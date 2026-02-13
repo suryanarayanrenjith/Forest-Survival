@@ -11,7 +11,7 @@ interface ClassicMenuProps {
 const ClassicMenu = ({ onStartGame, onBack }: ClassicMenuProps) => {
   const [selectedDifficulty, setSelectedDifficulty] = useState<'easy' | 'medium' | 'hard' | 'adaptive'>('medium');
   const [selectedTimeOfDay, setSelectedTimeOfDay] = useState<'day' | 'night' | 'auto'>('auto');
-  const [selectedMap, setSelectedMap] = useState<MapType>('dense_forest');
+  const [selectedMap, setSelectedMap] = useState<MapType>('deep_forest');
   const [isRandomMode, setIsRandomMode] = useState(false);
   const [showMapSelector, setShowMapSelector] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -479,7 +479,7 @@ const ClassicMenu = ({ onStartGame, onBack }: ClassicMenuProps) => {
 
           {/* Version inside scrollable content */}
           <p className="mt-4 sm:mt-6 text-gray-600 text-[9px] sm:text-[10px] tracking-wider uppercase">
-            Version 7.0 • Classic Mode
+            Version 1.0 • Classic Mode
           </p>
         </div>
       </div>

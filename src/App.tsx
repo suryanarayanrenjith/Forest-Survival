@@ -771,9 +771,11 @@ const ForestSurvivalGame = () => {
     };
 
     // Collision detection helper
-    const checkTerrainCollision = (newX: number, newZ: number): boolean => {
+    const checkTerrainCollision = (newX: number, newZ: number, playerY = 0): boolean => {
       for (const obj of terrainObjects) {
         if (!obj.collidable) continue;
+        // If the player is above the object's height, skip collision (jump over)
+        if (obj.height !== undefined && playerY > obj.height) continue;
         const dx = newX - obj.x;
         const dz = newZ - obj.z;
         const distance = Math.sqrt(dx * dx + dz * dz);
@@ -962,7 +964,7 @@ const ForestSurvivalGame = () => {
 
       // Get the scale for this enemy type (must match SmartEnemyManager ENEMY_CONFIGS)
       const bodyScale = type === 'fast' ? 0.7 : type === 'tank' ? 1.5 : type === 'boss' ? 2.0 : 1.0;
-      const position = new THREE.Vector3(x, 1.5 * bodyScale, z);
+      const position = new THREE.Vector3(x, 1.0 * bodyScale, z);
       const acquiredMesh = smartEnemyManager.acquireMeshForEnemy(type as PooledEnemyType, position);
 
       // If pool is exhausted or adaptive limit reached, don't spawn
@@ -971,7 +973,7 @@ const ForestSurvivalGame = () => {
       }
 
       // Extract mesh and parts from pooled enemy
-      const { mesh: enemyGroup, body: torso, leftArm, rightArm, leftLeg, rightLeg, poolId } = acquiredMesh;
+      const { mesh: enemyGroup, body: torso, leftArm, rightArm, leftLeg, rightLeg, head, poolId } = acquiredMesh;
 
       // Get enemy stats based on type (kept for AI calculations)
       let enemyHealth = 50;
@@ -1054,6 +1056,7 @@ const ForestSurvivalGame = () => {
         leftArm,
         rightArm,
         torso,
+        head,
         // AI state - prevent clumping
         targetPosition: new THREE.Vector3(x, 0, z),
         spreadOffset: new THREE.Vector2(
@@ -1266,6 +1269,10 @@ const ForestSurvivalGame = () => {
 
     let velocityY = 0;
     let isJumping = false;
+    let jumpCooldown = 0; // Prevents bunny hop spam
+    const JUMP_COOLDOWN_TIME = 150; // ms
+    let landingImpact = 0; // Camera dip on landing (0 = none, positive = dipping)
+    let wasJumping = false; // Track previous frame jump state for landing detection
 
     // CROUCH SYSTEM
     let isCrouching = false;
@@ -1996,7 +2003,7 @@ const ForestSurvivalGame = () => {
       if (isDashing) {
         const newX = camera.position.x + dashDirection.x * currentSpeed;
         const newZ = camera.position.z + dashDirection.z * currentSpeed;
-        if (!checkTerrainCollision(newX, newZ)) {
+        if (!checkTerrainCollision(newX, newZ, camera.position.y)) {
           camera.position.x = newX;
           camera.position.z = newZ;
         }
@@ -2006,7 +2013,7 @@ const ForestSurvivalGame = () => {
       if (!isDashing && (keys['KeyW'] || keys['ArrowUp'])) {
         const newX = camera.position.x + _moveDirection.x * currentSpeed;
         const newZ = camera.position.z + _moveDirection.z * currentSpeed;
-        if (!checkTerrainCollision(newX, newZ)) {
+        if (!checkTerrainCollision(newX, newZ, camera.position.y)) {
           camera.position.x = newX;
           camera.position.z = newZ;
         }
@@ -2014,7 +2021,7 @@ const ForestSurvivalGame = () => {
       if (!isDashing && (keys['KeyS'] || keys['ArrowDown'])) {
         const newX = camera.position.x - _moveDirection.x * currentSpeed;
         const newZ = camera.position.z - _moveDirection.z * currentSpeed;
-        if (!checkTerrainCollision(newX, newZ)) {
+        if (!checkTerrainCollision(newX, newZ, camera.position.y)) {
           camera.position.x = newX;
           camera.position.z = newZ;
         }
@@ -2022,7 +2029,7 @@ const ForestSurvivalGame = () => {
       if (!isDashing && (keys['KeyA'] || keys['ArrowLeft'])) {
         const newX = camera.position.x + _moveRight.x * currentSpeed;
         const newZ = camera.position.z + _moveRight.z * currentSpeed;
-        if (!checkTerrainCollision(newX, newZ)) {
+        if (!checkTerrainCollision(newX, newZ, camera.position.y)) {
           camera.position.x = newX;
           camera.position.z = newZ;
         }
@@ -2030,14 +2037,17 @@ const ForestSurvivalGame = () => {
       if (!isDashing && (keys['KeyD'] || keys['ArrowRight'])) {
         const newX = camera.position.x - _moveRight.x * currentSpeed;
         const newZ = camera.position.z - _moveRight.z * currentSpeed;
-        if (!checkTerrainCollision(newX, newZ)) {
+        if (!checkTerrainCollision(newX, newZ, camera.position.y)) {
           camera.position.x = newX;
           camera.position.z = newZ;
         }
       }
 
+      // Jump cooldown timer
+      if (jumpCooldown > 0) jumpCooldown -= delta * 1000;
+
       // Jump - weight-based jump height (auto-uncrouch when jumping)
-      if (keys['Space'] && !isJumping && camera.position.y <= currentCameraHeight + 0.1) {
+      if (keys['Space'] && !isJumping && jumpCooldown <= 0 && camera.position.y <= currentCameraHeight + 0.1) {
         // Auto-uncrouch when jumping
         if (isCrouching) {
           isCrouching = false;
@@ -2047,6 +2057,12 @@ const ForestSurvivalGame = () => {
         const jumpMultiplier = 1.0 / Math.sqrt(weaponWeight);
         velocityY = baseJumpPower * jumpMultiplier;
         isJumping = true;
+        wasJumping = true;
+      }
+
+      // Variable jump height: release Space early for short hops
+      if (!keys['Space'] && isJumping && velocityY > 0) {
+        velocityY *= 0.5; // Cut upward velocity for a short hop
       }
 
       velocityY -= gravity;
@@ -2056,7 +2072,21 @@ const ForestSurvivalGame = () => {
       if (camera.position.y <= currentCameraHeight) {
         camera.position.y = currentCameraHeight;
         velocityY = 0;
+        // Landing impact — trigger camera dip when touching ground after a jump
+        if (wasJumping) {
+          landingImpact = 0.3; // Start landing dip effect
+          jumpCooldown = JUMP_COOLDOWN_TIME; // Anti-bunny-hop cooldown
+          wasJumping = false;
+        }
         isJumping = false;
+      }
+
+      // Landing impact camera dip (quick down-and-back)
+      if (landingImpact > 0) {
+        const dip = Math.sin(landingImpact * Math.PI) * 0.25; // Sine curve for smooth dip
+        camera.position.y -= dip;
+        landingImpact -= delta * 4; // Recover over ~0.25s
+        if (landingImpact <= 0) landingImpact = 0;
       }
 
       // Head bob for realistic movement feel - uses stable time accumulator
@@ -2451,7 +2481,7 @@ const ForestSurvivalGame = () => {
 
           // Death animation using rotation and scale (NO material changes - materials are shared!)
           enemy.mesh.rotation.x = deathProgress * Math.PI / 2;
-          enemy.mesh.position.y = (1.5 * baseScale) - deathProgress * (1.5 * baseScale);
+          enemy.mesh.position.y = (1.0 * baseScale) - deathProgress * (1.0 * baseScale);
 
           // Scale down as enemy dies, multiplied by base scale to maintain relative size
           const deathScale = Math.max(0.01, 1.0 - deathProgress * 0.8) * baseScale;
@@ -2491,6 +2521,10 @@ const ForestSurvivalGame = () => {
 
         if (enemy.dead) continue;
 
+        // Compute baseScale for ALL living enemies (needed for grounding)
+        const baseScale = enemy.type === 'fast' ? 0.7 : enemy.type === 'tank' ? 1.5 : enemy.type === 'boss' ? 2.0 : 1.0;
+        const groundY = 1.0 * baseScale;
+
         // Performance optimization: Skip AI update for distant enemies
         const distance = enemy.mesh.position.distanceTo(camera.position);
         if (distance > MAX_AI_UPDATE_DISTANCE) {
@@ -2498,6 +2532,7 @@ const ForestSurvivalGame = () => {
           _tempVec3.subVectors(camera.position, enemy.mesh.position).normalize();
           enemy.mesh.position.x += _tempVec3.x * (enemy.speed || 2) * delta;
           enemy.mesh.position.z += _tempVec3.z * (enemy.speed || 2) * delta;
+          enemy.mesh.position.y = groundY;
           continue;
         }
 
@@ -2624,7 +2659,7 @@ const ForestSurvivalGame = () => {
 
             // Body bob (vertical movement while walking)
             const bodyBob = Math.abs(Math.sin(walkPhase * 2)) * 0.08;
-            enemy.mesh.position.y = 2 + bodyBob;
+            enemy.mesh.position.y = groundY + bodyBob;
 
             // Subtle body tilt while moving (lean into movement)
             if (enemy.torso) {
@@ -2662,24 +2697,23 @@ const ForestSurvivalGame = () => {
                 }
               }
 
-              // Look at player (or dodge direction if dodging)
+              // Look at player (or dodge direction if dodging) with angle-wrapped smooth rotation
               let lookAtX, lookAtZ;
               if (enemy.isDodging && enemy.dodgeDirection) {
-                // Look in dodge direction
                 lookAtX = enemy.mesh.position.x + enemy.dodgeDirection.x;
                 lookAtZ = enemy.mesh.position.z + enemy.dodgeDirection.z;
               } else {
-                // Look at player
                 lookAtX = camera.position.x;
                 lookAtZ = camera.position.z;
               }
               const dx = lookAtX - enemy.mesh.position.x;
               const dz = lookAtZ - enemy.mesh.position.z;
-              enemy.mesh.rotation.y = THREE.MathUtils.lerp(
-                enemy.mesh.rotation.y,
-                Math.atan2(dx, dz),
-                0.1
-              );
+              const targetAngle = Math.atan2(dx, dz);
+              // Angle wrapping to prevent 360° spins when crossing ±π
+              let angleDiff = targetAngle - enemy.mesh.rotation.y;
+              while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+              while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+              enemy.mesh.rotation.y += angleDiff * 0.12;
             }
           } else {
             // === IDLE ANIMATION ===
@@ -2706,12 +2740,41 @@ const ForestSurvivalGame = () => {
             }
 
             // Subtle breathing motion on body
-            enemy.mesh.position.y = THREE.MathUtils.lerp(enemy.mesh.position.y, 2 + Math.sin(idlePhase) * 0.02, 0.1);
+            enemy.mesh.position.y = THREE.MathUtils.lerp(enemy.mesh.position.y, groundY + Math.sin(idlePhase) * 0.02, 0.1);
 
             // Reset torso tilt
             if (enemy.torso) {
               enemy.torso.rotation.x = THREE.MathUtils.lerp(enemy.torso.rotation.x, 0, 0.08);
             }
+          }
+
+          // === HEAD TRACKING — look at player ===
+          if (enemy.head) {
+            const headDx = camera.position.x - enemy.mesh.position.x;
+            const headDz = camera.position.z - enemy.mesh.position.z;
+            // Local-space rotation: subtract body rotation to get relative angle
+            const headTargetY = Math.atan2(headDx, headDz) - enemy.mesh.rotation.y;
+            // Clamp head turn to ±45°
+            const clampedHeadY = Math.max(-0.78, Math.min(0.78, headTargetY));
+            enemy.head.rotation.y = THREE.MathUtils.lerp(enemy.head.rotation.y, clampedHeadY, 0.08);
+            // Slight head pitch toward player (look down if close, up if far)
+            const headPitch = distance < 5 ? 0.15 : distance < 15 ? 0.05 : -0.05;
+            enemy.head.rotation.x = THREE.MathUtils.lerp(enemy.head.rotation.x, headPitch, 0.06);
+          }
+
+          // === HIT STAGGER — visual feedback when damaged ===
+          if (enemy.damageFlashTime > 0) {
+            // Quick backward jolt
+            const staggerIntensity = Math.min(enemy.damageFlashTime / 0.15, 1.0);
+            if (enemy.torso) {
+              enemy.torso.rotation.x = THREE.MathUtils.lerp(enemy.torso.rotation.x, -0.25 * staggerIntensity, 0.3);
+            }
+            // Scale pulse for impact feel
+            const scalePulse = 1.0 + Math.sin(staggerIntensity * Math.PI) * 0.08;
+            enemy.mesh.scale.setScalar(baseScale * scalePulse);
+          } else {
+            // Ensure scale is correct when not staggering
+            enemy.mesh.scale.setScalar(baseScale);
           }
         }
 
@@ -2827,13 +2890,26 @@ const ForestSurvivalGame = () => {
 
           // Update arm animations from attack system
           const armRotations = enemy.attackSystem.getArmRotation();
+          const atkState = enemy.attackSystem.getAttackState();
           if (enemy.leftArm && enemy.rightArm) {
-            if (enemy.attackSystem.getAttackState().isAttacking) {
+            if (atkState.isAttacking) {
               enemy.leftArm.rotation.x = armRotations.left;
               enemy.rightArm.rotation.x = armRotations.right;
 
               if (enemy.torso) {
                 enemy.torso.rotation.x = enemy.attackSystem.getTorsoRotation();
+              }
+
+              // Attack lunge — lean forward and lurch toward player during strike
+              if (atkState.attackPhase === 'strike') {
+                const lungeDx = camera.position.x - enemy.mesh.position.x;
+                const lungeDz = camera.position.z - enemy.mesh.position.z;
+                const lungeDist = Math.sqrt(lungeDx * lungeDx + lungeDz * lungeDz);
+                if (lungeDist > 0.5) {
+                  const lungeStrength = 0.15 * baseScale;
+                  enemy.mesh.position.x += (lungeDx / lungeDist) * lungeStrength;
+                  enemy.mesh.position.z += (lungeDz / lungeDist) * lungeStrength;
+                }
               }
             } else {
               // Idle arm animation
@@ -2951,7 +3027,7 @@ const ForestSurvivalGame = () => {
 
       renderer.dispose();
     };
-  }, [gameStarted, gameMode, classicDifficulty, classicTimeOfDay, multiplayerManager]);
+  }, [gameStarted, gameMode, classicDifficulty, classicTimeOfDay, selectedMap, multiplayerManager]);
 
   // Handle mode selection
   const handleModeSelection = () => {

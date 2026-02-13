@@ -136,6 +136,7 @@ export interface Enemy {
   leftArm?: THREE.Mesh;
   rightArm?: THREE.Mesh;
   torso?: THREE.Mesh;
+  head?: THREE.Mesh;
   // AI state
   targetPosition: THREE.Vector3;
   spreadOffset: THREE.Vector2;
@@ -204,6 +205,7 @@ export interface TerrainObject {
   type: 'tree' | 'rock' | 'boulder' | 'bush' | 'water' | 'cactus';
   collidable: boolean;
   radius: number;
+  height?: number; // Collidable height — player can jump over if above this Y
 }
 
 export interface Keys {

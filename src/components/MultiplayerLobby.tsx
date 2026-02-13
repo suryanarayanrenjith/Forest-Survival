@@ -53,7 +53,7 @@ const MultiplayerLobby = ({ onStartGame, onBack }: MultiplayerLobbyProps) => {
   const [gameMode, setGameMode] = useState<'coop' | 'survival'>('coop');
   const [timeLimit, setTimeLimit] = useState<number>(300); // 5 minutes default
   const [hasTimeLimit, setHasTimeLimit] = useState(false);
-  const [selectedMap, setSelectedMap] = useState<MapType>('dense_forest');
+  const [selectedMap, setSelectedMap] = useState<MapType>('deep_forest');
   const [showMapSelector, setShowMapSelector] = useState(false);
   const lobbyCreatedRef = useRef(false);
   const autoJoinAttemptedRef = useRef(false);
