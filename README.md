@@ -195,4 +195,4 @@ forest-survival/
 
 ## 📝 License
 
-Open source. Built for fun.
+[MIT](https://github.com/suryanarayanrenjith/Forest-Survival/blob/master/LICENSE)
