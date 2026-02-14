@@ -6,49 +6,70 @@ interface TutorialOverlayProps {
   progress: number;
   onSkip?: () => void;
   onNext?: () => void;
+  onEndTutorial?: () => void;
 }
 
 export const TutorialOverlay: React.FC<TutorialOverlayProps> = ({
   currentStep,
   progress,
   onSkip,
-  onNext
+  onNext,
+  onEndTutorial
 }) => {
   if (!currentStep) return null;
 
-  const positionClasses = {
-    top: 'top-24 left-1/2 -translate-x-1/2',
-    bottom: 'bottom-24 left-1/2 -translate-x-1/2',
-    center: 'top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2',
-    left: 'left-24 top-1/2 -translate-y-1/2',
-    right: 'right-24 top-1/2 -translate-y-1/2'
+  // All positions now use safe inset values that keep the card fully on-screen
+  // Center = dead center, top/bottom = centered horizontally near edge,
+  // left/right = centered vertically near the left/right side
+  const getPositionStyle = (pos: string): React.CSSProperties => {
+    switch (pos) {
+      case 'top':
+        return { top: '1.5rem', left: '50%', transform: 'translateX(-50%)' };
+      case 'bottom':
+        return { bottom: '1.5rem', left: '50%', transform: 'translateX(-50%)' };
+      case 'left':
+        return { top: '50%', left: '1.5rem', transform: 'translateY(-50%)' };
+      case 'right':
+        return { top: '50%', right: '1.5rem', transform: 'translateY(-50%)' };
+      case 'center':
+      default:
+        return { top: '50%', left: '50%', transform: 'translate(-50%, -50%)' };
+    }
   };
 
   const position = currentStep.position || 'center';
 
   return (
-    <div className="fixed inset-0 z-50 pointer-events-none">
-      {/* Dark overlay */}
-      <div className="absolute inset-0 bg-black/60 pointer-events-auto" />
+    <div className="fixed inset-0 z-50">
+      {/* Dark overlay — clickable to dismiss optional steps */}
+      <div className="absolute inset-0 bg-black/60" />
 
-      {/* Tutorial card */}
-      <div className={`absolute ${positionClasses[position]} pointer-events-auto max-w-lg`}>
-        <div className="bg-gradient-to-br from-gray-900 to-gray-800 border-4 border-cyan-400 rounded-xl shadow-2xl overflow-hidden animate-pulse-border">
+      {/* Tutorial card — positioned safely within viewport */}
+      <div
+        className="absolute pointer-events-auto w-[90vw] max-w-lg"
+        style={{
+          ...getPositionStyle(position),
+          animation: 'tutorialEnter 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards',
+        }}
+      >
+        <div className="bg-gradient-to-br from-gray-900 to-gray-800 border-2 border-cyan-400 rounded-xl shadow-2xl overflow-hidden"
+          style={{ boxShadow: '0 0 30px rgba(6, 182, 212, 0.3)' }}
+        >
           {/* Icon and Title */}
           <div className="bg-gradient-to-r from-cyan-500 to-blue-500 p-4 text-center">
-            <div className="text-6xl mb-2 animate-bounce">{currentStep.icon}</div>
-            <h2 className="text-2xl font-bold text-white">{currentStep.title}</h2>
+            <div className="text-5xl mb-1">{currentStep.icon}</div>
+            <h2 className="text-xl font-bold text-white">{currentStep.title}</h2>
           </div>
 
           {/* Content */}
-          <div className="p-6 space-y-4">
-            <p className="text-gray-300 text-lg font-medium">{currentStep.description}</p>
+          <div className="p-5 space-y-3">
+            <p className="text-gray-300 text-base font-medium">{currentStep.description}</p>
 
             {/* Instructions */}
-            <div className="bg-black/40 rounded-lg p-4 space-y-2">
+            <div className="bg-black/40 rounded-lg p-3 space-y-1.5">
               {currentStep.instructions.map((instruction, idx) => (
                 <div key={idx} className="flex items-start gap-2">
-                  <span className="text-cyan-400 font-bold">•</span>
+                  <span className="text-cyan-400 font-bold mt-0.5">•</span>
                   <p className="text-gray-200 text-sm">{instruction}</p>
                 </div>
               ))}
@@ -68,21 +89,36 @@ export const TutorialOverlay: React.FC<TutorialOverlayProps> = ({
               </div>
             </div>
 
-            {/* Action buttons */}
-            <div className="flex gap-2 justify-between pt-2">
+            {/* Action buttons — always visible */}
+            <div className="flex gap-2 justify-between pt-1">
+              {/* Skip this step (for optional steps) */}
               {!currentStep.required && onSkip && (
                 <button
                   onClick={onSkip}
-                  className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors text-sm"
+                  className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-lg transition-colors text-sm"
                 >
-                  Skip (Optional)
+                  Skip Step
                 </button>
               )}
+
+              {/* End Tutorial button — always available so user can exit anytime */}
+              {onEndTutorial && (
+                <button
+                  onClick={onEndTutorial}
+                  className="px-4 py-2 bg-red-900/60 hover:bg-red-800/80 text-red-300 hover:text-red-200 rounded-lg transition-colors text-sm border border-red-500/30"
+                >
+                  End Tutorial
+                </button>
+              )}
+
               <div className="flex-1" />
+
+              {/* Continue / Got it button */}
               {onNext && (
                 <button
                   onClick={onNext}
-                  className="px-6 py-2 bg-cyan-500 hover:bg-cyan-600 text-white font-bold rounded transition-colors text-sm"
+                  className="px-6 py-2 bg-cyan-500 hover:bg-cyan-400 text-white font-bold rounded-lg transition-all duration-150 text-sm hover:scale-105 active:scale-95"
+                  style={{ boxShadow: '0 0 12px rgba(6, 182, 212, 0.4)' }}
                 >
                   Got it!
                 </button>
@@ -90,21 +126,22 @@ export const TutorialOverlay: React.FC<TutorialOverlayProps> = ({
             </div>
           </div>
         </div>
-
-        {/* Pointer arrow (for positioned tooltips) */}
-        {position !== 'center' && (
-          <div
-            className={`absolute ${
-              position === 'top' ? 'bottom-0 left-1/2 -translate-x-1/2 translate-y-full' :
-              position === 'bottom' ? 'top-0 left-1/2 -translate-x-1/2 -translate-y-full rotate-180' :
-              position === 'left' ? 'right-0 top-1/2 -translate-y-1/2 translate-x-full -rotate-90' :
-              'left-0 top-1/2 -translate-y-1/2 -translate-x-full rotate-90'
-            }`}
-          >
-            <div className="w-0 h-0 border-l-8 border-r-8 border-t-8 border-l-transparent border-r-transparent border-t-cyan-400" />
-          </div>
-        )}
       </div>
+
+      <style>{`
+        @keyframes tutorialEnter {
+          from {
+            opacity: 0;
+            transform: translateY(20px) scale(0.95);
+            filter: blur(5px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            filter: blur(0);
+          }
+        }
+      `}</style>
     </div>
   );
 };

@@ -5,10 +5,11 @@ import SettingsMenu from './SettingsMenu';
 interface MainMenuProps {
   onClassicMode: () => void;
   onMultiplayerMode: () => void;
+  onTutorialMode: () => void;
   t: (key: string) => string;
 }
 
-const MainMenu = ({ onClassicMode, onMultiplayerMode }: MainMenuProps) => {
+const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode }: MainMenuProps) => {
   const [showSettings, setShowSettings] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const sceneRef = useRef<{
@@ -309,6 +310,26 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode }: MainMenuProps) => {
                 <div className="text-left">
                   <span className="block text-xl sm:text-2xl lg:text-3xl font-black text-white tracking-wide">MULTIPLAYER</span>
                   <span className="block text-[10px] sm:text-xs text-blue-200/80 font-medium">Play with friends online</span>
+                </div>
+              </div>
+            </button>
+
+            {/* Tutorial Button */}
+            <button
+              onClick={onTutorialMode}
+              className="group relative w-full overflow-hidden rounded-xl sm:rounded-2xl transition-all duration-500 hover:scale-[1.02] active:scale-[0.98]"
+            >
+              <div className="absolute inset-0 bg-gradient-to-r from-amber-600/80 via-yellow-600/80 to-amber-600/80 group-hover:from-amber-500/90 group-hover:via-yellow-500/90 group-hover:to-amber-500/90 transition-all duration-500" />
+              <div className="absolute inset-0 bg-gradient-to-b from-white/10 to-transparent" />
+              <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500">
+                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000" />
+              </div>
+              <div className="absolute inset-0 rounded-xl sm:rounded-2xl border-2 border-amber-400/60 group-hover:border-amber-300/80 group-hover:shadow-[0_0_30px_rgba(245,158,11,0.4)] transition-all duration-300" />
+              <div className="relative px-6 sm:px-10 py-4 sm:py-5 flex items-center justify-center gap-3">
+                <span className="text-2xl sm:text-3xl group-hover:scale-110 transition-transform duration-300">🎯</span>
+                <div className="text-left">
+                  <span className="block text-xl sm:text-2xl lg:text-3xl font-black text-white tracking-wide">TUTORIAL</span>
+                  <span className="block text-[10px] sm:text-xs text-amber-200/80 font-medium">Learn the basics</span>
                 </div>
               </div>
             </button>

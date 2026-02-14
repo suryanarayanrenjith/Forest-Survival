@@ -35,7 +35,7 @@ import ChatSystem from './components/ChatSystem';
 import AchievementNotification from './components/AchievementNotification';
 import KillFeed, { addKillFeedEntry } from './components/KillFeed';
 import HitMarkers, { addHitMarker, addDamageNumber } from './components/HitMarkers';
-import ScreenEffects, { triggerDamageFlash, triggerScreenShake } from './components/ScreenEffects';
+import ScreenEffects, { triggerDamageFlash, triggerScreenShake, triggerKillFlash, triggerHeadshotFlash } from './components/ScreenEffects';
 import ComboDisplay from './components/ComboDisplay';
 import { WEAPONS, type Enemy, type Bullet, type PowerUp, type Particle, type TerrainObject, type Keys, type GameState } from './types/game';
 import { AdaptiveDifficultySystem } from './utils/AdaptiveDifficultySystem';
@@ -106,7 +106,7 @@ const t = (key: string): string => TRANSLATIONS[locale]?.[key as keyof typeof TR
 
 const ForestSurvivalGame = () => {
   const mountRef = useRef<HTMLDivElement>(null);
-  const [gameMode, setGameMode] = useState<'none' | 'classic' | 'multiplayer'>('none');
+  const [gameMode, setGameMode] = useState<'none' | 'classic' | 'multiplayer' | 'tutorial'>('none');
   const [showClassicMenu, setShowClassicMenu] = useState(false);
   const [gameStarted, setGameStarted] = useState(false);
   const [classicDifficulty, setClassicDifficulty] = useState<'easy' | 'medium' | 'hard' | 'adaptive'>('medium');
@@ -139,6 +139,21 @@ const ForestSurvivalGame = () => {
   const [showTutorial, setShowTutorial] = useState(false);
   const [showEnhancedSettings, setShowEnhancedSettings] = useState(false);
   const [showStatsGallery, setShowStatsGallery] = useState(false);
+
+  // Tutorial & Skill Tree refs + state (bridge useEffect closure → React render)
+  const tutorialRef = useRef<TutorialSystem | null>(null);
+  const tutorialActiveRef = useRef(false); // true while tutorial popup is showing — blocks pointer lock
+  const [tutorialStep, setTutorialStep] = useState<any>(null);
+  const [tutorialProgress, setTutorialProgress] = useState(0);
+  const skillTreeRef = useRef<SmartSkillTreeSystem | null>(null);
+  const [skillTreeData, setSkillTreeData] = useState({
+    skills: [] as any[],
+    availablePoints: 0,
+    spentPoints: 0,
+    totalPoints: 0,
+    detectedPlayStyle: 'balanced' as string,
+    recommendations: [] as string[],
+  });
 
   // Game settings
   const [gameSettings, setGameSettings] = useState<GameSettings>({
@@ -307,11 +322,37 @@ const ForestSurvivalGame = () => {
     tutorial.setEnabled(gameSettings.showTutorial);
     tutorial.setShowHints(gameSettings.showHints);
 
-    // Start tutorial for new players
-    if (gameSettings.showTutorial && !isMultiplayer) {
+    // Store refs so React render can access these systems
+    tutorialRef.current = tutorial;
+    skillTreeRef.current = skillTree;
+
+    // Tutorial mode: force tutorial on + reduce difficulty for learning
+    const isTutorialMode = gameMode === 'tutorial';
+    if (isTutorialMode) {
       tutorial.start();
       setShowTutorial(true);
+      tutorialActiveRef.current = true; // Block pointer lock while tutorial popup shows
+      diffSettings.healthMult *= 0.6;
+      diffSettings.speedMult *= 0.7;
+      diffSettings.spawnMult *= 0.5;
+      // Set initial tutorial step immediately so overlay renders on first frame
+      const firstStep = tutorial.getCurrentStep();
+      if (firstStep) {
+        setTutorialStep({ ...firstStep });
+        setTutorialProgress(tutorial.getProgress());
+        (tutorial as any)._lastStepId = firstStep.id;
+      }
     }
+
+    // Initialize skill tree data for React
+    setSkillTreeData({
+      skills: skillTree.getAllSkills(),
+      availablePoints: skillTree.getState().availablePoints,
+      spentPoints: skillTree.getState().spentPoints,
+      totalPoints: skillTree.getState().totalPoints,
+      detectedPlayStyle: 'balanced',
+      recommendations: [],
+    });
 
     // === ADVANCED DAY-NIGHT CYCLE SYSTEM ===
     // Initialize with intelligent auto mode for multiplayer, or user-selected mode for classic
@@ -428,6 +469,30 @@ const ForestSurvivalGame = () => {
       format: THREE.RGBAFormat,
       type: THREE.UnsignedByteType,
       stencilBuffer: false
+    });
+
+    // Bloom render target at half resolution for performance
+    const bloomTarget = new THREE.WebGLRenderTarget(
+      Math.max(1, Math.floor(window.innerWidth / 2)),
+      Math.max(1, Math.floor(window.innerHeight / 2)),
+      { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, format: THREE.RGBAFormat }
+    );
+
+    // Bright-pass extraction shader — extracts only bright pixels for bloom
+    const brightPassMaterial = new THREE.ShaderMaterial({
+      uniforms: { tDiffuse: { value: null }, threshold: { value: 0.65 } },
+      vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+      fragmentShader: `
+        uniform sampler2D tDiffuse;
+        uniform float threshold;
+        varying vec2 vUv;
+        void main() {
+          vec4 color = texture2D(tDiffuse, vUv);
+          float brightness = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
+          float soft = smoothstep(threshold - 0.1, threshold + 0.1, brightness);
+          gl_FragColor = vec4(color.rgb * soft, 1.0);
+        }
+      `
     });
 
     // Enhanced Final Color Grading & Tone Mapping for Stunning Visuals
@@ -902,6 +967,45 @@ const ForestSurvivalGame = () => {
       console.log('[Graphics] Player shadow with gun enabled');
     }
 
+    // AMBIENT FLOATING PARTICLES (dust motes / fireflies)
+    let ambientParticles: THREE.Points | null = null;
+    const AMBIENT_PARTICLE_COUNT = 200;
+    if (gameSettings.particles && graphicsPreset.particleDensity > 30) {
+      const isNight = timeOfDay === 'night';
+      const particleGeo = new THREE.BufferGeometry();
+      const positions = new Float32Array(AMBIENT_PARTICLE_COUNT * 3);
+      const velocities = new Float32Array(AMBIENT_PARTICLE_COUNT * 3);
+      const phases = new Float32Array(AMBIENT_PARTICLE_COUNT); // random phase offset for sine drift
+
+      for (let i = 0; i < AMBIENT_PARTICLE_COUNT; i++) {
+        positions[i * 3] = (Math.random() - 0.5) * 60;
+        positions[i * 3 + 1] = 1 + Math.random() * 8;
+        positions[i * 3 + 2] = (Math.random() - 0.5) * 60;
+        velocities[i * 3] = (Math.random() - 0.5) * 0.3;
+        velocities[i * 3 + 1] = (Math.random() - 0.5) * 0.1;
+        velocities[i * 3 + 2] = (Math.random() - 0.5) * 0.3;
+        phases[i] = Math.random() * Math.PI * 2;
+      }
+
+      particleGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      (particleGeo as any)._velocities = velocities;
+      (particleGeo as any)._phases = phases;
+
+      const particleMat = new THREE.PointsMaterial({
+        color: isNight ? 0x88ff88 : 0xffffff,
+        size: isNight ? 0.12 : 0.06,
+        transparent: true,
+        opacity: isNight ? 0.6 : 0.35,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        sizeAttenuation: true,
+      });
+
+      ambientParticles = new THREE.Points(particleGeo, particleMat);
+      ambientParticles.frustumCulled = false;
+      scene.add(ambientParticles);
+    }
+
     // Game state
     let health = 100;
     let ammo = 12;
@@ -920,6 +1024,7 @@ const ForestSurvivalGame = () => {
     let unlockedWeapons = ['pistol'];
     let isAiming = false;
     let timeScale = 1.0; // For slow-mo effects (1.0 = normal speed)
+    let fovPunch = 0; // FOV punch on shooting (additive degrees)
 
     // Track player velocity for AI prediction
     let playerVelocity = new THREE.Vector3(0, 0, 0);
@@ -1331,7 +1436,7 @@ const ForestSurvivalGame = () => {
         setIsPaused(paused);
         if (paused) {
           document.exitPointerLock();
-        } else {
+        } else if (!tutorialActiveRef.current) {
           renderer.domElement.requestPointerLock();
         }
         return;
@@ -1459,10 +1564,9 @@ const ForestSurvivalGame = () => {
     document.addEventListener('keyup', onKeyUp);
 
     const onPointerLockChange = () => {
-      // Don't auto-pause in multiplayer mode when losing pointer lock
-      // IMPORTANT: isMultiplayer uses multiplayerManager which is more reliable than gameMode state
+      // Don't auto-pause when losing pointer lock in multiplayer or during tutorial
       const inMultiplayerGame = isMultiplayer || gameMode === 'multiplayer';
-      if (!document.pointerLockElement && !paused && !isGameOver && !inMultiplayerGame) {
+      if (!document.pointerLockElement && !paused && !isGameOver && !inMultiplayerGame && !tutorialActiveRef.current) {
         paused = true;
         setIsPaused(true);
       }
@@ -1481,8 +1585,8 @@ const ForestSurvivalGame = () => {
     document.addEventListener('pointerlockchange', onPointerLockChange);
 
     const onCanvasClick = (e: MouseEvent) => {
-      // Left click to lock pointer
-      if (e.button === 0 && !isGameOver && !paused && document.pointerLockElement !== renderer.domElement) {
+      // Left click to lock pointer (skip during tutorial popup)
+      if (e.button === 0 && !isGameOver && !paused && !tutorialActiveRef.current && document.pointerLockElement !== renderer.domElement) {
         renderer.domElement.requestPointerLock();
       }
 
@@ -1503,7 +1607,7 @@ const ForestSurvivalGame = () => {
 
       if (document.pointerLockElement === renderer.domElement) {
         document.exitPointerLock();
-      } else if (!isGameOver && !paused) {
+      } else if (!isGameOver && !paused && !tutorialActiveRef.current) {
         renderer.domElement.requestPointerLock();
       }
     };
@@ -1513,7 +1617,7 @@ const ForestSurvivalGame = () => {
 
     // Enhanced shooting
     const shoot = () => {
-      if (ammo > 0 && !isGameOver && !paused && canShoot && !isReloading) {
+      if (ammo > 0 && !isGameOver && !paused && canShoot && !isReloading && !tutorialActiveRef.current) {
         const weapon = WEAPONS[currentWeapon];
         canShoot = false;
         setTimeout(() => { canShoot = true; }, weapon.fireRate);
@@ -1597,6 +1701,9 @@ const ForestSurvivalGame = () => {
         // ENHANCED SCREEN SHAKE for recoil feedback
         cameraShakeIntensity = Math.min(cameraShakeIntensity + recoilAmount * 3.5, 0.2);
 
+        // FOV punch — subtle widening on each shot
+        fovPunch = Math.min(fovPunch + recoilAmount * 60, 3);
+
         // Gun model handles visual recoil animation (no camera tilt!)
       }
     };
@@ -1614,7 +1721,7 @@ const ForestSurvivalGame = () => {
         return;
       }
 
-      if (e.button === 0 && !paused && !isGameOver) {
+      if (e.button === 0 && !paused && !isGameOver && !tutorialActiveRef.current) {
         mouseDown = true;
         shoot();
 
@@ -1652,7 +1759,7 @@ const ForestSurvivalGame = () => {
     document.addEventListener('mouseup', onMouseUp);
 
     setTimeout(() => {
-      if (renderer.domElement && !paused && !isGameOver) {
+      if (renderer.domElement && !paused && !isGameOver && !tutorialActiveRef.current) {
         renderer.domElement.requestPointerLock();
       }
     }, 200);
@@ -1883,9 +1990,26 @@ const ForestSurvivalGame = () => {
         }
       }
 
-      // Update tutorial
+      // Update tutorial — propagate state to React (throttled to avoid 60fps re-renders)
       if (tutorial.isActive()) {
-        tutorial.getCurrentStep(); // Tutorial system handles step completion internally
+        const step = tutorial.getCurrentStep();
+        const progress = tutorial.getProgress();
+        // Only update React state when step actually changes
+        if (step && step.id !== (tutorialRef.current as any)?._lastStepId) {
+          (tutorialRef.current as any)._lastStepId = step.id;
+          setTutorialStep({ ...step });
+          setTutorialProgress(progress);
+          tutorialActiveRef.current = true;
+          // Safety: exit pointer lock so cursor is visible for new tutorial popup
+          if (document.pointerLockElement) {
+            document.exitPointerLock();
+          }
+        }
+      } else if (showTutorial) {
+        // Tutorial completed — close overlay
+        setShowTutorial(false);
+        setTutorialStep(null);
+        tutorialActiveRef.current = false;
       }
 
       // Update multiplayer (sync player position)
@@ -1906,11 +2030,18 @@ const ForestSurvivalGame = () => {
       if (isGameOver || paused) {
         // Render paused state (with or without post-processing based on quality)
         if (graphicsPreset.postProcessing) {
+          // Pass 1: Render scene
           renderer.setRenderTarget(renderTarget1);
           renderer.render(scene, camera);
+          // Pass 2: Extract bright pixels for bloom
+          postQuad.material = brightPassMaterial;
+          brightPassMaterial.uniforms.tDiffuse.value = renderTarget1.texture;
+          renderer.setRenderTarget(bloomTarget);
+          renderer.render(postScene, postCamera);
+          // Pass 3: Final composite with bloom
           postQuad.material = finalMaterial;
           finalMaterial.uniforms.tDiffuse.value = renderTarget1.texture;
-          finalMaterial.uniforms.tBloom.value = renderTarget1.texture;
+          finalMaterial.uniforms.tBloom.value = bloomTarget.texture;
           renderer.setRenderTarget(null);
           renderer.render(postScene, postCamera);
         } else {
@@ -1923,12 +2054,37 @@ const ForestSurvivalGame = () => {
       gunModel.updateRecoil(delta);
 
       // Aiming zoom effect only (position/rotation handled by gun model)
-      if (isAiming && WEAPONS[currentWeapon].canAim) {
-        camera.fov = THREE.MathUtils.lerp(camera.fov, 50, delta * 8);
-      } else {
-        camera.fov = THREE.MathUtils.lerp(camera.fov, baseFOV, delta * 8);
-      }
+      const targetFov = (isAiming && WEAPONS[currentWeapon].canAim) ? 50 : baseFOV;
+      camera.fov = THREE.MathUtils.lerp(camera.fov, targetFov + fovPunch, delta * 8);
       camera.updateProjectionMatrix();
+      // Decay FOV punch
+      fovPunch *= 0.92;
+
+      // Update ambient particles — drift and re-center around player
+      if (ambientParticles) {
+        const posAttr = ambientParticles.geometry.getAttribute('position') as THREE.BufferAttribute;
+        const vels = (ambientParticles.geometry as any)._velocities as Float32Array;
+        const phs = (ambientParticles.geometry as any)._phases as Float32Array;
+        const elapsed = clock.getElapsedTime();
+
+        for (let i = 0; i < AMBIENT_PARTICLE_COUNT; i++) {
+          const ix = i * 3;
+          // Gentle sine drift
+          posAttr.array[ix] += vels[ix] * delta + Math.sin(elapsed * 0.5 + phs[i]) * 0.005;
+          posAttr.array[ix + 1] += vels[ix + 1] * delta + Math.sin(elapsed * 0.3 + phs[i] * 2) * 0.003;
+          posAttr.array[ix + 2] += vels[ix + 2] * delta + Math.cos(elapsed * 0.4 + phs[i]) * 0.005;
+
+          // Re-center particles that drift too far from player
+          const dx = posAttr.array[ix] - camera.position.x;
+          const dz = posAttr.array[ix + 2] - camera.position.z;
+          if (Math.abs(dx) > 30 || Math.abs(dz) > 30 || posAttr.array[ix + 1] < 0.5 || posAttr.array[ix + 1] > 12) {
+            posAttr.array[ix] = camera.position.x + (Math.random() - 0.5) * 50;
+            posAttr.array[ix + 1] = 1 + Math.random() * 8;
+            posAttr.array[ix + 2] = camera.position.z + (Math.random() - 0.5) * 50;
+          }
+        }
+        posAttr.needsUpdate = true;
+      }
 
       // Removed player light update for performance
 
@@ -2380,8 +2536,24 @@ const ForestSurvivalGame = () => {
               }
               tutorial.recordAction('kill', 1);
 
-              // Award XP to skill tree
-              skillTree.awardPoints(0); // Will add proper XP system later
+              // Kill confirmation flash
+              if (isCritical) {
+                triggerHeadshotFlash();
+              } else {
+                triggerKillFlash();
+              }
+
+              // Award XP to skill tree (1 point per kill)
+              skillTree.awardPoints(1);
+              const stState = skillTree.getState();
+              setSkillTreeData({
+                skills: skillTree.getAllSkills(),
+                availablePoints: stState.availablePoints,
+                spentPoints: stState.spentPoints,
+                totalPoints: stState.totalPoints,
+                detectedPlayStyle: 'balanced',
+                recommendations: [],
+              });
 
               // Add kill feed entries (if enabled in settings)
               if (gameSettingsManager.getSetting('killFeed')) {
@@ -2947,14 +3119,18 @@ const ForestSurvivalGame = () => {
 
       // === RENDERING (with optional post-processing based on graphics quality) ===
       if (graphicsPreset.postProcessing) {
-        // High/Medium quality: Full post-processing pipeline
+        // Pass 1: Render scene to main target
         renderer.setRenderTarget(renderTarget1);
         renderer.render(scene, camera);
-
-        // Apply final composite with all effects
+        // Pass 2: Extract bright pixels for bloom
+        postQuad.material = brightPassMaterial;
+        brightPassMaterial.uniforms.tDiffuse.value = renderTarget1.texture;
+        renderer.setRenderTarget(bloomTarget);
+        renderer.render(postScene, postCamera);
+        // Pass 3: Final composite with real bloom
         postQuad.material = finalMaterial;
         finalMaterial.uniforms.tDiffuse.value = renderTarget1.texture;
-        finalMaterial.uniforms.tBloom.value = renderTarget1.texture;
+        finalMaterial.uniforms.tBloom.value = bloomTarget.texture;
         renderer.setRenderTarget(null);
         renderer.render(postScene, postCamera);
       } else {
@@ -2972,6 +3148,8 @@ const ForestSurvivalGame = () => {
       const newWidth = Math.floor(window.innerWidth * graphicsPreset.pixelRatio);
       const newHeight = Math.floor(window.innerHeight * graphicsPreset.pixelRatio);
       renderer.setSize(newWidth, newHeight, false);
+      renderTarget1.setSize(newWidth, newHeight);
+      bloomTarget.setSize(Math.max(1, Math.floor(newWidth / 2)), Math.max(1, Math.floor(newHeight / 2)));
     };
 
     window.addEventListener('resize', handleResize);
@@ -3035,6 +3213,16 @@ const ForestSurvivalGame = () => {
     setShowClassicMenu(true);
   };
 
+  // Handle tutorial mode — start an easy game with tutorial forced on
+  const handleTutorialMode = () => {
+    setGameMode('tutorial');
+    setClassicDifficulty('easy');
+    setClassicTimeOfDay('day');
+    setSelectedMap('deep_forest');
+    soundManager.initialize();
+    setGameStarted(true);
+  };
+
   // Handle multiplayer mode selection
   const handleMultiplayerMode = () => {
     setGameMode('multiplayer');
@@ -3093,7 +3281,7 @@ const ForestSurvivalGame = () => {
 
   // Main Menu (Initial Screen)
   if (gameMode === 'none') {
-    return <MainMenu onClassicMode={handleModeSelection} onMultiplayerMode={handleMultiplayerMode} t={t} />;
+    return <MainMenu onClassicMode={handleModeSelection} onMultiplayerMode={handleMultiplayerMode} onTutorialMode={handleTutorialMode} t={t} />;
   }
 
   // Classic Mode Menu
@@ -3297,6 +3485,7 @@ const ForestSurvivalGame = () => {
             score={gameState.score}
             wave={gameState.wave}
             onMainMenu={returnToMenu}
+            onSkillTree={() => { setIsPaused(false); setShowSkillTree(true); }}
             t={t}
           />
         </div>
@@ -3338,27 +3527,87 @@ const ForestSurvivalGame = () => {
         />
       )}
 
-      {/* Tutorial Overlay */}
+      {/* Tutorial Overlay — wired to real tutorial state */}
       {showTutorial && gameStarted && !gameState.isGameOver && (
         <TutorialOverlay
-          currentStep={null} // Will be populated by tutorial system
-          progress={0}
-          onSkip={() => setShowTutorial(false)}
-          onNext={() => {}}
+          currentStep={tutorialStep}
+          progress={tutorialProgress}
+          onSkip={() => {
+            tutorialRef.current?.skipCurrentStep();
+            const tut = tutorialRef.current;
+            if (tut) {
+              const nextStep = tut.getCurrentStep();
+              if (nextStep) {
+                (tut as any)._lastStepId = null;
+                setTutorialStep({ ...nextStep });
+                setTutorialProgress(tut.getProgress());
+              } else {
+                // Tutorial done — unlock pointer
+                setShowTutorial(false);
+                setTutorialStep(null);
+                tutorialActiveRef.current = false;
+                const canvas = mountRef.current?.querySelector('canvas');
+                if (canvas) setTimeout(() => canvas.requestPointerLock(), 100);
+              }
+            }
+          }}
+          onNext={() => {
+            const tut = tutorialRef.current;
+            if (tut && tutorialStep?.id) {
+              tut.completeStep(tutorialStep.id);
+              const nextStep = tut.getCurrentStep();
+              if (nextStep) {
+                (tut as any)._lastStepId = null;
+                setTutorialStep({ ...nextStep });
+                setTutorialProgress(tut.getProgress());
+              } else {
+                // Tutorial done — unlock pointer
+                setShowTutorial(false);
+                setTutorialStep(null);
+                tutorialActiveRef.current = false;
+                const canvas = mountRef.current?.querySelector('canvas');
+                if (canvas) setTimeout(() => canvas.requestPointerLock(), 100);
+              }
+            }
+          }}
+          onEndTutorial={() => {
+            // Exit tutorial entirely — unlock pointer
+            setShowTutorial(false);
+            setTutorialStep(null);
+            tutorialActiveRef.current = false;
+            if (tutorialRef.current) {
+              tutorialRef.current.setEnabled(false);
+            }
+            const canvas = mountRef.current?.querySelector('canvas');
+            if (canvas) setTimeout(() => canvas.requestPointerLock(), 100);
+          }}
         />
       )}
 
-      {/* Skill Tree Menu */}
+      {/* Skill Tree Menu — wired to real skill tree state */}
       {showSkillTree && (
         <SkillTreeMenu
-          skills={[]}
-          availablePoints={0}
-          spentPoints={0}
-          totalPoints={0}
-          detectedPlayStyle="balanced"
-          recommendations={[]}
+          skills={skillTreeData.skills}
+          availablePoints={skillTreeData.availablePoints}
+          spentPoints={skillTreeData.spentPoints}
+          totalPoints={skillTreeData.totalPoints}
+          detectedPlayStyle={skillTreeData.detectedPlayStyle as any}
+          recommendations={skillTreeData.recommendations}
           onUnlockSkill={(skillId) => {
-            console.log('[SkillTree] Unlocking skill:', skillId);
+            if (skillTreeRef.current) {
+              const result = skillTreeRef.current.unlockSkill(skillId);
+              if (result.success) {
+                const s = skillTreeRef.current.getState();
+                setSkillTreeData({
+                  skills: skillTreeRef.current.getAllSkills(),
+                  availablePoints: s.availablePoints,
+                  spentPoints: s.spentPoints,
+                  totalPoints: s.totalPoints,
+                  detectedPlayStyle: 'balanced',
+                  recommendations: [],
+                });
+              }
+            }
           }}
           onClose={() => setShowSkillTree(false)}
         />

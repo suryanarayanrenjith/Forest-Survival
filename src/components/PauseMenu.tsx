@@ -6,10 +6,11 @@ interface PauseMenuProps {
   score: number;
   wave: number;
   onMainMenu: () => void;
+  onSkillTree: () => void;
   t: (key: string) => string;
 }
 
-const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMenu }: PauseMenuProps) => {
+const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMenu, onSkillTree }: PauseMenuProps) => {
   return (
     <div
       className="absolute inset-0 flex items-center justify-center overflow-y-auto p-3 sm:p-4"
@@ -23,7 +24,7 @@ const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMe
       <div className="absolute bottom-0 right-0 w-32 h-32 bg-yellow-500/10 blur-[80px] rounded-full" />
 
       {/* Content */}
-      <div className="relative z-10 text-center max-w-md w-full py-4 my-auto" style={{ animation: 'fadeIn 0.3s ease-out' }}>
+      <div className="relative z-10 text-center max-w-md w-full py-4 my-auto" style={{ animation: 'fadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards' }}>
         {/* Pause Title */}
         <div className="relative mb-4 sm:mb-6">
           <div className="absolute inset-0 blur-3xl bg-yellow-500/20 scale-150" />
@@ -176,6 +177,23 @@ const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMe
           </div>
         </div>
 
+        {/* Skill Tree Button */}
+        <button
+          onClick={onSkillTree}
+          className="group relative overflow-hidden rounded-xl sm:rounded-2xl transition-all duration-300 hover:scale-105 active:scale-95"
+        >
+          <div className="absolute inset-0 bg-gradient-to-r from-cyan-700 via-purple-700 to-cyan-700 group-hover:from-cyan-600 group-hover:via-purple-600 group-hover:to-cyan-600 transition-all duration-300" />
+          <div className="absolute inset-0 bg-gradient-to-b from-white/10 to-transparent" />
+          <div className="absolute inset-0 rounded-xl sm:rounded-2xl border-2 border-purple-500/60 group-hover:border-purple-400/80 transition-colors duration-300" />
+          <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+            <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-700" />
+          </div>
+          <div className="relative px-8 sm:px-12 py-3 sm:py-4 flex items-center justify-center gap-2">
+            <span className="text-lg sm:text-xl">🧠</span>
+            <span className="text-base sm:text-xl font-black text-white">SKILL TREE</span>
+          </div>
+        </button>
+
         {/* Main Menu Button */}
         <button
           onClick={onMainMenu}
@@ -197,8 +215,16 @@ const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMe
       {/* CSS Animation */}
       <style>{`
         @keyframes fadeIn {
-          from { opacity: 0; transform: scale(0.95); }
-          to { opacity: 1; transform: scale(1); }
+          from {
+            opacity: 0;
+            transform: scale(0.95) translateY(20px);
+            filter: blur(5px);
+          }
+          to {
+            opacity: 1;
+            transform: scale(1) translateY(0);
+            filter: blur(0);
+          }
         }
       `}</style>
     </div>

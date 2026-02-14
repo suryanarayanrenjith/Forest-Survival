@@ -641,6 +641,13 @@ export class SmartSkillTreeSystem {
   }
 
   /**
+   * Get all skills
+   */
+  public getAllSkills(): Skill[] {
+    return Array.from(this.skills.values());
+  }
+
+  /**
    * Get all unlocked skills
    */
   public getUnlockedSkills(): Skill[] {

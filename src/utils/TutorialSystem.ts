@@ -692,10 +692,10 @@ export class TutorialSystem {
 
     this.updateProgress();
 
-    // If it's the current step, advance
+    // If it's the current step, advance immediately
     const currentStep = this.getCurrentStep();
     if (currentStep && currentStep.id === stepId) {
-      setTimeout(() => this.nextStep(), 1000);
+      this.nextStep();
     }
   }
 }
