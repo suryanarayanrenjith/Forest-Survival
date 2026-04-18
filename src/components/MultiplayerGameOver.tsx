@@ -6,6 +6,7 @@ interface MultiplayerGameOverProps {
   localPlayerId: string;
   onRestart: () => void;
   onMainMenu: () => void;
+  canRestart?: boolean;
   t?: (key: string) => string;
 }
 
@@ -30,7 +31,8 @@ const MultiplayerGameOver = ({
   finalStats,
   localPlayerId,
   onRestart,
-  onMainMenu
+  onMainMenu,
+  canRestart = true
 }: MultiplayerGameOverProps) => {
   const sortedPlayers = [...finalStats].sort((a, b) => {
     // Sort by kills first, then by score
@@ -223,9 +225,14 @@ const MultiplayerGameOver = ({
         <div className="flex flex-col sm:flex-row gap-2 sm:gap-3">
           <button
             onClick={onRestart}
-            className="flex-1 px-3 sm:px-6 py-2.5 sm:py-3 text-sm sm:text-lg font-bold text-black bg-gradient-to-r from-green-400 to-green-600 rounded-lg hover:from-green-500 hover:to-green-700 transition-all transform hover:scale-105 active:scale-95 shadow-lg hover:shadow-green-500/30"
+            disabled={!canRestart}
+            className={`flex-1 px-3 sm:px-6 py-2.5 sm:py-3 text-sm sm:text-lg font-bold rounded-lg transition-all shadow-lg ${
+              canRestart
+                ? 'text-black bg-gradient-to-r from-green-400 to-green-600 hover:from-green-500 hover:to-green-700 transform hover:scale-105 active:scale-95 hover:shadow-green-500/30'
+                : 'text-gray-400 bg-gray-700/60 border border-gray-500/40 cursor-not-allowed'
+            }`}
           >
-            🔄 PLAY AGAIN
+            {canRestart ? '🔄 PLAY AGAIN' : '⏳ WAITING FOR HOST'}
           </button>
           <button
             onClick={onMainMenu}

@@ -31,23 +31,23 @@ export class DayCycleSystem {
   // Predefined settings for each time period
   private readonly timeSettings: Record<string, AtmosphericSettings> = {
     night: {
-      skyColor: 0x0a0a1a,
-      fogColor: 0x1a1a2e,
-      fogDensity: 0.006,
-      ambientColor: 0x4466aa,
-      ambientIntensity: 0.8,
-      lightColor: 0xaaccff,
-      lightIntensity: 1.8,
-      lightPosition: { x: -80, y: 120, z: 100 },
+      skyColor: 0x15172e,
+      fogColor: 0x23284a,
+      fogDensity: 0.0035,
+      ambientColor: 0x6a88d6,
+      ambientIntensity: 1.85,
+      lightColor: 0xbfd6ff,
+      lightIntensity: 3.2,
+      lightPosition: { x: -80, y: 160, z: 100 },
       sunVisible: false,
       moonVisible: true,
       starIntensity: 1.0,
       cloudOpacity: 0.3,
-      bloomStrength: 2.5,
-      colorTint: new THREE.Vector3(0.8, 0.85, 1.0),
-      temperature: -0.2,
-      saturation: 0.9,
-      contrast: 1.1
+      bloomStrength: 2.2,
+      colorTint: new THREE.Vector3(0.92, 0.94, 1.05),
+      temperature: -0.12,
+      saturation: 1.05,
+      contrast: 1.08
     },
     dawn: {
       skyColor: 0xff6b4a,
@@ -70,22 +70,22 @@ export class DayCycleSystem {
     },
     day: {
       skyColor: 0x87CEEB,
-      fogColor: 0xb0c4de,
-      fogDensity: 0.004,
+      fogColor: 0xbcd3ee,
+      fogDensity: 0.0025,
       ambientColor: 0xffffff,
-      ambientIntensity: 1.0,
-      lightColor: 0xfff4e6,
-      lightIntensity: 2.5,
-      lightPosition: { x: 100, y: 150, z: -50 },
+      ambientIntensity: 1.25,
+      lightColor: 0xfff2d4,
+      lightIntensity: 3.2,
+      lightPosition: { x: 100, y: 180, z: -50 },
       sunVisible: true,
       moonVisible: false,
       starIntensity: 0.0,
-      cloudOpacity: 0.8,
-      bloomStrength: 1.8,
-      colorTint: new THREE.Vector3(1.0, 1.0, 1.0),
-      temperature: 0.0,
-      saturation: 1.2,
-      contrast: 1.1
+      cloudOpacity: 0.85,
+      bloomStrength: 2.4,
+      colorTint: new THREE.Vector3(1.02, 1.0, 0.96),
+      temperature: 0.08,
+      saturation: 1.35,
+      contrast: 1.18
     },
     dusk: {
       skyColor: 0xff4466,
@@ -107,23 +107,23 @@ export class DayCycleSystem {
       contrast: 1.2
     },
     twilight: {
-      skyColor: 0x332266,
-      fogColor: 0x443377,
-      fogDensity: 0.007,
-      ambientColor: 0x6677aa,
-      ambientIntensity: 0.7,
-      lightColor: 0x7788cc,
-      lightIntensity: 1.5,
-      lightPosition: { x: -100, y: 80, z: 120 },
+      skyColor: 0x3a2c70,
+      fogColor: 0x4b3a85,
+      fogDensity: 0.004,
+      ambientColor: 0x8a99cc,
+      ambientIntensity: 1.4,
+      lightColor: 0x99aadd,
+      lightIntensity: 2.4,
+      lightPosition: { x: -100, y: 110, z: 120 },
       sunVisible: false,
       moonVisible: true,
       starIntensity: 0.7,
       cloudOpacity: 0.4,
-      bloomStrength: 2.8,
-      colorTint: new THREE.Vector3(0.85, 0.8, 1.0),
-      temperature: -0.1,
-      saturation: 1.0,
-      contrast: 1.15
+      bloomStrength: 2.6,
+      colorTint: new THREE.Vector3(0.9, 0.9, 1.05),
+      temperature: -0.08,
+      saturation: 1.08,
+      contrast: 1.12
     }
   };
 
@@ -423,11 +423,11 @@ export class DayCycleSystem {
   getGlobalIlluminationMultiplier(): number {
     const period = this.getCurrentPeriod();
     const multipliers = {
-      night: 0.15,
-      twilight: 0.35,
-      dawn: 0.7,
-      day: 1.0,
-      dusk: 0.6
+      night: 0.55,
+      twilight: 0.65,
+      dawn: 0.85,
+      day: 1.15,
+      dusk: 0.75
     };
     return multipliers[period as keyof typeof multipliers] || 1.0;
   }

@@ -35,9 +35,11 @@ export type NetworkMessage =
   | { type: 'player_left'; playerId: string }
   | { type: 'player_rejected'; reason: string }
   | { type: 'game_start'; gameState: Partial<GameState> }
+  | { type: 'game_restart'; gameState: Partial<GameState> }
   | { type: 'game_over'; winnerId: string; finalStats: PlayerData[] }
   | { type: 'enemy_killed'; playerId: string }
   | { type: 'player_shot'; shooterId: string; targetId: string; damage: number }
+  | { type: 'player_killed'; victimId: string; victimName: string; victimColor: number; killerId: string; killerName: string; weapon: string; timestamp: number }
   | { type: 'chat_message'; playerId: string; playerName: string; playerColor: number; message: string; messageType: 'chat' | 'emote'; timestamp: number }
   | { type: 'heartbeat'; playerId: string; timestamp: number };
 
@@ -347,9 +349,28 @@ export class MultiplayerManager {
         break;
 
       case 'player_update':
+        // Track alive-state transitions before replacing snapshots
+        const prevState = this.gameState?.players.get(message.data.id);
+        const wasAlive = prevState ? prevState.isAlive : true;
+
         // Update heartbeat time when we receive position updates
         message.data.lastHeartbeat = Date.now();
         this.remotePlayers.set(message.data.id, message.data);
+
+        // Keep authoritative game-state map in sync (important for game over/final stats)
+        if (this.gameState) {
+          this.gameState.players.set(message.data.id, message.data);
+        }
+
+        // Guests only send updates to host; host must relay them to other guests
+        if (this.isHost) {
+          this.broadcastMessage(message, conn.peer);
+
+          // Re-evaluate multiplayer end conditions when a remote player dies.
+          if (wasAlive && !message.data.isAlive) {
+            this.checkGameOver();
+          }
+        }
         break;
 
       case 'player_left':
@@ -425,10 +446,71 @@ export class MultiplayerManager {
         }
         break;
 
-      case 'game_over':
+      case 'game_restart': {
+        console.log('[MultiplayerManager] ===== Received game_restart message =====');
+
+        if (message.gameState) {
+          const playersMap = new Map<string, PlayerData>();
+          if (Array.isArray(message.gameState.players)) {
+            message.gameState.players.forEach((player: PlayerData) => {
+              playersMap.set(player.id, player);
+            });
+          } else if (message.gameState.players instanceof Map) {
+            message.gameState.players.forEach((player, id) => {
+              playersMap.set(id, player);
+            });
+          }
+
+          // Reset local player stats from the fresh state
+          const freshLocal = playersMap.get(this.localPlayer.id);
+          if (freshLocal) {
+            this.localPlayer.health = freshLocal.health;
+            this.localPlayer.maxHealth = freshLocal.maxHealth;
+            this.localPlayer.isAlive = true;
+            this.localPlayer.kills = 0;
+            this.localPlayer.deaths = 0;
+            this.localPlayer.score = 0;
+          }
+
+          this.gameState = {
+            ...message.gameState,
+            players: playersMap
+          } as GameState;
+
+          // Update remote players
+          this.remotePlayers.clear();
+          playersMap.forEach((player, id) => {
+            if (id !== this.localPlayer.id) {
+              this.remotePlayers.set(id, player);
+            }
+          });
+        }
+
+        const restartHandlers = this.messageHandlers.get('game_restart');
+        if (restartHandlers) {
+          restartHandlers.forEach(handler => handler(message));
+        }
+        break;
+      }
+
+      case 'game_over': {
+        // Forward to registered handlers
+        const handlers = this.messageHandlers.get(message.type);
+        if (handlers) {
+          handlers.forEach(handler => handler(message));
+        }
+        break;
+      }
+
       case 'enemy_killed':
       case 'player_shot':
+      case 'player_killed':
       case 'chat_message': {
+        // Guests send these to host; relay to all other guests for full lobby sync
+        if (this.isHost) {
+          this.broadcastMessage(message, conn.peer);
+        }
+
         // Forward to registered handlers
         const handlers = this.messageHandlers.get(message.type);
         if (handlers) {
@@ -482,6 +564,11 @@ export class MultiplayerManager {
 
   updateLocalPlayer(updates: Partial<PlayerData>) {
     Object.assign(this.localPlayer, updates);
+
+    // Keep game-state players map synced with local player snapshot
+    if (this.gameState) {
+      this.gameState.players.set(this.localPlayer.id, this.localPlayer);
+    }
 
     // Broadcast update to all connected players
     this.broadcastMessage({
@@ -624,6 +711,110 @@ export class MultiplayerManager {
         console.log('[MultiplayerManager] Triggering game_over handlers for host');
         gameOverHandlers.forEach(handler => handler(gameOverMessage));
       }
+    }
+  }
+
+  /**
+   * Reset per-match stats (health/kills/deaths/score/alive) for all players.
+   * Call before restarting a game to reuse the same lobby.
+   */
+  resetGameStats() {
+    // Reset local player stats
+    this.localPlayer.health = this.localPlayer.maxHealth;
+    this.localPlayer.isAlive = true;
+    this.localPlayer.kills = 0;
+    this.localPlayer.deaths = 0;
+    this.localPlayer.score = 0;
+    this.localPlayer.lastHeartbeat = Date.now();
+
+    // Reset remote player stats
+    this.remotePlayers.forEach(player => {
+      player.health = player.maxHealth;
+      player.isAlive = true;
+      player.kills = 0;
+      player.deaths = 0;
+      player.score = 0;
+    });
+
+    // Reset players inside gameState too (they may be separate references)
+    if (this.gameState) {
+      this.gameState.players.forEach(player => {
+        player.health = player.maxHealth;
+        player.isAlive = true;
+        player.kills = 0;
+        player.deaths = 0;
+        player.score = 0;
+      });
+      this.gameState.startTime = undefined;
+    }
+  }
+
+  /**
+   * Host-side: restart the game in the existing lobby.
+   * Broadcasts game_restart so all guests reset their state without rejoining.
+   */
+  restartGame(gameMode?: 'coop' | 'survival', timeLimit?: number, map?: string) {
+    if (!this.isHost || !this.gameState) {
+      console.warn('[MultiplayerManager] Cannot restart - not host or no game state');
+      return;
+    }
+
+    // Reset stats locally
+    this.resetGameStats();
+
+    // Use previous settings if not overridden
+    const mode = gameMode || this.gameState.gameMode;
+    const tLimit = timeLimit !== undefined ? timeLimit : this.gameState.timeLimit;
+    const mapId = map !== undefined ? map : this.gameState.map;
+
+    // Update game state with fresh start time
+    this.gameState.gameMode = mode;
+    this.gameState.timeLimit = tLimit;
+    this.gameState.startTime = Date.now();
+    this.gameState.map = mapId;
+
+    // Make sure local player is in gameState.players
+    this.gameState.players.set(this.localPlayer.id, this.localPlayer);
+
+    console.log('[MultiplayerManager] Restarting game in existing lobby - Players:', this.gameState.players.size);
+
+    const restartMessage = {
+      type: 'game_restart' as const,
+      gameState: {
+        players: Array.from(this.gameState.players.values()),
+        gameMode: this.gameState.gameMode,
+        timeLimit: this.gameState.timeLimit,
+        startTime: this.gameState.startTime,
+        hostId: this.gameState.hostId,
+        map: this.gameState.map
+      } as any
+    };
+
+    this.broadcastMessage(restartMessage);
+  }
+
+  /**
+   * Broadcast a kill event (who killed whom with what weapon).
+   * Also triggers local handlers so the shooter sees their own kill in the feed.
+   */
+  broadcastKill(killerName: string, victimId: string, victimName: string, victimColor: number, weapon: string) {
+    const msg = {
+      type: 'player_killed' as const,
+      killerId: this.localPlayer.id,
+      killerName,
+      victimId,
+      victimName,
+      victimColor,
+      weapon,
+      timestamp: Date.now()
+    };
+
+    this.broadcastMessage(msg);
+
+    // Trigger local handlers too so shooter/host also sees the kill
+    const handlers = this.messageHandlers.get('player_killed');
+    if (handlers) {
+      handlers.forEach(handler => handler(msg));
     }
   }
 

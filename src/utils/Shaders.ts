@@ -449,6 +449,7 @@ export const godRaysFragmentShader = `
 // AAA-Quality Sky Dome Shader with realistic Rayleigh & Mie atmospheric scattering
 export const skyDomeVertexShader = `
   varying vec3 vWorldPosition;
+  varying vec3 vSkyDirection;
   varying vec3 vViewDirection;
   varying float vSunfade;
   varying vec3 vBetaR;
@@ -494,6 +495,9 @@ export const skyDomeVertexShader = `
   void main() {
     vec4 worldPosition = modelMatrix * vec4(position, 1.0);
     vWorldPosition = worldPosition.xyz;
+    // Use the local sphere position as a direction so the sky is always
+    // sampled radially from the dome's center, regardless of world translation.
+    vSkyDirection = normalize(position);
     vViewDirection = normalize(worldPosition.xyz - cameraPosition);
 
     gl_Position = projectionMatrix * viewMatrix * worldPosition;
@@ -518,6 +522,7 @@ export const skyDomeFragmentShader = `
   uniform vec3 skyColorHorizon;
 
   varying vec3 vWorldPosition;
+  varying vec3 vSkyDirection;
   varying vec3 vViewDirection;
   varying float vSunfade;
   varying vec3 vBetaR;
@@ -578,7 +583,7 @@ export const skyDomeFragmentShader = `
   }
 
   void main() {
-    vec3 direction = normalize(vWorldPosition);
+    vec3 direction = normalize(vSkyDirection);
     vec3 sunDirection = normalize(sunPosition);
 
     // Calculate zenith angle
@@ -770,7 +775,9 @@ export function createSkyDomeMaterial(
     vertexShader: skyDomeVertexShader,
     fragmentShader: skyDomeFragmentShader,
     side: THREE.BackSide,
-    depthWrite: false
+    depthWrite: false,
+    depthTest: false,
+    fog: false
   });
 }
 

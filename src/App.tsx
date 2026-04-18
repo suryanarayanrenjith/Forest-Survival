@@ -125,6 +125,11 @@ const ForestSurvivalGame = () => {
   const [multiplayerWinner, setMultiplayerWinner] = useState<string | null>(null);
   const [multiplayerGameMode, setMultiplayerGameMode] = useState<'coop' | 'survival'>('coop');
   const [isSpectating, setIsSpectating] = useState(false); // Track if local player is eliminated and spectating
+  const [, setMultiplayerKillFeed] = useState<Array<{ id: string; killerName: string; victimName: string; victimColor: number; weapon: string; timestamp: number }>>([]);
+  const [, setLastKillerInfo] = useState<{ killerName: string; weapon: string } | null>(null);
+  const [, setMpStatsTick] = useState(0); // Force HUD re-render for remote player stats
+  const [gameRestartKey, setGameRestartKey] = useState(0); // Bump to force game useEffect re-run on restart
+  const multiplayerTimeLimitRef = useRef<number | undefined>(undefined);
 
   // Achievement system state - using array to support multiple achievements
   const [achievementQueue, setAchievementQueue] = useState<any[]>([]);
@@ -233,10 +238,10 @@ const ForestSurvivalGame = () => {
   useEffect(() => {
     if (!multiplayerManager) return;
 
-    console.log('[App] Setting up multiplayer game over listener - isHost:', multiplayerManager.isGameHost());
+    console.log('[App] Setting up multiplayer listeners - isHost:', multiplayerManager.isGameHost());
 
     // Listen for game over
-    multiplayerManager.onMessage('game_over', (data: any) => {
+    const unsubGameOver = multiplayerManager.onMessage('game_over', (data: any) => {
       console.log('[App] Received game_over message:', data);
       setMultiplayerWinner(data.winnerId);
       setMultiplayerGameOver(true);
@@ -244,7 +249,80 @@ const ForestSurvivalGame = () => {
       soundManager.mute();
     });
 
-    console.log('[App] Game over listener registered successfully');
+    // Listen for kill events - real-time killer/victim info
+    const unsubKilled = multiplayerManager.onMessage('player_killed', (data: any) => {
+      console.log('[App] Received player_killed:', data);
+      const entry = {
+        id: `kill-${data.timestamp}-${Math.random().toString(36).slice(2, 6)}`,
+        killerName: data.killerName || 'Unknown',
+        victimName: data.victimName || 'Unknown',
+        victimColor: typeof data.victimColor === 'number' ? data.victimColor : 0xffffff,
+        weapon: data.weapon || '',
+        timestamp: data.timestamp || Date.now()
+      };
+      setMultiplayerKillFeed(prev => [...prev, entry].slice(-6));
+
+      // If local player was killed, remember the killer so SpectateScreen can show it
+      const localId = multiplayerManager.getLocalPlayer().id;
+      if (data.victimId === localId) {
+        setLastKillerInfo({ killerName: data.killerName || 'Unknown', weapon: data.weapon || '' });
+      }
+    });
+
+    // Listen for game restart (guests receive this from host)
+    const unsubRestart = multiplayerManager.onMessage('game_restart', (data: any) => {
+      console.log('[App] Received game_restart - resetting local state');
+      // Reset UI state
+      setMultiplayerGameOver(false);
+      setMultiplayerWinner(null);
+      setIsSpectating(false);
+      setMultiplayerKillFeed([]);
+      setLastKillerInfo(null);
+      setGameState({
+        health: 100,
+        ammo: 12,
+        maxAmmo: 12,
+        score: 0,
+        enemiesKilled: 0,
+        wave: 1,
+        isGameOver: false,
+        isVictory: false,
+        combo: 0,
+        killStreak: 0,
+        currentWeapon: 'pistol',
+        unlockedWeapons: ['pistol']
+      });
+      soundManager.unmute();
+      if (data.gameState?.timeLimit !== undefined) {
+        multiplayerTimeLimitRef.current = data.gameState.timeLimit;
+      }
+      // Bump key to re-run the main game useEffect (fresh scene + fresh state)
+      setGameRestartKey(k => k + 1);
+    });
+
+    // Poll remote player stats so MultiplayerHUD reflects live kills/deaths/score
+    const statsInterval = setInterval(() => {
+      setMpStatsTick(v => (v + 1) % 1000000);
+    }, 400);
+
+    // Clean stale kill feed entries (entries auto-fade after 5s)
+    const killFeedInterval = setInterval(() => {
+      setMultiplayerKillFeed(prev => {
+        const now = Date.now();
+        const fresh = prev.filter(e => now - e.timestamp < 5000);
+        return fresh.length === prev.length ? prev : fresh;
+      });
+    }, 1000);
+
+    console.log('[App] Multiplayer listeners registered');
+
+    return () => {
+      unsubGameOver();
+      unsubKilled();
+      unsubRestart();
+      clearInterval(statsInterval);
+      clearInterval(killFeedInterval);
+    };
   }, [multiplayerManager]);
 
   const [gameState, setGameState] = useState<GameState>({
@@ -423,7 +501,7 @@ const ForestSurvivalGame = () => {
     renderer.shadowMap.enabled = graphicsPreset.shadowsEnabled;
     renderer.shadowMap.type = graphicsQuality === 'high' ? THREE.PCFSoftShadowMap : THREE.BasicShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping; // Cinematic tone mapping
-    renderer.toneMappingExposure = timeOfDay === 'day' ? 1.0 : 1.2;
+    renderer.toneMappingExposure = timeOfDay === 'day' ? 1.15 : 1.5;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
 
     // Style canvas to scale up render to full screen
@@ -447,14 +525,62 @@ const ForestSurvivalGame = () => {
       renderer.domElement.style.outline = 'none'; // Remove focus outline
       renderer.domElement.focus(); // Focus immediately
 
-      // Request pointer lock after a short delay to ensure everything is ready
+      // Aggressively try to auto-lock the pointer for multiplayer so the
+      // player doesn't have to click to start controlling the camera.
       if (gameMode === 'multiplayer') {
-        setTimeout(() => {
-          if (renderer.domElement && !document.pointerLockElement) {
+        const tryLock = () => {
+          if (!renderer.domElement || document.pointerLockElement) return;
+          try {
+            renderer.domElement.focus();
             renderer.domElement.requestPointerLock();
-            console.log('[App] Auto-requesting pointer lock for multiplayer');
+          } catch (err) {
+            console.warn('[App] Pointer lock attempt failed:', err);
           }
-        }, 100);
+        };
+
+        // Immediate attempt (preserves the "Start Game" click activation on host)
+        tryLock();
+        // Try again over the next ~2 seconds in case the first attempt raced
+        // with the canvas being ready or the user-activation state
+        const retries = [50, 150, 400, 900, 1800];
+        const retryIds: number[] = [];
+        retries.forEach(ms => {
+          const id = window.setTimeout(tryLock, ms);
+          retryIds.push(id);
+        });
+
+        // One-shot global fallback: if browser blocks auto-lock (common for
+        // guests receiving a remote start), lock controls on first user input.
+        const onFirstInput = () => {
+          if (!document.pointerLockElement && renderer.domElement) {
+            try {
+              renderer.domElement.focus();
+              renderer.domElement.requestPointerLock();
+            } catch {
+              // Ignore; user can still click canvas manually if browser blocks lock
+            }
+          }
+          window.removeEventListener('click', onFirstInput, true);
+          window.removeEventListener('mousedown', onFirstInput, true);
+          window.removeEventListener('pointerdown', onFirstInput, true);
+          window.removeEventListener('keydown', onFirstInput, true);
+          window.removeEventListener('touchstart', onFirstInput, true);
+        };
+        window.addEventListener('click', onFirstInput, true);
+        window.addEventListener('mousedown', onFirstInput, true);
+        window.addEventListener('pointerdown', onFirstInput, true);
+        window.addEventListener('keydown', onFirstInput, true);
+        window.addEventListener('touchstart', onFirstInput, true);
+
+        // Store cleanup on the renderer element
+        (renderer.domElement as any)._mpPointerLockCleanup = () => {
+          retryIds.forEach(id => clearTimeout(id));
+          window.removeEventListener('click', onFirstInput, true);
+          window.removeEventListener('mousedown', onFirstInput, true);
+          window.removeEventListener('pointerdown', onFirstInput, true);
+          window.removeEventListener('keydown', onFirstInput, true);
+          window.removeEventListener('touchstart', onFirstInput, true);
+        };
       }
     }
 
@@ -607,23 +733,26 @@ const ForestSurvivalGame = () => {
     mainLight.shadow.mapSize.width = graphicsPreset.shadowMapSize;
     mainLight.shadow.mapSize.height = graphicsPreset.shadowMapSize;
     mainLight.shadow.bias = -0.00005;
+    mainLight.shadow.normalBias = 0.02;
     mainLight.shadow.radius = graphicsQuality === 'high' ? 1.5 : 1.0; // Soft shadows only on high
     scene.add(mainLight);
+    // Target follows player so directional shadows stay centered on the camera
+    scene.add(mainLight.target);
 
     // Hemisphere light for natural sky reflection (dynamic based on atmospheric settings)
     const skyColor = new THREE.Color(atmosphericSettings.skyColor);
-    const groundColor = skyColor.clone().multiplyScalar(0.3); // Darker ground reflection
+    const groundColor = skyColor.clone().multiplyScalar(0.35); // Darker ground reflection
     const skyLight = new THREE.HemisphereLight(
       skyColor.getHex(),
       groundColor.getHex(),
-      atmosphericSettings.ambientIntensity * 0.8
+      atmosphericSettings.ambientIntensity * 0.9
     );
     scene.add(skyLight);
 
-    // Volumetric light effect (god rays simulation)
+    // Volumetric god-ray light (follows sun direction, gives directional bounce feel)
     const volumetricLight = new THREE.DirectionalLight(
-      atmosphericSettings.sunVisible ? 0xffffaa : 0x8899ff,
-      atmosphericSettings.sunVisible ? 0.4 : 0.6
+      atmosphericSettings.sunVisible ? 0xffe8b8 : 0x9aaee0,
+      atmosphericSettings.sunVisible ? 0.55 : 0.7
     );
     volumetricLight.position.set(
       atmosphericSettings.lightPosition.x * 0.5,
@@ -631,11 +760,12 @@ const ForestSurvivalGame = () => {
       atmosphericSettings.lightPosition.z * 0.5
     );
     scene.add(volumetricLight);
+    scene.add(volumetricLight.target);
 
     // Fill light (opposite side of main light for balanced illumination)
     const fillLight = new THREE.DirectionalLight(
-      atmosphericSettings.sunVisible ? 0xaaccff : 0x6677aa,
-      atmosphericSettings.sunVisible ? 0.3 : 0.5
+      atmosphericSettings.sunVisible ? 0xbcd6ff : 0x8a9ccc,
+      atmosphericSettings.sunVisible ? 0.45 : 0.85
     );
     fillLight.position.set(
       -atmosphericSettings.lightPosition.x * 0.6,
@@ -643,11 +773,12 @@ const ForestSurvivalGame = () => {
       -atmosphericSettings.lightPosition.z * 0.6
     );
     scene.add(fillLight);
+    scene.add(fillLight.target);
 
     // Rim/Back light for dramatic silhouettes
     const rimLight = new THREE.DirectionalLight(
-      atmosphericSettings.sunVisible ? 0xffffff : 0xccddff,
-      atmosphericSettings.sunVisible ? 0.5 : 0.8
+      atmosphericSettings.sunVisible ? 0xffffff : 0xd6e4ff,
+      atmosphericSettings.sunVisible ? 0.6 : 1.0
     );
     rimLight.position.set(
       atmosphericSettings.lightPosition.x * 0.3,
@@ -655,12 +786,35 @@ const ForestSurvivalGame = () => {
       atmosphericSettings.lightPosition.z
     );
     scene.add(rimLight);
+    scene.add(rimLight.target);
 
-    // Additional ambient fill for better visibility
-    if (!atmosphericSettings.sunVisible) {
-      const nightFillLight = new THREE.AmbientLight(0x3344aa, 0.4);
-      scene.add(nightFillLight);
-    }
+    // Additional ambient fill for better night visibility (moonlight bounce)
+    const nightFillLight = new THREE.AmbientLight(0x556db0, atmosphericSettings.sunVisible ? 0.0 : 1.1);
+    scene.add(nightFillLight);
+
+    // Player-attached night lantern — softly illuminates surroundings when sun is down
+    const playerNightLantern = new THREE.PointLight(0xaec6ff, 0, 42, 1.6);
+    playerNightLantern.position.set(0, 3, 0);
+    camera.add(playerNightLantern);
+
+    // Precompute base light offsets so lights can follow the player
+    const mainLightBaseOffset = new THREE.Vector3(
+      atmosphericSettings.lightPosition.x,
+      atmosphericSettings.lightPosition.y,
+      atmosphericSettings.lightPosition.z
+    );
+    const volumetricLightBaseOffset = mainLightBaseOffset.clone().multiplyScalar(0.5);
+    volumetricLightBaseOffset.y = atmosphericSettings.lightPosition.y * 0.8;
+    const fillLightBaseOffset = new THREE.Vector3(
+      -atmosphericSettings.lightPosition.x * 0.6,
+      atmosphericSettings.lightPosition.y * 0.4,
+      -atmosphericSettings.lightPosition.z * 0.6
+    );
+    const rimLightBaseOffset = new THREE.Vector3(
+      atmosphericSettings.lightPosition.x * 0.3,
+      atmosphericSettings.lightPosition.y * 1.2,
+      atmosphericSettings.lightPosition.z
+    );
 
     // INFINITE LOW-POLY Ground with dynamic day/night and map-specific colors
     const groundGeometry = new THREE.PlaneGeometry(mapConfig.groundSize || 2000, mapConfig.groundSize || 2000, 40, 40);
@@ -715,6 +869,10 @@ const ForestSurvivalGame = () => {
       !atmosphericSettings.sunVisible
     );
     const skyDome = new THREE.Mesh(skyGeometry, skyMaterial);
+    // Render the sky first and ignore depth so it never appears as a "blob"
+    // floating in the distance, even when the player walks far from origin.
+    skyDome.renderOrder = -1000;
+    skyDome.frustumCulled = false;
     scene.add(skyDome);
 
     // === WEATHER SYSTEM ===
@@ -1907,18 +2065,85 @@ const ForestSurvivalGame = () => {
         scene.background.setHex(atmosphericSettings.skyColor);
       }
 
-      // Update main light
+      // Update main light — position follows player so shadow frustum stays on-screen
       mainLight.color.setHex(atmosphericSettings.lightColor);
       mainLight.intensity = atmosphericSettings.lightIntensity;
-      mainLight.position.set(
+      mainLightBaseOffset.set(
         atmosphericSettings.lightPosition.x,
         atmosphericSettings.lightPosition.y,
         atmosphericSettings.lightPosition.z
       );
+      mainLight.position.set(
+        camera.position.x + mainLightBaseOffset.x,
+        mainLightBaseOffset.y,
+        camera.position.z + mainLightBaseOffset.z
+      );
+      mainLight.target.position.set(camera.position.x, 0, camera.position.z);
+      mainLight.target.updateMatrixWorld();
+
+      // Keep volumetric, fill, and rim lights aimed at the player too
+      volumetricLightBaseOffset.set(
+        atmosphericSettings.lightPosition.x * 0.5,
+        atmosphericSettings.lightPosition.y * 0.8,
+        atmosphericSettings.lightPosition.z * 0.5
+      );
+      volumetricLight.color.setHex(atmosphericSettings.sunVisible ? 0xffe8b8 : 0x9aaee0);
+      volumetricLight.intensity = atmosphericSettings.sunVisible ? 0.55 : 0.7;
+      volumetricLight.position.set(
+        camera.position.x + volumetricLightBaseOffset.x,
+        volumetricLightBaseOffset.y,
+        camera.position.z + volumetricLightBaseOffset.z
+      );
+      volumetricLight.target.position.set(camera.position.x, 0, camera.position.z);
+      volumetricLight.target.updateMatrixWorld();
+
+      fillLightBaseOffset.set(
+        -atmosphericSettings.lightPosition.x * 0.6,
+        atmosphericSettings.lightPosition.y * 0.4,
+        -atmosphericSettings.lightPosition.z * 0.6
+      );
+      fillLight.color.setHex(atmosphericSettings.sunVisible ? 0xbcd6ff : 0x8a9ccc);
+      fillLight.intensity = atmosphericSettings.sunVisible ? 0.45 : 0.85;
+      fillLight.position.set(
+        camera.position.x + fillLightBaseOffset.x,
+        fillLightBaseOffset.y,
+        camera.position.z + fillLightBaseOffset.z
+      );
+      fillLight.target.position.set(camera.position.x, 0, camera.position.z);
+      fillLight.target.updateMatrixWorld();
+
+      rimLightBaseOffset.set(
+        atmosphericSettings.lightPosition.x * 0.3,
+        atmosphericSettings.lightPosition.y * 1.2,
+        atmosphericSettings.lightPosition.z
+      );
+      rimLight.color.setHex(atmosphericSettings.sunVisible ? 0xffffff : 0xd6e4ff);
+      rimLight.intensity = atmosphericSettings.sunVisible ? 0.6 : 1.0;
+      rimLight.position.set(
+        camera.position.x + rimLightBaseOffset.x,
+        rimLightBaseOffset.y,
+        camera.position.z + rimLightBaseOffset.z
+      );
+      rimLight.target.position.set(camera.position.x, 0, camera.position.z);
+      rimLight.target.updateMatrixWorld();
 
       // Update ambient light
       ambientLight.color.setHex(atmosphericSettings.ambientColor);
       ambientLight.intensity = atmosphericSettings.ambientIntensity;
+
+      // Keep hemisphere light synced with current sky & ground tones
+      const curSkyCol = new THREE.Color(atmosphericSettings.skyColor);
+      skyLight.color.copy(curSkyCol);
+      skyLight.groundColor.copy(curSkyCol).multiplyScalar(0.35);
+      skyLight.intensity = atmosphericSettings.ambientIntensity * 0.9;
+
+      // Nighttime moonlight fill + attached lantern so players can see
+      nightFillLight.intensity = atmosphericSettings.sunVisible ? 0.0 : 1.1;
+      playerNightLantern.intensity = atmosphericSettings.sunVisible ? 0.0 : 1.4;
+
+      // Keep the sky dome centered on the player so the player never walks
+      // "outside" the sphere (which is what caused the giant-blob glitch).
+      skyDome.position.set(camera.position.x, 0, camera.position.z);
 
       // Update post-processing uniforms
       finalMaterial.uniforms.contrast.value = atmosphericSettings.contrast;
@@ -1929,6 +2154,16 @@ const ForestSurvivalGame = () => {
       // Update sky dome shader
       if (skyMaterial.uniforms.time) {
         skyMaterial.uniforms.time.value += delta;
+      }
+      if (skyMaterial.uniforms.sunPosition) {
+        skyMaterial.uniforms.sunPosition.value.set(
+          atmosphericSettings.lightPosition.x,
+          atmosphericSettings.lightPosition.y,
+          atmosphericSettings.lightPosition.z
+        );
+      }
+      if (skyMaterial.uniforms.isNight) {
+        skyMaterial.uniforms.isNight.value = !atmosphericSettings.sunVisible;
       }
 
       // === UPDATE ENHANCED SYSTEMS ===
@@ -3047,6 +3282,23 @@ const ForestSurvivalGame = () => {
                 // Sync death in multiplayer
                 if (isMultiplayer && multiplayerManager) {
                   multiplayerManager.updatePlayerHealth(0);
+
+                  // Broadcast killer info so every player (especially the victim)
+                  // knows who/what killed them in real time
+                  const enemyTypeLabel =
+                    enemy.type === 'boss' ? '👹 Boss' :
+                    enemy.type === 'tank' ? '🛡️ Tank' :
+                    enemy.type === 'fast' ? '⚡ Stalker' :
+                    '🧟 Forest Creature';
+                  const victim = multiplayerManager.getLocalPlayer();
+                  multiplayerManager.broadcastKill(
+                    enemyTypeLabel,
+                    victim.id,
+                    victim.name,
+                    victim.color,
+                    enemyTypeLabel
+                  );
+
                   // In multiplayer, enter spectate mode instead of game over
                   console.log('[Multiplayer] Local player eliminated - entering spectate mode');
                   setIsSpectating(true);
@@ -3168,6 +3420,12 @@ const ForestSurvivalGame = () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
 
       if (renderer.domElement) {
+        const pointerLockCleanup = (renderer.domElement as any)._mpPointerLockCleanup;
+        if (typeof pointerLockCleanup === 'function') {
+          pointerLockCleanup();
+          delete (renderer.domElement as any)._mpPointerLockCleanup;
+        }
+
         renderer.domElement.removeEventListener('click', onCanvasClick);
         renderer.domElement.removeEventListener('contextmenu', onContextMenu);
         renderer.domElement.removeEventListener('webglcontextlost', onWebGLContextLost);
@@ -3205,7 +3463,7 @@ const ForestSurvivalGame = () => {
 
       renderer.dispose();
     };
-  }, [gameStarted, gameMode, classicDifficulty, classicTimeOfDay, selectedMap, multiplayerManager]);
+  }, [gameStarted, gameMode, classicDifficulty, classicTimeOfDay, selectedMap, multiplayerManager, gameRestartKey]);
 
   // Handle mode selection
   const handleModeSelection = () => {
@@ -3237,8 +3495,32 @@ const ForestSurvivalGame = () => {
     if (map) {
       setSelectedMap(map);
     }
+    multiplayerTimeLimitRef.current = timeLimit;
     soundManager.initialize();
+    soundManager.unmute();
     setShowMultiplayerLobby(false);
+
+    // Reset any lingering state from a prior round (safe even on initial start)
+    setMultiplayerGameOver(false);
+    setMultiplayerWinner(null);
+    setIsSpectating(false);
+    setMultiplayerKillFeed([]);
+    setLastKillerInfo(null);
+    setGameState({
+      health: 100,
+      ammo: 12,
+      maxAmmo: 12,
+      score: 0,
+      enemiesKilled: 0,
+      wave: 1,
+      isGameOver: false,
+      isVictory: false,
+      combo: 0,
+      killStreak: 0,
+      currentWeapon: 'pistol',
+      unlockedWeapons: ['pistol']
+    });
+
     setGameStarted(true);
 
     // Start the game in multiplayer manager (host broadcasts to guests)
@@ -3267,10 +3549,71 @@ const ForestSurvivalGame = () => {
   };
 
   const restartGame = () => {
+    // In multiplayer, keep the lobby alive - reset state and re-broadcast game_start
+    if (gameMode === 'multiplayer' && multiplayerManager) {
+      // Guests should wait for host restart broadcast to avoid local desync.
+      if (!multiplayerManager.isGameHost()) {
+        console.log('[App] Guest requested restart - waiting for host game_restart');
+        return;
+      }
+
+      console.log('[App] Restarting multiplayer game in existing lobby');
+
+      // Reset UI state
+      setMultiplayerGameOver(false);
+      setMultiplayerWinner(null);
+      setIsSpectating(false);
+      setMultiplayerKillFeed([]);
+      setLastKillerInfo(null);
+      setGameState({
+        health: 100,
+        ammo: 12,
+        maxAmmo: 12,
+        score: 0,
+        enemiesKilled: 0,
+        wave: 1,
+        isGameOver: false,
+        isVictory: false,
+        combo: 0,
+        killStreak: 0,
+        currentWeapon: 'pistol',
+        unlockedWeapons: ['pistol']
+      });
+
+      soundManager.unmute();
+
+      // Only host can trigger a restart for the lobby
+      if (multiplayerManager.isGameHost()) {
+        multiplayerManager.restartGame(undefined, multiplayerTimeLimitRef.current, selectedMap);
+      }
+
+      // Bump the restart key so the main game useEffect re-runs (fresh scene/state)
+      setGameRestartKey(k => k + 1);
+      return;
+    }
+
     window.location.reload();
   };
 
   const returnToMenu = () => {
+    // Multiplayer: cleanly disconnect from peers before reload
+    if (multiplayerManager) {
+      try {
+        multiplayerManager.disconnect();
+      } catch (err) {
+        console.warn('[App] Error disconnecting multiplayer manager:', err);
+      }
+    }
+    // Clear any multiplayer URL params so we return to the real menu
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('lobby');
+      url.searchParams.delete('role');
+      url.searchParams.delete('name');
+      window.history.replaceState({}, '', url.toString());
+    } catch {
+      // Ignore
+    }
     window.location.reload();
   };
 
@@ -3317,7 +3660,7 @@ const ForestSurvivalGame = () => {
   if (multiplayerGameOver && multiplayerManager) {
     const finalStats = multiplayerManager.getAllPlayers();
     const localPlayerId = multiplayerManager.getLocalPlayer().id;
-    return <MultiplayerGameOver winnerId={multiplayerWinner || ''} finalStats={finalStats} localPlayerId={localPlayerId} onRestart={restartGame} onMainMenu={returnToMenu} />;
+    return <MultiplayerGameOver winnerId={multiplayerWinner || ''} finalStats={finalStats} localPlayerId={localPlayerId} onRestart={restartGame} onMainMenu={returnToMenu} canRestart={multiplayerManager.isGameHost()} />;
   }
 
   return (
