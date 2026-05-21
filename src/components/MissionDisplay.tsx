@@ -1,4 +1,5 @@
 import React from 'react';
+import { Timer, Gift, X, Check, Target, Plus } from 'lucide-react';
 import { type Mission, type MissionObjective } from '../utils/ProceduralMissionSystem';
 
 interface MissionDisplayProps {
@@ -57,8 +58,8 @@ const MissionCard: React.FC<MissionCardProps> = ({ mission, onDismiss }) => {
               {mission.difficulty}
             </span>
             {mission.timeLimit && (
-              <span className="text-xs text-red-400 font-mono">
-                ⏱️ {timeRemaining}
+              <span className="flex items-center gap-1 text-xs text-red-400 font-mono">
+                <Timer className="w-3 h-3" strokeWidth={2.5} /> {timeRemaining}
               </span>
             )}
           </div>
@@ -67,9 +68,10 @@ const MissionCard: React.FC<MissionCardProps> = ({ mission, onDismiss }) => {
         {onDismiss && (
           <button
             onClick={() => onDismiss(mission.id)}
-            className="text-gray-400 hover:text-white text-xs ml-2"
+            className="text-gray-500 hover:text-white ml-2 transition-colors"
+            aria-label="Dismiss mission"
           >
-            ✕
+            <X className="w-3.5 h-3.5" strokeWidth={2.5} />
           </button>
         )}
       </div>
@@ -100,12 +102,14 @@ const MissionCard: React.FC<MissionCardProps> = ({ mission, onDismiss }) => {
 
       {/* Rewards */}
       <div className="flex items-center justify-between text-xs">
-        <div className="text-yellow-400">
-          🎁 {mission.reward.description}
+        <div className="flex items-center gap-1.5 text-amber-400">
+          <Gift className="w-3.5 h-3.5" strokeWidth={2.25} />
+          {mission.reward.description}
         </div>
         {mission.bonusReward && (
-          <div className="text-purple-400">
-            +{mission.bonusReward.description}
+          <div className="flex items-center gap-1 text-purple-400">
+            <Plus className="w-3 h-3" strokeWidth={2.5} />
+            {mission.bonusReward.description}
           </div>
         )}
       </div>
@@ -123,7 +127,7 @@ const ObjectiveItem: React.FC<ObjectiveItemProps> = ({ objective }) => {
 
   return (
     <div className={`flex items-center gap-2 ${isComplete ? 'opacity-60' : ''}`}>
-      <span className="text-sm">{objective.icon}</span>
+      <Target className={`w-3.5 h-3.5 flex-shrink-0 ${isComplete ? 'text-green-400' : 'text-cyan-400'}`} strokeWidth={2.25} />
       <div className="flex-1">
         <div className="flex items-center justify-between mb-0.5">
           <span className={`text-xs ${isComplete ? 'line-through text-gray-500' : 'text-gray-300'}`}>
@@ -131,7 +135,7 @@ const ObjectiveItem: React.FC<ObjectiveItemProps> = ({ objective }) => {
             {objective.optional && <span className="text-yellow-400 ml-1">(Bonus)</span>}
           </span>
           {isComplete ? (
-            <span className="text-green-400 text-xs">✓</span>
+            <Check className="w-3.5 h-3.5 text-green-400" strokeWidth={3} />
           ) : (
             <span className="text-gray-400 text-xs font-mono">
               {objective.current}/{objective.target}

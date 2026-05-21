@@ -1,4 +1,5 @@
 import React from 'react';
+import { Lightbulb, AlertTriangle, AlertOctagon, Siren, GraduationCap, X, type LucideIcon } from 'lucide-react';
 import { type TutorialStep } from '../utils/TutorialSystem';
 
 interface TutorialOverlayProps {
@@ -56,8 +57,10 @@ export const TutorialOverlay: React.FC<TutorialOverlayProps> = ({
           style={{ boxShadow: '0 0 30px rgba(6, 182, 212, 0.3)' }}
         >
           {/* Icon and Title */}
-          <div className="bg-gradient-to-r from-cyan-500 to-blue-500 p-4 text-center">
-            <div className="text-5xl mb-1">{currentStep.icon}</div>
+          <div className="bg-gradient-to-r from-cyan-500 to-blue-500 p-4 flex items-center gap-3">
+            <div className="flex items-center justify-center w-11 h-11 rounded-xl bg-white/15 flex-shrink-0">
+              <GraduationCap className="w-6 h-6 text-white" strokeWidth={2} />
+            </div>
             <h2 className="text-xl font-bold text-white">{currentStep.title}</h2>
           </div>
 
@@ -156,7 +159,6 @@ interface CoachTipProps {
 }
 
 export const CoachTip: React.FC<CoachTipProps> = ({
-  icon,
   title,
   message,
   priority,
@@ -169,31 +171,38 @@ export const CoachTip: React.FC<CoachTipProps> = ({
     critical: 'border-red-400 bg-red-900/80 animate-pulse'
   };
 
-  const priorityIcon = {
-    low: '💡',
-    medium: '⚠️',
-    high: '🚨',
-    critical: '🆘'
+  const priorityIcon: Record<string, LucideIcon> = {
+    low: Lightbulb,
+    medium: AlertTriangle,
+    high: AlertOctagon,
+    critical: Siren,
   };
+  const PriorityIcon = priorityIcon[priority];
+  const iconColor = {
+    low: '#60a5fa',
+    medium: '#fbbf24',
+    high: '#fb923c',
+    critical: '#f87171',
+  }[priority];
 
   return (
     <div className={`fixed bottom-48 left-1/2 -translate-x-1/2 z-40 animate-slide-up`}>
       <div className={`${priorityStyles[priority]} border-2 rounded-lg p-4 shadow-2xl backdrop-blur-sm max-w-md`}>
         <div className="flex items-start gap-3">
-          <div className="text-3xl">{icon}</div>
+          <div className="flex items-center justify-center w-9 h-9 rounded-lg bg-white/10 flex-shrink-0">
+            <PriorityIcon className="w-5 h-5" style={{ color: iconColor }} strokeWidth={2} />
+          </div>
           <div className="flex-1">
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-sm">{priorityIcon[priority]}</span>
-              <h4 className="text-white font-bold text-sm">{title}</h4>
-            </div>
+            <h4 className="text-white font-bold text-sm mb-0.5">{title}</h4>
             <p className="text-gray-200 text-sm">{message}</p>
           </div>
           {onDismiss && (
             <button
               onClick={onDismiss}
-              className="text-gray-400 hover:text-white transition-colors"
+              className="text-gray-400 hover:text-white transition-colors flex-shrink-0"
+              aria-label="Dismiss"
             >
-              ✕
+              <X className="w-4 h-4" strokeWidth={2.5} />
             </button>
           )}
         </div>

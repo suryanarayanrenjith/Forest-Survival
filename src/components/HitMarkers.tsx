@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { Skull } from 'lucide-react';
 
 interface DamageNumber {
   id: string;
@@ -100,7 +101,7 @@ const HitMarkers = () => {
 
               {marker.isHeadshot && (
                 <div className="absolute inset-0 flex items-center justify-center">
-                  <span className="text-xs font-bold animate-pulse">💀</span>
+                  <Skull className="w-3 h-3 text-red-500" strokeWidth={2.5} />
                 </div>
               )}
             </div>
@@ -135,9 +136,7 @@ const HitMarkers = () => {
                 pointerEvents: 'none'
               }}
             >
-              {dmg.isHeadshot && '💀 '}
               -{dmg.damage}
-              {dmg.isCritical && ' ⚡'}
             </div>
           );
         })}

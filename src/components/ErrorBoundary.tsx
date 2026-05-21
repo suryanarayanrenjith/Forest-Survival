@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { AlertTriangle } from 'lucide-react';
 
 interface Props {
   children: ReactNode;
@@ -83,8 +84,10 @@ export class ErrorBoundary extends Component<Props, State> {
           <div className="bg-gray-900 border-4 border-red-500 rounded-lg shadow-2xl p-8 max-w-2xl mx-4">
             {/* Error Icon */}
             <div className="text-center mb-6">
-              <div className="text-8xl mb-4">⚠️</div>
-              <h1 className="text-4xl font-bold text-red-400 mb-2">Oops! Something Went Wrong</h1>
+              <div className="inline-flex items-center justify-center w-20 h-20 rounded-2xl bg-red-500/10 border border-red-500/30 mb-4">
+                <AlertTriangle className="w-10 h-10 text-red-400" strokeWidth={2} />
+              </div>
+              <h1 className="text-4xl font-bold text-red-400 mb-2">Something Went Wrong</h1>
               <p className="text-gray-400">The game encountered an unexpected error</p>
             </div>
 

@@ -1,5 +1,15 @@
 import React, { useState } from 'react';
+import { Star, Swords, Heart, Footprints, Brain, Package, Check, type LucideIcon } from 'lucide-react';
 import { type Skill, type SkillCategory, type PlayStyle } from '../utils/SmartSkillTreeSystem';
+
+const CATEGORY_ICON: Record<string, LucideIcon> = {
+  all: Star,
+  combat: Swords,
+  survival: Heart,
+  mobility: Footprints,
+  tactical: Brain,
+  support: Package,
+};
 
 interface SkillTreeMenuProps {
   skills: Skill[];
@@ -25,13 +35,13 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
   const [selectedCategory, setSelectedCategory] = useState<SkillCategory | 'all'>('all');
   const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null);
 
-  const categories: Array<{id: SkillCategory | 'all', name: string, icon: string}> = [
-    { id: 'all', name: 'All Skills', icon: '⭐' },
-    { id: 'combat', name: 'Combat', icon: '⚔️' },
-    { id: 'survival', name: 'Survival', icon: '❤️' },
-    { id: 'mobility', name: 'Mobility', icon: '👟' },
-    { id: 'tactical', name: 'Tactical', icon: '🧠' },
-    { id: 'support', name: 'Support', icon: '📦' }
+  const categories: Array<{id: SkillCategory | 'all', name: string}> = [
+    { id: 'all', name: 'All Skills' },
+    { id: 'combat', name: 'Combat' },
+    { id: 'survival', name: 'Survival' },
+    { id: 'mobility', name: 'Mobility' },
+    { id: 'tactical', name: 'Tactical' },
+    { id: 'support', name: 'Support' },
   ];
 
   const filteredSkills = selectedCategory === 'all'
@@ -101,34 +111,41 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
           <div className="w-48 bg-gray-800/50 border-r border-cyan-400/30 p-3 overflow-y-auto">
             <div className="text-xs font-bold text-gray-400 uppercase mb-2">Categories</div>
             <div className="space-y-1">
-              {categories.map(cat => (
-                <button
-                  key={cat.id}
-                  onClick={() => setSelectedCategory(cat.id)}
-                  className={`w-full text-left px-3 py-2 rounded transition-all ${
-                    selectedCategory === cat.id
-                      ? 'bg-cyan-500 text-white'
-                      : 'text-gray-300 hover:bg-gray-700'
-                  }`}
-                >
-                  <span className="mr-2">{cat.icon}</span>
-                  <span className="text-sm">{cat.name}</span>
-                </button>
-              ))}
+              {categories.map(cat => {
+                const Icon = CATEGORY_ICON[cat.id];
+                return (
+                  <button
+                    key={cat.id}
+                    onClick={() => setSelectedCategory(cat.id)}
+                    className={`w-full flex items-center gap-2.5 text-left px-3 py-2 rounded-lg transition-all ${
+                      selectedCategory === cat.id
+                        ? 'bg-cyan-500 text-white'
+                        : 'text-gray-300 hover:bg-gray-700'
+                    }`}
+                  >
+                    <Icon className="w-4 h-4" strokeWidth={2} />
+                    <span className="text-sm font-medium">{cat.name}</span>
+                  </button>
+                );
+              })}
             </div>
 
             {recommendations.length > 0 && (
               <div className="mt-6">
-                <div className="text-xs font-bold text-yellow-400 uppercase mb-2">⭐ Recommended</div>
+                <div className="flex items-center gap-1.5 text-xs font-bold text-yellow-400 uppercase mb-2">
+                  <Star className="w-3.5 h-3.5" strokeWidth={2.25} fill="currentColor" /> Recommended
+                </div>
                 <div className="text-xs text-gray-400 space-y-1">
                   {recommendations.slice(0, 3).map(skillId => {
                     const skill = skills.find(s => s.id === skillId);
-                    return skill ? (
-                      <div key={skillId} className="bg-yellow-900/20 p-2 rounded border border-yellow-600/30">
-                        <span className="mr-1">{skill.icon}</span>
+                    if (!skill) return null;
+                    const SkillIcon = CATEGORY_ICON[skill.category] || Star;
+                    return (
+                      <div key={skillId} className="flex items-center gap-1.5 bg-yellow-900/20 p-2 rounded border border-yellow-600/30">
+                        <SkillIcon className="w-3.5 h-3.5 flex-shrink-0" strokeWidth={2} />
                         {skill.name}
                       </div>
-                    ) : null;
+                    );
                   })}
                 </div>
               </div>
@@ -251,15 +268,17 @@ const SkillCard: React.FC<SkillCardProps> = ({ skill, isRecommended, canAfford, 
       <div className="absolute inset-0 bg-gradient-to-br from-white/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-200 rounded-xl" />
 
       {isRecommended && (
-        <div className="absolute -top-1 -right-1 w-6 h-6 bg-gradient-to-br from-yellow-400 to-orange-400 rounded-full flex items-center justify-center text-xs shadow-lg"
+        <div className="absolute -top-1.5 -right-1.5 w-6 h-6 bg-gradient-to-br from-yellow-400 to-orange-400 rounded-full flex items-center justify-center shadow-lg"
           style={{ boxShadow: '0 0 8px rgba(250, 204, 21, 0.5)' }}
         >
-          ⭐
+          <Star className="w-3 h-3 text-yellow-900" strokeWidth={2.5} fill="currentColor" />
         </div>
       )}
 
       <div className="relative">
-        <div className="text-2xl mb-1.5">{skill.icon}</div>
+        <div className="mb-1.5">
+          {(() => { const I = CATEGORY_ICON[skill.category] || Star; return <I className="w-6 h-6 text-cyan-400" strokeWidth={1.75} />; })()}
+        </div>
         <div className="text-sm font-bold text-white mb-1 line-clamp-1">{skill.name}</div>
         <div className="text-xs text-gray-400 line-clamp-2 mb-2">{skill.description}</div>
 
@@ -285,7 +304,7 @@ const SkillCard: React.FC<SkillCardProps> = ({ skill, isRecommended, canAfford, 
 
       {isMaxed && (
         <div className="absolute top-2 right-2">
-          <span className="text-green-400 text-lg font-black">✓</span>
+          <Check className="w-4 h-4 text-green-400" strokeWidth={3} />
         </div>
       )}
     </button>
@@ -305,7 +324,9 @@ const SkillDetails: React.FC<SkillDetailsProps> = ({ skill, canAfford, onUnlock 
   return (
     <div>
       <div className="text-center mb-4">
-        <div className="text-6xl mb-2">{skill.icon}</div>
+        <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-cyan-500/10 border border-cyan-400/30 mb-3">
+          {(() => { const I = CATEGORY_ICON[skill.category] || Star; return <I className="w-8 h-8 text-cyan-400" strokeWidth={1.75} />; })()}
+        </div>
         <h3 className="text-xl font-bold text-white mb-1">{skill.name}</h3>
         <div className="text-sm text-gray-400 capitalize">{skill.category}</div>
       </div>
@@ -365,10 +386,10 @@ const SkillDetails: React.FC<SkillDetailsProps> = ({ skill, canAfford, onUnlock 
       {isMaxed ? (
         <button
           disabled
-          className="w-full py-3 bg-green-500/20 text-green-400 font-bold rounded-lg border-2 border-green-400/50"
+          className="w-full flex items-center justify-center gap-2 py-3 bg-green-500/20 text-green-400 font-bold rounded-lg border-2 border-green-400/50"
           style={{ boxShadow: '0 0 10px rgba(34, 197, 94, 0.2)' }}
         >
-          ✓ Maxed Out
+          <Check className="w-4 h-4" strokeWidth={3} /> Maxed Out
         </button>
       ) : canUnlock ? (
         <button

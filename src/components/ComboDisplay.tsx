@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { Flame, Zap } from 'lucide-react';
 
 interface ComboDisplayProps {
   combo: number;
@@ -19,15 +20,13 @@ const ComboDisplay = ({ combo, killStreak, visible }: ComboDisplayProps) => {
       setShowNotification(true);
       setFadeOut(false);
 
-      // Clear existing timeout
       if (hideTimeoutRef.current) {
         clearTimeout(hideTimeoutRef.current);
       }
 
-      // Set new timeout to hide after 3 seconds
       hideTimeoutRef.current = setTimeout(() => {
         setFadeOut(true);
-        setTimeout(() => setShowNotification(false), 500);
+        setTimeout(() => setShowNotification(false), 400);
       }, 3000);
     }
 
@@ -41,96 +40,65 @@ const ComboDisplay = ({ combo, killStreak, visible }: ComboDisplayProps) => {
   useEffect(() => {
     if (combo > previousCombo && combo > 0) {
       setComboIncreased(true);
-      setTimeout(() => setComboIncreased(false), 500);
+      const timer = setTimeout(() => setComboIncreased(false), 400);
+      setPreviousCombo(combo);
+      return () => clearTimeout(timer);
     }
     setPreviousCombo(combo);
   }, [combo, previousCombo]);
 
   if (!visible || !showNotification || (combo === 0 && killStreak === 0)) return null;
 
-  const getComboTier = (comboCount: number) => {
-    if (comboCount >= 20) return { text: 'LEGENDARY!', color: 'from-purple-500 to-pink-500', glow: 'purple' };
-    if (comboCount >= 15) return { text: 'UNSTOPPABLE!', color: 'from-orange-500 to-red-500', glow: 'red' };
-    if (comboCount >= 10) return { text: 'DOMINATING!', color: 'from-yellow-500 to-orange-500', glow: 'orange' };
-    if (comboCount >= 5) return { text: 'KILLING SPREE!', color: 'from-green-500 to-yellow-500', glow: 'yellow' };
-    return { text: 'COMBO!', color: 'from-blue-500 to-cyan-500', glow: 'cyan' };
+  const getComboTier = (c: number) => {
+    if (c >= 20) return { label: 'Legendary', color: '#c084fc' };
+    if (c >= 15) return { label: 'Unstoppable', color: '#f87171' };
+    if (c >= 10) return { label: 'Dominating', color: '#fb923c' };
+    if (c >= 5) return { label: 'Killing Spree', color: '#fbbf24' };
+    return { label: 'Combo', color: '#38bdf8' };
   };
 
-  const getStreakTitle = (streak: number) => {
-    if (streak >= 50) return '🔥 GOD MODE 🔥';
-    if (streak >= 30) return '⚡ RAMPAGE ⚡';
-    if (streak >= 20) return '💀 MERCILESS 💀';
-    if (streak >= 10) return '⭐ ON FIRE ⭐';
-    if (streak >= 5) return '🎯 SHARPSHOOTER 🎯';
+  const getStreakLabel = (s: number) => {
+    if (s >= 50) return 'God Mode';
+    if (s >= 30) return 'Rampage';
+    if (s >= 20) return 'Merciless';
+    if (s >= 10) return 'On Fire';
+    if (s >= 5) return 'Sharpshooter';
     return null;
   };
 
-  const comboTier = getComboTier(combo);
-  const streakTitle = getStreakTitle(killStreak);
+  const tier = getComboTier(combo);
+  const streakLabel = getStreakLabel(killStreak);
 
   return (
     <div
-      className={`fixed top-24 left-1/2 transform -translate-x-1/2 z-40 pointer-events-none transition-all duration-500 ${fadeOut ? 'opacity-0 translate-y-[-20px]' : 'opacity-100'}`}
+      className={`fixed top-20 left-1/2 -translate-x-1/2 z-40 pointer-events-none flex flex-col items-center gap-1.5
+        transition-all duration-400 ${fadeOut ? 'opacity-0 -translate-y-2' : 'opacity-100'}`}
     >
-      {/* Compact unified display */}
-      <div className="flex flex-col items-center gap-1.5">
-        {/* Combo Counter - More compact */}
-        {combo > 0 && (
-          <div
-            className={`
-              bg-gradient-to-r ${comboTier.color}
-              text-white px-4 py-2 rounded-lg shadow-xl
-              transform transition-all duration-200
-              ${comboIncreased ? 'scale-110' : 'scale-100'}
-            `}
-            style={{
-              boxShadow: `0 0 20px var(--glow-color)`,
-              '--glow-color': comboTier.glow === 'purple' ? 'rgba(168, 85, 247, 0.6)' :
-                             comboTier.glow === 'red' ? 'rgba(239, 68, 68, 0.6)' :
-                             comboTier.glow === 'orange' ? 'rgba(249, 115, 22, 0.6)' :
-                             comboTier.glow === 'yellow' ? 'rgba(234, 179, 8, 0.6)' :
-                             'rgba(6, 182, 212, 0.6)'
-            } as React.CSSProperties}
-          >
-            <div className="flex items-center gap-2">
-              <span className="text-2xl font-black">{combo}x</span>
-              <span className="text-xs font-bold tracking-wide opacity-90">{comboTier.text}</span>
-            </div>
-          </div>
-        )}
+      {/* Combo counter */}
+      {combo > 0 && (
+        <div
+          className={`flex items-center gap-2 rounded-full border bg-black/60 backdrop-blur-md px-4 py-1.5
+            transition-transform duration-200 ${comboIncreased ? 'scale-110' : 'scale-100'}`}
+          style={{ borderColor: `${tier.color}66` }}
+        >
+          <Flame className="w-4 h-4" style={{ color: tier.color }} strokeWidth={2.25} fill="currentColor" />
+          <span className="text-lg font-bold tabular-nums" style={{ color: tier.color }}>{combo}x</span>
+          <span className="text-[10px] font-semibold tracking-[0.18em] uppercase" style={{ color: `${tier.color}cc` }}>
+            {tier.label}
+          </span>
+        </div>
+      )}
 
-        {/* Kill Streak - Inline with title */}
-        {killStreak >= 5 && streakTitle && (
-          <div
-            className="bg-gradient-to-r from-red-600/90 to-orange-600/90 text-white px-4 py-1.5 rounded-lg shadow-lg font-bold text-sm flex items-center gap-2"
-            style={{ boxShadow: '0 0 15px rgba(239, 68, 68, 0.5)' }}
-          >
-            <span className="text-orange-300">🔥</span>
-            <span>{streakTitle}</span>
-            <span className="bg-black/30 px-2 py-0.5 rounded text-xs">{killStreak}</span>
-          </div>
-        )}
-
-        {/* Simple streak counter for lower streaks */}
-        {killStreak > 0 && killStreak < 5 && (
-          <div className="bg-black/60 backdrop-blur-sm px-3 py-1 rounded-lg text-sm">
-            <span className="text-orange-400 font-bold">🔥 STREAK: {killStreak}</span>
-          </div>
-        )}
-      </div>
-
-      <style>{`
-        @keyframes pulse {
-          0%, 100% {
-            transform: scale(1);
-            opacity: 1;
-          }
-          50% {
-            transform: scale(1.05);
-            opacity: 0.9;
-          }
-        }
-      `}</style>
+      {/* Kill streak */}
+      {killStreak >= 5 && streakLabel && (
+        <div className="flex items-center gap-2 rounded-full border border-orange-400/40 bg-orange-500/15 backdrop-blur-md px-3.5 py-1">
+          <Zap className="w-3.5 h-3.5 text-orange-400" strokeWidth={2.25} fill="currentColor" />
+          <span className="text-xs font-bold text-orange-200 tracking-[0.1em] uppercase">{streakLabel}</span>
+          <span className="text-[10px] font-bold text-orange-100 tabular-nums bg-black/30 rounded px-1.5 py-0.5">
+            {killStreak}
+          </span>
+        </div>
+      )}
     </div>
   );
 };

@@ -22,7 +22,7 @@ export interface Weapon {
 
 export const WEAPONS: Record<string, Weapon> = {
   pistol: {
-    name: '🔫 Pistol',
+    name: 'Pistol',
     damage: 25,
     fireRate: 300,
     maxAmmo: 12,
@@ -35,7 +35,7 @@ export const WEAPONS: Record<string, Weapon> = {
     canAim: false
   },
   rifle: {
-    name: '🔪 Rifle',
+    name: 'Rifle',
     damage: 35,
     fireRate: 150,
     maxAmmo: 30,
@@ -48,7 +48,7 @@ export const WEAPONS: Record<string, Weapon> = {
     canAim: true // Rifle can aim
   },
   shotgun: {
-    name: '💥 Shotgun',
+    name: 'Shotgun',
     damage: 15,
     fireRate: 800,
     maxAmmo: 8,
@@ -61,7 +61,7 @@ export const WEAPONS: Record<string, Weapon> = {
     canAim: false
   },
   smg: {
-    name: '🔫 SMG',
+    name: 'SMG',
     damage: 20,
     fireRate: 100,
     maxAmmo: 40,
@@ -75,7 +75,7 @@ export const WEAPONS: Record<string, Weapon> = {
     canAim: false
   },
   sniper: {
-    name: '🎯 Sniper',
+    name: 'Sniper',
     damage: 100,
     fireRate: 1200,
     maxAmmo: 5,
@@ -89,7 +89,7 @@ export const WEAPONS: Record<string, Weapon> = {
     canAim: true // Sniper can aim
   },
   minigun: {
-    name: '⚡ Minigun',
+    name: 'Minigun',
     damage: 30,
     fireRate: 50,
     maxAmmo: 100,
@@ -103,7 +103,7 @@ export const WEAPONS: Record<string, Weapon> = {
     canAim: false
   },
   launcher: {
-    name: '🚀 Launcher',
+    name: 'Launcher',
     damage: 150,
     fireRate: 2000,
     maxAmmo: 3,

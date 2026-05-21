@@ -856,8 +856,8 @@ const ForestSurvivalGame = () => {
 
     // === ADVANCED SKY DOME SYSTEM ===
     const skyGeometry = new THREE.SphereGeometry(500, 32, 32);
-    const skyTopColor = new THREE.Color(atmosphericSettings.skyColor);
-    const skyHorizonColor = new THREE.Color(atmosphericSettings.fogColor);
+    const skyTopColor = new THREE.Color(mapConfig.hasSpecialWeather ? mapConfig.skyColor : atmosphericSettings.skyColor);
+    const skyHorizonColor = new THREE.Color(mapConfig.hasSpecialWeather ? mapConfig.fogColor : atmosphericSettings.fogColor);
     const skyMaterial = createSkyDomeMaterial(
       skyTopColor,
       skyHorizonColor,
@@ -1017,6 +1017,26 @@ const ForestSurvivalGame = () => {
     generateChunk(-1, 0);
     generateChunk(0, -1);
     generateChunk(-1, -1);
+
+    // === SPAWN SAFE ZONE ===
+    // Random terrain generation can place a tree/rock/wall right on top of the
+    // player's start position. Because collision is radius-based, the player
+    // would then be trapped — every move target stays inside the obstacle.
+    // Clear any collidable object overlapping a generous radius around spawn.
+    {
+      const spawnX = camera.position.x;
+      const spawnZ = camera.position.z;
+      const SPAWN_CLEARANCE = 6; // free space the player needs beyond an obstacle's edge
+      for (let i = terrainObjects.length - 1; i >= 0; i--) {
+        const obj = terrainObjects[i];
+        if (!obj.collidable) continue;
+        const dist = Math.sqrt((obj.x - spawnX) ** 2 + (obj.z - spawnZ) ** 2);
+        if (dist < obj.radius + SPAWN_CLEARANCE) {
+          scene.remove(obj.mesh);
+          terrainObjects.splice(i, 1);
+        }
+      }
+    }
 
     // Gun Model - CRITICAL FIX
     const gunModel = new GunModel('pistol');
@@ -1197,7 +1217,7 @@ const ForestSurvivalGame = () => {
         const weapon = WEAPONS[weaponKey];
         if (score >= weapon.unlockScore && !unlockedWeapons.includes(weaponKey)) {
           unlockedWeapons.push(weaponKey);
-          setPowerUpMessage(`🔓 ${weapon.name} Unlocked!`);
+          setPowerUpMessage(`${weapon.name} Unlocked`);
           setTimeout(() => setPowerUpMessage(''), 3000);
           newUnlock = true;
         }
@@ -1698,7 +1718,7 @@ const ForestSurvivalGame = () => {
           updateGameState();
         } else {
           const weapon = WEAPONS[weaponName];
-          setPowerUpMessage(`🔒 ${weapon.name} - Need ${weapon.unlockScore} score`);
+          setPowerUpMessage(`${weapon.name} Locked — ${weapon.unlockScore} pts needed`);
           setTimeout(() => setPowerUpMessage(''), 2000);
         }
       }
@@ -2170,6 +2190,18 @@ const ForestSurvivalGame = () => {
       if (skyMaterial.uniforms.isNight) {
         skyMaterial.uniforms.isNight.value = !atmosphericSettings.sunVisible;
       }
+      // Keep the sky gradient synced with the day-night cycle (and the map's
+      // own atmosphere for special-weather maps) so it never drifts dark.
+      if (skyMaterial.uniforms.skyColorTop) {
+        skyMaterial.uniforms.skyColorTop.value.setHex(
+          mapConfig.hasSpecialWeather ? mapConfig.skyColor : atmosphericSettings.skyColor
+        );
+      }
+      if (skyMaterial.uniforms.skyColorHorizon) {
+        skyMaterial.uniforms.skyColorHorizon.value.setHex(
+          mapConfig.hasSpecialWeather ? mapConfig.fogColor : atmosphericSettings.fogColor
+        );
+      }
 
       // === UPDATE ENHANCED SYSTEMS ===
       // Update ability system
@@ -2596,14 +2628,14 @@ const ForestSurvivalGame = () => {
             switch(powerUp.type) {
               case 'health':
                 health = Math.min(100, health + 30);
-                setPowerUpMessage('❤️ +30 Health');
+                setPowerUpMessage('+30 Health Restored');
                 if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Health Restored', 'powerup');
                 // Visual feedback - green flash
                 createParticles(camera.position, 0x00ff00, 15);
                 break;
               case 'ammo':
                 ammo = WEAPONS[currentWeapon].maxAmmo;
-                setPowerUpMessage('🔫 Ammo Refilled');
+                setPowerUpMessage('Ammo Refilled');
                 if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Ammo Refilled', 'powerup');
                 // Visual feedback - yellow flash
                 createParticles(camera.position, 0xffff00, 10);
@@ -2612,7 +2644,7 @@ const ForestSurvivalGame = () => {
                 // ACTUALLY APPLY SPEED BOOST
                 speedBoostActive = true;
                 speedBoostEndTime = Date.now() + speedBoostDuration;
-                setPowerUpMessage('⚡ Speed Boost! (10s)');
+                setPowerUpMessage('Speed Boost · 10s');
                 if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Speed Boost Active!', 'powerup');
                 // Visual feedback - cyan particles
                 createParticles(camera.position, 0x00ffff, 20);
@@ -2621,7 +2653,7 @@ const ForestSurvivalGame = () => {
                 // DAMAGE BOOST - Double damage for 15 seconds
                 damageBoostActive = true;
                 damageBoostEndTime = Date.now() + damageBoostDuration;
-                setPowerUpMessage('💥 Damage Boost! (15s)');
+                setPowerUpMessage('Damage Boost · 15s');
                 if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Damage Boost Active!', 'powerup');
                 // Visual feedback - orange particles
                 createParticles(camera.position, 0xff4400, 20);
@@ -2630,7 +2662,7 @@ const ForestSurvivalGame = () => {
                 // SHIELD - Absorbs 50 damage
                 shieldActive = true;
                 shieldHealth = shieldMaxHealth;
-                setPowerUpMessage('🛡️ Shield Active! (50 HP)');
+                setPowerUpMessage('Shield Active · 50 HP');
                 if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Shield Active!', 'powerup');
                 // Visual feedback - blue particles
                 createParticles(camera.position, 0x0099ff, 25);
@@ -2639,7 +2671,7 @@ const ForestSurvivalGame = () => {
                 // INFINITE AMMO - Unlimited ammo for 20 seconds
                 infiniteAmmoActive = true;
                 infiniteAmmoEndTime = Date.now() + infiniteAmmoDuration;
-                setPowerUpMessage('∞ Infinite Ammo! (20s)');
+                setPowerUpMessage('Infinite Ammo · 20s');
                 if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Infinite Ammo Active!', 'powerup');
                 // Visual feedback - magenta particles
                 createParticles(camera.position, 0xff00ff, 25);
@@ -3249,10 +3281,10 @@ const ForestSurvivalGame = () => {
                 const absorbed = Math.min(damage, shieldHealth);
                 shieldHealth -= absorbed;
                 damage -= absorbed;
-                setPowerUpMessage(`🛡️ Shield: ${shieldHealth}/${shieldMaxHealth}`);
+                setPowerUpMessage(`Shield · ${shieldHealth}/${shieldMaxHealth}`);
                 if (shieldHealth <= 0) {
                   shieldActive = false;
-                  setPowerUpMessage('🛡️ Shield Broken!');
+                  setPowerUpMessage('Shield Broken');
                   if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Shield Broken', 'powerup');
                   setTimeout(() => setPowerUpMessage(''), 1500);
                 }
@@ -3303,10 +3335,10 @@ const ForestSurvivalGame = () => {
                   // Broadcast killer info so every player (especially the victim)
                   // knows who/what killed them in real time
                   const enemyTypeLabel =
-                    enemy.type === 'boss' ? '👹 Boss' :
-                    enemy.type === 'tank' ? '🛡️ Tank' :
-                    enemy.type === 'fast' ? '⚡ Stalker' :
-                    '🧟 Forest Creature';
+                    enemy.type === 'boss' ? 'Boss' :
+                    enemy.type === 'tank' ? 'Tank' :
+                    enemy.type === 'fast' ? 'Stalker' :
+                    'Forest Creature';
                   const victim = multiplayerManager.getLocalPlayer();
                   multiplayerManager.broadcastKill(
                     enemyTypeLabel,

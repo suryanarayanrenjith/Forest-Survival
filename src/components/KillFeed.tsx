@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { Skull, Crosshair, Flame, Sparkles, Waves, type LucideIcon } from 'lucide-react';
 
 interface KillFeedEntry {
   id: string;
@@ -29,6 +30,14 @@ export const addKillFeedEntry = (message: string, type: KillFeedEntry['type'] = 
   }
 };
 
+const TYPE_META: Record<KillFeedEntry['type'], { icon: LucideIcon; color: string }> = {
+  kill: { icon: Skull, color: '#9ca3af' },
+  headshot: { icon: Crosshair, color: '#f87171' },
+  combo: { icon: Flame, color: '#fb923c' },
+  powerup: { icon: Sparkles, color: '#c084fc' },
+  wave: { icon: Waves, color: '#38bdf8' },
+};
+
 const KillFeed = ({ visible }: KillFeedProps) => {
   const [entries, setEntries] = useState<KillFeedEntry[]>([]);
 
@@ -54,68 +63,35 @@ const KillFeed = ({ visible }: KillFeedProps) => {
 
   if (!visible || entries.length === 0) return null;
 
-  const getIcon = (type: KillFeedEntry['type']) => {
-    switch (type) {
-      case 'headshot': return '💀';
-      case 'combo': return '🔥';
-      case 'powerup': return '⭐';
-      case 'wave': return '🎯';
-      default: return '☠️';
-    }
-  };
-
-  const getColor = (type: KillFeedEntry['type']) => {
-    switch (type) {
-      case 'headshot': return 'from-red-500 to-orange-500';
-      case 'combo': return 'from-yellow-500 to-orange-500';
-      case 'powerup': return 'from-purple-500 to-pink-500';
-      case 'wave': return 'from-blue-500 to-cyan-500';
-      default: return 'from-gray-500 to-gray-600';
-    }
-  };
-
   return (
-    <div className="fixed top-36 right-4 z-40 space-y-2 pointer-events-none">
-      {entries.map((entry, index) => (
-        <div
-          key={entry.id}
-          className={`
-            bg-gradient-to-r ${getColor(entry.type)}
-            text-white px-4 py-2 rounded-lg shadow-lg
-            transform transition-all duration-300
-            animate-slideInRight
-            ${index > 0 ? 'opacity-80' : 'opacity-100'}
-          `}
-          style={{
-            animation: `slideInRight 0.3s ease-out ${index * 0.05}s both, fadeOut 0.5s ease-in 4.5s both`
-          }}
-        >
-          <div className="flex items-center gap-2 font-bold text-sm">
-            <span className="text-xl">{getIcon(entry.type)}</span>
-            <span>{entry.message}</span>
+    <div className="fixed top-36 right-4 z-40 flex flex-col items-end gap-1.5 pointer-events-none">
+      {entries.map((entry, index) => {
+        const meta = TYPE_META[entry.type];
+        const Icon = meta.icon;
+        return (
+          <div
+            key={entry.id}
+            className="flex items-center gap-2 rounded-lg border border-white/10 bg-black/65 backdrop-blur-md px-3 py-1.5"
+            style={{
+              opacity: index === 0 ? 1 : 0.7,
+              animation: `kfIn 0.25s ease-out ${index * 0.04}s both, kfOut 0.5s ease-in 4.5s both`,
+            }}
+          >
+            <Icon className="w-3.5 h-3.5 flex-shrink-0" style={{ color: meta.color }} strokeWidth={2.25} />
+            <span className="text-xs font-semibold text-gray-200 tracking-wide whitespace-nowrap">
+              {entry.message}
+            </span>
           </div>
-        </div>
-      ))}
+        );
+      })}
       <style>{`
-        @keyframes slideInRight {
-          from {
-            transform: translateX(100%);
-            opacity: 0;
-          }
-          to {
-            transform: translateX(0);
-            opacity: 1;
-          }
+        @keyframes kfIn {
+          from { transform: translateX(24px); opacity: 0; }
+          to { transform: translateX(0); opacity: 1; }
         }
-        @keyframes fadeOut {
-          from {
-            opacity: 1;
-            transform: translateX(0);
-          }
-          to {
-            opacity: 0;
-            transform: translateX(20px);
-          }
+        @keyframes kfOut {
+          from { opacity: 1; }
+          to { opacity: 0; transform: translateX(16px); }
         }
       `}</style>
     </div>

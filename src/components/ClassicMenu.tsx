@@ -1,5 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import * as THREE from 'three';
+import {
+  ArrowLeft, Dices, Sparkles, ChevronDown, Play, Cpu,
+  Shield, Crosshair, Skull, CloudSun, Sun, Moon,
+  Trees, Flame, Snowflake, Mountain, Droplet, Gem, Landmark, type LucideIcon,
+} from 'lucide-react';
 import { MAP_CONFIGS, getRandomMap, type MapType } from '../utils/MapSystem';
 
 interface ClassicMenuProps {
@@ -7,6 +12,17 @@ interface ClassicMenuProps {
   onBack: () => void;
   t: (key: string) => string;
 }
+
+const MAP_ICONS: Record<MapType, LucideIcon> = {
+  deep_forest: Trees,
+  scorched_wasteland: Flame,
+  frozen_tundra: Snowflake,
+  desert_canyon: Mountain,
+  toxic_swamp: Droplet,
+  military_outpost: Shield,
+  crystal_caverns: Gem,
+  ancient_ruins: Landmark,
+};
 
 const ClassicMenu = ({ onStartGame, onBack }: ClassicMenuProps) => {
   const [selectedDifficulty, setSelectedDifficulty] = useState<'easy' | 'medium' | 'hard' | 'adaptive'>('medium');
@@ -25,167 +41,103 @@ const ClassicMenu = ({ onStartGame, onBack }: ClassicMenuProps) => {
   useEffect(() => {
     if (!canvasRef.current) return;
 
-    // Same forest scene as main menu
     const scene = new THREE.Scene();
     scene.fog = new THREE.Fog(0x0a1f0a, 10, 50);
 
-    const camera = new THREE.PerspectiveCamera(
-      60,
-      window.innerWidth / window.innerHeight,
-      0.1,
-      100
-    );
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
     camera.position.set(0, 8, 20);
     camera.lookAt(0, 0, 0);
 
-    const renderer = new THREE.WebGLRenderer({
-      canvas: canvasRef.current,
-      antialias: true,
-      alpha: true,
-    });
+    const renderer = new THREE.WebGLRenderer({ canvas: canvasRef.current, antialias: true, alpha: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setClearColor(0x0a1f0a, 1);
 
-    // Minimal particle stars
     const starsGeometry = new THREE.BufferGeometry();
     const starCount = 800;
     const positions = new Float32Array(starCount * 3);
-
     for (let i = 0; i < starCount * 3; i += 3) {
       positions[i] = (Math.random() - 0.5) * 80;
       positions[i + 1] = Math.random() * 40;
       positions[i + 2] = (Math.random() - 0.5) * 80;
     }
-
     starsGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    const starsMaterial = new THREE.PointsMaterial({
-      size: 0.15,
-      color: 0x88ff88,
-      transparent: true,
-      opacity: 0.6,
-    });
+    const starsMaterial = new THREE.PointsMaterial({ size: 0.15, color: 0x88ff88, transparent: true, opacity: 0.6 });
     const stars = new THREE.Points(starsGeometry, starsMaterial);
     scene.add(stars);
 
-    // Create forest circle
     const forest: THREE.Group[] = [];
     const treeCount = 40;
     const radius = 15;
-
     for (let i = 0; i < treeCount; i++) {
       const angle = (i / treeCount) * Math.PI * 2;
       const tree = new THREE.Group();
-
-      // Trunk
-      const trunkGeometry = new THREE.CylinderGeometry(0.15, 0.2, 2.5, 6);
-      const trunkMaterial = new THREE.MeshStandardMaterial({
-        color: 0x2d1810,
-        roughness: 0.9,
-        flatShading: true,
-      });
-      const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
+      const trunk = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.15, 0.2, 2.5, 6),
+        new THREE.MeshStandardMaterial({ color: 0x2d1810, roughness: 0.9, flatShading: true })
+      );
       trunk.castShadow = true;
       tree.add(trunk);
-
-      // Foliage - pyramid style
-      const foliageGeometry = new THREE.ConeGeometry(1, 2.5, 6);
-      const foliageMaterial = new THREE.MeshStandardMaterial({
-        color: 0x1a4d1a,
-        roughness: 0.8,
-        flatShading: true,
-      });
-      const foliage = new THREE.Mesh(foliageGeometry, foliageMaterial);
+      const foliage = new THREE.Mesh(
+        new THREE.ConeGeometry(1, 2.5, 6),
+        new THREE.MeshStandardMaterial({ color: 0x1a4d1a, roughness: 0.8, flatShading: true })
+      );
       foliage.position.y = 2;
       foliage.castShadow = true;
       tree.add(foliage);
-
-      // Position in circle
-      const x = Math.cos(angle) * radius;
-      const z = Math.sin(angle) * radius;
-      tree.position.set(x, 0, z);
+      tree.position.set(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
       tree.rotation.y = -angle + Math.PI / 2;
-
       scene.add(tree);
       forest.push(tree);
     }
 
-    // Ground
-    const groundGeometry = new THREE.CircleGeometry(25, 32);
-    const groundMaterial = new THREE.MeshStandardMaterial({
-      color: 0x0d1f0d,
-      roughness: 0.9,
-    });
-    const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+    const ground = new THREE.Mesh(
+      new THREE.CircleGeometry(25, 32),
+      new THREE.MeshStandardMaterial({ color: 0x0d1f0d, roughness: 0.9 })
+    );
     ground.rotation.x = -Math.PI / 2;
     ground.position.y = -0.1;
     ground.receiveShadow = true;
     scene.add(ground);
 
-    // Lighting
-    const ambientLight = new THREE.AmbientLight(0x2d4d2d, 0.4);
-    scene.add(ambientLight);
-
+    scene.add(new THREE.AmbientLight(0x2d4d2d, 0.4));
     const dirLight = new THREE.DirectionalLight(0x88ff88, 0.8);
     dirLight.position.set(5, 10, 5);
     dirLight.castShadow = true;
     scene.add(dirLight);
-
     const fillLight = new THREE.DirectionalLight(0x4d8d4d, 0.3);
     fillLight.position.set(-5, 5, -5);
     scene.add(fillLight);
 
-    // Initialize sceneRef first
     sceneRef.current = { scene, camera, renderer, animationId: 0 };
+    forest.forEach((tree, i) => { tree.userData.angle = (i / treeCount) * Math.PI * 2; });
 
-    // Store initial angles for trees
-    forest.forEach((tree, i) => {
-      tree.userData.angle = (i / treeCount) * Math.PI * 2;
-    });
-
-    // Animation with visibility detection for performance
     let time = 0;
     let isVisible = true;
-
-    const handleVisibilityChange = () => {
-      isVisible = !document.hidden;
-    };
+    const handleVisibilityChange = () => { isVisible = !document.hidden; };
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     const animate = () => {
-      if (sceneRef.current) {
-        sceneRef.current.animationId = requestAnimationFrame(animate);
-      }
-
-      // Skip rendering when tab is not visible (major performance boost)
+      if (sceneRef.current) sceneRef.current.animationId = requestAnimationFrame(animate);
       if (!isVisible) return;
-
       time += 0.003;
-
-      // Rotate entire forest
       forest.forEach((tree) => {
         tree.position.x = Math.cos(tree.userData.angle + time) * radius;
         tree.position.z = Math.sin(tree.userData.angle + time) * radius;
         tree.rotation.y = -(tree.userData.angle + time) + Math.PI / 2;
       });
-
-      // Subtle camera sway
       camera.position.x = Math.sin(time * 0.3) * 1;
       camera.position.y = 8 + Math.sin(time * 0.5) * 0.5;
       camera.lookAt(0, 0, 0);
-
       renderer.render(scene, camera);
     };
-
     animate();
 
-    // Handle resize
     const handleResize = () => {
       camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
     };
-
     window.addEventListener('resize', handleResize);
 
     return () => {
@@ -198,375 +150,224 @@ const ClassicMenu = ({ onStartGame, onBack }: ClassicMenuProps) => {
     };
   }, []);
 
+  const difficulties: { key: 'easy' | 'medium' | 'hard' | 'adaptive'; icon: LucideIcon; label: string; desc: string; color: string }[] = [
+    { key: 'easy', icon: Shield, label: 'Easy', desc: 'Casual', color: '#34d399' },
+    { key: 'medium', icon: Crosshair, label: 'Medium', desc: 'Balanced', color: '#fbbf24' },
+    { key: 'hard', icon: Skull, label: 'Hard', desc: 'Brutal', color: '#f87171' },
+    { key: 'adaptive', icon: Cpu, label: 'Adaptive', desc: 'AI-paced', color: '#22d3ee' },
+  ];
+
+  const atmospheres: { key: 'auto' | 'day' | 'night'; icon: LucideIcon; label: string; desc: string; color: string }[] = [
+    { key: 'auto', icon: CloudSun, label: 'Auto', desc: 'Day-night cycle', color: '#a78bfa' },
+    { key: 'day', icon: Sun, label: 'Day', desc: 'Bright', color: '#fbbf24' },
+    { key: 'night', icon: Moon, label: 'Night', desc: 'Dark', color: '#818cf8' },
+  ];
+
+  const SelectedMapIcon = MAP_ICONS[selectedMap];
+
   return (
-    <div className="relative w-full h-screen bg-black overflow-hidden">
-      {/* 3D Background Canvas - Fixed position so it doesn't scroll */}
-      <canvas
-        ref={canvasRef}
-        className="fixed inset-0 w-full h-full pointer-events-none"
-        style={{ display: 'block', zIndex: 0 }}
-      />
+    <div className="relative w-full h-screen bg-[#05080a] overflow-hidden">
+      <canvas ref={canvasRef} className="fixed inset-0 w-full h-full pointer-events-none" style={{ display: 'block', zIndex: 0 }} />
+      <div className="fixed inset-0 z-[1] pointer-events-none bg-gradient-to-b from-black/65 via-black/45 to-black/85" />
 
-      {/* Dark overlay for readability - Fixed */}
-      <div className="fixed inset-0 bg-gradient-to-b from-black/40 via-black/30 to-black/50 z-[1] pointer-events-none" />
-
-      {/* Back Button - Fixed position */}
+      {/* Back */}
       <button
         onClick={onBack}
-        className="group fixed top-3 sm:top-5 left-3 sm:left-5 z-50 overflow-hidden rounded-lg sm:rounded-xl transition-all duration-300 hover:scale-105 active:scale-95"
+        className="group fixed top-5 left-5 z-50 flex items-center gap-2 rounded-xl px-4 py-2.5
+          border border-white/10 bg-black/50 backdrop-blur-md text-sm font-semibold text-gray-300
+          transition-all duration-200 hover:text-white hover:bg-black/70 hover:border-white/20"
       >
-        <div className="absolute inset-0 bg-black/50 backdrop-blur-sm group-hover:bg-black/60 transition-colors duration-300" />
-        <div className="absolute inset-0 rounded-lg sm:rounded-xl border border-gray-500/40 group-hover:border-gray-400/60 transition-colors duration-300" />
-        <div className="relative px-4 sm:px-6 py-2 sm:py-2.5 flex items-center gap-2">
-          <span className="text-lg group-hover:-translate-x-1 transition-transform duration-300">←</span>
-          <span className="text-sm sm:text-base font-semibold text-gray-300 group-hover:text-white transition-colors duration-300">Back</span>
-        </div>
+        <ArrowLeft className="w-4 h-4 group-hover:-translate-x-0.5 transition-transform" strokeWidth={2.25} />
+        Back
       </button>
 
-      {/* Scrollable Menu Content */}
-      <div className="relative z-20 h-screen overflow-y-auto overflow-x-hidden">
-        <div className="flex flex-col items-center px-3 sm:px-4 pt-16 sm:pt-20 pb-32 sm:pb-40">
-          {/* Title Section */}
-          <div className="relative mb-4 sm:mb-8">
-            {/* Title glow */}
-            <div className="absolute inset-0 blur-3xl bg-gradient-to-r from-green-500/30 via-emerald-400/20 to-green-500/30 scale-150" />
-
-            {/* Subtitle */}
-            <p
-              className="relative text-xs sm:text-sm tracking-[0.2em] text-green-400/80 text-center mb-1 sm:mb-2 font-semibold uppercase"
-              style={{ textShadow: '0 0 20px rgba(34, 197, 94, 0.5)' }}
-            >
-              Solo Survival
-            </p>
-
-            {/* Main Title */}
+      {/* Scrollable content */}
+      <div className="relative z-20 h-screen overflow-y-auto">
+        <div className="flex flex-col items-center px-4 pt-20 pb-36 max-w-2xl mx-auto">
+          {/* Title */}
+          <div className="text-center mb-8">
+            <p className="text-[10px] tracking-[0.4em] text-emerald-400/90 font-semibold uppercase mb-2">Solo Survival</p>
             <h1
-              className="relative text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-black text-center"
+              className="text-4xl sm:text-5xl font-black tracking-tight"
               style={{
-                background: 'linear-gradient(135deg, #86efac 0%, #4ade80 25%, #22c55e 50%, #86efac 75%, #bbf7d0 100%)',
-                backgroundSize: '200% 200%',
-                WebkitBackgroundClip: 'text',
-                WebkitTextFillColor: 'transparent',
-                backgroundClip: 'text',
-                filter: 'drop-shadow(0 0 20px rgba(34, 197, 94, 0.4))',
-                fontFamily: 'system-ui, -apple-system, sans-serif',
-                letterSpacing: '0.02em',
+                background: 'linear-gradient(180deg, #f0fdf4 0%, #86efac 60%, #22c55e 100%)',
+                WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text',
               }}
             >
               CLASSIC MODE
             </h1>
-
-            {/* Decorative line */}
-            <div className="flex items-center justify-center gap-2 mt-2 sm:mt-3">
-              <div className="h-[1px] w-8 sm:w-16 bg-gradient-to-r from-transparent to-green-500/50" />
-              <div className="w-1.5 h-1.5 rounded-full bg-green-400/80" />
-              <div className="h-[1px] w-8 sm:w-16 bg-gradient-to-l from-transparent to-green-500/50" />
-            </div>
           </div>
 
-          {/* Settings Container */}
-          <div className="space-y-3 sm:space-y-4 max-w-2xl w-full mb-4 sm:mb-6">
-          {/* Random Mode - Featured Option */}
-          <div
-            className="relative rounded-xl sm:rounded-2xl overflow-hidden transition-all duration-500"
-            style={{
-              background: isRandomMode
-                ? 'linear-gradient(135deg, rgba(147,51,234,0.3) 0%, rgba(219,39,119,0.3) 50%, rgba(6,182,212,0.3) 100%)'
-                : 'linear-gradient(135deg, rgba(0,0,0,0.5) 0%, rgba(0,0,0,0.3) 100%)',
-              backdropFilter: 'blur(12px)',
-              border: isRandomMode ? '2px solid rgba(168,85,247,0.6)' : '1px solid rgba(168,85,247,0.3)',
-              boxShadow: isRandomMode ? '0 0 40px rgba(168,85,247,0.3)' : 'none',
-            }}
-          >
-            <div className="p-3 sm:p-4">
-              <button
-                onClick={() => {
-                  setIsRandomMode(!isRandomMode);
-                  if (!isRandomMode) {
-                    setSelectedDifficulty('adaptive');
-                  } else {
-                    setSelectedDifficulty('medium');
-                  }
-                }}
-                className="group w-full relative overflow-hidden rounded-lg sm:rounded-xl transition-all duration-300 hover:scale-[1.01] active:scale-[0.99]"
-              >
-                <div className={`absolute inset-0 ${isRandomMode ? 'bg-gradient-to-r from-purple-600/90 via-pink-600/90 to-cyan-600/90' : 'bg-gradient-to-r from-purple-900/60 to-pink-900/60 group-hover:from-purple-800/70 group-hover:to-pink-800/70'} transition-all duration-300`} />
-                <div className="absolute inset-0 bg-gradient-to-b from-white/10 to-transparent" />
-                <div className={`absolute inset-0 rounded-lg sm:rounded-xl border ${isRandomMode ? 'border-white/40' : 'border-purple-500/40 group-hover:border-purple-400/60'} transition-colors duration-300`} />
-
-                <div className="relative py-3 sm:py-4 px-3 sm:px-5 flex items-center gap-3 sm:gap-4">
-                  <span className="text-2xl sm:text-3xl flex-shrink-0" style={{ animation: isRandomMode ? 'spin-slow 3s linear infinite' : 'none' }}>🎲</span>
-                  <div className="text-left flex-1 min-w-0">
-                    <div className="text-sm sm:text-xl font-black text-white">RANDOM MODE</div>
-                    <div className="text-[10px] sm:text-sm text-purple-200/80 truncate">
-                      {isRandomMode ? 'Dynamic difficulty + Random atmosphere!' : 'Click to enable the ultimate challenge!'}
-                    </div>
-                  </div>
-                  <span className="text-xl sm:text-2xl flex-shrink-0" style={{ animation: isRandomMode ? 'pulse 1s ease-in-out infinite' : 'none' }}>{isRandomMode ? '✨' : '→'}</span>
-                </div>
-              </button>
-
-              {isRandomMode && (
-                <div className="mt-3 text-center text-xs sm:text-sm text-purple-200 bg-purple-900/40 rounded-lg p-2 sm:p-3 border border-purple-500/30">
-                  <span className="font-bold">AI-Powered:</span> Difficulty adapts to your skill level in real-time!
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Difficulty Selection */}
-          <div
-            className={`relative rounded-xl sm:rounded-2xl overflow-hidden transition-all duration-300 ${isRandomMode ? 'opacity-40 pointer-events-none' : ''}`}
-            style={{
-              background: 'linear-gradient(135deg, rgba(0,0,0,0.5) 0%, rgba(0,0,0,0.3) 100%)',
-              backdropFilter: 'blur(12px)',
-              border: '1px solid rgba(251,146,60,0.3)',
-            }}
-          >
-            <div className="px-3 sm:px-4 py-2.5 sm:py-3 border-b border-orange-500/20">
-              <h2 className="text-sm sm:text-lg font-bold text-orange-400 flex items-center justify-center gap-2">
-                <span className="text-base sm:text-xl">⚔️</span>
-                <span>DIFFICULTY</span>
-              </h2>
-            </div>
-            <div className="p-3 sm:p-4 grid grid-cols-2 sm:grid-cols-4 gap-2">
-              {[
-                { key: 'easy', icon: '😊', label: 'EASY', desc: 'Casual', color: 'green' },
-                { key: 'medium', icon: '😐', label: 'MEDIUM', desc: 'Balanced', color: 'orange' },
-                { key: 'hard', icon: '😈', label: 'HARD', desc: 'Nightmare', color: 'red' },
-                { key: 'adaptive', icon: '🤖', label: 'ADAPTIVE', desc: 'AI-Powered', color: 'cyan' },
-              ].map(({ key, icon, label, desc, color }) => (
-                <button
-                  key={key}
-                  onClick={() => { setSelectedDifficulty(key as 'easy' | 'medium' | 'hard' | 'adaptive'); setIsRandomMode(false); }}
-                  className={`relative rounded-lg sm:rounded-xl overflow-hidden transition-all duration-200 hover:scale-[1.03] active:scale-[0.98] ${selectedDifficulty === key && !isRandomMode ? 'scale-[1.02]' : ''}`}
-                  style={{
-                    background: selectedDifficulty === key && !isRandomMode
-                      ? `linear-gradient(135deg, var(--tw-gradient-from) 0%, var(--tw-gradient-to) 100%)`
-                      : 'rgba(0,0,0,0.3)',
-                    boxShadow: selectedDifficulty === key && !isRandomMode ? `0 0 20px rgba(var(--shadow-color), 0.4)` : 'none',
-                    ['--tw-gradient-from' as string]: color === 'green' ? 'rgb(22,163,74)' : color === 'orange' ? 'rgb(234,88,12)' : color === 'red' ? 'rgb(220,38,38)' : 'rgb(6,182,212)',
-                    ['--tw-gradient-to' as string]: color === 'green' ? 'rgb(34,197,94)' : color === 'orange' ? 'rgb(251,146,60)' : color === 'red' ? 'rgb(239,68,68)' : 'rgb(34,211,238)',
-                    ['--shadow-color' as string]: color === 'green' ? '34,197,94' : color === 'orange' ? '251,146,60' : color === 'red' ? '239,68,68' : '34,211,238',
-                    border: selectedDifficulty === key && !isRandomMode
-                      ? `2px solid rgba(255,255,255,0.4)`
-                      : '1px solid rgba(255,255,255,0.1)',
-                  }}
-                >
-                  <div className="py-2.5 sm:py-3 px-2">
-                    <div className="text-lg sm:text-2xl mb-0.5">{icon}</div>
-                    <div className={`text-[10px] sm:text-xs font-bold ${selectedDifficulty === key && !isRandomMode ? 'text-white' : 'text-gray-300'}`}>{label}</div>
-                    <div className={`text-[9px] sm:text-[10px] ${selectedDifficulty === key && !isRandomMode ? 'text-white/70' : 'text-gray-500'}`}>{desc}</div>
-                  </div>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Atmosphere Mode Selection */}
-          <div
-            className={`relative rounded-xl sm:rounded-2xl overflow-hidden transition-all duration-300 ${isRandomMode ? 'opacity-40 pointer-events-none' : ''}`}
-            style={{
-              background: 'linear-gradient(135deg, rgba(0,0,0,0.5) 0%, rgba(0,0,0,0.3) 100%)',
-              backdropFilter: 'blur(12px)',
-              border: '1px solid rgba(34,211,238,0.3)',
-            }}
-          >
-            <div className="px-3 sm:px-4 py-2.5 sm:py-3 border-b border-cyan-500/20">
-              <h2 className="text-sm sm:text-lg font-bold text-cyan-400 flex items-center justify-center gap-2">
-                <span className="text-base sm:text-xl">🎨</span>
-                <span>ATMOSPHERE</span>
-              </h2>
-            </div>
-            <div className="p-3 sm:p-4 grid grid-cols-3 gap-2">
-              {[
-                { key: 'auto', icon: '🌈', label: 'AUTO', desc: 'Dynamic' },
-                { key: 'day', icon: '☀️', label: 'DAY', desc: 'Bright' },
-                { key: 'night', icon: '🌙', label: 'NIGHT', desc: 'Dark' },
-              ].map(({ key, icon, label, desc }) => (
-                <button
-                  key={key}
-                  onClick={() => setSelectedTimeOfDay(key as 'auto' | 'day' | 'night')}
-                  className={`relative rounded-lg sm:rounded-xl overflow-hidden transition-all duration-200 hover:scale-[1.03] active:scale-[0.98] ${selectedTimeOfDay === key ? 'scale-[1.02]' : ''}`}
-                  style={{
-                    background: selectedTimeOfDay === key
-                      ? key === 'auto' ? 'linear-gradient(135deg, rgb(147,51,234) 0%, rgb(219,39,119) 100%)'
-                        : key === 'day' ? 'linear-gradient(135deg, rgb(202,138,4) 0%, rgb(234,179,8) 100%)'
-                        : 'linear-gradient(135deg, rgb(67,56,202) 0%, rgb(99,102,241) 100%)'
-                      : 'rgba(0,0,0,0.3)',
-                    boxShadow: selectedTimeOfDay === key
-                      ? key === 'auto' ? '0 0 20px rgba(168,85,247,0.4)'
-                        : key === 'day' ? '0 0 20px rgba(234,179,8,0.4)'
-                        : '0 0 20px rgba(99,102,241,0.4)'
-                      : 'none',
-                    border: selectedTimeOfDay === key ? '2px solid rgba(255,255,255,0.4)' : '1px solid rgba(255,255,255,0.1)',
-                  }}
-                >
-                  <div className="py-3 sm:py-4 px-2">
-                    <div className="text-xl sm:text-3xl mb-1">{icon}</div>
-                    <div className={`text-xs sm:text-sm font-bold ${selectedTimeOfDay === key ? 'text-white' : 'text-gray-300'}`}>{label}</div>
-                    <div className={`text-[9px] sm:text-xs hidden sm:block ${selectedTimeOfDay === key ? 'text-white/70' : 'text-gray-500'}`}>{desc}</div>
-                  </div>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Map Selection */}
-          <div
-            className={`relative rounded-xl sm:rounded-2xl overflow-hidden transition-all duration-300 ${isRandomMode ? 'opacity-40 pointer-events-none' : ''}`}
-            style={{
-              background: 'linear-gradient(135deg, rgba(0,0,0,0.5) 0%, rgba(0,0,0,0.3) 100%)',
-              backdropFilter: 'blur(12px)',
-              border: '1px solid rgba(52,211,153,0.3)',
-            }}
-          >
-            <div className="px-3 sm:px-4 py-2.5 sm:py-3 border-b border-emerald-500/20">
-              <h2 className="text-sm sm:text-lg font-bold text-emerald-400 flex items-center justify-center gap-2">
-                <span className="text-base sm:text-xl">🗺️</span>
-                <span>SELECT MAP</span>
-              </h2>
-            </div>
-            <div className="p-3 sm:p-4">
-              {/* Selected Map Preview */}
-              <button
-                className="w-full group relative rounded-lg sm:rounded-xl overflow-hidden transition-all duration-200 hover:scale-[1.01] active:scale-[0.99]"
-                onClick={() => setShowMapSelector(!showMapSelector)}
-                style={{
-                  background: 'linear-gradient(135deg, rgba(52,211,153,0.15) 0%, rgba(52,211,153,0.05) 100%)',
-                  border: '1px solid rgba(52,211,153,0.3)',
-                }}
-              >
-                <div className="p-3 sm:p-4 flex items-center justify-between">
-                  <div className="flex items-center gap-2 sm:gap-4 flex-1 min-w-0">
-                    <span className="text-2xl sm:text-3xl flex-shrink-0">{MAP_CONFIGS[selectedMap].icon}</span>
-                    <div className="min-w-0 text-left">
-                      <div className="text-sm sm:text-lg font-bold text-white truncate">{MAP_CONFIGS[selectedMap].name}</div>
-                      <div className="text-[10px] sm:text-xs text-emerald-300/70 truncate">{MAP_CONFIGS[selectedMap].description}</div>
-                    </div>
-                  </div>
-                  <span className={`text-lg sm:text-xl text-emerald-400 flex-shrink-0 ml-2 transition-transform duration-200 ${showMapSelector ? 'rotate-180' : ''}`}>▼</span>
-                </div>
-              </button>
-
-              {/* Map Grid */}
-              {showMapSelector && (
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3" style={{ animation: 'fade-in 0.2s ease-out' }}>
-                  {Object.values(MAP_CONFIGS).map((map) => (
-                    <button
-                      key={map.id}
-                      onClick={() => { setSelectedMap(map.id); setShowMapSelector(false); }}
-                      className={`relative rounded-lg sm:rounded-xl overflow-hidden transition-all duration-200 hover:scale-[1.03] active:scale-[0.98]`}
-                      style={{
-                        background: selectedMap === map.id
-                          ? 'linear-gradient(135deg, rgb(16,185,129) 0%, rgb(52,211,153) 100%)'
-                          : 'rgba(0,0,0,0.3)',
-                        boxShadow: selectedMap === map.id ? '0 0 15px rgba(52,211,153,0.4)' : 'none',
-                        border: selectedMap === map.id ? '2px solid rgba(255,255,255,0.4)' : '1px solid rgba(255,255,255,0.1)',
-                      }}
-                    >
-                      <div className="py-2.5 sm:py-3 px-2">
-                        <div className="text-lg sm:text-2xl mb-0.5">{map.icon}</div>
-                        <div className={`text-[9px] sm:text-[10px] font-bold leading-tight ${selectedMap === map.id ? 'text-white' : 'text-gray-400'}`}>{map.name}</div>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-          {/* Version inside scrollable content */}
-          <p className="mt-4 sm:mt-6 text-gray-600 text-[9px] sm:text-[10px] tracking-wider uppercase">
-            Version 1.0 • Classic Mode
-          </p>
-        </div>
-      </div>
-
-      {/* Fixed Start Button at Bottom - Always visible and clickable */}
-      <div className="fixed bottom-0 left-0 right-0 z-50 pointer-events-none">
-        <div className="bg-gradient-to-t from-black/90 via-black/60 to-transparent pt-8 pb-4 sm:pb-6 px-4 pointer-events-auto">
-          <div className="flex flex-col items-center">
+          <div className="w-full space-y-4">
+            {/* Random Mode */}
             <button
               onClick={() => {
-                if (isRandomMode) {
-                  const timeOptions: ('day' | 'night' | 'auto')[] = ['day', 'night', 'auto'];
-                  const randomTime = timeOptions[Math.floor(Math.random() * timeOptions.length)];
-                  const randomMap = getRandomMap();
-                  onStartGame('adaptive', randomTime, randomMap);
-                } else {
-                  onStartGame(selectedDifficulty, selectedTimeOfDay, selectedMap);
-                }
+                const next = !isRandomMode;
+                setIsRandomMode(next);
+                setSelectedDifficulty(next ? 'adaptive' : 'medium');
               }}
-              className="group relative overflow-hidden rounded-xl sm:rounded-2xl transition-all duration-300 hover:scale-105 active:scale-95 min-w-[200px] sm:min-w-[280px]"
+              className="w-full flex items-center gap-4 rounded-2xl px-4 py-4 border transition-all duration-300 text-left"
+              style={{
+                borderColor: isRandomMode ? 'rgba(167,139,250,0.55)' : 'rgba(255,255,255,0.1)',
+                background: isRandomMode ? 'rgba(167,139,250,0.12)' : 'rgba(255,255,255,0.03)',
+              }}
             >
-              <div className={`absolute inset-0 ${isRandomMode
-                ? 'bg-gradient-to-r from-purple-600 via-pink-600 to-cyan-600 group-hover:from-purple-500 group-hover:via-pink-500 group-hover:to-cyan-500'
-                : 'bg-gradient-to-r from-green-600 via-emerald-600 to-green-600 group-hover:from-green-500 group-hover:via-emerald-500 group-hover:to-green-500'
-              } transition-all duration-300`} />
-              <div className="absolute inset-0 bg-gradient-to-b from-white/15 to-transparent" />
-              <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500">
-                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/25 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-700" />
-              </div>
-              <div className={`absolute inset-0 rounded-xl sm:rounded-2xl border-2 ${isRandomMode ? 'border-purple-400/60 group-hover:border-purple-300/80' : 'border-green-400/60 group-hover:border-green-300/80'} transition-colors duration-300`} />
-              <div className="relative px-8 sm:px-14 py-3 sm:py-4 flex items-center justify-center gap-2 sm:gap-3"
-                style={{ boxShadow: isRandomMode ? '0 0 40px rgba(168,85,247,0.4)' : '0 0 40px rgba(34,197,94,0.4)' }}
+              <span
+                className="flex items-center justify-center w-12 h-12 rounded-xl flex-shrink-0"
+                style={{ background: 'rgba(167,139,250,0.15)' }}
               >
-                <span className={`text-xl sm:text-2xl ${isRandomMode ? 'group-hover:animate-spin' : ''}`}>{isRandomMode ? '🎲' : '▶️'}</span>
-                <span className="text-base sm:text-xl font-black text-white tracking-wide">
-                  {isRandomMode ? 'ROLL THE DICE!' : 'START GAME'}
+                <Dices className="w-6 h-6 text-violet-400" strokeWidth={1.75} />
+              </span>
+              <span className="flex-1 min-w-0">
+                <span className="block text-base font-bold text-white tracking-wide">Random Mode</span>
+                <span className="block text-xs text-gray-400 truncate">
+                  {isRandomMode ? 'Adaptive difficulty + randomized atmosphere & map' : 'Let the game roll difficulty, time and map'}
                 </span>
-              </div>
+              </span>
+              <span
+                className="flex items-center justify-center w-6 h-6 rounded-full border text-[10px] font-bold flex-shrink-0"
+                style={{
+                  borderColor: isRandomMode ? 'rgba(167,139,250,0.7)' : 'rgba(255,255,255,0.2)',
+                  background: isRandomMode ? '#a78bfa' : 'transparent',
+                }}
+              >
+                {isRandomMode && <Sparkles className="w-3.5 h-3.5 text-[#1a1030]" strokeWidth={2.5} />}
+              </span>
             </button>
+
+            {/* Difficulty */}
+            <Section title="Difficulty" dimmed={isRandomMode}>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {difficulties.map((d) => {
+                  const Icon = d.icon;
+                  const active = selectedDifficulty === d.key && !isRandomMode;
+                  return (
+                    <OptionCard key={d.key} active={active} color={d.color}
+                      onClick={() => { setSelectedDifficulty(d.key); setIsRandomMode(false); }}>
+                      <Icon className="w-5 h-5 mb-1.5" style={{ color: active ? d.color : '#9ca3af' }} strokeWidth={2} />
+                      <span className={`text-xs font-bold ${active ? 'text-white' : 'text-gray-300'}`}>{d.label}</span>
+                      <span className="text-[10px] text-gray-500">{d.desc}</span>
+                    </OptionCard>
+                  );
+                })}
+              </div>
+            </Section>
+
+            {/* Atmosphere */}
+            <Section title="Atmosphere" dimmed={isRandomMode}>
+              <div className="grid grid-cols-3 gap-2">
+                {atmospheres.map((a) => {
+                  const Icon = a.icon;
+                  const active = selectedTimeOfDay === a.key;
+                  return (
+                    <OptionCard key={a.key} active={active} color={a.color}
+                      onClick={() => setSelectedTimeOfDay(a.key)}>
+                      <Icon className="w-5 h-5 mb-1.5" style={{ color: active ? a.color : '#9ca3af' }} strokeWidth={2} />
+                      <span className={`text-xs font-bold ${active ? 'text-white' : 'text-gray-300'}`}>{a.label}</span>
+                      <span className="text-[10px] text-gray-500">{a.desc}</span>
+                    </OptionCard>
+                  );
+                })}
+              </div>
+            </Section>
+
+            {/* Map */}
+            <Section title="Map" dimmed={isRandomMode}>
+              <button
+                onClick={() => setShowMapSelector(!showMapSelector)}
+                className="w-full flex items-center gap-3 rounded-xl px-3.5 py-3 border border-white/10 bg-white/[0.03]
+                  transition-colors hover:bg-white/[0.06]"
+              >
+                <span className="flex items-center justify-center w-10 h-10 rounded-lg bg-emerald-500/12 flex-shrink-0">
+                  <SelectedMapIcon className="w-5 h-5 text-emerald-400" strokeWidth={1.75} />
+                </span>
+                <span className="flex-1 min-w-0 text-left">
+                  <span className="block text-sm font-bold text-white truncate">{MAP_CONFIGS[selectedMap].name}</span>
+                  <span className="block text-[11px] text-gray-500 truncate">{MAP_CONFIGS[selectedMap].description}</span>
+                </span>
+                <ChevronDown className={`w-4 h-4 text-gray-500 flex-shrink-0 transition-transform ${showMapSelector ? 'rotate-180' : ''}`} strokeWidth={2.25} />
+              </button>
+              {showMapSelector && (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2">
+                  {Object.values(MAP_CONFIGS).map((map) => {
+                    const Icon = MAP_ICONS[map.id];
+                    const active = selectedMap === map.id;
+                    return (
+                      <OptionCard key={map.id} active={active} color="#34d399"
+                        onClick={() => { setSelectedMap(map.id); setShowMapSelector(false); }}>
+                        <Icon className="w-5 h-5 mb-1.5" style={{ color: active ? '#34d399' : '#9ca3af' }} strokeWidth={1.75} />
+                        <span className={`text-[10px] font-bold leading-tight text-center ${active ? 'text-white' : 'text-gray-400'}`}>
+                          {map.name}
+                        </span>
+                      </OptionCard>
+                    );
+                  })}
+                </div>
+              )}
+            </Section>
           </div>
+
+          <p className="mt-6 text-[10px] tracking-[0.3em] text-gray-600 uppercase">Version 1.0 · Classic Mode</p>
         </div>
       </div>
 
-      {/* CSS Animations */}
-      <style>{`
-        @keyframes pulse-glow {
-          0%, 100% {
-            box-shadow: 0 0 20px rgba(168, 85, 247, 0.2);
-          }
-          50% {
-            box-shadow: 0 0 40px rgba(168, 85, 247, 0.4);
-          }
-        }
-
-        @keyframes spin-slow {
-          from {
-            transform: rotate(0deg);
-          }
-          to {
-            transform: rotate(360deg);
-          }
-        }
-
-        @keyframes pulse {
-          0%, 100% {
-            opacity: 1;
-            transform: scale(1);
-          }
-          50% {
-            opacity: 0.7;
-            transform: scale(1.1);
-          }
-        }
-
-        @keyframes fade-in {
-          from {
-            opacity: 0;
-            transform: translateY(10px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
-        }
-      `}</style>
+      {/* Fixed Start button */}
+      <div className="fixed bottom-0 left-0 right-0 z-50 pointer-events-none">
+        <div className="bg-gradient-to-t from-black via-black/80 to-transparent pt-10 pb-6 px-4 flex justify-center pointer-events-auto">
+          <button
+            onClick={() => {
+              if (isRandomMode) {
+                const timeOptions: ('day' | 'night' | 'auto')[] = ['day', 'night', 'auto'];
+                onStartGame('adaptive', timeOptions[Math.floor(Math.random() * 3)], getRandomMap());
+              } else {
+                onStartGame(selectedDifficulty, selectedTimeOfDay, selectedMap);
+              }
+            }}
+            className="group flex items-center justify-center gap-2.5 rounded-xl px-12 py-4 min-w-[260px]
+              font-bold tracking-[0.1em] uppercase text-[#04130a] transition-all duration-200
+              hover:-translate-y-0.5 active:translate-y-0"
+            style={{
+              background: isRandomMode
+                ? 'linear-gradient(135deg, #a78bfa, #f0abfc)'
+                : 'linear-gradient(135deg, #34d399, #22c55e)',
+              boxShadow: isRandomMode
+                ? '0 8px 28px -8px rgba(167,139,250,0.6)'
+                : '0 8px 28px -8px rgba(52,211,153,0.6)',
+            }}
+          >
+            {isRandomMode
+              ? <Dices className="w-5 h-5 group-hover:rotate-180 transition-transform duration-500" strokeWidth={2.25} />
+              : <Play className="w-5 h-5" strokeWidth={2.5} fill="currentColor" />}
+            {isRandomMode ? 'Roll & Play' : 'Start Game'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 };
+
+const Section = ({ title, dimmed, children }: { title: string; dimmed: boolean; children: React.ReactNode }) => (
+  <div className={`rounded-2xl border border-white/10 bg-white/[0.025] backdrop-blur-md transition-opacity duration-300 ${dimmed ? 'opacity-40 pointer-events-none' : ''}`}>
+    <div className="px-4 py-2.5 border-b border-white/[0.07]">
+      <h2 className="text-[11px] font-semibold tracking-[0.2em] text-gray-400 uppercase">{title}</h2>
+    </div>
+    <div className="p-3">{children}</div>
+  </div>
+);
+
+const OptionCard = ({ active, color, onClick, children }: {
+  active: boolean; color: string; onClick: () => void; children: React.ReactNode;
+}) => (
+  <button
+    onClick={onClick}
+    className="flex flex-col items-center justify-center py-3 px-2 rounded-xl border transition-all duration-200 hover:-translate-y-0.5"
+    style={{
+      borderColor: active ? `${color}99` : 'rgba(255,255,255,0.08)',
+      background: active ? `${color}1f` : 'rgba(255,255,255,0.03)',
+    }}
+  >
+    {children}
+  </button>
+);
 
 export default ClassicMenu;

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { AlertTriangle } from 'lucide-react';
 
 interface ScreenEffectsProps {
   health: number;
@@ -96,9 +97,9 @@ const ScreenEffects = ({ health, maxHealth = 100, isVisible }: ScreenEffectsProp
             className="bg-red-900/80 border border-red-500/60 rounded-full px-4 py-1.5 backdrop-blur-sm"
             style={{ animation: 'pulse 0.8s ease-in-out infinite' }}
           >
-            <div className="text-red-400 font-bold text-sm flex items-center gap-2">
-              <span>⚠️</span>
-              <span>LOW HP</span>
+            <div className="text-red-400 font-bold text-xs tracking-[0.15em] uppercase flex items-center gap-2">
+              <AlertTriangle className="w-3.5 h-3.5" strokeWidth={2.5} />
+              <span>Low Health</span>
             </div>
           </div>
         </div>

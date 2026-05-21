@@ -1,3 +1,4 @@
+import { Timer, Users, Swords, Crosshair, Skull, Star } from 'lucide-react';
 import type { PlayerData } from '../utils/MultiplayerManager';
 
 interface MultiplayerHUDProps {
@@ -7,19 +8,13 @@ interface MultiplayerHUDProps {
   gameMode: 'coop' | 'survival';
 }
 
-// Safe color formatting to handle edge cases
 const formatColor = (color: number): string => {
-  if (typeof color !== 'number' || color < 0) {
-    return '#ffffff';
-  }
+  if (typeof color !== 'number' || color < 0) return '#ffffff';
   return `#${Math.abs(color).toString(16).padStart(6, '0')}`;
 };
 
-// Safe K/D ratio calculation
 const calculateKD = (kills: number, deaths: number): string => {
-  if (deaths === 0) {
-    return kills.toString();
-  }
+  if (deaths === 0) return kills.toString();
   return (kills / deaths).toFixed(1);
 };
 
@@ -32,141 +27,107 @@ const MultiplayerHUD = ({ localPlayer, remotePlayers, remainingTime, gameMode }:
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
-  return (
-    <div className="absolute top-2 sm:top-4 right-2 sm:right-4 space-y-2 sm:space-y-3" style={{ zIndex: 20 }}>
-      {/* Time Limit Display */}
-      {remainingTime !== null && (
-        <div className="bg-black/80 backdrop-blur-sm border-2 border-yellow-500/50 rounded-lg p-2 sm:p-3 min-w-[140px] sm:min-w-[180px]">
-          <div className="text-yellow-400 font-bold text-center text-base sm:text-xl">
-            ⏱️ {formatTime(remainingTime)}
-          </div>
-          {remainingTime < 30 && (
-            <div className="text-red-400 text-[10px] sm:text-xs text-center animate-pulse mt-1">
-              TIME RUNNING OUT!
-            </div>
-          )}
-        </div>
-      )}
+  const totalKills = allPlayers.reduce((sum, p) => sum + p.kills, 0);
+  const aliveCount = allPlayers.filter((p) => p.isAlive).length;
 
-      {/* Game Mode Display */}
-      <div className="bg-black/80 backdrop-blur-sm border-2 border-blue-500/50 rounded-lg p-1.5 sm:p-2 min-w-[140px] sm:min-w-[180px]">
-        <div className="text-blue-400 font-bold text-center text-[10px] sm:text-sm">
-          {gameMode === 'coop' ? '👥 CO-OP' : '⚔️ SURVIVAL'}
+  return (
+    <div className="absolute top-4 right-4 w-[280px] space-y-2.5" style={{ zIndex: 20 }}>
+      {/* Timer + mode */}
+      <div className="flex items-center gap-2.5">
+        {remainingTime !== null && (
+          <div
+            className={`flex items-center gap-2 rounded-xl border bg-black/60 backdrop-blur-md px-3 py-2 flex-1 ${
+              remainingTime < 30 ? 'border-red-500/50' : 'border-white/10'
+            }`}
+          >
+            <Timer className={`w-4 h-4 ${remainingTime < 30 ? 'text-red-400' : 'text-amber-400'}`} strokeWidth={2.25} />
+            <span className={`text-base font-bold tabular-nums ${remainingTime < 30 ? 'text-red-300' : 'text-white'}`}>
+              {formatTime(remainingTime)}
+            </span>
+          </div>
+        )}
+        <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-black/60 backdrop-blur-md px-3 py-2">
+          {gameMode === 'coop'
+            ? <Users className="w-4 h-4 text-sky-400" strokeWidth={2.25} />
+            : <Swords className="w-4 h-4 text-rose-400" strokeWidth={2.25} />}
+          <span className="text-[11px] font-bold tracking-[0.12em] text-gray-200 uppercase">
+            {gameMode === 'coop' ? 'Co-op' : 'Survival'}
+          </span>
         </div>
       </div>
 
-      {/* Players List - Responsive and Scrollable */}
-      <div className="bg-black/80 backdrop-blur-sm border-2 border-green-500/50 rounded-lg p-2 sm:p-3 min-w-[200px] sm:min-w-[260px] max-w-[280px]">
-        <div className="text-green-400 font-bold text-xs sm:text-sm mb-1.5 sm:mb-2 border-b border-green-500/30 pb-1.5 sm:pb-2 flex items-center justify-between">
-          <span>PLAYERS ({allPlayers.length})</span>
-          <span className="text-[10px] sm:text-xs text-gray-400">K/D/S</span>
+      {/* Scoreboard */}
+      <div className="rounded-xl border border-white/10 bg-black/60 backdrop-blur-md overflow-hidden">
+        <div className="flex items-center justify-between px-3 py-2 border-b border-white/[0.07]">
+          <span className="text-[10px] font-semibold tracking-[0.15em] text-gray-400 uppercase">
+            Players · {allPlayers.length}
+          </span>
+          <span className="text-[10px] font-semibold tracking-[0.1em] text-gray-600 uppercase">K / D / Score</span>
         </div>
 
-        <div className="space-y-1.5 sm:space-y-2 max-h-[250px] sm:max-h-[350px] overflow-y-auto pr-1 scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-transparent">
-          {allPlayers.map((player, index) => (
-            <div
-              key={player.id}
-              className={`p-1.5 sm:p-2 rounded ${
-                player.id === localPlayer.id
-                  ? 'bg-green-900/40 border border-green-400/50'
-                  : 'bg-gray-900/40'
-              } ${!player.isAlive ? 'opacity-50' : ''}`}
-            >
-              <div className="flex items-center gap-1.5 sm:gap-2 mb-0.5 sm:mb-1">
-                {/* Rank */}
-                <div className="text-yellow-400 font-bold text-xs sm:text-base w-4 sm:w-6 flex-shrink-0">
-                  #{index + 1}
+        <div className="max-h-[320px] overflow-y-auto">
+          {allPlayers.map((player, index) => {
+            const isLocal = player.id === localPlayer.id;
+            return (
+              <div
+                key={player.id}
+                className={`px-3 py-2 border-b border-white/[0.05] last:border-0 ${
+                  isLocal ? 'bg-emerald-500/[0.07]' : ''
+                } ${!player.isAlive ? 'opacity-45' : ''}`}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] font-bold text-gray-500 tabular-nums w-4">{index + 1}</span>
+                  <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: formatColor(player.color) }} />
+                  <span className="flex-1 min-w-0 text-xs font-semibold text-white truncate">
+                    {player.name}
+                    {isLocal && <span className="text-emerald-400 ml-1">· you</span>}
+                  </span>
+                  {!player.isAlive && <Skull className="w-3.5 h-3.5 text-red-500 flex-shrink-0" strokeWidth={2.25} />}
                 </div>
 
-                {/* Player Color */}
-                <div
-                  className="w-2.5 h-2.5 sm:w-3 sm:h-3 rounded-full flex-shrink-0"
-                  style={{ backgroundColor: formatColor(player.color) }}
-                />
-
-                {/* Player Name */}
-                <div className="flex-1 text-white font-semibold text-[10px] sm:text-sm truncate min-w-0">
-                  {player.name}
-                  {player.id === localPlayer.id && (
-                    <span className="text-green-400 text-[8px] sm:text-xs ml-1">(YOU)</span>
-                  )}
+                <div className="flex items-center gap-3 pl-6 mt-1 text-[11px]">
+                  <span className="flex items-center gap-1 text-orange-300">
+                    <Crosshair className="w-3 h-3" strokeWidth={2.5} />
+                    <span className="font-semibold tabular-nums">{player.kills}</span>
+                  </span>
+                  <span className="flex items-center gap-1 text-gray-500">
+                    <Skull className="w-3 h-3" strokeWidth={2.5} />
+                    <span className="font-semibold tabular-nums">{player.deaths}</span>
+                  </span>
+                  <span className="flex items-center gap-1 text-cyan-300">
+                    <Star className="w-3 h-3" strokeWidth={2.5} />
+                    <span className="font-semibold tabular-nums">{player.score}</span>
+                  </span>
+                  <span className="ml-auto text-violet-300 font-semibold tabular-nums">
+                    {calculateKD(player.kills, player.deaths)}
+                  </span>
                 </div>
 
-                {/* Status */}
-                {!player.isAlive && (
-                  <div className="text-red-400 text-[8px] sm:text-xs font-bold flex-shrink-0">💀</div>
+                {player.isAlive && (
+                  <div className="ml-6 mt-1.5 h-1 rounded-full bg-white/10 overflow-hidden">
+                    <div
+                      className="h-full rounded-full transition-all duration-300"
+                      style={{
+                        width: `${(player.health / player.maxHealth) * 100}%`,
+                        backgroundColor: player.health > 50 ? '#34d399' : player.health > 25 ? '#fbbf24' : '#f87171',
+                      }}
+                    />
+                  </div>
                 )}
               </div>
-
-              {/* Stats Row - Compact */}
-              <div className="flex gap-2 sm:gap-3 text-[9px] sm:text-xs pl-5 sm:pl-7">
-                {/* Kills */}
-                <div className="flex items-center gap-0.5 sm:gap-1">
-                  <span className="text-orange-400">💀</span>
-                  <span className="text-orange-400 font-medium">{player.kills}</span>
-                </div>
-
-                {/* Deaths */}
-                <div className="flex items-center gap-0.5 sm:gap-1">
-                  <span className="text-gray-400">☠️</span>
-                  <span className="text-gray-400">{player.deaths}</span>
-                </div>
-
-                {/* Score */}
-                <div className="flex items-center gap-0.5 sm:gap-1">
-                  <span className="text-blue-400">⭐</span>
-                  <span className="text-blue-400">{player.score}</span>
-                </div>
-
-                {/* K/D - Hidden on mobile */}
-                <div className="hidden sm:flex items-center gap-0.5 sm:gap-1">
-                  <span className="text-purple-400 text-[10px]">K/D:</span>
-                  <span className="text-purple-400">{calculateKD(player.kills, player.deaths)}</span>
-                </div>
-              </div>
-
-              {/* Health Bar - Simplified on mobile */}
-              {player.isAlive && (
-                <div className="mt-1 sm:mt-1.5 h-1 sm:h-1.5 bg-gray-700 rounded-full overflow-hidden ml-5 sm:ml-7">
-                  <div
-                    className="h-full transition-all duration-300"
-                    style={{
-                      width: `${(player.health / player.maxHealth) * 100}%`,
-                      backgroundColor:
-                        player.health > 50
-                          ? '#4ade80'
-                          : player.health > 25
-                          ? '#facc15'
-                          : '#ef4444'
-                    }}
-                  />
-                </div>
-              )}
-
-              {/* Current Weapon - Hidden on very small screens */}
-              <div className="hidden sm:block mt-0.5 sm:mt-1 text-[9px] sm:text-xs text-gray-400 pl-5 sm:pl-7">
-                🔫 {player.currentWeapon.toUpperCase()}
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
-      </div>
 
-      {/* Quick Stats Summary - Compact on mobile */}
-      <div className="bg-black/80 backdrop-blur-sm border-2 border-purple-500/50 rounded-lg p-2 sm:p-3 min-w-[140px] sm:min-w-[180px]">
-        <div className="text-purple-400 font-bold text-[10px] sm:text-xs mb-1.5 sm:mb-2">TEAM STATS</div>
-        <div className="grid grid-cols-2 gap-1.5 sm:gap-2 text-[10px] sm:text-xs">
-          <div className="text-center">
-            <div className="text-gray-400 text-[8px] sm:text-[10px]">Total Kills</div>
-            <div className="text-orange-400 font-bold text-sm sm:text-lg">
-              {allPlayers.reduce((sum, p) => sum + p.kills, 0)}
-            </div>
+        {/* Team summary */}
+        <div className="flex border-t border-white/[0.07]">
+          <div className="flex-1 flex items-center justify-center gap-2 py-2 border-r border-white/[0.07]">
+            <span className="text-[10px] text-gray-500 uppercase tracking-wide">Kills</span>
+            <span className="text-sm font-bold text-orange-300 tabular-nums">{totalKills}</span>
           </div>
-          <div className="text-center">
-            <div className="text-gray-400 text-[8px] sm:text-[10px]">Alive</div>
-            <div className="text-green-400 font-bold text-sm sm:text-lg">
-              {allPlayers.filter(p => p.isAlive).length}/{allPlayers.length}
-            </div>
+          <div className="flex-1 flex items-center justify-center gap-2 py-2">
+            <span className="text-[10px] text-gray-500 uppercase tracking-wide">Alive</span>
+            <span className="text-sm font-bold text-emerald-300 tabular-nums">{aliveCount}/{allPlayers.length}</span>
           </div>
         </div>
       </div>

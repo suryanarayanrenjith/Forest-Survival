@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import * as THREE from 'three';
+import { Swords, Users, GraduationCap, Settings, ChevronRight } from 'lucide-react';
 import SettingsMenu from './SettingsMenu';
 
 interface MainMenuProps {
@@ -195,8 +196,51 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode }: MainMenu
     };
   }, []);
 
+  const modes = [
+    {
+      key: 'solo',
+      icon: Swords,
+      title: 'Solo',
+      desc: 'Survive endless waves alone',
+      accent: 'emerald',
+      onClick: onClassicMode,
+    },
+    {
+      key: 'multiplayer',
+      icon: Users,
+      title: 'Multiplayer',
+      desc: 'Co-op & survival with friends',
+      accent: 'sky',
+      onClick: onMultiplayerMode,
+    },
+    {
+      key: 'tutorial',
+      icon: GraduationCap,
+      title: 'Tutorial',
+      desc: 'Learn the core mechanics',
+      accent: 'amber',
+      onClick: onTutorialMode,
+    },
+  ] as const;
+
+  const accentRing: Record<string, string> = {
+    emerald: 'group-hover:border-emerald-400/70 group-hover:shadow-[0_0_24px_-6px_rgba(16,185,129,0.45)]',
+    sky: 'group-hover:border-sky-400/70 group-hover:shadow-[0_0_24px_-6px_rgba(56,189,248,0.45)]',
+    amber: 'group-hover:border-amber-400/70 group-hover:shadow-[0_0_24px_-6px_rgba(245,158,11,0.45)]',
+  };
+  const accentIcon: Record<string, string> = {
+    emerald: 'text-emerald-400',
+    sky: 'text-sky-400',
+    amber: 'text-amber-400',
+  };
+  const accentIconBg: Record<string, string> = {
+    emerald: 'bg-emerald-500/10 group-hover:bg-emerald-500/15',
+    sky: 'bg-sky-500/10 group-hover:bg-sky-500/15',
+    amber: 'bg-amber-500/10 group-hover:bg-amber-500/15',
+  };
+
   return (
-    <div className="relative w-full h-screen overflow-hidden bg-black">
+    <div className="relative w-full h-screen overflow-hidden bg-[#05080a]">
       {/* 3D Background Canvas */}
       <canvas
         ref={canvasRef}
@@ -204,172 +248,96 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode }: MainMenu
         style={{ display: 'block' }}
       />
 
-      {/* Dark overlay for readability */}
-      <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-black/30 to-black/50" />
+      {/* Cinematic vignette + readability overlay */}
+      <div className="absolute inset-0 bg-gradient-to-b from-black/55 via-black/35 to-black/80" />
+      <div
+        className="absolute inset-0 pointer-events-none"
+        style={{ background: 'radial-gradient(ellipse at center, transparent 45%, rgba(0,0,0,0.7) 100%)' }}
+      />
 
       {/* Main Screen */}
       {!showSettings && (
-        <div className="relative z-10 min-h-screen overflow-y-auto">
-          <div className="flex flex-col items-center justify-center min-h-screen px-4 py-8">
-            {/* Decorative top glow */}
-            <div className="absolute top-0 left-1/2 -translate-x-1/2 w-96 h-48 bg-green-500/20 blur-[100px] rounded-full pointer-events-none" />
+        <div className="relative z-10 min-h-screen overflow-y-auto flex flex-col items-center justify-center px-6 py-10">
+          {/* Title */}
+          <div className="relative mb-10 sm:mb-14 text-center">
+            <div className="flex items-center justify-center gap-3 mb-3">
+              <span className="h-px w-8 sm:w-12 bg-gradient-to-r from-transparent to-emerald-500/60" />
+              <p className="text-[10px] sm:text-xs tracking-[0.45em] text-emerald-400/90 font-semibold uppercase">
+                Wave-Based Survival
+              </p>
+              <span className="h-px w-8 sm:w-12 bg-gradient-to-l from-transparent to-emerald-500/60" />
+            </div>
 
-          {/* Title Container with enhanced styling */}
-          <div className="relative mb-6 sm:mb-10 lg:mb-14">
-            {/* Title glow background */}
-            <div className="absolute inset-0 blur-3xl bg-gradient-to-r from-green-500/30 via-emerald-400/20 to-green-500/30 scale-150 animate-pulse" />
-
-            {/* Subtitle */}
-            <p
-              className="relative text-xs sm:text-sm md:text-base tracking-[0.3em] text-green-400/80 text-center mb-2 sm:mb-3 font-semibold uppercase"
-              style={{ textShadow: '0 0 20px rgba(34, 197, 94, 0.5)' }}
-            >
-              Wave-Based Survival
-            </p>
-
-            {/* Main Title */}
             <h1
-              className="relative text-4xl sm:text-5xl md:text-7xl lg:text-8xl font-black text-center"
+              className="text-5xl sm:text-6xl md:text-7xl lg:text-8xl font-black tracking-tight leading-none"
               style={{
-                background: 'linear-gradient(135deg, #86efac 0%, #4ade80 25%, #22c55e 50%, #86efac 75%, #bbf7d0 100%)',
-                backgroundSize: '200% 200%',
+                background: 'linear-gradient(180deg, #f0fdf4 0%, #86efac 55%, #22c55e 100%)',
                 WebkitBackgroundClip: 'text',
                 WebkitTextFillColor: 'transparent',
                 backgroundClip: 'text',
-                textShadow: 'none',
-                filter: 'drop-shadow(0 0 30px rgba(34, 197, 94, 0.5)) drop-shadow(0 0 60px rgba(34, 197, 94, 0.3))',
-                fontFamily: 'system-ui, -apple-system, sans-serif',
-                letterSpacing: '0.02em',
-                animation: 'gradientShift 4s ease infinite',
+                filter: 'drop-shadow(0 4px 24px rgba(34,197,94,0.35))',
               }}
             >
-              FOREST SURVIVAL
+              FOREST<br className="sm:hidden" /> SURVIVAL
             </h1>
-
-            {/* Decorative line under title */}
-            <div className="flex items-center justify-center gap-3 mt-3 sm:mt-4">
-              <div className="h-[2px] w-12 sm:w-20 bg-gradient-to-r from-transparent via-green-500/50 to-green-500" />
-              <div className="w-2 h-2 rounded-full bg-green-400 shadow-[0_0_10px_rgba(34,197,94,0.8)]" />
-              <div className="h-[2px] w-12 sm:w-20 bg-gradient-to-l from-transparent via-green-500/50 to-green-500" />
-            </div>
           </div>
 
-          {/* Main Buttons Container */}
-          <div className="flex flex-col gap-3 sm:gap-4 items-center w-full max-w-sm sm:max-w-md px-4">
-            {/* Solo Mode Button */}
-            <button
-              onClick={onClassicMode}
-              className="group relative w-full overflow-hidden rounded-xl sm:rounded-2xl transition-all duration-500 hover:scale-[1.02] active:scale-[0.98]"
-            >
-              {/* Button background with gradient */}
-              <div className="absolute inset-0 bg-gradient-to-r from-green-600/80 via-emerald-600/80 to-green-600/80 group-hover:from-green-500/90 group-hover:via-emerald-500/90 group-hover:to-green-500/90 transition-all duration-500" />
+          {/* Mode Buttons */}
+          <div className="flex flex-col gap-3 w-full max-w-md">
+            {modes.map((mode) => {
+              const Icon = mode.icon;
+              return (
+                <button
+                  key={mode.key}
+                  onClick={mode.onClick}
+                  className="group relative flex items-center gap-4 w-full rounded-2xl px-4 py-4 text-left
+                    bg-white/[0.03] border border-white/10 backdrop-blur-md
+                    transition-all duration-300 hover:bg-white/[0.06] hover:-translate-y-0.5
+                    active:translate-y-0"
+                >
+                  {/* accent ring on hover */}
+                  <span
+                    className={`pointer-events-none absolute inset-0 rounded-2xl border border-transparent transition-all duration-300 ${accentRing[mode.accent]}`}
+                  />
+                  <span
+                    className={`flex items-center justify-center w-12 h-12 rounded-xl transition-colors duration-300 ${accentIconBg[mode.accent]}`}
+                  >
+                    <Icon className={`w-6 h-6 ${accentIcon[mode.accent]}`} strokeWidth={1.75} />
+                  </span>
+                  <span className="flex-1 min-w-0">
+                    <span className="block text-lg sm:text-xl font-bold text-white tracking-wide">
+                      {mode.title}
+                    </span>
+                    <span className="block text-xs sm:text-sm text-gray-400 font-medium truncate">
+                      {mode.desc}
+                    </span>
+                  </span>
+                  <ChevronRight
+                    className="w-5 h-5 text-gray-600 group-hover:text-gray-300 group-hover:translate-x-0.5 transition-all duration-300"
+                    strokeWidth={2}
+                  />
+                </button>
+              );
+            })}
 
-              {/* Glass overlay */}
-              <div className="absolute inset-0 bg-gradient-to-b from-white/10 to-transparent" />
-
-              {/* Animated shine effect */}
-              <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500">
-                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000" />
-              </div>
-
-              {/* Border glow */}
-              <div className="absolute inset-0 rounded-xl sm:rounded-2xl border-2 border-green-400/60 group-hover:border-green-300/80 group-hover:shadow-[0_0_30px_rgba(34,197,94,0.4)] transition-all duration-300" />
-
-              {/* Content */}
-              <div className="relative px-6 sm:px-10 py-4 sm:py-5 flex items-center justify-center gap-3">
-                <span className="text-2xl sm:text-3xl group-hover:scale-110 transition-transform duration-300">🎮</span>
-                <div className="text-left">
-                  <span className="block text-xl sm:text-2xl lg:text-3xl font-black text-white tracking-wide">SOLO</span>
-                  <span className="block text-[10px] sm:text-xs text-green-200/80 font-medium">Survive the waves alone</span>
-                </div>
-              </div>
-            </button>
-
-            {/* Multiplayer Button */}
-            <button
-              onClick={onMultiplayerMode}
-              className="group relative w-full overflow-hidden rounded-xl sm:rounded-2xl transition-all duration-500 hover:scale-[1.02] active:scale-[0.98]"
-            >
-              {/* Button background with gradient */}
-              <div className="absolute inset-0 bg-gradient-to-r from-blue-600/80 via-cyan-600/80 to-blue-600/80 group-hover:from-blue-500/90 group-hover:via-cyan-500/90 group-hover:to-blue-500/90 transition-all duration-500" />
-
-              {/* Glass overlay */}
-              <div className="absolute inset-0 bg-gradient-to-b from-white/10 to-transparent" />
-
-              {/* Animated shine effect */}
-              <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500">
-                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000" />
-              </div>
-
-              {/* Border glow */}
-              <div className="absolute inset-0 rounded-xl sm:rounded-2xl border-2 border-blue-400/60 group-hover:border-blue-300/80 group-hover:shadow-[0_0_30px_rgba(59,130,246,0.4)] transition-all duration-300" />
-
-              {/* Content */}
-              <div className="relative px-6 sm:px-10 py-4 sm:py-5 flex items-center justify-center gap-3">
-                <span className="text-2xl sm:text-3xl group-hover:scale-110 transition-transform duration-300">👥</span>
-                <div className="text-left">
-                  <span className="block text-xl sm:text-2xl lg:text-3xl font-black text-white tracking-wide">MULTIPLAYER</span>
-                  <span className="block text-[10px] sm:text-xs text-blue-200/80 font-medium">Play with friends online</span>
-                </div>
-              </div>
-            </button>
-
-            {/* Tutorial Button */}
-            <button
-              onClick={onTutorialMode}
-              className="group relative w-full overflow-hidden rounded-xl sm:rounded-2xl transition-all duration-500 hover:scale-[1.02] active:scale-[0.98]"
-            >
-              <div className="absolute inset-0 bg-gradient-to-r from-amber-600/80 via-yellow-600/80 to-amber-600/80 group-hover:from-amber-500/90 group-hover:via-yellow-500/90 group-hover:to-amber-500/90 transition-all duration-500" />
-              <div className="absolute inset-0 bg-gradient-to-b from-white/10 to-transparent" />
-              <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500">
-                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000" />
-              </div>
-              <div className="absolute inset-0 rounded-xl sm:rounded-2xl border-2 border-amber-400/60 group-hover:border-amber-300/80 group-hover:shadow-[0_0_30px_rgba(245,158,11,0.4)] transition-all duration-300" />
-              <div className="relative px-6 sm:px-10 py-4 sm:py-5 flex items-center justify-center gap-3">
-                <span className="text-2xl sm:text-3xl group-hover:scale-110 transition-transform duration-300">🎯</span>
-                <div className="text-left">
-                  <span className="block text-xl sm:text-2xl lg:text-3xl font-black text-white tracking-wide">TUTORIAL</span>
-                  <span className="block text-[10px] sm:text-xs text-amber-200/80 font-medium">Learn the basics</span>
-                </div>
-              </div>
-            </button>
-
-            {/* Settings Button */}
+            {/* Settings */}
             <button
               onClick={() => setShowSettings(true)}
-              className="group relative mt-2 overflow-hidden rounded-lg sm:rounded-xl transition-all duration-300 hover:scale-105 active:scale-95"
+              className="group mt-1 flex items-center justify-center gap-2 self-center rounded-xl px-5 py-2.5
+                text-sm font-semibold text-gray-400 border border-white/10 bg-white/[0.02]
+                transition-all duration-300 hover:text-white hover:bg-white/[0.06] hover:border-white/20"
             >
-              {/* Background */}
-              <div className="absolute inset-0 bg-black/50 backdrop-blur-sm group-hover:bg-black/60 transition-colors duration-300" />
-
-              {/* Border */}
-              <div className="absolute inset-0 rounded-lg sm:rounded-xl border border-gray-500/40 group-hover:border-gray-400/60 transition-colors duration-300" />
-
-              {/* Content */}
-              <div className="relative px-6 sm:px-10 py-2.5 sm:py-3 flex items-center justify-center gap-2">
-                <span className="text-lg sm:text-xl group-hover:rotate-90 transition-transform duration-500">⚙️</span>
-                <span className="text-sm sm:text-base font-semibold text-gray-300 group-hover:text-white transition-colors duration-300">Settings</span>
-              </div>
+              <Settings className="w-4 h-4 group-hover:rotate-90 transition-transform duration-500" strokeWidth={2} />
+              Settings
             </button>
           </div>
 
-          {/* Version & Credits */}
-            <div className="mt-6 sm:mt-8 flex flex-col items-center gap-1">
-              <p className="text-gray-500 text-[9px] sm:text-[10px] tracking-wider uppercase">
-                Version 1.0
-              </p>
-            </div>
-          </div>
+          {/* Version */}
+          <p className="mt-10 text-[10px] tracking-[0.3em] text-gray-600 uppercase">
+            Version 1.0
+          </p>
         </div>
       )}
-
-      {/* CSS Animation for gradient */}
-      <style>{`
-        @keyframes gradientShift {
-          0%, 100% { background-position: 0% 50%; }
-          50% { background-position: 100% 50%; }
-        }
-      `}</style>
 
       {/* Settings Menu */}
       {showSettings && <SettingsMenu onClose={() => setShowSettings(false)} />}
