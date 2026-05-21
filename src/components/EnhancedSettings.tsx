@@ -51,11 +51,11 @@ export const EnhancedSettings: React.FC<EnhancedSettingsProps> = ({
   const [activeTab, setActiveTab] = useState<'graphics' | 'audio' | 'gameplay' | 'controls' | 'ui'>('graphics');
 
   const tabs = [
-    { id: 'graphics' as const, name: 'Graphics', icon: '🎨' },
-    { id: 'audio' as const, name: 'Audio', icon: '🔊' },
-    { id: 'gameplay' as const, name: 'Gameplay', icon: '🎮' },
-    { id: 'controls' as const, name: 'Controls', icon: '🎯' },
-    { id: 'ui' as const, name: 'Interface', icon: '📊' }
+    { id: 'graphics' as const, name: 'Graphics', icon: '' },
+    { id: 'audio' as const, name: 'Audio', icon: '' },
+    { id: 'gameplay' as const, name: 'Gameplay', icon: '' },
+    { id: 'controls' as const, name: 'Controls', icon: '' },
+    { id: 'ui' as const, name: 'Interface', icon: '' }
   ];
 
   const handleChange = (key: keyof GameSettings, value: any) => {

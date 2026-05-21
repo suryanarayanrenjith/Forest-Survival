@@ -80,7 +80,7 @@ const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMe
               bg-white/[0.03] transition-all duration-200 hover:bg-white/[0.07] hover:border-violet-400/50"
           >
             <span className="flex items-center justify-center w-9 h-9 rounded-lg bg-violet-500/15">
-              <Network className="w-4.5 h-4.5 text-violet-400" strokeWidth={2} />
+              <Network className="w-[18px] h-[18px] text-violet-400" strokeWidth={2} />
             </span>
             <span className="flex-1 text-left text-sm font-bold text-white tracking-wide">Skill Tree</span>
             <ChevronRight className="w-4 h-4 text-gray-600 group-hover:text-gray-300 group-hover:translate-x-0.5 transition-all" strokeWidth={2} />
@@ -92,7 +92,7 @@ const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMe
               bg-white/[0.03] transition-all duration-200 hover:bg-red-500/[0.08] hover:border-red-400/50"
           >
             <span className="flex items-center justify-center w-9 h-9 rounded-lg bg-red-500/15">
-              <LogOut className="w-4.5 h-4.5 text-red-400" strokeWidth={2} />
+              <LogOut className="w-[18px] h-[18px] text-red-400" strokeWidth={2} />
             </span>
             <span className="flex-1 text-left text-sm font-bold text-white tracking-wide">Main Menu</span>
             <ChevronRight className="w-4 h-4 text-gray-600 group-hover:text-gray-300 group-hover:translate-x-0.5 transition-all" strokeWidth={2} />

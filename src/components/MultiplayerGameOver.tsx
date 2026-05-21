@@ -146,8 +146,8 @@ const MultiplayerGameOver = ({
             }`}
           >
             {canRestart
-              ? <><RotateCcw className="w-4.5 h-4.5 group-hover:-rotate-180 transition-transform duration-500" strokeWidth={2.25} />Play Again</>
-              : <><Hourglass className="w-4.5 h-4.5" strokeWidth={2.25} />Waiting for Host</>}
+              ? <><RotateCcw className="w-[18px] h-[18px] group-hover:-rotate-180 transition-transform duration-500" strokeWidth={2.25} />Play Again</>
+              : <><Hourglass className="w-[18px] h-[18px]" strokeWidth={2.25} />Waiting for Host</>}
           </button>
           <button
             onClick={onMainMenu}
@@ -155,7 +155,7 @@ const MultiplayerGameOver = ({
               border border-white/10 bg-white/[0.04] text-gray-300 font-bold tracking-wide
               transition-all duration-200 hover:bg-white/[0.08] hover:text-white hover:border-white/20"
           >
-            <Home className="w-4.5 h-4.5" strokeWidth={2.25} />
+            <Home className="w-[18px] h-[18px]" strokeWidth={2.25} />
             Main Menu
           </button>
         </div>

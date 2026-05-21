@@ -65,10 +65,10 @@ export const StatsGallery: React.FC<StatsGalleryProps> = ({ stats, achievements,
   const [activeTab, setActiveTab] = useState<'overview' | 'combat' | 'progression' | 'achievements'>('overview');
 
   const tabs = [
-    { id: 'overview' as const, name: 'Overview', icon: '📊' },
-    { id: 'combat' as const, name: 'Combat', icon: '⚔️' },
-    { id: 'progression' as const, name: 'Progression', icon: '📈' },
-    { id: 'achievements' as const, name: 'Achievements', icon: '🏆' }
+    { id: 'overview' as const, name: 'Overview', icon: '' },
+    { id: 'combat' as const, name: 'Combat', icon: '' },
+    { id: 'progression' as const, name: 'Progression', icon: '' },
+    { id: 'achievements' as const, name: 'Achievements', icon: '' }
   ];
 
   return (
@@ -140,10 +140,10 @@ const OverviewTab: React.FC<{ stats: PlayerStatistics }> = ({ stats }) => {
 
       {/* Quick Stats Grid */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard icon="💀" label="Total Kills" value={stats.totalKills} color="text-red-400" />
-        <StatCard icon="📈" label="Level" value={stats.level} color="text-cyan-400" />
-        <StatCard icon="🏆" label="Achievements" value={`${stats.achievementsUnlocked}/${stats.totalAchievements}`} color="text-yellow-400" />
-        <StatCard icon="⏱️" label="Play Time" value={`${playTimeHours}h ${playTimeMinutes}m`} color="text-purple-400" />
+        <StatCard icon="" label="Total Kills" value={stats.totalKills} color="text-red-400" />
+        <StatCard icon="" label="Level" value={stats.level} color="text-cyan-400" />
+        <StatCard icon="" label="Achievements" value={`${stats.achievementsUnlocked}/${stats.totalAchievements}`} color="text-yellow-400" />
+        <StatCard icon="" label="Play Time" value={`${playTimeHours}h ${playTimeMinutes}m`} color="text-purple-400" />
       </div>
 
       {/* Performance Metrics */}
@@ -159,12 +159,12 @@ const OverviewTab: React.FC<{ stats: PlayerStatistics }> = ({ stats }) => {
 
       {/* Highlights */}
       <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-        <HighlightCard icon="🔥" label="Longest Streak" value={stats.longestKillStreak} />
-        <HighlightCard icon="🎯" label="Highest Combo" value={`${stats.highestCombo}x`} />
-        <HighlightCard icon="🌊" label="Highest Wave" value={stats.highestWave} />
-        <HighlightCard icon="⏳" label="Longest Survival" value={`${Math.floor(stats.longestSurvival / 60)}m`} />
-        <HighlightCard icon="🎮" label="MP Wins" value={stats.multiplayerWins} />
-        <HighlightCard icon="✅" label="Missions Done" value={stats.missionsCompleted} />
+        <HighlightCard icon="" label="Longest Streak" value={stats.longestKillStreak} />
+        <HighlightCard icon="" label="Highest Combo" value={`${stats.highestCombo}x`} />
+        <HighlightCard icon="" label="Highest Wave" value={stats.highestWave} />
+        <HighlightCard icon="" label="Longest Survival" value={`${Math.floor(stats.longestSurvival / 60)}m`} />
+        <HighlightCard icon="" label="MP Wins" value={stats.multiplayerWins} />
+        <HighlightCard icon="" label="Missions Done" value={stats.missionsCompleted} />
       </div>
     </div>
   );
@@ -179,12 +179,12 @@ const CombatTab: React.FC<{ stats: PlayerStatistics }> = ({ stats }) => {
 
       {/* Combat Overview */}
       <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-        <StatCard icon="💀" label="Total Kills" value={stats.totalKills} color="text-red-400" />
-        <StatCard icon="☠️" label="Deaths" value={stats.totalDeaths} color="text-gray-400" />
-        <StatCard icon="📊" label="K/D Ratio" value={stats.killDeathRatio.toFixed(2)} color="text-cyan-400" />
-        <StatCard icon="💥" label="Damage Dealt" value={stats.totalDamageDealt.toLocaleString()} color="text-orange-400" />
-        <StatCard icon="🩹" label="Damage Taken" value={stats.totalDamageTaken.toLocaleString()} color="text-red-400" />
-        <StatCard icon="📈" label="Damage Ratio" value={damageRatio.toFixed(2)} color="text-green-400" />
+        <StatCard icon="" label="Total Kills" value={stats.totalKills} color="text-red-400" />
+        <StatCard icon="" label="Deaths" value={stats.totalDeaths} color="text-gray-400" />
+        <StatCard icon="" label="K/D Ratio" value={stats.killDeathRatio.toFixed(2)} color="text-cyan-400" />
+        <StatCard icon="" label="Damage Dealt" value={stats.totalDamageDealt.toLocaleString()} color="text-orange-400" />
+        <StatCard icon="" label="Damage Taken" value={stats.totalDamageTaken.toLocaleString()} color="text-red-400" />
+        <StatCard icon="" label="Damage Ratio" value={damageRatio.toFixed(2)} color="text-green-400" />
       </div>
 
       {/* Accuracy Stats */}

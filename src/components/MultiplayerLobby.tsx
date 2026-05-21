@@ -316,7 +316,7 @@ const MultiplayerLobby = ({ onStartGame, onBack }: MultiplayerLobbyProps) => {
               <div className="absolute inset-0 bg-gradient-to-b from-white/10 to-transparent" />
               <div className="absolute inset-0 rounded-xl border-2 border-green-400/50 group-hover:border-green-300/70 transition-colors duration-300" />
               <div className="relative px-6 py-3 sm:py-4 flex items-center justify-center gap-2 sm:gap-3">
-                <span className="text-xl sm:text-2xl group-hover:scale-110 transition-transform duration-300">🎮</span>
+                <span className="text-xl sm:text-2xl group-hover:scale-110 transition-transform duration-300"></span>
                 <span className="text-base sm:text-xl font-black text-white">HOST GAME</span>
               </div>
             </button>
@@ -330,7 +330,7 @@ const MultiplayerLobby = ({ onStartGame, onBack }: MultiplayerLobbyProps) => {
               <div className="absolute inset-0 bg-gradient-to-b from-white/10 to-transparent" />
               <div className="absolute inset-0 rounded-xl border-2 border-blue-400/50 group-hover:border-blue-300/70 transition-colors duration-300" />
               <div className="relative px-6 py-3 sm:py-4 flex items-center justify-center gap-2 sm:gap-3">
-                <span className="text-xl sm:text-2xl group-hover:scale-110 transition-transform duration-300">🔗</span>
+                <span className="text-xl sm:text-2xl group-hover:scale-110 transition-transform duration-300"></span>
                 <span className="text-base sm:text-xl font-black text-white">JOIN GAME</span>
               </div>
             </button>
@@ -343,7 +343,7 @@ const MultiplayerLobby = ({ onStartGame, onBack }: MultiplayerLobbyProps) => {
               <div className="absolute inset-0 bg-black/40 backdrop-blur-sm group-hover:bg-black/50 transition-colors duration-300" />
               <div className="absolute inset-0 rounded-lg border border-gray-600/40 group-hover:border-gray-500/60 transition-colors duration-300" />
               <div className="relative px-6 py-2 sm:py-2.5 flex items-center justify-center gap-2">
-                <span className="text-lg group-hover:-translate-x-1 transition-transform duration-300">←</span>
+                <span className="text-lg group-hover:-translate-x-1 transition-transform duration-300"></span>
                 <span className="text-sm sm:text-base font-semibold text-gray-400 group-hover:text-gray-300 transition-colors duration-300">BACK</span>
               </div>
             </button>
@@ -354,7 +354,7 @@ const MultiplayerLobby = ({ onStartGame, onBack }: MultiplayerLobbyProps) => {
               className="text-red-400 text-xs sm:text-sm p-3 rounded-lg"
               style={{ background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)' }}
             >
-              ⚠️ {error}
+              {error}
             </div>
           )}
         </div>
@@ -384,11 +384,11 @@ const MultiplayerLobby = ({ onStartGame, onBack }: MultiplayerLobbyProps) => {
     return (
       <div className="fixed inset-0 flex items-center justify-center bg-gradient-to-br from-gray-900 via-green-900 to-black p-2 sm:p-4 overflow-y-auto">
         <div className="bg-black/70 rounded-xl backdrop-blur-md border-2 border-green-500/40 p-4 sm:p-8 max-w-2xl w-full space-y-4 sm:space-y-6 shadow-2xl my-auto">
-          <h2 className="text-2xl sm:text-4xl font-bold bg-gradient-to-r from-green-400 to-emerald-500 bg-clip-text text-transparent text-center">🎮 LOBBY</h2>
+          <h2 className="text-2xl sm:text-4xl font-bold bg-gradient-to-r from-green-400 to-emerald-500 bg-clip-text text-transparent text-center">LOBBY</h2>
 
           <div className="bg-gradient-to-br from-gray-800/70 to-gray-900/70 rounded-lg p-3 sm:p-4 space-y-2 border border-green-500/30">
             <div className="text-green-400 text-xs sm:text-sm font-semibold flex items-center gap-2">
-              <span>🔑</span> Lobby ID:
+              <span></span> Lobby ID:
             </div>
             <div className="flex gap-2">
               <input
@@ -401,14 +401,14 @@ const MultiplayerLobby = ({ onStartGame, onBack }: MultiplayerLobbyProps) => {
                 onClick={copyLobbyId}
                 className="px-3 sm:px-6 py-2 sm:py-3 bg-gradient-to-r from-green-500 to-emerald-600 text-white font-bold rounded-lg hover:from-green-600 hover:to-emerald-700 transition-all transform hover:scale-105 active:scale-95 text-sm sm:text-base flex-shrink-0"
               >
-                📋 <span className="hidden sm:inline">COPY</span>
+                <span className="hidden sm:inline">COPY</span>
               </button>
             </div>
           </div>
 
           <div className="space-y-3 sm:space-y-4">
             <h3 className="text-base sm:text-xl font-bold text-green-400 flex items-center gap-2">
-              ⚙️ Game Settings
+              Game Settings
             </h3>
 
             <div>
@@ -418,8 +418,8 @@ const MultiplayerLobby = ({ onStartGame, onBack }: MultiplayerLobbyProps) => {
                 onChange={(e) => setGameMode(e.target.value as 'coop' | 'survival')}
                 className="w-full px-3 sm:px-4 py-2 sm:py-3 bg-gray-800/80 text-white border-2 border-green-500/50 rounded-lg focus:outline-none focus:border-green-400 focus:ring-2 focus:ring-green-400/20 transition-all text-sm sm:text-base"
               >
-                <option value="coop">🤝 Co-op Survival (PvE)</option>
-                <option value="survival">⚔️ Last Man Standing (PvE)</option>
+                <option value="coop">Co-op Survival (PvE)</option>
+                <option value="survival">Last Man Standing (PvE)</option>
               </select>
             </div>
 
@@ -431,7 +431,7 @@ const MultiplayerLobby = ({ onStartGame, onBack }: MultiplayerLobbyProps) => {
                 onChange={(e) => setHasTimeLimit(e.target.checked)}
                 className="w-4 h-4 sm:w-5 sm:h-5 accent-green-500"
               />
-              <label htmlFor="timeLimit" className="text-green-400 font-semibold cursor-pointer text-sm sm:text-base">⏱️ Time Limit</label>
+              <label htmlFor="timeLimit" className="text-green-400 font-semibold cursor-pointer text-sm sm:text-base">Time Limit</label>
             </div>
 
             {hasTimeLimit && (
@@ -453,7 +453,7 @@ const MultiplayerLobby = ({ onStartGame, onBack }: MultiplayerLobbyProps) => {
 
             {/* Map Selection */}
             <div>
-              <label className="block text-green-400 text-xs sm:text-sm mb-2 font-semibold">🗺️ Map</label>
+              <label className="block text-green-400 text-xs sm:text-sm mb-2 font-semibold">Map</label>
               <div
                 className="bg-gray-800/80 border-2 border-green-500/50 rounded-lg p-2 sm:p-3 cursor-pointer hover:border-green-400 transition-all"
                 onClick={() => setShowMapSelector(!showMapSelector)}
@@ -493,7 +493,7 @@ const MultiplayerLobby = ({ onStartGame, onBack }: MultiplayerLobbyProps) => {
           <div className="bg-gradient-to-br from-gray-800/70 to-gray-900/70 rounded-lg p-3 sm:p-4 border border-green-500/30">
             <div className="flex items-center justify-between mb-2 sm:mb-3">
               <h3 className="text-base sm:text-xl font-bold text-green-400 flex items-center gap-2">
-                👥 Players ({connectedPlayers.length}/8)
+                Players ({connectedPlayers.length}/8)
               </h3>
               <div className="flex items-center gap-1 sm:gap-2 text-xs sm:text-sm">
                 <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
@@ -527,7 +527,7 @@ const MultiplayerLobby = ({ onStartGame, onBack }: MultiplayerLobbyProps) => {
                           <span className="text-white font-bold text-sm sm:text-base truncate">{player.name}</span>
                           {isPlayerHost && (
                             <span className="px-1.5 sm:px-2 py-0.5 bg-yellow-500/30 text-yellow-300 text-[10px] sm:text-xs font-bold rounded border border-yellow-500/50 flex items-center gap-1 flex-shrink-0">
-                              👑 <span className="hidden sm:inline">HOST</span>
+                              <span className="hidden sm:inline">HOST</span>
                             </span>
                           )}
                           {isLocalPlayer && !isPlayerHost && (
@@ -562,19 +562,19 @@ const MultiplayerLobby = ({ onStartGame, onBack }: MultiplayerLobbyProps) => {
               disabled={connectedPlayers.length < 2}
               className="flex-1 px-4 sm:px-8 py-3 sm:py-4 text-base sm:text-xl font-bold text-black bg-gradient-to-r from-green-400 to-green-600 rounded-lg hover:from-green-500 hover:to-green-700 transition-all transform hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none shadow-lg hover:shadow-green-500/50"
             >
-              🚀 <span className="hidden sm:inline">START </span>GAME
+              <span className="hidden sm:inline">START </span>GAME
             </button>
             <button
               onClick={handleBack}
               className="px-4 sm:px-8 py-3 sm:py-4 text-base sm:text-xl font-bold text-gray-400 bg-gray-800/50 rounded-lg border border-gray-600/50 hover:border-gray-500 hover:bg-gray-700/50 transition-all"
             >
-              ❌ <span className="hidden sm:inline">CANCEL</span>
+              <span className="hidden sm:inline">CANCEL</span>
             </button>
           </div>
 
           {connectedPlayers.length < 2 && (
             <div className="text-center text-yellow-400 text-xs sm:text-sm bg-yellow-900/20 border border-yellow-500/30 rounded-lg p-2 sm:p-3 animate-pulse">
-              ⏳ Need at least 2 players to start (Current: {connectedPlayers.length})
+              Need at least 2 players to start (Current: {connectedPlayers.length})
             </div>
           )}
         </div>
@@ -611,7 +611,7 @@ const MultiplayerLobby = ({ onStartGame, onBack }: MultiplayerLobbyProps) => {
                 filter: 'drop-shadow(0 0 20px rgba(6, 182, 212, 0.4))',
               }}
             >
-              🔗 JOIN GAME
+              JOIN GAME
             </h2>
           </div>
 
@@ -648,7 +648,7 @@ const MultiplayerLobby = ({ onStartGame, onBack }: MultiplayerLobbyProps) => {
                   </>
                 ) : (
                   <>
-                    <span className="text-xl sm:text-2xl">🚀</span>
+                    <span className="text-xl sm:text-2xl"></span>
                     <span className="text-base sm:text-xl font-black text-white">JOIN</span>
                   </>
                 )}
@@ -662,7 +662,7 @@ const MultiplayerLobby = ({ onStartGame, onBack }: MultiplayerLobbyProps) => {
               <div className="absolute inset-0 bg-black/40 backdrop-blur-sm group-hover:bg-black/50 transition-colors duration-300" />
               <div className="absolute inset-0 rounded-lg border border-gray-600/40 group-hover:border-gray-500/60 transition-colors duration-300" />
               <div className="relative px-6 py-2 sm:py-2.5 flex items-center justify-center gap-2">
-                <span className="text-lg group-hover:-translate-x-1 transition-transform duration-300">←</span>
+                <span className="text-lg group-hover:-translate-x-1 transition-transform duration-300"></span>
                 <span className="text-sm sm:text-base font-semibold text-gray-400 group-hover:text-gray-300 transition-colors duration-300">BACK</span>
               </div>
             </button>
@@ -673,7 +673,7 @@ const MultiplayerLobby = ({ onStartGame, onBack }: MultiplayerLobbyProps) => {
               className="text-red-400 text-xs sm:text-sm p-3 rounded-lg"
               style={{ background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)' }}
             >
-              ⚠️ {error}
+              {error}
             </div>
           )}
         </div>
@@ -686,12 +686,12 @@ const MultiplayerLobby = ({ onStartGame, onBack }: MultiplayerLobbyProps) => {
     return (
       <div className="fixed inset-0 flex items-center justify-center bg-gradient-to-br from-gray-900 via-green-900 to-black p-2 sm:p-4 overflow-y-auto">
         <div className="bg-black/70 rounded-xl backdrop-blur-md border-2 border-green-500/40 p-4 sm:p-8 max-w-2xl w-full space-y-4 sm:space-y-6 shadow-2xl my-auto">
-          <h2 className="text-2xl sm:text-4xl font-bold bg-gradient-to-r from-green-400 to-emerald-500 bg-clip-text text-transparent text-center">🎮 LOBBY</h2>
+          <h2 className="text-2xl sm:text-4xl font-bold bg-gradient-to-r from-green-400 to-emerald-500 bg-clip-text text-transparent text-center">LOBBY</h2>
 
           <div className="bg-gradient-to-br from-gray-800/70 to-gray-900/70 rounded-lg p-3 sm:p-4 border border-green-500/30">
             <div className="flex items-center justify-between mb-2 sm:mb-3">
               <h3 className="text-base sm:text-xl font-bold text-green-400 flex items-center gap-2">
-                👥 Players ({connectedPlayers.length}/8)
+                Players ({connectedPlayers.length}/8)
               </h3>
               <div className="flex items-center gap-1 sm:gap-2 text-xs sm:text-sm">
                 <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
@@ -725,7 +725,7 @@ const MultiplayerLobby = ({ onStartGame, onBack }: MultiplayerLobbyProps) => {
                           <span className="text-white font-bold text-sm sm:text-base truncate">{player.name}</span>
                           {isPlayerHost && (
                             <span className="px-1.5 sm:px-2 py-0.5 bg-yellow-500/30 text-yellow-300 text-[10px] sm:text-xs font-bold rounded border border-yellow-500/50 flex items-center gap-1 flex-shrink-0">
-                              👑 <span className="hidden sm:inline">HOST</span>
+                              <span className="hidden sm:inline">HOST</span>
                             </span>
                           )}
                           {isLocalPlayer && !isPlayerHost && (
@@ -747,7 +747,7 @@ const MultiplayerLobby = ({ onStartGame, onBack }: MultiplayerLobbyProps) => {
           </div>
 
           <div className="text-center space-y-2 sm:space-y-3 bg-gradient-to-r from-blue-900/30 to-purple-900/30 border-2 border-blue-500/40 rounded-lg p-4 sm:p-6">
-            <div className="text-2xl sm:text-3xl animate-bounce">⏳</div>
+            <div className="text-2xl sm:text-3xl animate-bounce"></div>
             <div className="text-blue-300 font-bold text-base sm:text-xl">Waiting for Host</div>
             <div className="text-gray-300 text-xs sm:text-sm">The game will start when the host is ready</div>
             <div className="flex items-center justify-center gap-2 mt-2">
@@ -761,7 +761,7 @@ const MultiplayerLobby = ({ onStartGame, onBack }: MultiplayerLobbyProps) => {
             onClick={handleBack}
             className="w-full px-6 sm:px-8 py-2 sm:py-3 text-base sm:text-lg font-bold text-gray-400 bg-gray-800/50 rounded-lg border border-gray-600/50 hover:border-gray-500 hover:bg-gray-700/50 transition-all transform hover:scale-105 active:scale-95"
           >
-            🚪 LEAVE LOBBY
+            LEAVE LOBBY
           </button>
         </div>
       </div>
