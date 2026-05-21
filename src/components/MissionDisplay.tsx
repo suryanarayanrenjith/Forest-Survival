@@ -9,8 +9,10 @@ interface MissionDisplayProps {
 export const MissionDisplay: React.FC<MissionDisplayProps> = ({ missions, onDismiss }) => {
   if (missions.length === 0) return null;
 
+  // Anchored to the left side, below the health panel — the top-right
+  // corner is reserved for the kill feed, which previously overlapped.
   return (
-    <div className="fixed top-20 right-4 z-40 space-y-2 max-w-md">
+    <div className="fixed top-44 left-3 sm:left-5 z-40 space-y-2 max-w-xs sm:max-w-sm">
       {missions.map((mission) => (
         <MissionCard key={mission.id} mission={mission} onDismiss={onDismiss} />
       ))}

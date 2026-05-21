@@ -535,6 +535,10 @@ class SmartEnemyManager {
     }
     if (pooledEnemy.parts.body) {
       pooledEnemy.parts.body.scale.set(1, 1, 1);
+      pooledEnemy.parts.body.rotation.set(0, 0, 0);
+    }
+    if (pooledEnemy.parts.head) {
+      pooledEnemy.parts.head.rotation.set(0, 0, 0);
     }
 
     // NOTE: We do NOT reset materials because they are SHARED across all enemies.
@@ -573,8 +577,16 @@ class SmartEnemyManager {
       newLOD = LODLevel.HIGH;
     }
 
-    // Check frustum culling
-    if (newLOD !== LODLevel.CULLED && !this.isInFrustum(pooledEnemy.group.position)) {
+    // Check frustum culling — but never cull close enemies. A single-point
+    // frustum test makes enemies pop in/out at screen edges, and an enemy
+    // attacking the player from the side/behind would vanish entirely.
+    // Keeping nearby enemies always rendered avoids that flicker; distant
+    // enemies are still culled for performance.
+    if (
+      newLOD !== LODLevel.CULLED &&
+      distance > LOD_DISTANCES.HIGH_TO_MEDIUM &&
+      !this.isInFrustum(pooledEnemy.group.position)
+    ) {
       newLOD = LODLevel.CULLED;
     }
 

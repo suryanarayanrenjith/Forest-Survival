@@ -75,7 +75,7 @@ const KillFeed = ({ visible }: KillFeedProps) => {
   };
 
   return (
-    <div className="fixed top-20 right-4 z-40 space-y-2 pointer-events-none">
+    <div className="fixed top-36 right-4 z-40 space-y-2 pointer-events-none">
       {entries.map((entry, index) => (
         <div
           key={entry.id}

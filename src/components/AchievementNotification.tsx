@@ -60,7 +60,8 @@ const AchievementNotification = ({ achievement, index, onClose }: AchievementNot
   const colors = getRarityColor(achievement.rarity);
 
   // Calculate vertical position based on index (stack achievements)
-  const topPosition = 80 + (index * 160); // 80px base + 160px per achievement
+  // Base offset clears the top-right score panel so they never overlap it.
+  const topPosition = 150 + (index * 160); // 150px base + 160px per achievement
 
   return (
     <div
@@ -115,146 +116,6 @@ const AchievementNotification = ({ achievement, index, onClose }: AchievementNot
             className={`h-full ${colors.bg} animate-progress-fill`}
             style={{ width: '100%' }}
           />
-        </div>
-      </div>
-    </div>
-  );
-};
-
-// Achievement Menu
-interface AchievementMenuProps {
-  achievements: Achievement[];
-  isOpen: boolean;
-  onClose: () => void;
-}
-
-export const AchievementMenu = ({ achievements, isOpen, onClose }: AchievementMenuProps) => {
-  if (!isOpen) return null;
-
-  const unlocked = achievements.filter(a => a.unlocked).length;
-  const total = achievements.length;
-  const percent = (unlocked / total) * 100;
-
-  const getRarityColor = (rarity: string) => {
-    switch (rarity) {
-      case 'legendary':
-        return 'border-yellow-500 bg-yellow-900/20';
-      case 'epic':
-        return 'border-purple-500 bg-purple-900/20';
-      case 'rare':
-        return 'border-blue-500 bg-blue-900/20';
-      default:
-        return 'border-gray-500 bg-gray-900/20';
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black/80 flex items-center justify-center" style={{ zIndex: 200 }}>
-      <div className="bg-gray-900 rounded-lg max-w-4xl w-full max-h-[80vh] overflow-hidden border-2 border-green-500/50 m-4">
-        {/* Header */}
-        <div className="bg-gradient-to-r from-gray-800 to-gray-700 px-6 py-4 border-b border-gray-600/50 flex items-center justify-between">
-          <div>
-            <h2 className="text-3xl font-bold text-green-400">🏆 ACHIEVEMENTS</h2>
-            <div className="text-gray-400 text-sm mt-1">
-              {unlocked} / {total} Unlocked ({percent.toFixed(1)}%)
-            </div>
-          </div>
-          <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-white transition-colors text-2xl"
-          >
-            ✕
-          </button>
-        </div>
-
-        {/* Progress Bar */}
-        <div className="px-6 py-3 bg-gray-800/50">
-          <div className="h-4 bg-gray-700 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-gradient-to-r from-green-500 to-green-400 transition-all duration-500"
-              style={{ width: `${percent}%` }}
-            />
-          </div>
-        </div>
-
-        {/* Achievement Grid */}
-        <div className="p-6 overflow-y-auto max-h-[calc(80vh-180px)] grid grid-cols-1 md:grid-cols-2 gap-4">
-          {achievements.map((achievement) => (
-            <div
-              key={achievement.id}
-              className={`border-2 rounded-lg p-4 ${
-                achievement.unlocked
-                  ? getRarityColor(achievement.rarity)
-                  : 'border-gray-700 bg-gray-900/40 opacity-60'
-              }`}
-            >
-              <div className="flex items-start gap-3">
-                {/* Icon */}
-                <div
-                  className={`text-4xl ${achievement.unlocked ? '' : 'grayscale opacity-50'}`}
-                >
-                  {achievement.icon}
-                </div>
-
-                {/* Info */}
-                <div className="flex-1">
-                  <div className="flex items-start justify-between mb-1">
-                    <div>
-                      <h3 className="text-white font-bold">{achievement.name}</h3>
-                      <p className="text-gray-400 text-sm">{achievement.description}</p>
-                    </div>
-                    {achievement.unlocked && (
-                      <div className="text-green-400 text-xl">✓</div>
-                    )}
-                  </div>
-
-                  {/* Progress */}
-                  {!achievement.unlocked && (
-                    <div className="mt-2">
-                      <div className="flex justify-between text-xs text-gray-400 mb-1">
-                        <span>Progress</span>
-                        <span>
-                          {achievement.progress} / {achievement.target}
-                        </span>
-                      </div>
-                      <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-green-500 transition-all"
-                          style={{
-                            width: `${(achievement.progress / achievement.target) * 100}%`
-                          }}
-                        />
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Reward */}
-                  {achievement.reward && achievement.unlocked && (
-                    <div className="mt-2 text-yellow-400 text-xs">
-                      🎁 {achievement.reward}
-                    </div>
-                  )}
-
-                  {/* Rarity Badge */}
-                  <div className="mt-2">
-                    <span
-                      className={`text-xs font-bold uppercase px-2 py-1 rounded ${
-                        achievement.rarity === 'legendary'
-                          ? 'bg-yellow-900/50 text-yellow-400'
-                          : achievement.rarity === 'epic'
-                          ? 'bg-purple-900/50 text-purple-400'
-                          : achievement.rarity === 'rare'
-                          ? 'bg-blue-900/50 text-blue-400'
-                          : 'bg-gray-800/50 text-gray-400'
-                      }`}
-                    >
-                      {achievement.rarity}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          ))}
         </div>
       </div>
     </div>

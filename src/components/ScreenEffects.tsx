@@ -118,8 +118,9 @@ const ScreenEffects = ({ health, maxHealth = 100, isVisible }: ScreenEffectsProp
       {/* Screen Shake Container */}
       {screenShake && (
         <div
-          className="fixed inset-0 pointer-events-none z-35"
+          className="fixed inset-0 pointer-events-none"
           style={{
+            zIndex: 35,
             animation: 'screenShake 0.5s ease-out'
           }}
         />
@@ -140,14 +141,15 @@ const ScreenEffects = ({ health, maxHealth = 100, isVisible }: ScreenEffectsProp
       {headshotFlash && (
         <>
           <div
-            className="fixed inset-0 pointer-events-none z-41"
+            className="fixed inset-0 pointer-events-none"
             style={{
+              zIndex: 41,
               background: 'radial-gradient(circle at center, rgba(255, 255, 255, 0.15) 0%, rgba(250, 204, 21, 0.2) 50%, transparent 80%)',
               animation: 'headshotFlash 0.4s ease-out forwards'
             }}
           />
-          <div className="fixed top-4 left-1/2 transform -translate-x-1/2 pointer-events-none z-42"
-            style={{ animation: 'headshotText 0.4s ease-out forwards' }}
+          <div className="fixed top-4 left-1/2 transform -translate-x-1/2 pointer-events-none"
+            style={{ zIndex: 42, animation: 'headshotText 0.4s ease-out forwards' }}
           >
             <div className="bg-yellow-500/90 rounded-full px-4 py-1 backdrop-blur-sm">
               <span className="text-black font-black text-sm tracking-wider">HEADSHOT</span>
@@ -160,29 +162,33 @@ const ScreenEffects = ({ health, maxHealth = 100, isVisible }: ScreenEffectsProp
       {health < 50 && (
         <>
           <div
-            className="fixed top-0 left-0 w-32 h-32 pointer-events-none z-29"
+            className="fixed top-0 left-0 w-32 h-32 pointer-events-none"
             style={{
+              zIndex: 29,
               background: `radial-gradient(circle at top left, rgba(139, 0, 0, ${(50 - health) / 50 * 0.3}), transparent)`,
               opacity: 0.6
             }}
           />
           <div
-            className="fixed top-0 right-0 w-32 h-32 pointer-events-none z-29"
+            className="fixed top-0 right-0 w-32 h-32 pointer-events-none"
             style={{
+              zIndex: 29,
               background: `radial-gradient(circle at top right, rgba(139, 0, 0, ${(50 - health) / 50 * 0.3}), transparent)`,
               opacity: 0.6
             }}
           />
           <div
-            className="fixed bottom-0 left-0 w-32 h-32 pointer-events-none z-29"
+            className="fixed bottom-0 left-0 w-32 h-32 pointer-events-none"
             style={{
+              zIndex: 29,
               background: `radial-gradient(circle at bottom left, rgba(139, 0, 0, ${(50 - health) / 50 * 0.3}), transparent)`,
               opacity: 0.6
             }}
           />
           <div
-            className="fixed bottom-0 right-0 w-32 h-32 pointer-events-none z-29"
+            className="fixed bottom-0 right-0 w-32 h-32 pointer-events-none"
             style={{
+              zIndex: 29,
               background: `radial-gradient(circle at bottom right, rgba(139, 0, 0, ${(50 - health) / 50 * 0.3}), transparent)`,
               opacity: 0.6
             }}

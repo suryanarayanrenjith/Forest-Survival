@@ -177,7 +177,7 @@ export const CoachTip: React.FC<CoachTipProps> = ({
   };
 
   return (
-    <div className={`fixed bottom-32 left-1/2 -translate-x-1/2 z-40 animate-slide-up`}>
+    <div className={`fixed bottom-48 left-1/2 -translate-x-1/2 z-40 animate-slide-up`}>
       <div className={`${priorityStyles[priority]} border-2 rounded-lg p-4 shadow-2xl backdrop-blur-sm max-w-md`}>
         <div className="flex items-start gap-3">
           <div className="text-3xl">{icon}</div>

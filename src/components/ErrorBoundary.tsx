@@ -1,4 +1,4 @@
-import React, { Component, type ErrorInfo, type ReactNode } from 'react';
+import { Component, type ErrorInfo, type ReactNode } from 'react';
 
 interface Props {
   children: ReactNode;
@@ -142,22 +142,4 @@ export class ErrorBoundary extends Component<Props, State> {
 
     return this.props.children;
   }
-}
-
-/**
- * Higher-order component to wrap components with error boundary
- */
-export function withErrorBoundary<P extends object>(
-  WrappedComponent: React.ComponentType<P>,
-  fallbackUI?: ReactNode
-): React.FC<P> {
-  const ComponentWithErrorBoundary: React.FC<P> = (props) => (
-    <ErrorBoundary fallbackUI={fallbackUI}>
-      <WrappedComponent {...props} />
-    </ErrorBoundary>
-  );
-
-  ComponentWithErrorBoundary.displayName = `withErrorBoundary(${WrappedComponent.displayName || WrappedComponent.name || 'Component'})`;
-
-  return ComponentWithErrorBoundary;
 }

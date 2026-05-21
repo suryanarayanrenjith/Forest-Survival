@@ -5,7 +5,6 @@
  * atmosphere, and terrain generation profile.
  */
 
-import * as THREE from 'three';
 import type { BiomeType } from './BiomeSystem';
 
 export type MapType =
@@ -264,29 +263,9 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
   },
 };
 
-// Get all available maps for UI display
-export function getAvailableMaps(): MapConfig[] {
-  return Object.values(MAP_CONFIGS);
-}
-
 // Get a specific map config
 export function getMapConfig(mapType: MapType): MapConfig {
   return MAP_CONFIGS[mapType];
-}
-
-// Apply map configuration to scene
-export function applyMapToScene(
-  scene: THREE.Scene,
-  mapConfig: MapConfig,
-  ground?: THREE.Mesh
-): void {
-  scene.background = new THREE.Color(mapConfig.skyColor);
-  scene.fog = new THREE.Fog(mapConfig.fogColor, mapConfig.fogNear, mapConfig.fogFar);
-
-  if (ground && ground.material instanceof THREE.MeshStandardMaterial) {
-    ground.material.color.setHex(mapConfig.groundColor);
-    ground.material.emissive.setHex(mapConfig.groundEmissive);
-  }
 }
 
 // Get random map for random mode — uses crypto for uniform distribution

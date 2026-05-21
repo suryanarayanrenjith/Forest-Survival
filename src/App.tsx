@@ -1170,6 +1170,8 @@ const ForestSurvivalGame = () => {
     let score = 0;
     let enemiesKilled = 0;
     let wave = 1;
+    let waveTransitioning = false; // Guards wave-complete logic during the inter-wave delay
+    let waveTimeoutId: number | null = null; // Tracked so it can be cancelled on unmount
     let isGameOver = false;
     let paused = false;
     let combo = 0;
@@ -2057,12 +2059,15 @@ const ForestSurvivalGame = () => {
       atmosphericSettings = dayCycleSystem.update(delta);
 
       // Apply updated atmospheric settings to scene (optimized - update existing fog instead of recreating)
+      // Special-weather maps keep their distinctive fog/sky every frame —
+      // otherwise the day-cycle would overwrite the map's atmosphere after the
+      // first frame, making every map look the same.
       if (scene.fog instanceof THREE.FogExp2) {
-        scene.fog.color.setHex(atmosphericSettings.fogColor);
-        scene.fog.density = atmosphericSettings.fogDensity;
+        scene.fog.color.setHex(mapConfig.hasSpecialWeather ? mapConfig.fogColor : atmosphericSettings.fogColor);
+        scene.fog.density = mapConfig.hasSpecialWeather ? blendedFogDensity : atmosphericSettings.fogDensity;
       }
       if (scene.background instanceof THREE.Color) {
-        scene.background.setHex(atmosphericSettings.skyColor);
+        scene.background.setHex(mapConfig.hasSpecialWeather ? mapConfig.skyColor : atmosphericSettings.skyColor);
       }
 
       // Update main light — position follows player so shadow frustum stays on-screen
@@ -2666,15 +2671,20 @@ const ForestSurvivalGame = () => {
             let damage = bullet.damage;
             let isCritical = false;
 
-            // Check if bullet hit the head (upper part of enemy) - reuse temp vector
+            // Check if bullet hit the head - reuse temp vector.
+            // The head mesh sits at local y≈1.9 and the whole enemy group is
+            // scaled by its type scale, so the head's true world height is
+            // position.y + 1.9 * scale. Using a flat +1.0 made the crit zone
+            // land on the chest and miss the visible head entirely.
+            const hsScale = enemy.type === 'fast' ? 0.7 : enemy.type === 'tank' ? 1.5 : enemy.type === 'boss' ? 2.0 : 1.0;
             _tempVec3.set(
               enemy.mesh.position.x,
-              enemy.mesh.position.y + 1.0, // Head is 1 unit above body center
+              enemy.mesh.position.y + 1.9 * hsScale,
               enemy.mesh.position.z
             );
             const distanceToHead = bullet.mesh.position.distanceTo(_tempVec3);
 
-            if (distanceToHead < 0.8) {
+            if (distanceToHead < 0.8 * hsScale) {
               // HEADSHOT! 2x damage
               damage *= 2;
               isCritical = true;
@@ -2849,16 +2859,23 @@ const ForestSurvivalGame = () => {
               updateGameState();
 
               // Check for wave complete - endless mode
-              if (enemies.length === 0) {
+              // Count only LIVING enemies: freshly-killed enemies remain in the
+              // array briefly while their death animation plays, so a plain
+              // `enemies.length === 0` check would never become true.
+              const livingEnemies = enemies.reduce((n, e) => n + (e.dead ? 0 : 1), 0);
+              if (livingEnemies === 0 && !waveTransitioning) {
+                waveTransitioning = true;
                 wave++;
                 combo = 0;
                 killStreak = 0;
                 setShowWaveComplete(true);
                 soundManager.play('waveComplete', 1.0);
                 if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry(`Wave ${wave - 1} Complete!`, 'wave');
-                setTimeout(() => {
+                waveTimeoutId = window.setTimeout(() => {
+                  waveTimeoutId = null;
                   setShowWaveComplete(false);
                   spawnWave();
+                  waveTransitioning = false;
                 }, 3000);
                 updateGameState();
               }
@@ -3440,6 +3457,11 @@ const ForestSurvivalGame = () => {
         clearInterval(autoFireInterval);
       }
 
+      if (waveTimeoutId !== null) {
+        clearTimeout(waveTimeoutId);
+        waveTimeoutId = null;
+      }
+
       if (mountNode && renderer.domElement) {
         mountNode.removeChild(renderer.domElement);
       }
@@ -3682,6 +3704,7 @@ const ForestSurvivalGame = () => {
           t={t}
           unlockedWeapons={gameState.unlockedWeapons}
           currentWeapon={gameState.currentWeapon}
+          hideStatsPanel={gameMode === 'multiplayer'}
         />
       </div>
 
@@ -3952,7 +3975,7 @@ const ForestSurvivalGame = () => {
               }
             }
           }}
-          onClose={() => setShowSkillTree(false)}
+          onClose={() => { setShowSkillTree(false); setIsPaused(true); }}
         />
       )}
 

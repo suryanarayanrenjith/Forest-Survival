@@ -13,9 +13,12 @@ interface HUDProps {
   t: (key: string) => string;
   unlockedWeapons: string[];
   currentWeapon: string;
+  /** Hide the top-right score/stats panel — used in multiplayer where the
+   *  MultiplayerHUD occupies that corner and would otherwise overlap. */
+  hideStatsPanel?: boolean;
 }
 
-const HUD = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, weaponName, combo, unlockedWeapons, currentWeapon }: HUDProps) => {
+const HUD = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, weaponName, combo, unlockedWeapons, currentWeapon, hideStatsPanel = false }: HUDProps) => {
   const [damageFlash, setDamageFlash] = useState(false);
   const [prevHealth, setPrevHealth] = useState(health);
   const [scorePopup, setScorePopup] = useState(false);
@@ -147,6 +150,7 @@ const HUD = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, weaponName, co
       </div>
 
       {/* Top Right - Score & Stats */}
+      {!hideStatsPanel && (
       <div className="absolute top-3 sm:top-5 right-3 sm:right-5 select-none">
         <div
           className="relative rounded-xl sm:rounded-2xl overflow-hidden text-right"
@@ -182,6 +186,7 @@ const HUD = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, weaponName, co
           </div>
         </div>
       </div>
+      )}
 
       {/* Combo - Center Top */}
       {combo > 1 && (

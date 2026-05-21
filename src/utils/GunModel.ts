@@ -29,7 +29,27 @@ export class GunModel {
   }
 
   private createGunModel(type: 'pistol' | 'rifle' | 'shotgun' | 'smg' | 'sniper' | 'minigun' | 'launcher') {
+    // Dispose the previous weapon's GPU resources before clearing. Without
+    // this, every weapon switch leaks geometries and materials, which builds
+    // up over a session and degrades performance.
+    this.group.traverse((obj) => {
+      if (obj instanceof THREE.Mesh) {
+        obj.geometry?.dispose();
+        const mat = obj.material;
+        if (Array.isArray(mat)) {
+          mat.forEach((m) => m?.dispose());
+        } else {
+          mat?.dispose();
+        }
+      }
+    });
     this.group.clear();
+
+    // Reset tracked part references — they belong to the old (now-disposed) model
+    this.magazine = null;
+    this.slide = null;
+    this.bolt = null;
+    this.ejectedMag = null;
 
     switch(type) {
       case 'pistol':
