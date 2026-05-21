@@ -4,8 +4,8 @@ const MobileWarning = () => {
   return (
     <div className="fixed inset-0 z-[9999] flex items-center justify-center p-6 bg-[#05080a]">
       <div className="max-w-md w-full text-center">
-        <div className="inline-flex items-center justify-center w-20 h-20 rounded-2xl border border-sky-500/30 bg-sky-500/10 mb-6">
-          <Monitor className="w-10 h-10 text-sky-400" strokeWidth={1.75} />
+        <div className="inline-flex items-center justify-center w-20 h-20 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 mb-6">
+          <Monitor className="w-10 h-10 text-emerald-400" strokeWidth={1.75} />
         </div>
 
         <h1 className="text-3xl font-bold text-white mb-3">Desktop Required</h1>

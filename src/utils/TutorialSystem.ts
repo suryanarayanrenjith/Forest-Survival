@@ -197,9 +197,9 @@ export class TutorialSystem {
       title: 'Switch Weapons',
       description: 'Use different weapons for different situations',
       instructions: [
-        'Press Q to switch between weapons',
+        'Scroll the mouse wheel — or press number keys 1-7 — to switch weapons',
         'Each weapon has unique stats and behavior',
-        'Switch weapons to continue'
+        'In Tutorial mode every weapon is already unlocked for you'
       ],
       icon: '⚔️',
       required: false,
@@ -216,10 +216,10 @@ export class TutorialSystem {
       title: 'Special Abilities',
       description: 'Unlock your potential',
       instructions: [
-        'You have special abilities mapped to number keys 1-6',
-        'Each ability has a unique effect and cooldown',
+        'Special abilities are mapped to the E, F, V and B keys',
+        'Each ability has a unique effect and a cooldown',
         'Abilities can turn the tide of battle',
-        'Let\'s try your first ability...'
+        'Let\'s try a quick movement ability next...'
       ],
       icon: '✨',
       required: true,
@@ -236,10 +236,10 @@ export class TutorialSystem {
       title: 'Dash Ability',
       description: 'Quick movement burst',
       instructions: [
-        'Press 1 to use Dash',
+        'Press Q to Dash',
         'Dash gives you a quick burst of speed',
         'Great for dodging attacks or closing distance',
-        'Use Dash to continue'
+        'Try it out once the tutorial finishes'
       ],
       icon: '⚡',
       required: true,

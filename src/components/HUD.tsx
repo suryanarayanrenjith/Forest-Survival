@@ -17,9 +17,11 @@ interface HUDProps {
   /** Hide the top-right score/stats panel — used in multiplayer where the
    *  MultiplayerHUD occupies that corner and would otherwise overlap. */
   hideStatsPanel?: boolean;
+  /** Tutorial mode — the player can't be hurt, so health shows as unlimited. */
+  unlimitedHealth?: boolean;
 }
 
-const HUD = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, weaponName, combo, unlockedWeapons, currentWeapon, hideStatsPanel = false }: HUDProps) => {
+const HUD = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, weaponName, combo, unlockedWeapons, currentWeapon, hideStatsPanel = false, unlimitedHealth = false }: HUDProps) => {
   const [scorePopup, setScorePopup] = useState(false);
   const [prevScore, setPrevScore] = useState(score);
 
@@ -32,9 +34,9 @@ const HUD = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, weaponName, co
     setPrevScore(score);
   }, [score, prevScore]);
 
-  const healthPct = Math.max(0, Math.min(100, health));
-  const healthColor = health > 60 ? '#34d399' : health > 30 ? '#fbbf24' : '#f87171';
-  const isLowHealth = health <= 30;
+  const healthPct = unlimitedHealth ? 100 : Math.max(0, Math.min(100, health));
+  const healthColor = unlimitedHealth ? '#34d399' : health > 60 ? '#34d399' : health > 30 ? '#fbbf24' : '#f87171';
+  const isLowHealth = !unlimitedHealth && health <= 30;
   const isLowAmmo = ammo <= Math.ceil(maxAmmo * 0.2);
 
   const weaponKeys = Object.keys(WEAPONS);
@@ -51,7 +53,7 @@ const HUD = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, weaponName, co
               <span className="text-[10px] font-semibold tracking-[0.15em] text-gray-400 uppercase">Health</span>
             </div>
             <span className="text-xl font-bold tabular-nums" style={{ color: healthColor }}>
-              {Math.max(0, Math.floor(health))}
+              {unlimitedHealth ? '∞' : Math.max(0, Math.floor(health))}
             </span>
           </div>
           <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">

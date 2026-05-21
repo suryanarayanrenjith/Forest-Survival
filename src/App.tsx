@@ -350,11 +350,16 @@ const ForestSurvivalGame = () => {
 
     // Determine configuration based on difficulty and mode
     const timeOfDay: 'day' | 'night' | 'dawn' | 'dusk' | 'bloodmoon' = classicTimeOfDay as any;
+    // speedMult is the dominant control over how fast enemies close in.
+    //   easy     — enemies amble in; the player can always out-walk them.
+    //   medium   — enemies roughly match a walking player; sprint to escape.
+    //   hard     — enemies keep pace with a sprinting player; relentless.
+    //   adaptive — starts gentle, the AI difficulty system ramps it up.
     const classicSettings = {
-      easy: { healthMult: 1.5, speedMult: 1.3, damageMult: 1.5, spawnMult: 1.3, regenRate: 0 },
-      medium: { healthMult: 2.5, speedMult: 1.8, damageMult: 2.2, spawnMult: 1.8, regenRate: 0.2 },
-      hard: { healthMult: 4.0, speedMult: 2.5, damageMult: 3.5, spawnMult: 2.5, regenRate: 0.5 },
-      adaptive: { healthMult: 2.0, speedMult: 1.5, damageMult: 2.0, spawnMult: 1.5, regenRate: 0.1 } // Starts balanced, AI adjusts
+      easy: { healthMult: 1.5, speedMult: 0.85, damageMult: 1.5, spawnMult: 1.3, regenRate: 0 },
+      medium: { healthMult: 2.5, speedMult: 1.55, damageMult: 2.2, spawnMult: 1.8, regenRate: 0.2 },
+      hard: { healthMult: 4.0, speedMult: 2.35, damageMult: 3.5, spawnMult: 2.5, regenRate: 0.5 },
+      adaptive: { healthMult: 2.0, speedMult: 1.15, damageMult: 2.0, spawnMult: 1.5, regenRate: 0.1 } // Starts balanced, AI adjusts
     };
     const diffSettings = { ...classicSettings[classicDifficulty], progressive: classicDifficulty === 'adaptive', rampRate: classicDifficulty === 'adaptive' ? 0.05 : 0 };
 
@@ -499,7 +504,8 @@ const ForestSurvivalGame = () => {
     renderer.setSize(renderWidth, renderHeight, false);
     renderer.setPixelRatio(1); // Fixed at 1, we handle scaling via renderWidth/Height
     renderer.shadowMap.enabled = graphicsPreset.shadowsEnabled;
-    renderer.shadowMap.type = graphicsQuality === 'high' ? THREE.PCFSoftShadowMap : THREE.BasicShadowMap;
+    // Soft (PCF) shadows on medium+ for realistic penumbra; basic only on low.
+    renderer.shadowMap.type = graphicsQuality === 'low' ? THREE.BasicShadowMap : THREE.PCFSoftShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping; // Cinematic tone mapping
     renderer.toneMappingExposure = timeOfDay === 'day' ? 1.15 : 1.5;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -722,19 +728,22 @@ const ForestSurvivalGame = () => {
     );
     mainLight.castShadow = graphicsPreset.shadowsEnabled;
 
-    // Shadow settings based on graphics quality
+    // Shadow settings based on graphics quality.
+    // A tighter frustum concentrates the shadow map's resolution near the
+    // player, giving noticeably crisper, more grounded contact shadows.
     mainLight.shadow.camera.near = 1;
     mainLight.shadow.camera.far = graphicsPreset.viewDistance * 2;
-    const shadowRange = graphicsQuality === 'high' ? 150 : graphicsQuality === 'medium' ? 100 : 50;
+    const shadowRange = graphicsQuality === 'high' ? 100 : graphicsQuality === 'medium' ? 72 : 48;
     mainLight.shadow.camera.left = -shadowRange;
     mainLight.shadow.camera.right = shadowRange;
     mainLight.shadow.camera.top = shadowRange;
     mainLight.shadow.camera.bottom = -shadowRange;
     mainLight.shadow.mapSize.width = graphicsPreset.shadowMapSize;
     mainLight.shadow.mapSize.height = graphicsPreset.shadowMapSize;
-    mainLight.shadow.bias = -0.00005;
-    mainLight.shadow.normalBias = 0.02;
-    mainLight.shadow.radius = graphicsQuality === 'high' ? 1.5 : 1.0; // Soft shadows only on high
+    mainLight.shadow.bias = -0.00018;
+    mainLight.shadow.normalBias = 0.035; // Reduces shadow acne / peter-panning
+    mainLight.shadow.radius = graphicsQuality === 'high' ? 2.5 : graphicsQuality === 'medium' ? 1.6 : 1.0;
+    mainLight.shadow.camera.updateProjectionMatrix();
     scene.add(mainLight);
     // Target follows player so directional shadows stay centered on the camera
     scene.add(mainLight.target);
@@ -907,6 +916,32 @@ const ForestSurvivalGame = () => {
 
     // Old terrain generation functions removed - now using BiomeSystem
 
+    // Returns true if a collidable object of the given radius placed at (x,z)
+    // would overlap an existing collidable terrain object. Used to keep rocks,
+    // trees and boulders from clipping into one another when scattered.
+    const overlapsTerrain = (x: number, z: number, radius: number): boolean => {
+      for (const obj of terrainObjects) {
+        if (!obj.collidable) continue;
+        const dx = obj.x - x;
+        const dz = obj.z - z;
+        const minDist = obj.radius + radius;
+        if (dx * dx + dz * dz < minDist * minDist) return true;
+      }
+      return false;
+    };
+
+    // Picks a chunk-local position that doesn't overlap existing terrain.
+    // Falls back to the last candidate if no clear spot is found in a few tries.
+    const findFreeSpot = (startX: number, startZ: number, estRadius: number) => {
+      let x = 0, z = 0;
+      for (let attempt = 0; attempt < 8; attempt++) {
+        x = startX + Math.random() * CHUNK_SIZE;
+        z = startZ + Math.random() * CHUNK_SIZE;
+        if (!overlapsTerrain(x, z, estRadius)) return { x, z, ok: true };
+      }
+      return { x, z, ok: false };
+    };
+
     const generateChunk = (chunkX: number, chunkZ: number) => {
       const chunkKey = `${chunkX},${chunkZ}`;
       if (loadedChunks.has(chunkKey)) return;
@@ -930,9 +965,9 @@ const ForestSurvivalGame = () => {
       // Generate trees based on biome density * map multiplier
       const treesInChunk = Math.floor(CHUNK_SIZE * CHUNK_SIZE * biomeConfig.treeDensity * treeDensityMult / 100);
       for (let i = 0; i < treesInChunk; i++) {
-        const x = startX + Math.random() * CHUNK_SIZE;
-        const z = startZ + Math.random() * CHUNK_SIZE;
-        const tree = biomeSystem.createTree(x, z, biome);
+        const spot = findFreeSpot(startX, startZ, 2.6);
+        if (!spot.ok) continue; // Skip if no clear space — avoids overlapping trees
+        const tree = biomeSystem.createTree(spot.x, spot.z, biome);
         terrainObjects.push(tree);
         scene.add(tree.mesh);
       }
@@ -940,20 +975,21 @@ const ForestSurvivalGame = () => {
       // Generate rocks based on biome density * map multiplier
       const rocksInChunk = Math.floor(CHUNK_SIZE * CHUNK_SIZE * biomeConfig.rockDensity * rockDensityMult / 100);
       for (let i = 0; i < rocksInChunk; i++) {
-        const x = startX + Math.random() * CHUNK_SIZE;
-        const z = startZ + Math.random() * CHUNK_SIZE;
-        const rock = biomeSystem.createRock(x, z, biome);
+        const spot = findFreeSpot(startX, startZ, 2.2);
+        if (!spot.ok) continue; // Skip if no clear space — avoids overlapping rocks
+        const rock = biomeSystem.createRock(spot.x, spot.z, biome);
         terrainObjects.push(rock);
         scene.add(rock.mesh);
       }
 
       // Generate occasional boulders (more common in rocky maps)
       if (Math.random() > (0.7 / rockDensityMult)) {
-        const x = startX + Math.random() * CHUNK_SIZE;
-        const z = startZ + Math.random() * CHUNK_SIZE;
-        const boulder = biomeSystem.createBoulder(x, z, biome);
-        terrainObjects.push(boulder);
-        scene.add(boulder.mesh);
+        const spot = findFreeSpot(startX, startZ, 4);
+        if (spot.ok) {
+          const boulder = biomeSystem.createBoulder(spot.x, spot.z, biome);
+          terrainObjects.push(boulder);
+          scene.add(boulder.mesh);
+        }
       }
 
       // Generate bushes based on biome density * map multiplier
@@ -1009,12 +1045,19 @@ const ForestSurvivalGame = () => {
       }
     };
 
-    // Collision detection helper
-    const checkTerrainCollision = (newX: number, newZ: number, playerY = 0): boolean => {
+    // Collision detection helper.
+    // `playerY` is the camera (eye) Y. We convert it to the player's FEET
+    // height so that "jump over" only triggers when the player is genuinely
+    // airborne above the obstacle — not simply because the camera sits above
+    // a short rock while standing on the ground. Enemy callers pass the
+    // default (0), which yields a negative feet height so enemies always
+    // collide with terrain.
+    const checkTerrainCollision = (newX: number, newZ: number, playerY?: number): boolean => {
+      const feetY = playerY === undefined ? -1 : playerY - currentCameraHeight;
       for (const obj of terrainObjects) {
         if (!obj.collidable) continue;
-        // If the player is above the object's height, skip collision (jump over)
-        if (obj.height !== undefined && playerY > obj.height) continue;
+        // If the player's feet clear the object's top, skip collision (jump over)
+        if (obj.height !== undefined && feetY > obj.height) continue;
         const dx = newX - obj.x;
         const dz = newZ - obj.z;
         const distance = Math.sqrt(dx * dx + dz * dz);
@@ -1023,6 +1066,27 @@ const ForestSurvivalGame = () => {
         }
       }
       return false;
+    };
+
+    // Push the player out of any collidable obstacle they are overlapping at
+    // their current feet height. This recovers from edge cases the move-time
+    // collision check can't prevent — e.g. landing on top of a rock after
+    // jumping over it, then descending into its volume.
+    const resolveTerrainPenetration = () => {
+      const feetY = camera.position.y - currentCameraHeight;
+      for (const obj of terrainObjects) {
+        if (!obj.collidable) continue;
+        if (obj.height !== undefined && feetY > obj.height) continue;
+        const dx = camera.position.x - obj.x;
+        const dz = camera.position.z - obj.z;
+        const distSq = dx * dx + dz * dz;
+        if (distSq < obj.radius * obj.radius && distSq > 0.0001) {
+          const dist = Math.sqrt(distSq);
+          const push = obj.radius - dist + 0.05;
+          camera.position.x += (dx / dist) * push;
+          camera.position.z += (dz / dist) * push;
+        }
+      }
     };
 
     // Initial world generation
@@ -1069,8 +1133,14 @@ const ForestSurvivalGame = () => {
     let playerShadowBody: THREE.Group | null = null;
     let shadowRightArm: THREE.Mesh | null = null;
     let shadowGunGroup: THREE.Group | null = null;
+    let shadowLeftLeg: THREE.Mesh | null = null;
+    let shadowRightLeg: THREE.Mesh | null = null;
+    let shadowWalkTime = 0; // drives the walking-shadow leg animation
 
-    if (graphicsPreset.playerShadow && graphicsPreset.shadowsEnabled) {
+    // Always give the player a ground shadow when shadows are enabled — the
+    // visible first-person arms can't cast a clean world shadow themselves,
+    // so this invisible silhouette body provides a proper grounded shadow.
+    if (graphicsPreset.shadowsEnabled) {
       // Shadow-only material - renders as black for shadow map but doesn't appear in view
       const shadowOnlyMaterial = new THREE.MeshBasicMaterial({
         color: 0x000000,
@@ -1135,15 +1205,17 @@ const ForestSurvivalGame = () => {
       shadowGunGroup.rotation.x = -0.4;
       playerShadowBody.add(shadowGunGroup);
 
-      // Player legs
+      // Player legs — geometry shifted so its origin is at the hip, letting
+      // the legs pivot from the top for a natural walking-shadow stride.
       const shadowLegGeo = new THREE.BoxGeometry(0.3, 1.0, 0.3);
-      const shadowLeftLeg = new THREE.Mesh(shadowLegGeo, shadowOnlyMaterial);
-      shadowLeftLeg.position.set(-0.2, -1.7, 0);
+      shadowLegGeo.translate(0, -0.5, 0);
+      shadowLeftLeg = new THREE.Mesh(shadowLegGeo, shadowOnlyMaterial);
+      shadowLeftLeg.position.set(-0.2, -1.2, 0);
       shadowLeftLeg.castShadow = true;
       playerShadowBody.add(shadowLeftLeg);
 
-      const shadowRightLeg = new THREE.Mesh(shadowLegGeo, shadowOnlyMaterial);
-      shadowRightLeg.position.set(0.2, -1.7, 0);
+      shadowRightLeg = new THREE.Mesh(shadowLegGeo, shadowOnlyMaterial);
+      shadowRightLeg.position.set(0.2, -1.2, 0);
       shadowRightLeg.castShadow = true;
       playerShadowBody.add(shadowRightLeg);
 
@@ -1566,7 +1638,7 @@ const ForestSurvivalGame = () => {
     const keys: Keys = {};
     const moveSpeed = 0.3;
     const sprintMultiplier = 1.8;
-    const baseJumpPower = 0.4;
+    const baseJumpPower = 0.5; // Prominent jump — clears most rocks/obstacles
     const gravity = 0.02;
 
     let velocityY = 0;
@@ -1672,6 +1744,7 @@ const ForestSurvivalGame = () => {
 
         // Play dash sound and trigger effect
         soundManager.play('jump', 0.5);
+        gunModel.triggerDash(); // Braced weapon pull-back animation
         if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
 
         // Slight time slow for cinematic effect
@@ -1702,6 +1775,7 @@ const ForestSurvivalGame = () => {
           const success = abilitySystem.useAbility(abilities[abilityIndex].type);
           if (success) {
             soundManager.play('powerUp', 0.6);
+            gunModel.triggerAbility(); // Quick weapon flourish on cast
             // Create visual effect
             const effect = abilitySystem.createAbilityEffect(scene, camera.position, abilities[abilityIndex].type);
             scene.add(effect);
@@ -2025,6 +2099,11 @@ const ForestSurvivalGame = () => {
         unlockedWeapons: [...unlockedWeapons]
       });
     };
+
+    // Push the initial state to the HUD immediately so it reflects the real
+    // starting values (e.g. all weapons already unlocked in Tutorial mode)
+    // instead of waiting for the first shot / weapon switch.
+    updateGameState();
 
     const checkCollision = (pos1: THREE.Vector3, pos2: THREE.Vector3, distance: number) => {
       const dx = pos1.x - pos2.x;
@@ -2437,7 +2516,27 @@ const ForestSurvivalGame = () => {
       // Update gun sway and bobbing based on movement, then apply all animations
       gunModel.updateIdleSway(delta);
       gunModel.updateWalkBob(delta, isMoving, isRunning && isMoving);
+      gunModel.updateAim(delta, isAiming && WEAPONS[currentWeapon].canAim === true);
+      // Lowered "folded" carry pose while sprinting (not while shooting)
+      gunModel.updateSprint(delta, isRunning && isMoving && !isCrouching && !mouseDown);
+      // Airborne weapon inertia + landing dip
+      gunModel.updateJump(delta, isJumping, velocityY);
+      // Decay one-shot flourishes (dash, abilities)
+      gunModel.updateActions(delta);
       gunModel.applyAnimations(); // Combine all animation offsets into final transform
+
+      // Animate the player's ground-shadow legs into a walking/running stride
+      if (shadowLeftLeg && shadowRightLeg) {
+        if (isMoving) {
+          shadowWalkTime += rawDelta * (isRunning ? 11 : 7);
+          const swing = Math.sin(shadowWalkTime) * (isRunning ? 0.8 : 0.5);
+          shadowLeftLeg.rotation.x = swing;
+          shadowRightLeg.rotation.x = -swing;
+        } else {
+          shadowLeftLeg.rotation.x *= 0.85;
+          shadowRightLeg.rotation.x *= 0.85;
+        }
+      }
 
       // Reuse vectors instead of allocating new ones each frame
       camera.getWorldDirection(_moveDirection);
@@ -2500,8 +2599,9 @@ const ForestSurvivalGame = () => {
           isCrouching = false;
         }
         const weaponWeight = WEAPONS[currentWeapon].weight;
-        // Heavier weapons reduce jump height significantly
-        const jumpMultiplier = 1.0 / Math.sqrt(weaponWeight);
+        // Heavier weapons reduce jump height, but only mildly — even the
+        // minigun should still clear most obstacles for responsive movement.
+        const jumpMultiplier = Math.max(0.78, Math.pow(weaponWeight, -0.28));
         velocityY = baseJumpPower * jumpMultiplier;
         isJumping = true;
         wasJumping = true;
@@ -2535,6 +2635,9 @@ const ForestSurvivalGame = () => {
         landingImpact -= delta * 4; // Recover over ~0.25s
         if (landingImpact <= 0) landingImpact = 0;
       }
+
+      // Resolve any obstacle penetration (e.g. landed inside a rock after a jump)
+      resolveTerrainPenetration();
 
       // Head bob for realistic movement feel - uses stable time accumulator
       // Reduced values for smoother, less distracting motion
@@ -3275,8 +3378,9 @@ const ForestSurvivalGame = () => {
           );
 
           if (hitPlayer || overlapDamage) {
-            // Check invincibility from abilities
-            if (!abilityEffects.isInvincible) {
+            // Tutorial mode grants unlimited health — the player can never be
+            // hurt, so the tutorial is a safe, pressure-free practice space.
+            if (!abilityEffects.isInvincible && !isTutorialMode) {
               let damage = enemy.attackSystem.getDamage();
 
               // Apply ability shield if active
@@ -3753,6 +3857,7 @@ const ForestSurvivalGame = () => {
           unlockedWeapons={gameState.unlockedWeapons}
           currentWeapon={gameState.currentWeapon}
           hideStatsPanel={gameMode === 'multiplayer'}
+          unlimitedHealth={gameMode === 'tutorial'}
         />
       </div>
 

@@ -1,5 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, RotateCcw, RefreshCw } from 'lucide-react';
 
 interface Props {
   children: ReactNode;
@@ -80,28 +80,28 @@ export class ErrorBoundary extends Component<Props, State> {
 
       // Default fallback UI
       return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90">
-          <div className="bg-gray-900 border-4 border-red-500 rounded-lg shadow-2xl p-8 max-w-2xl mx-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-[#05080a]/95 backdrop-blur-sm">
+          <div className="w-full max-w-2xl rounded-2xl border border-white/10 bg-[#0b0f15] shadow-2xl p-8">
             {/* Error Icon */}
             <div className="text-center mb-6">
               <div className="inline-flex items-center justify-center w-20 h-20 rounded-2xl bg-red-500/10 border border-red-500/30 mb-4">
-                <AlertTriangle className="w-10 h-10 text-red-400" strokeWidth={2} />
+                <AlertTriangle className="w-10 h-10 text-red-400" strokeWidth={1.75} />
               </div>
-              <h1 className="text-4xl font-bold text-red-400 mb-2">Something Went Wrong</h1>
-              <p className="text-gray-400">The game encountered an unexpected error</p>
+              <h1 className="text-3xl font-bold text-white mb-2">Something Went Wrong</h1>
+              <p className="text-sm text-gray-400">The game encountered an unexpected error</p>
             </div>
 
             {/* Error Details (Development Only) */}
             {import.meta.env.DEV && this.state.error && (
-              <div className="bg-black/50 rounded-lg p-4 mb-6 max-h-64 overflow-auto">
-                <div className="text-red-400 font-bold mb-2">Error Details:</div>
-                <pre className="text-xs text-gray-300 whitespace-pre-wrap">
+              <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4 mb-6 max-h-64 overflow-auto">
+                <div className="text-[11px] font-semibold tracking-[0.15em] text-red-400 uppercase mb-2">Error Details</div>
+                <pre className="text-xs text-gray-300 whitespace-pre-wrap font-mono">
                   {this.state.error.toString()}
                 </pre>
                 {this.state.errorInfo && (
                   <>
-                    <div className="text-red-400 font-bold mt-4 mb-2">Stack Trace:</div>
-                    <pre className="text-xs text-gray-400 whitespace-pre-wrap">
+                    <div className="text-[11px] font-semibold tracking-[0.15em] text-red-400 uppercase mt-4 mb-2">Stack Trace</div>
+                    <pre className="text-xs text-gray-500 whitespace-pre-wrap font-mono">
                       {this.state.errorInfo.componentStack}
                     </pre>
                   </>
@@ -111,31 +111,37 @@ export class ErrorBoundary extends Component<Props, State> {
 
             {/* Error Message (Production) */}
             {!import.meta.env.DEV && (
-              <div className="bg-red-900/20 border border-red-500/30 rounded-lg p-4 mb-6">
-                <p className="text-gray-300 text-center">
+              <div className="rounded-xl border border-red-500/20 bg-red-500/[0.06] p-4 mb-6">
+                <p className="text-sm text-gray-300 text-center">
                   We apologize for the inconvenience. The error has been logged and we'll look into it.
                 </p>
               </div>
             )}
 
             {/* Action Buttons */}
-            <div className="flex gap-4 justify-center">
+            <div className="flex flex-col sm:flex-row gap-3 justify-center">
               <button
                 onClick={this.handleReset}
-                className="px-6 py-3 bg-cyan-500 hover:bg-cyan-600 text-white font-bold rounded transition-colors"
+                className="flex items-center justify-center gap-2 px-6 py-3 rounded-xl text-sm font-semibold
+                  bg-emerald-500/15 border border-emerald-400/40 text-emerald-300
+                  hover:bg-emerald-500/25 hover:border-emerald-400/60 transition-all duration-200"
               >
+                <RotateCcw className="w-4 h-4" strokeWidth={2.25} />
                 Try Again
               </button>
               <button
                 onClick={this.handleReload}
-                className="px-6 py-3 bg-gray-700 hover:bg-gray-600 text-white font-bold rounded transition-colors"
+                className="flex items-center justify-center gap-2 px-6 py-3 rounded-xl text-sm font-semibold
+                  bg-white/[0.04] border border-white/10 text-gray-300
+                  hover:bg-white/[0.08] hover:border-white/20 hover:text-white transition-all duration-200"
               >
+                <RefreshCw className="w-4 h-4" strokeWidth={2.25} />
                 Reload Page
               </button>
             </div>
 
             {/* Help Text */}
-            <div className="mt-6 text-center text-sm text-gray-500">
+            <div className="mt-6 text-center text-xs text-gray-500">
               If this problem persists, try refreshing the page or clearing your browser cache.
             </div>
           </div>
