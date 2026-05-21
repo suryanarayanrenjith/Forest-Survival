@@ -287,9 +287,10 @@ export class MultiplayerManager {
         console.log('[MultiplayerManager] Player join request:', message.data.name);
 
         if (this.isHost && this.gameState) {
-          // Check for duplicate names
+          // Check for duplicate names (case- and whitespace-insensitive)
+          const incomingName = (message.data.name || '').trim().toLowerCase();
           const existingPlayerWithName = Array.from(this.gameState.players.values())
-            .find(p => p.name.toLowerCase() === message.data.name.toLowerCase());
+            .find(p => (p.name || '').trim().toLowerCase() === incomingName);
 
           if (existingPlayerWithName) {
             console.log('[MultiplayerManager] Rejecting player - duplicate name:', message.data.name);

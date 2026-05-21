@@ -14,10 +14,13 @@ A 3D first-person survival shooter built entirely through vibe coding — powere
 
 ## 🎮 Gameplay
 
-Survive endless waves of enemies in a procedurally themed forest. Fight through 4 enemy types using 7 unlockable weapons, collect power-ups, chain combo kills, and either eliminate 50 enemies to claim victory — or keep surviving as long as you can.
+Survive endless, escalating waves of enemies across **eight distinct biome maps**. Fight 4 enemy types with 7 unlockable weapons, collect power-ups, chain combo kills, and push your wave count and score as high as you can.
 
 ### Objective
-Eliminate **50 enemies** to win. Each wave gets harder. Don't die.
+Endless survival — every cleared wave spawns a harder one. Climb the waves, build your score, and stay alive as long as you can.
+
+### Maps
+Eight hand-crafted, premium low-poly environments — each with its own biome, palette, atmosphere and props: **Deep Forest**, **Scorched Wasteland**, **Frozen Tundra**, **Desert Canyon**, **Toxic Swamp**, **Military Outpost**, **Crystal Caverns** and **Ancient Ruins**.
 
 ---
 
@@ -39,12 +42,14 @@ Weapons unlock as your score climbs:
 
 ## 👾 Enemies
 
-| Type | Color | HP | Behavior |
-|------|-------|----|----------|
-| Normal | Red | 25 | Balanced aggression |
-| Fast | Blue | 15 | Quick and agile |
-| Tank | Green | 60 | Slow, heavy damage |
-| Boss | Purple | 120 | Tactical, coordinates with others |
+Premium low-poly creatures with chest cores, shoulder plating, glowing visors and head crests. Base HP scales up with difficulty and wave number.
+
+| Type | Color | Base HP | Behavior |
+|------|-------|---------|----------|
+| Normal | Crimson | 50 | Balanced aggression |
+| Fast | Blue | 30 | Quick and agile, dodges bullets |
+| Tank | Green | 150 | Slow, heavy hitter |
+| Boss | Violet | 300 | Tactical, coordinates with others |
 
 ---
 
@@ -60,45 +65,49 @@ Weapons unlock as your score climbs:
 **AI Systems**
 - Adaptive difficulty that adjusts to your skill in real time
 - Enemy AI with state-machine behavior: patrol, hunt, ambush, coordinate, retreat
-- Bullet dodging and obstacle avoidance on enemies
+- Steering-based navigation — repulsion avoidance and wall-sliding so enemies arc around trees instead of getting stuck
+- Bullet dodging on agile enemies
 - Combat coaching with live tips
 - Predictive enemy spawning
 - Smart skill tree progression
 
-**Atmosphere**
-- Day/night cycle
-- Dynamic weather — rain, fog, storms
-- Multiple biomes
-- Custom shader sky dome
-- Blood splatter and impact effects
+**Visuals & Atmosphere**
+- Premium low-poly art direction — custom-built creatures, weapons and per-biome props
+- Volumetric custom sky shader with day/night cycle, drifting clouds, stars and moon
+- Image-based lighting — environment reflections that make metals read as real metal
+- 8 distinct biomes with unique palettes, fog and atmosphere
+- Bloom, ACES tone mapping and cinematic colour grading
+- Blood splatter, muzzle flash and impact effects
 
 **Multiplayer**
 - Peer-to-peer multiplayer via PeerJS
-- In-game chat
+- In-game chat with quick emotes
 - Spectator mode
-- Multiplayer HUD and game over screens
-- Lobby system
+- Live scoreboard HUD and game over screens
+- Lobby system with co-op and last-man-standing modes
 
 **UI & Polish**
-- Glassmorphism design language
-- Hit markers and damage numbers
-- Kill feed
+- Cohesive, professional dark UI built with hand-crafted Tailwind styling
+- Crisp `lucide-react` SVG iconography throughout — zero emoji chrome
+- Dynamic crosshair, hit markers and floating damage numbers
+- Kill feed, combo display and achievement toasts
 - Screen shake and damage flash effects
-- Skill tree menu
-- Mission display
-- Stats gallery
-- Tutorial overlay with progressive hints
+- Skill tree, mission display, stats gallery
+- Themed tutorial that freezes the world while you read each step
 - Full settings menu with persistence
 
 ---
 
 ## 🎁 Power-Ups
 
-Spawn every 2 waves:
+Spawn between waves, with a chance to drop from fallen enemies:
 
 - **Health Pack** — Restore 30 HP
 - **Ammo Crate** — Refill current magazine
-- **Speed Boost** — Temporary movement speed increase
+- **Speed Boost** — Temporary movement speed increase (10s)
+- **Damage Boost** — Double weapon damage (15s)
+- **Shield** — Absorbs up to 50 incoming damage
+- **Infinite Ammo** — Unlimited ammo for a short burst (20s)
 
 ---
 
@@ -109,10 +118,14 @@ Spawn every 2 waves:
 | W / A / S / D | Move |
 | Mouse | Look around |
 | Left Click | Shoot |
+| Right Click | Aim (Rifle / Sniper) |
 | Space | Jump |
 | Shift | Sprint |
+| C | Crouch |
+| Q | Dash |
 | R | Reload |
-| 1–7 | Switch weapons |
+| 1–7 / Scroll | Switch weapons |
+| E / F / V / B | Abilities |
 | ESC | Pause |
 
 ---
@@ -150,11 +163,10 @@ npm run preview    # Preview production build
 | Framework | React 19 |
 | Language | TypeScript 5 (strict) |
 | 3D Engine | Three.js |
-| Physics | Cannon-es |
 | Build Tool | Vite 7 |
 | Styling | Tailwind CSS |
+| Icons | lucide-react |
 | Multiplayer | PeerJS |
-| AI Integration | OpenAI SDK (optional) |
 
 ---
 
@@ -168,7 +180,7 @@ forest-survival/
 │   ├── index.css            # Global styles
 │   ├── types/
 │   │   └── game.ts          # All TypeScript interfaces
-│   ├── components/          # 23 React UI components
+│   ├── components/          # 24 React UI components
 │   │   ├── HUD.tsx
 │   │   ├── MainMenu.tsx
 │   │   ├── GameOver.tsx
