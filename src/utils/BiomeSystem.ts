@@ -251,23 +251,30 @@ export class BiomeSystem {
   private createForestTree(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
     const height = 8 + Math.random() * 5;
+    // Tapered bark trunk
     const trunk = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.4, 0.6, height, 6),
-      new THREE.MeshStandardMaterial({ color: 0x4a3520, flatShading: true, roughness: 0.9, metalness: 0.1, emissive: 0x201510, emissiveIntensity: 0.1 })
+      new THREE.CylinderGeometry(0.34, 0.72, height, 7),
+      new THREE.MeshStandardMaterial({ color: 0x3d2a18, flatShading: true, roughness: 0.95, metalness: 0.0, emissive: 0x140d06, emissiveIntensity: 0.1 })
     );
     trunk.castShadow = true; trunk.receiveShadow = true;
     group.add(trunk);
-    const leafColors = [0x1a7a1a, 0x0f5d0f, 0x0d4d0d, 0x246a24, 0x2a8a2a];
-    for (let i = 0; i < 3; i++) {
-      const size = 4 - i * 0.8;
-      const color = leafColors[Math.floor(Math.random() * leafColors.length)];
-      const leaves = new THREE.Mesh(
-        new THREE.ConeGeometry(size, 5 - i * 1.2, 6),
-        new THREE.MeshStandardMaterial({ color, flatShading: true, emissive: color, emissiveIntensity: 0.15, roughness: 0.85, metalness: 0.05 })
+    // Layered canopy — darker at the shaded base, brighter toward the lit top
+    // for natural depth. Slight per-layer hue keeps the forest from going flat.
+    const canopy = [0x0e4d1c, 0x166327, 0x1f7c33, 0x32953f];
+    const layers = 4;
+    for (let i = 0; i < layers; i++) {
+      const t = i / (layers - 1);
+      const cone = new THREE.Mesh(
+        new THREE.ConeGeometry(4.2 - i * 0.85, 4.4 - i * 0.7, 7),
+        new THREE.MeshStandardMaterial({
+          color: canopy[i], flatShading: true, roughness: 0.88, metalness: 0.0,
+          emissive: canopy[i], emissiveIntensity: 0.1 + t * 0.07,
+        })
       );
-      leaves.position.y = height / 2 + 1 + i * 3.5;
-      leaves.castShadow = true; leaves.receiveShadow = true;
-      group.add(leaves);
+      cone.position.y = height / 2 + 0.3 + i * 2.7;
+      cone.rotation.y = Math.random() * Math.PI;
+      cone.castShadow = true; cone.receiveShadow = true;
+      group.add(cone);
     }
     group.position.set(x, height / 2, z);
     return { mesh: group, x, z, type: 'tree', collidable: true, radius: 2.5, height: 99 };
@@ -362,26 +369,37 @@ export class BiomeSystem {
     const group = new THREE.Group();
     const height = 3 + Math.random() * 4;
     const trunk = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.3, 0.7, height, 5),
-      new THREE.MeshStandardMaterial({ color: 0x1a1210, flatShading: true, roughness: 0.95, metalness: 0.1, emissive: 0x1a0800, emissiveIntensity: 0.1 })
+      new THREE.CylinderGeometry(0.32, 0.78, height, 6),
+      new THREE.MeshStandardMaterial({ color: 0x161210, flatShading: true, roughness: 0.95, metalness: 0.18, emissive: 0x140600, emissiveIntensity: 0.12 })
     );
     trunk.castShadow = true; trunk.receiveShadow = true;
     group.add(trunk);
+    // Glowing magma veins running up the charred bark
+    const crackMat = new THREE.MeshStandardMaterial({ color: 0x000000, emissive: 0xff5512, emissiveIntensity: 2.2, flatShading: true });
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2 + Math.random();
+      const crack = new THREE.Mesh(new THREE.BoxGeometry(0.09, height * (0.5 + Math.random() * 0.35), 0.09), crackMat);
+      crack.position.set(Math.cos(a) * 0.42, (Math.random() - 0.3) * height * 0.3, Math.sin(a) * 0.42);
+      crack.rotation.z = (Math.random() - 0.5) * 0.3;
+      group.add(crack);
+    }
+    // Charred broken branches
     for (let i = 0; i < 2; i++) {
       const branch = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.05, 0.15, 1.5, 4),
-        new THREE.MeshStandardMaterial({ color: 0x0d0908, flatShading: true, roughness: 0.95 })
+        new THREE.CylinderGeometry(0.05, 0.16, 1.5, 4),
+        new THREE.MeshStandardMaterial({ color: 0x0c0807, flatShading: true, roughness: 0.95 })
       );
-      branch.position.set(Math.random() > 0.5 ? 0.5 : -0.5, height * 0.3 * (i + 1), 0);
-      branch.rotation.z = (Math.random() > 0.5 ? 1 : -1) * (0.5 + Math.random() * 0.8);
+      branch.position.set(i === 0 ? 0.5 : -0.5, height * 0.3 * (i + 1), 0);
+      branch.rotation.z = (i === 0 ? 1 : -1) * (0.5 + Math.random() * 0.8);
       branch.castShadow = true;
       group.add(branch);
     }
+    // Smouldering ember bed at the base
     const ember = new THREE.Mesh(
-      new THREE.SphereGeometry(0.8, 4, 3),
-      new THREE.MeshStandardMaterial({ color: 0xff3300, emissive: 0xff2200, emissiveIntensity: 0.4, transparent: true, opacity: 0.3 })
+      new THREE.SphereGeometry(0.85, 5, 3),
+      new THREE.MeshStandardMaterial({ color: 0x000000, emissive: 0xff3a00, emissiveIntensity: 1.6, transparent: true, opacity: 0.55 })
     );
-    ember.position.y = -height / 2 + 0.3; ember.scale.set(1, 0.3, 1);
+    ember.position.y = -height / 2 + 0.25; ember.scale.set(1, 0.3, 1);
     group.add(ember);
     group.position.set(x, height / 2, z);
     return { mesh: group, x, z, type: 'tree', collidable: true, radius: 2.0, height: 99 };
@@ -389,14 +407,32 @@ export class BiomeSystem {
 
   private createObsidianShard(x: number, z: number): TerrainObject {
     const size = 1 + Math.random() * 1.5;
+    const group = new THREE.Group();
+    // Glossy obsidian shard — low roughness reads as polished volcanic glass
     const shard = new THREE.Mesh(
       new THREE.TetrahedronGeometry(size, 0),
-      new THREE.MeshStandardMaterial({ color: 0x0a0a0a, flatShading: true, roughness: 0.1, metalness: 0.8, emissive: 0x110808, emissiveIntensity: 0.15 })
+      new THREE.MeshStandardMaterial({ color: 0x09090c, flatShading: true, roughness: 0.08, metalness: 0.85, emissive: 0x1a0a06, emissiveIntensity: 0.18 })
     );
     shard.castShadow = true; shard.receiveShadow = true;
-    shard.position.set(x, size * 0.6, z);
     shard.rotation.set(Math.random() * 0.5, Math.random() * Math.PI, Math.random() * 0.3);
-    return { mesh: shard, x, z, type: 'rock', collidable: true, radius: size + 0.3, height: size * 1.5 };
+    group.add(shard);
+    // Smaller satellite shard + a molten glow at the base
+    const shard2 = new THREE.Mesh(
+      new THREE.TetrahedronGeometry(size * 0.5, 0),
+      (shard.material as THREE.Material)
+    );
+    shard2.position.set(size * 0.7, -size * 0.35, size * 0.3);
+    shard2.rotation.set(Math.random(), Math.random() * Math.PI, Math.random());
+    shard2.castShadow = true;
+    group.add(shard2);
+    const glow = new THREE.Mesh(
+      new THREE.CircleGeometry(size * 0.9, 8),
+      new THREE.MeshStandardMaterial({ color: 0x000000, emissive: 0xff4a14, emissiveIntensity: 1.4, transparent: true, opacity: 0.5 })
+    );
+    glow.rotation.x = -Math.PI / 2; glow.position.y = -size * 0.55;
+    group.add(glow);
+    group.position.set(x, size * 0.6, z);
+    return { mesh: group, x, z, type: 'rock', collidable: true, radius: size + 0.3, height: size * 1.5 };
   }
 
   private createEmberPatch(x: number, z: number): TerrainObject {
@@ -476,19 +512,25 @@ export class BiomeSystem {
     );
     trunk.castShadow = true; trunk.receiveShadow = true;
     group.add(trunk);
+    // Frosted pine layers — cold blue-green needles, crisp snow caps
+    const needle = [0x1f4a40, 0x2a5e4e, 0x39705c];
     for (let i = 0; i < 3; i++) {
       const size = 3 - i * 0.6;
       const foliage = new THREE.Mesh(
-        new THREE.ConeGeometry(size * 0.7, 4 - i * 1.0, 4),
-        new THREE.MeshStandardMaterial({ color: 0x2a5a4a, flatShading: true, emissive: 0x1a3a2a, emissiveIntensity: 0.1, roughness: 0.85 })
+        new THREE.ConeGeometry(size * 0.72, 4 - i * 1.0, 6),
+        new THREE.MeshStandardMaterial({ color: needle[i], flatShading: true, emissive: needle[i], emissiveIntensity: 0.12, roughness: 0.82, metalness: 0.05 })
       );
-      foliage.position.y = height / 2 + i * 2.5; foliage.castShadow = true;
+      foliage.position.y = height / 2 + i * 2.5;
+      foliage.rotation.y = Math.random() * Math.PI;
+      foliage.castShadow = true;
       group.add(foliage);
       const snow = new THREE.Mesh(
-        new THREE.ConeGeometry(size * 0.5, 1.0, 4),
-        new THREE.MeshStandardMaterial({ color: 0xe8f0f8, flatShading: true, emissive: 0xc0d8e8, emissiveIntensity: 0.2, roughness: 0.4, metalness: 0.1 })
+        new THREE.ConeGeometry(size * 0.54, 1.05, 6),
+        new THREE.MeshStandardMaterial({ color: 0xeef4fb, flatShading: true, emissive: 0xb9d4ea, emissiveIntensity: 0.22, roughness: 0.35, metalness: 0.15 })
       );
-      snow.position.y = height / 2 + i * 2.5 + 1.2; snow.castShadow = true;
+      snow.position.y = height / 2 + i * 2.5 + 1.25;
+      snow.rotation.y = foliage.rotation.y;
+      snow.castShadow = true;
       group.add(snow);
     }
     group.position.set(x, height / 2, z);
@@ -497,14 +539,24 @@ export class BiomeSystem {
 
   private createIceChunk(x: number, z: number): TerrainObject {
     const size = 1 + Math.random() * 1.5;
+    const group = new THREE.Group();
+    // Polished glassy ice
     const ice = new THREE.Mesh(
       new THREE.IcosahedronGeometry(size, 0),
-      new THREE.MeshStandardMaterial({ color: 0x88bbdd, flatShading: true, roughness: 0.1, metalness: 0.4, transparent: true, opacity: 0.8, emissive: 0x4488aa, emissiveIntensity: 0.15 })
+      new THREE.MeshStandardMaterial({ color: 0x9fcfe6, flatShading: true, roughness: 0.06, metalness: 0.3, transparent: true, opacity: 0.72, emissive: 0x3d7fa6, emissiveIntensity: 0.2 })
     );
     ice.castShadow = true; ice.receiveShadow = true;
-    ice.position.set(x, size * 0.5, z);
     ice.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
-    return { mesh: ice, x, z, type: 'rock', collidable: true, radius: size + 0.3, height: size * 1.5 };
+    group.add(ice);
+    // Frozen inner core — gives the ice visible depth
+    const core = new THREE.Mesh(
+      new THREE.OctahedronGeometry(size * 0.45, 0),
+      new THREE.MeshStandardMaterial({ color: 0xdff1fb, emissive: 0x8fc8e6, emissiveIntensity: 0.5, flatShading: true })
+    );
+    core.rotation.set(Math.random(), Math.random(), Math.random());
+    group.add(core);
+    group.position.set(x, size * 0.5, z);
+    return { mesh: group, x, z, type: 'rock', collidable: true, radius: size + 0.3, height: size * 1.5 };
   }
 
   private createSnowMound(x: number, z: number): TerrainObject {
@@ -575,26 +627,30 @@ export class BiomeSystem {
     const height = 8 + Math.random() * 6;
     const topR = 1.5 + Math.random();
     const botR = 1.0 + Math.random() * 0.5;
-    const pillar = new THREE.Mesh(
-      new THREE.CylinderGeometry(topR, botR, height, 6),
-      new THREE.MeshStandardMaterial({ color: 0xc48844, flatShading: true, roughness: 0.95, emissive: 0x6a4420, emissiveIntensity: 0.1 })
-    );
-    pillar.castShadow = true; pillar.receiveShadow = true;
-    group.add(pillar);
-    const cap = new THREE.Mesh(
-      new THREE.CylinderGeometry(topR + 0.5, topR, 1, 6),
-      new THREE.MeshStandardMaterial({ color: 0xb87838, flatShading: true, roughness: 0.95 })
-    );
-    cap.position.y = height / 2 + 0.5; cap.castShadow = true;
-    group.add(cap);
-    for (let i = 0; i < 2; i++) {
-      const line = new THREE.Mesh(
-        new THREE.TorusGeometry(botR + 0.3 + i * 0.3, 0.1, 3, 8),
-        new THREE.MeshStandardMaterial({ color: 0xa06830, flatShading: true, roughness: 0.95 })
+    // Stacked sandstone strata — each band a slightly different weathered tone,
+    // the classic banded-mesa silhouette.
+    const strata = [0x9c6332, 0xb87a3c, 0xc89150, 0xa86d38, 0xbe8246];
+    const bands = 5;
+    const bandH = height / bands;
+    for (let i = 0; i < bands; i++) {
+      const r1 = botR + (topR - botR) * ((i + 1) / bands);
+      const r0 = botR + (topR - botR) * (i / bands);
+      const seg = new THREE.Mesh(
+        new THREE.CylinderGeometry(r1, r0, bandH * 1.02, 7),
+        new THREE.MeshStandardMaterial({ color: strata[i % strata.length], flatShading: true, roughness: 0.97, metalness: 0.0, emissive: 0x3a2410, emissiveIntensity: 0.08 })
       );
-      line.rotation.x = Math.PI / 2; line.position.y = -height / 4 + i * height / 3;
-      group.add(line);
+      seg.position.y = -height / 2 + bandH * (i + 0.5);
+      seg.rotation.y = (i / bands) * 0.4;
+      seg.castShadow = true; seg.receiveShadow = true;
+      group.add(seg);
     }
+    // Weathered cap rock
+    const cap = new THREE.Mesh(
+      new THREE.CylinderGeometry(topR + 0.45, topR, 0.9, 7),
+      new THREE.MeshStandardMaterial({ color: 0x8f5e2e, flatShading: true, roughness: 0.97 })
+    );
+    cap.position.y = height / 2 + 0.45; cap.castShadow = true;
+    group.add(cap);
     group.position.set(x, height / 2, z);
     return { mesh: group, x, z, type: 'tree', collidable: true, radius: topR + 1, height: 99 };
   }
@@ -688,16 +744,26 @@ export class BiomeSystem {
     const trunk2 = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.4, height * 0.7, 4), trunkMat);
     trunk2.position.set(0.4, -height * 0.15, 0.3); trunk2.rotation.z = (Math.random() - 0.5) * 0.5; trunk2.castShadow = true;
     group.add(trunk2);
-    const fColors = [0x2a4a25, 0x1a3a18, 0x3a5a30];
-    for (let i = 0; i < 2; i++) {
-      const color = fColors[Math.floor(Math.random() * fColors.length)];
+    // Drooping murky canopy
+    const fColors = [0x24401f, 0x1a3417, 0x315028];
+    for (let i = 0; i < 3; i++) {
+      const color = fColors[i % fColors.length];
       const foliage = new THREE.Mesh(
-        new THREE.SphereGeometry(2 - i * 0.5, 4, 3),
-        new THREE.MeshStandardMaterial({ color, flatShading: true, emissive: color, emissiveIntensity: 0.1 })
+        new THREE.SphereGeometry(2.1 - i * 0.45, 5, 3),
+        new THREE.MeshStandardMaterial({ color, flatShading: true, emissive: color, emissiveIntensity: 0.12 })
       );
-      foliage.position.set((Math.random() - 0.5) * 2, height / 2 + i * 1.5, (Math.random() - 0.5) * 2);
+      foliage.position.set((Math.random() - 0.5) * 2, height / 2 + i * 1.3, (Math.random() - 0.5) * 2);
       foliage.scale.y = 0.5; foliage.castShadow = true;
       group.add(foliage);
+    }
+    // Glowing fungus brackets clinging to the trunk
+    const fungusMat = new THREE.MeshStandardMaterial({ color: 0x000000, emissive: 0x6affc0, emissiveIntensity: 1.8, flatShading: true });
+    for (let i = 0; i < 3; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const fungus = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.1, 0.16, 6), fungusMat);
+      fungus.position.set(Math.cos(a) * 0.4, -height * 0.2 + i * height * 0.22, Math.sin(a) * 0.4);
+      fungus.rotation.z = Math.PI / 2 - 0.3; fungus.rotation.y = -a;
+      group.add(fungus);
     }
     for (let i = 0; i < 3; i++) {
       const moss = new THREE.Mesh(
@@ -792,19 +858,26 @@ export class BiomeSystem {
     wall.position.y = height / 2; wall.castShadow = true; wall.receiveShadow = true;
     group.add(wall);
     const lip = new THREE.Mesh(
-      new THREE.BoxGeometry(width + 0.3, 0.3, 1.0),
-      new THREE.MeshStandardMaterial({ color: 0x5a5a52, flatShading: true, roughness: 0.9, metalness: 0.2 })
+      new THREE.BoxGeometry(width + 0.3, 0.32, 1.05),
+      new THREE.MeshStandardMaterial({ color: 0x55554e, flatShading: true, roughness: 0.9, metalness: 0.25 })
     );
-    lip.position.y = height + 0.15; lip.castShadow = true;
+    lip.position.y = height + 0.16; lip.castShadow = true;
     group.add(lip);
-    for (let i = 0; i < 2; i++) {
-      const mark = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.5 + Math.random() * 0.5, 0.5 + Math.random() * 0.5),
-        new THREE.MeshStandardMaterial({ color: 0x4a4a42 })
-      );
-      mark.position.set((Math.random() - 0.5) * width * 0.6, height * 0.3 + Math.random() * height * 0.4, 0.41);
-      group.add(mark);
+    // Reinforced side support posts
+    const postMat = new THREE.MeshStandardMaterial({ color: 0x4d4d46, flatShading: true, roughness: 0.88, metalness: 0.3 });
+    for (const sx of [-1, 1]) {
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.32, height + 0.1, 1.0), postMat);
+      post.position.set(sx * (width / 2 - 0.1), height / 2, 0);
+      post.castShadow = true;
+      group.add(post);
     }
+    // Painted hazard stripe panel
+    const stripe = new THREE.Mesh(
+      new THREE.BoxGeometry(width * 0.55, 0.5, 0.06),
+      new THREE.MeshStandardMaterial({ color: 0xc8a526, flatShading: true, roughness: 0.7, emissive: 0x3a2e08, emissiveIntensity: 0.2 })
+    );
+    stripe.position.set(0, height * 0.62, 0.43);
+    group.add(stripe);
     group.position.set(x, 0, z); group.rotation.y = Math.random() * Math.PI;
     return { mesh: group, x, z, type: 'tree', collidable: true, radius: width / 2 + 0.5, height: 99 };
   }
@@ -919,21 +992,30 @@ export class BiomeSystem {
   private createCrystalSpire(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
     const height = 6 + Math.random() * 6;
-    const color = [0x8844cc, 0x6633aa, 0xaa55ee, 0x44aacc][Math.floor(Math.random() * 4)];
-    const mat = new THREE.MeshStandardMaterial({ color, flatShading: true, roughness: 0.1, metalness: 0.7, emissive: color, emissiveIntensity: 0.35, transparent: true, opacity: 0.85 });
+    const palette = [0x9a4ee0, 0x6b3ad0, 0xb866ff, 0x4ec3e8];
+    const color = palette[Math.floor(Math.random() * palette.length)];
+    const mat = new THREE.MeshStandardMaterial({ color, flatShading: true, roughness: 0.08, metalness: 0.4, emissive: color, emissiveIntensity: 0.7, transparent: true, opacity: 0.82 });
     const main = new THREE.Mesh(new THREE.OctahedronGeometry(1.2, 0), mat);
     main.scale.set(1, height / 2.4, 1); main.position.y = height / 2;
     main.castShadow = true; main.receiveShadow = true;
     group.add(main);
-    for (let i = 0; i < 2 + Math.floor(Math.random() * 2); i++) {
-      const sc = [0x8844cc, 0x44aacc, 0xaa55ee][Math.floor(Math.random() * 3)];
-      const subH = 2 + Math.random() * 3;
+    // Bright inner core — makes the crystal genuinely glow under bloom
+    const core = new THREE.Mesh(
+      new THREE.OctahedronGeometry(0.5, 0),
+      new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: color, emissiveIntensity: 2.6, flatShading: true })
+    );
+    core.scale.set(1, height / 3, 1); core.position.y = height / 2;
+    group.add(core);
+    for (let i = 0; i < 3 + Math.floor(Math.random() * 2); i++) {
+      const sc = palette[Math.floor(Math.random() * palette.length)];
+      const subH = 2 + Math.random() * 3.5;
       const sub = new THREE.Mesh(
         new THREE.OctahedronGeometry(0.6, 0),
-        new THREE.MeshStandardMaterial({ color: sc, flatShading: true, roughness: 0.1, metalness: 0.7, emissive: sc, emissiveIntensity: 0.3, transparent: true, opacity: 0.8 })
+        new THREE.MeshStandardMaterial({ color: sc, flatShading: true, roughness: 0.08, metalness: 0.4, emissive: sc, emissiveIntensity: 0.65, transparent: true, opacity: 0.8 })
       );
-      sub.scale.set(0.6, subH / 1.2, 0.6);
-      sub.position.set((Math.random() - 0.5) * 2, subH / 2, (Math.random() - 0.5) * 2);
+      sub.scale.set(0.55, subH / 1.2, 0.55);
+      const a = (i / 4) * Math.PI * 2 + Math.random();
+      sub.position.set(Math.cos(a) * 1.6, subH / 2, Math.sin(a) * 1.6);
       sub.rotation.set((Math.random() - 0.5) * 0.5, 0, (Math.random() - 0.5) * 0.5);
       sub.castShadow = true;
       group.add(sub);
@@ -1046,17 +1128,40 @@ export class BiomeSystem {
     const height = 6 + Math.random() * 5;
     const isBroken = Math.random() > 0.5;
     const actualH = isBroken ? height * (0.4 + Math.random() * 0.4) : height;
-    const stoneMat = new THREE.MeshStandardMaterial({ color: 0x7a7a6a, flatShading: true, roughness: 0.9, metalness: 0.1, emissive: 0x3a3a30, emissiveIntensity: 0.05 });
-    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.6, 0.7, actualH, 8), stoneMat);
+    const stoneMat = new THREE.MeshStandardMaterial({ color: 0x837f6f, flatShading: true, roughness: 0.92, metalness: 0.06, emissive: 0x35332b, emissiveIntensity: 0.05 });
+    const darkStone = new THREE.MeshStandardMaterial({ color: 0x5f5c4f, flatShading: true, roughness: 0.95 });
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.58, 0.68, actualH, 12), stoneMat);
     shaft.position.y = actualH / 2; shaft.castShadow = true; shaft.receiveShadow = true;
     group.add(shaft);
-    const base = new THREE.Mesh(new THREE.CylinderGeometry(1.0, 1.1, 0.5, 8), new THREE.MeshStandardMaterial({ color: 0x6a6a5a, flatShading: true, roughness: 0.9 }));
-    base.position.y = 0.25; base.castShadow = true;
-    group.add(base);
+    // Vertical fluting grooves — the classical column detail
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      const flute = new THREE.Mesh(new THREE.BoxGeometry(0.1, actualH * 0.96, 0.1), darkStone);
+      flute.position.set(Math.cos(a) * 0.6, actualH / 2, Math.sin(a) * 0.6);
+      group.add(flute);
+    }
+    // Stepped plinth base
+    const base1 = new THREE.Mesh(new THREE.CylinderGeometry(0.95, 1.08, 0.32, 8), darkStone);
+    base1.position.y = 0.16; base1.castShadow = true;
+    group.add(base1);
+    const base2 = new THREE.Mesh(new THREE.CylinderGeometry(0.82, 0.95, 0.3, 8), stoneMat);
+    base2.position.y = 0.46;
+    group.add(base2);
     if (!isBroken) {
-      const capital = new THREE.Mesh(new THREE.CylinderGeometry(1.0, 0.6, 0.8, 8), stoneMat);
-      capital.position.y = actualH + 0.4; capital.castShadow = true;
+      const capital = new THREE.Mesh(new THREE.CylinderGeometry(1.05, 0.62, 0.5, 8), stoneMat);
+      capital.position.y = actualH + 0.25; capital.castShadow = true;
       group.add(capital);
+      const abacus = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.32, 1.7), darkStone);
+      abacus.position.y = actualH + 0.66; abacus.castShadow = true;
+      group.add(abacus);
+    } else {
+      // Jagged broken crown
+      for (let i = 0; i < 3; i++) {
+        const chunk = new THREE.Mesh(new THREE.DodecahedronGeometry(0.3 + Math.random() * 0.25, 0), stoneMat);
+        chunk.position.set((Math.random() - 0.5) * 0.7, actualH + Math.random() * 0.3, (Math.random() - 0.5) * 0.7);
+        chunk.rotation.set(Math.random(), Math.random(), Math.random());
+        group.add(chunk);
+      }
     }
     if (Math.random() > 0.5) {
       const vine = new THREE.Mesh(

@@ -1,15 +1,6 @@
 import React, { useState } from 'react';
-import { Star, Swords, Heart, Footprints, Brain, Package, Check, type LucideIcon } from 'lucide-react';
+import { Star, Swords, Heart, Footprints, Brain, Package, Check, Lock, X, type LucideIcon } from 'lucide-react';
 import { type Skill, type SkillCategory, type PlayStyle } from '../utils/SmartSkillTreeSystem';
-
-const CATEGORY_ICON: Record<string, LucideIcon> = {
-  all: Star,
-  combat: Swords,
-  survival: Heart,
-  mobility: Footprints,
-  tactical: Brain,
-  support: Package,
-};
 
 interface SkillTreeMenuProps {
   skills: Skill[];
@@ -22,6 +13,17 @@ interface SkillTreeMenuProps {
   onClose: () => void;
 }
 
+const CATEGORY_ICON: Record<string, LucideIcon> = {
+  all: Star,
+  combat: Swords,
+  survival: Heart,
+  mobility: Footprints,
+  tactical: Brain,
+  support: Package,
+};
+
+const ACCENT = '#22d3ee'; // cyan accent, on the shared dark base
+
 export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
   skills,
   availablePoints,
@@ -30,12 +32,12 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
   detectedPlayStyle,
   recommendations,
   onUnlockSkill,
-  onClose
+  onClose,
 }) => {
   const [selectedCategory, setSelectedCategory] = useState<SkillCategory | 'all'>('all');
   const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null);
 
-  const categories: Array<{id: SkillCategory | 'all', name: string}> = [
+  const categories: Array<{ id: SkillCategory | 'all'; name: string }> = [
     { id: 'all', name: 'All Skills' },
     { id: 'combat', name: 'Combat' },
     { id: 'survival', name: 'Survival' },
@@ -46,7 +48,7 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
 
   const filteredSkills = selectedCategory === 'all'
     ? skills
-    : skills.filter(s => s.category === selectedCategory);
+    : skills.filter((s) => s.category === selectedCategory);
 
   const groupedByTier = filteredSkills.reduce((acc, skill) => {
     if (!acc[skill.tier]) acc[skill.tier] = [];
@@ -55,76 +57,81 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
   }, {} as Record<number, Skill[]>);
 
   const playstyleInfo = {
-    aggressive: { name: 'Aggressive', color: 'text-red-400', description: 'High damage, fast kills' },
-    defensive: { name: 'Defensive', color: 'text-blue-400', description: 'Survival focused, damage mitigation' },
-    balanced: { name: 'Balanced', color: 'text-green-400', description: 'Well-rounded approach' },
-    tactical: { name: 'Tactical', color: 'text-purple-400', description: 'Ability-focused, strategic' },
-    speedrunner: { name: 'Speedrunner', color: 'text-yellow-400', description: 'Fast movement, efficiency' }
+    aggressive: { name: 'Aggressive', color: '#f87171', description: 'High damage, fast kills' },
+    defensive: { name: 'Defensive', color: '#60a5fa', description: 'Survival focused, damage mitigation' },
+    balanced: { name: 'Balanced', color: '#34d399', description: 'Well-rounded approach' },
+    tactical: { name: 'Tactical', color: '#c084fc', description: 'Ability-focused, strategic' },
+    speedrunner: { name: 'Speedrunner', color: '#fbbf24', description: 'Fast movement, efficiency' },
   }[detectedPlayStyle];
 
+  const progressPct = totalPoints > 0 ? (spentPoints / totalPoints) * 100 : 0;
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: 'rgba(5,8,10,0.92)', backdropFilter: 'blur(12px)' }}
+    >
       <div
-        className="bg-gray-900 border-2 border-cyan-400 rounded-lg shadow-2xl w-11/12 max-w-6xl h-5/6 flex flex-col"
-        style={{ animation: 'skillTreeEnter 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards' }}
+        className="w-full max-w-5xl h-[88vh] flex flex-col rounded-2xl border border-white/10 bg-[#0b0f15] overflow-hidden"
+        style={{ animation: 'stFade 0.35s cubic-bezier(0.16,1,0.3,1) forwards' }}
       >
         {/* Header */}
-        <div className="relative bg-gradient-to-r from-cyan-900/60 via-purple-900/40 to-cyan-900/60 p-5 border-b-2 border-cyan-400/50 rounded-t-lg overflow-hidden">
-          {/* Animated glow behind header */}
-          <div className="absolute inset-0 opacity-30" style={{
-            background: 'radial-gradient(ellipse at 30% 50%, rgba(6, 182, 212, 0.4), transparent 60%), radial-gradient(ellipse at 70% 50%, rgba(168, 85, 247, 0.3), transparent 60%)'
-          }} />
-          <div className="relative flex items-center justify-between">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.07]">
+          <div className="flex items-center gap-3">
+            <div className="flex items-center justify-center w-10 h-10 rounded-xl" style={{ background: `${ACCENT}1f` }}>
+              <Brain className="w-5 h-5" style={{ color: ACCENT }} strokeWidth={2} />
+            </div>
             <div>
-              <h2
-                className="text-3xl font-black text-white mb-1"
-                style={{ textShadow: '0 0 20px rgba(6, 182, 212, 0.5), 0 0 40px rgba(168, 85, 247, 0.3)' }}
-              >
-                SKILL TREE
-              </h2>
-              <p className="text-sm text-gray-300">
-                Playstyle: <span className={`font-bold ${playstyleInfo.color}`}>{playstyleInfo.name}</span> — {playstyleInfo.description}
+              <h2 className="text-lg font-bold text-white tracking-wide">Skill Tree</h2>
+              <p className="text-xs text-gray-500">
+                Playstyle ·{' '}
+                <span className="font-semibold" style={{ color: playstyleInfo.color }}>{playstyleInfo.name}</span>
+                <span className="hidden sm:inline"> — {playstyleInfo.description}</span>
               </p>
             </div>
+          </div>
+          <div className="flex items-center gap-4">
             <div className="text-right">
-              <div
-                className="text-4xl font-black text-cyan-400 tabular-nums"
-                style={{ textShadow: '0 0 15px rgba(6, 182, 212, 0.6)' }}
-              >
-                {availablePoints}
+              <div className="flex items-baseline gap-1.5 justify-end">
+                <span className="text-2xl font-bold tabular-nums" style={{ color: ACCENT }}>{availablePoints}</span>
+                <span className="text-[10px] font-semibold tracking-[0.12em] text-gray-500 uppercase">Points</span>
               </div>
-              <div className="text-xs text-gray-400 font-semibold uppercase tracking-wide">Available Points</div>
-              <div className="h-1.5 bg-gray-700 rounded-full mt-1.5 w-24 ml-auto overflow-hidden">
-                <div
-                  className="h-full bg-gradient-to-r from-cyan-500 to-purple-500 transition-all duration-500"
-                  style={{ width: totalPoints > 0 ? `${(spentPoints / totalPoints) * 100}%` : '0%' }}
-                />
+              <div className="mt-1 h-1 w-28 rounded-full bg-white/10 overflow-hidden">
+                <div className="h-full rounded-full transition-all duration-500" style={{ width: `${progressPct}%`, background: ACCENT }} />
               </div>
-              <div className="text-xs text-gray-500 mt-0.5">{spentPoints}/{totalPoints} spent</div>
+              <div className="text-[10px] text-gray-600 mt-0.5">{spentPoints} / {totalPoints} spent</div>
             </div>
+            <button
+              onClick={onClose}
+              className="flex items-center justify-center w-9 h-9 rounded-lg border border-white/10 text-gray-400
+                transition-colors hover:text-white hover:bg-white/[0.06]"
+              aria-label="Close skill tree"
+            >
+              <X className="w-[18px] h-[18px]" strokeWidth={2.25} />
+            </button>
           </div>
         </div>
 
-        {/* Content */}
+        {/* Body */}
         <div className="flex flex-1 overflow-hidden">
-          {/* Category Sidebar */}
-          <div className="w-48 bg-gray-800/50 border-r border-cyan-400/30 p-3 overflow-y-auto">
-            <div className="text-xs font-bold text-gray-400 uppercase mb-2">Categories</div>
+          {/* Sidebar */}
+          <div className="w-52 flex-shrink-0 border-r border-white/[0.07] p-3 overflow-y-auto hidden sm:block">
+            <div className="text-[10px] font-semibold tracking-[0.18em] text-gray-500 uppercase mb-2 px-1">Categories</div>
             <div className="space-y-1">
-              {categories.map(cat => {
+              {categories.map((cat) => {
                 const Icon = CATEGORY_ICON[cat.id];
+                const active = selectedCategory === cat.id;
                 return (
                   <button
                     key={cat.id}
                     onClick={() => setSelectedCategory(cat.id)}
-                    className={`w-full flex items-center gap-2.5 text-left px-3 py-2 rounded-lg transition-all ${
-                      selectedCategory === cat.id
-                        ? 'bg-cyan-500 text-white'
-                        : 'text-gray-300 hover:bg-gray-700'
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+                      active ? 'text-white' : 'text-gray-400 hover:text-gray-200 hover:bg-white/[0.04]'
                     }`}
+                    style={active ? { background: `${ACCENT}1f`, boxShadow: `inset 0 0 0 1px ${ACCENT}55` } : undefined}
                   >
-                    <Icon className="w-4 h-4" strokeWidth={2} />
-                    <span className="text-sm font-medium">{cat.name}</span>
+                    <Icon className="w-4 h-4" style={active ? { color: ACCENT } : undefined} strokeWidth={2} />
+                    {cat.name}
                   </button>
                 );
               })}
@@ -132,18 +139,21 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
 
             {recommendations.length > 0 && (
               <div className="mt-6">
-                <div className="flex items-center gap-1.5 text-xs font-bold text-yellow-400 uppercase mb-2">
-                  <Star className="w-3.5 h-3.5" strokeWidth={2.25} fill="currentColor" /> Recommended
+                <div className="flex items-center gap-1.5 text-[10px] font-semibold tracking-[0.18em] text-amber-400 uppercase mb-2 px-1">
+                  <Star className="w-3 h-3" strokeWidth={2.25} fill="currentColor" /> Recommended
                 </div>
-                <div className="text-xs text-gray-400 space-y-1">
-                  {recommendations.slice(0, 3).map(skillId => {
-                    const skill = skills.find(s => s.id === skillId);
+                <div className="space-y-1.5">
+                  {recommendations.slice(0, 3).map((skillId) => {
+                    const skill = skills.find((s) => s.id === skillId);
                     if (!skill) return null;
                     const SkillIcon = CATEGORY_ICON[skill.category] || Star;
                     return (
-                      <div key={skillId} className="flex items-center gap-1.5 bg-yellow-900/20 p-2 rounded border border-yellow-600/30">
-                        <SkillIcon className="w-3.5 h-3.5 flex-shrink-0" strokeWidth={2} />
-                        {skill.name}
+                      <div
+                        key={skillId}
+                        className="flex items-center gap-2 rounded-lg border border-amber-500/20 bg-amber-500/[0.06] px-2.5 py-1.5 text-xs text-gray-300"
+                      >
+                        <SkillIcon className="w-3.5 h-3.5 flex-shrink-0 text-amber-400/80" strokeWidth={2} />
+                        <span className="truncate">{skill.name}</span>
                       </div>
                     );
                   })}
@@ -152,21 +162,20 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
             )}
           </div>
 
-          {/* Skills Grid */}
-          <div className="flex-1 p-6 overflow-y-auto">
+          {/* Skills grid */}
+          <div className="flex-1 p-5 overflow-y-auto">
             <div className="space-y-6">
-              {[1, 2, 3, 4, 5].map(tier => {
+              {[1, 2, 3, 4, 5].map((tier) => {
                 const tierSkills = groupedByTier[tier] || [];
                 if (tierSkills.length === 0) return null;
-
                 return (
                   <div key={tier}>
-                    <div className="text-sm font-bold text-cyan-400 mb-3 flex items-center gap-2">
-                      <span>Tier {tier}</span>
-                      <div className="flex-1 h-px bg-cyan-400/30" />
+                    <div className="flex items-center gap-3 mb-3">
+                      <span className="text-[11px] font-semibold tracking-[0.18em] text-gray-400 uppercase">Tier {tier}</span>
+                      <div className="flex-1 h-px bg-white/[0.07]" />
                     </div>
-                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                      {tierSkills.map(skill => (
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-2.5">
+                      {tierSkills.map((skill) => (
                         <SkillCard
                           key={skill.id}
                           skill={skill}
@@ -183,9 +192,9 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
             </div>
           </div>
 
-          {/* Skill Details Sidebar */}
+          {/* Details */}
           {selectedSkill && (
-            <div className="w-80 bg-gray-800/50 border-l border-cyan-400/30 p-4 overflow-y-auto">
+            <div className="w-80 flex-shrink-0 border-l border-white/[0.07] p-5 overflow-y-auto hidden lg:block">
               <SkillDetails
                 skill={selectedSkill}
                 canAfford={availablePoints >= selectedSkill.cost}
@@ -199,30 +208,22 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="bg-gray-800/50 p-4 border-t border-cyan-400/30 rounded-b-lg flex items-center justify-between">
-          <div className="text-xs text-gray-500">
-            Earn skill points by eliminating enemies
-          </div>
+        <div className="flex items-center justify-between px-5 py-3.5 border-t border-white/[0.07]">
+          <span className="text-xs text-gray-600">Earn skill points by eliminating enemies</span>
           <button
             onClick={onClose}
-            className="px-8 py-2.5 bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-400 hover:to-blue-400 text-white font-bold rounded-lg transition-all duration-200 hover:scale-105 active:scale-95"
+            className="rounded-xl px-7 py-2.5 text-sm font-bold tracking-wide text-[#04131a] transition-all duration-200 hover:-translate-y-0.5"
+            style={{ background: `linear-gradient(135deg, ${ACCENT}, #0ea5b7)` }}
           >
-            Close
+            Done
           </button>
         </div>
       </div>
+
       <style>{`
-        @keyframes skillTreeEnter {
-          from {
-            opacity: 0;
-            transform: translateY(20px) scale(0.95);
-            filter: blur(5px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0) scale(1);
-            filter: blur(0);
-          }
+        @keyframes stFade {
+          from { opacity: 0; transform: scale(0.97) translateY(12px); }
+          to { opacity: 1; transform: scale(1) translateY(0); }
         }
       `}</style>
     </div>
@@ -240,73 +241,54 @@ interface SkillCardProps {
 const SkillCard: React.FC<SkillCardProps> = ({ skill, isRecommended, canAfford, onClick, isSelected }) => {
   const isMaxed = skill.currentLevel >= skill.maxLevel;
   const hasLevels = skill.currentLevel > 0 && !isMaxed;
+  const Icon = CATEGORY_ICON[skill.category] || Star;
 
-  let borderColor = 'border-gray-600/50';
-  let glowStyle = {};
-  if (isSelected) {
-    borderColor = 'border-cyan-400';
-    glowStyle = { boxShadow: '0 0 15px rgba(6, 182, 212, 0.3), inset 0 0 15px rgba(6, 182, 212, 0.1)' };
-  } else if (isMaxed) {
-    borderColor = 'border-green-400/70';
-    glowStyle = { boxShadow: '0 0 10px rgba(34, 197, 94, 0.2)' };
-  } else if (isRecommended && canAfford) {
-    borderColor = 'border-yellow-400/70';
-    glowStyle = { boxShadow: '0 0 10px rgba(250, 204, 21, 0.2)' };
-  } else if (canAfford) {
-    borderColor = 'border-cyan-400/30';
-  }
+  let borderColor = 'rgba(255,255,255,0.08)';
+  let bg = 'rgba(255,255,255,0.02)';
+  if (isSelected) { borderColor = `${ACCENT}99`; bg = `${ACCENT}14`; }
+  else if (isMaxed) { borderColor = 'rgba(52,211,153,0.5)'; bg = 'rgba(52,211,153,0.07)'; }
+  else if (isRecommended && canAfford) { borderColor = 'rgba(251,191,36,0.45)'; bg = 'rgba(251,191,36,0.06)'; }
+
+  const iconColor = isMaxed ? '#34d399' : hasLevels ? ACCENT : canAfford ? '#cbd5e1' : '#6b7280';
 
   return (
     <button
       onClick={onClick}
-      className={`group p-3 rounded-xl border-2 ${borderColor} transition-all duration-200 text-left relative overflow-hidden hover:scale-[1.03] active:scale-[0.97] ${
-        isMaxed ? 'bg-green-900/20' : hasLevels ? 'bg-cyan-900/15' : 'bg-gray-800/80 hover:bg-gray-700/80'
-      }`}
-      style={glowStyle}
+      className="group relative p-3 rounded-xl border text-left transition-all duration-200 hover:-translate-y-0.5"
+      style={{ borderColor, background: bg }}
     >
-      {/* Subtle gradient overlay on hover */}
-      <div className="absolute inset-0 bg-gradient-to-br from-white/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-200 rounded-xl" />
-
-      {isRecommended && (
-        <div className="absolute -top-1.5 -right-1.5 w-6 h-6 bg-gradient-to-br from-yellow-400 to-orange-400 rounded-full flex items-center justify-center shadow-lg"
-          style={{ boxShadow: '0 0 8px rgba(250, 204, 21, 0.5)' }}
-        >
-          <Star className="w-3 h-3 text-yellow-900" strokeWidth={2.5} fill="currentColor" />
-        </div>
+      {isRecommended && !isMaxed && (
+        <span className="absolute -top-1.5 -right-1.5 flex items-center justify-center w-5 h-5 rounded-full bg-amber-400">
+          <Star className="w-2.5 h-2.5 text-amber-900" strokeWidth={2.5} fill="currentColor" />
+        </span>
+      )}
+      {isMaxed && (
+        <span className="absolute top-2 right-2">
+          <Check className="w-4 h-4 text-emerald-400" strokeWidth={3} />
+        </span>
       )}
 
-      <div className="relative">
-        <div className="mb-1.5">
-          {(() => { const I = CATEGORY_ICON[skill.category] || Star; return <I className="w-6 h-6 text-cyan-400" strokeWidth={1.75} />; })()}
-        </div>
-        <div className="text-sm font-bold text-white mb-1 line-clamp-1">{skill.name}</div>
-        <div className="text-xs text-gray-400 line-clamp-2 mb-2">{skill.description}</div>
+      <Icon className="w-5 h-5 mb-2" style={{ color: iconColor }} strokeWidth={1.75} />
+      <div className="text-sm font-bold text-white mb-0.5 line-clamp-1">{skill.name}</div>
+      <div className="text-[11px] text-gray-500 line-clamp-2 mb-2 leading-snug">{skill.description}</div>
 
-        {/* Level progress bar */}
-        <div className="h-1 bg-gray-700 rounded-full mb-2 overflow-hidden">
-          <div
-            className={`h-full transition-all duration-500 rounded-full ${isMaxed ? 'bg-green-400' : 'bg-cyan-400'}`}
-            style={{ width: `${(skill.currentLevel / skill.maxLevel) * 100}%` }}
-          />
-        </div>
-
-        <div className="flex items-center justify-between text-xs">
-          <span className={`font-mono font-bold ${isMaxed ? 'text-green-400' : hasLevels ? 'text-cyan-400' : 'text-gray-500'}`}>
-            Lv.{skill.currentLevel}/{skill.maxLevel}
-          </span>
-          {!isMaxed && (
-            <span className={`font-semibold ${canAfford ? 'text-yellow-400' : 'text-red-400/60'}`}>
-              {skill.cost} pts
-            </span>
-          )}
-        </div>
+      <div className="h-1 rounded-full bg-white/10 overflow-hidden mb-2">
+        <div
+          className="h-full rounded-full transition-all duration-500"
+          style={{ width: `${(skill.currentLevel / skill.maxLevel) * 100}%`, background: isMaxed ? '#34d399' : ACCENT }}
+        />
       </div>
 
-      {isMaxed && (
-        <div className="absolute top-2 right-2">
-          <Check className="w-4 h-4 text-green-400" strokeWidth={3} />
-        </div>
-      )}
+      <div className="flex items-center justify-between text-[11px]">
+        <span className="font-mono font-semibold" style={{ color: iconColor }}>
+          Lv {skill.currentLevel}/{skill.maxLevel}
+        </span>
+        {!isMaxed && (
+          <span className={`font-semibold ${canAfford ? 'text-amber-400' : 'text-gray-600'}`}>
+            {skill.cost} pts
+          </span>
+        )}
+      </div>
     </button>
   );
 };
@@ -320,93 +302,104 @@ interface SkillDetailsProps {
 const SkillDetails: React.FC<SkillDetailsProps> = ({ skill, canAfford, onUnlock }) => {
   const isMaxed = skill.currentLevel >= skill.maxLevel;
   const canUnlock = canAfford && !isMaxed;
+  const Icon = CATEGORY_ICON[skill.category] || Star;
 
   return (
     <div>
-      <div className="text-center mb-4">
-        <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-cyan-500/10 border border-cyan-400/30 mb-3">
-          {(() => { const I = CATEGORY_ICON[skill.category] || Star; return <I className="w-8 h-8 text-cyan-400" strokeWidth={1.75} />; })()}
+      <div className="text-center mb-5">
+        <div
+          className="inline-flex items-center justify-center w-16 h-16 rounded-2xl mb-3"
+          style={{ background: `${ACCENT}14`, boxShadow: `inset 0 0 0 1px ${ACCENT}40` }}
+        >
+          <Icon className="w-8 h-8" style={{ color: ACCENT }} strokeWidth={1.75} />
         </div>
-        <h3 className="text-xl font-bold text-white mb-1">{skill.name}</h3>
-        <div className="text-sm text-gray-400 capitalize">{skill.category}</div>
+        <h3 className="text-lg font-bold text-white">{skill.name}</h3>
+        <div className="text-xs text-gray-500 capitalize mt-0.5">{skill.category}</div>
       </div>
 
-      <div className="mb-4">
-        <div className="text-xs font-bold text-gray-400 uppercase mb-1">Description</div>
-        <p className="text-sm text-gray-300">{skill.description}</p>
-      </div>
+      <DetailBlock title="Description">
+        <p className="text-sm text-gray-300 leading-relaxed">{skill.description}</p>
+      </DetailBlock>
 
-      <div className="mb-4">
-        <div className="text-xs font-bold text-gray-400 uppercase mb-1">Effects</div>
-        <div className="space-y-1">
+      <DetailBlock title="Effects">
+        <div className="space-y-1.5">
           {skill.effects.map((effect, idx) => (
-            <div key={idx} className="text-xs text-cyan-400 bg-cyan-900/20 p-2 rounded">
-              • {effect.description}
+            <div
+              key={idx}
+              className="text-xs rounded-lg px-2.5 py-1.5"
+              style={{ background: `${ACCENT}10`, color: ACCENT }}
+            >
+              {effect.description}
             </div>
           ))}
         </div>
-      </div>
+      </DetailBlock>
 
       {skill.requirements.length > 0 && (
-        <div className="mb-4">
-          <div className="text-xs font-bold text-gray-400 uppercase mb-1">Requirements</div>
+        <DetailBlock title="Requirements">
           <div className="space-y-1">
             {skill.requirements.map((req, idx) => (
-              <div key={idx} className="text-xs text-gray-300">
-                • {req.type}: {req.value}
-              </div>
+              <div key={idx} className="text-xs text-gray-400">• {req.type}: {req.value}</div>
             ))}
           </div>
-        </div>
+        </DetailBlock>
       )}
 
       {skill.synergiesWith.length > 0 && (
-        <div className="mb-4">
-          <div className="text-xs font-bold text-gray-400 uppercase mb-1">Synergies</div>
-          <div className="text-xs text-purple-400">
+        <DetailBlock title="Synergies">
+          <div className="text-xs text-violet-300">
             Works well with {skill.synergiesWith.length} other skill{skill.synergiesWith.length > 1 ? 's' : ''}
           </div>
-        </div>
+        </DetailBlock>
       )}
 
-      <div className="mb-4">
-        <div className="text-xs font-bold text-gray-400 uppercase mb-1">Progress</div>
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-sm text-white">Level {skill.currentLevel}/{skill.maxLevel}</span>
-          <span className="text-sm text-yellow-400">{skill.cost} points</span>
+      <DetailBlock title="Progress">
+        <div className="flex items-center justify-between mb-1.5">
+          <span className="text-sm text-white">Level {skill.currentLevel} / {skill.maxLevel}</span>
+          <span className="text-sm font-semibold text-amber-400">{skill.cost} pts</span>
         </div>
-        <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
+        <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
           <div
-            className="h-full bg-cyan-500 transition-all"
-            style={{ width: `${(skill.currentLevel / skill.maxLevel) * 100}%` }}
+            className="h-full rounded-full transition-all"
+            style={{ width: `${(skill.currentLevel / skill.maxLevel) * 100}%`, background: ACCENT }}
           />
         </div>
-      </div>
+      </DetailBlock>
 
       {isMaxed ? (
         <button
           disabled
-          className="w-full flex items-center justify-center gap-2 py-3 bg-green-500/20 text-green-400 font-bold rounded-lg border-2 border-green-400/50"
-          style={{ boxShadow: '0 0 10px rgba(34, 197, 94, 0.2)' }}
+          className="w-full flex items-center justify-center gap-2 py-3 rounded-xl font-bold text-sm
+            border border-emerald-400/40 bg-emerald-500/10 text-emerald-300"
         >
           <Check className="w-4 h-4" strokeWidth={3} /> Maxed Out
         </button>
       ) : canUnlock ? (
         <button
           onClick={onUnlock}
-          className="w-full py-3.5 bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-400 hover:to-blue-400 text-white font-black rounded-lg transition-all duration-200 hover:scale-[1.02] active:scale-95"
-          style={{ boxShadow: '0 0 20px rgba(6, 182, 212, 0.4)' }}
+          className="w-full py-3 rounded-xl font-bold text-sm tracking-wide text-[#04131a] transition-all duration-200 hover:-translate-y-0.5"
+          style={{ background: `linear-gradient(135deg, ${ACCENT}, #0ea5b7)` }}
         >
-          UNLOCK ({skill.cost} points)
+          Unlock — {skill.cost} points
         </button>
       ) : (
         <button
           disabled
-          className="w-full py-3 bg-gray-700/50 text-gray-500 font-bold rounded-lg cursor-not-allowed border border-gray-600/30"
+          className="w-full flex items-center justify-center gap-2 py-3 rounded-xl font-bold text-sm
+            border border-white/10 bg-white/[0.03] text-gray-500 cursor-not-allowed"
         >
-          Insufficient Points
+          <Lock className="w-3.5 h-3.5" strokeWidth={2.25} /> Insufficient Points
         </button>
       )}
     </div>
   );
 };
+
+const DetailBlock = ({ title, children }: { title: string; children: React.ReactNode }) => (
+  <div className="mb-4">
+    <div className="text-[10px] font-semibold tracking-[0.18em] text-gray-500 uppercase mb-1.5">{title}</div>
+    {children}
+  </div>
+);
+
+export default SkillTreeMenu;

@@ -875,6 +875,22 @@ const ForestSurvivalGame = () => {
     skyDome.frustumCulled = false;
     scene.add(skyDome);
 
+    // === IMAGE-BASED LIGHTING ===
+    // Generate an environment map from the sky/scene so metallic surfaces
+    // (weapons especially) pick up real reflections and read as polished
+    // metal instead of flat matte plastic. Generated once at startup.
+    let envMapTexture: THREE.Texture | null = null;
+    try {
+      const pmrem = new THREE.PMREMGenerator(renderer);
+      pmrem.compileEquirectangularShader();
+      const envRT = pmrem.fromScene(scene, 0.04);
+      envMapTexture = envRT.texture;
+      scene.environment = envMapTexture;
+      pmrem.dispose();
+    } catch (err) {
+      console.warn('[App] Environment map generation failed:', err);
+    }
+
     // === WEATHER SYSTEM ===
     const weatherSystem = new WeatherSystem(scene, camera);
     // Disable weather system as it causes lag and annoying visual effects
@@ -3515,6 +3531,11 @@ const ForestSurvivalGame = () => {
       // Cleanup SmartEnemyManager (releases pooled resources)
       smartEnemyManager.dispose();
 
+      if (envMapTexture) {
+        scene.environment = null;
+        envMapTexture.dispose();
+      }
+
       renderer.dispose();
     };
   }, [gameStarted, gameMode, classicDifficulty, classicTimeOfDay, selectedMap, multiplayerManager, gameRestartKey]);
@@ -3766,50 +3787,60 @@ const ForestSurvivalGame = () => {
 
       <div className="absolute inset-0" style={{ zIndex: 10, pointerEvents: 'none' }}>
         {!gameState.isGameOver && !isPaused && (
-          <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2">
-            <div className="relative">
-              {/* Dynamic crosshair based on settings */}
-              {userSettings.crosshairStyle === 'dot' && (
+          <div
+            className="absolute top-1/2 left-1/2"
+            style={{ filter: 'drop-shadow(0 0 1.5px rgba(0,0,0,0.95))' }}
+          >
+            {(() => {
+              const cc = userSettings.crosshairColor;
+              const style = userSettings.crosshairStyle;
+              // Centered tick — `len` long, `pos` away from centre, in the given direction.
+              const tick = (dir: 'up' | 'down' | 'left' | 'right', len: number, gap: number) => {
+                const vertical = dir === 'up' || dir === 'down';
+                const sign = dir === 'up' || dir === 'left' ? -1 : 1;
+                const offset = sign * (gap + len / 2);
+                return (
+                  <div
+                    key={dir}
+                    className="absolute rounded-full"
+                    style={{
+                      backgroundColor: cc,
+                      width: vertical ? 2 : len,
+                      height: vertical ? len : 2,
+                      left: '50%',
+                      top: '50%',
+                      transform: `translate(-50%, -50%) translate${vertical ? 'Y' : 'X'}(${offset}px)`,
+                    }}
+                  />
+                );
+              };
+              const dot = (size: number) => (
                 <div
-                  className="absolute w-2 h-2 rounded-full top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2"
-                  style={{ backgroundColor: userSettings.crosshairColor, boxShadow: `0 0 4px ${userSettings.crosshairColor}` }}
+                  className="absolute rounded-full"
+                  style={{
+                    backgroundColor: cc, width: size, height: size,
+                    left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
+                  }}
                 />
-              )}
-              {userSettings.crosshairStyle === 'cross' && (
-                <>
-                  <div
-                    className="absolute w-8 h-0.5 top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 opacity-90"
-                    style={{ backgroundColor: userSettings.crosshairColor, boxShadow: `0 0 4px ${userSettings.crosshairColor}` }}
-                  />
-                  <div
-                    className="absolute w-0.5 h-8 top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 opacity-90"
-                    style={{ backgroundColor: userSettings.crosshairColor, boxShadow: `0 0 4px ${userSettings.crosshairColor}` }}
-                  />
-                </>
-              )}
-              {userSettings.crosshairStyle === 'circle' && (
+              );
+              const ring = (size: number) => (
                 <div
-                  className="absolute w-6 h-6 rounded-full top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2"
-                  style={{ border: `2px solid ${userSettings.crosshairColor}`, boxShadow: `0 0 6px ${userSettings.crosshairColor}` }}
+                  className="absolute rounded-full"
+                  style={{
+                    border: `1.5px solid ${cc}`, width: size, height: size,
+                    left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
+                  }}
                 />
-              )}
-              {userSettings.crosshairStyle === 'dynamic' && (
-                <>
-                  <div
-                    className="absolute w-8 h-0.5 top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 opacity-90"
-                    style={{ backgroundColor: userSettings.crosshairColor, boxShadow: `0 0 4px ${userSettings.crosshairColor}` }}
-                  />
-                  <div
-                    className="absolute w-0.5 h-8 top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 opacity-90"
-                    style={{ backgroundColor: userSettings.crosshairColor, boxShadow: `0 0 4px ${userSettings.crosshairColor}` }}
-                  />
-                  <div
-                    className="absolute w-4 h-4 rounded-full top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2"
-                    style={{ border: `2px solid ${userSettings.crosshairColor}`, boxShadow: `0 0 4px ${userSettings.crosshairColor}` }}
-                  />
-                </>
-              )}
-            </div>
+              );
+
+              if (style === 'dot') return dot(4);
+              if (style === 'circle') return <>{ring(16)}{dot(2)}</>;
+              if (style === 'dynamic') {
+                return <>{(['up', 'down', 'left', 'right'] as const).map((d) => tick(d, 5, 5))}{ring(20)}{dot(2)}</>;
+              }
+              // default: 'cross' — gapped 4-tick crosshair with centre dot
+              return <>{(['up', 'down', 'left', 'right'] as const).map((d) => tick(d, 6, 3))}{dot(2)}</>;
+            })()}
           </div>
         )}
 

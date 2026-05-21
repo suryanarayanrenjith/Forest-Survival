@@ -36,40 +36,52 @@ export type LODLevel = typeof LODLevel[keyof typeof LODLevel];
 
 // Enemy visual configuration
 interface EnemyVisualConfig {
-  baseColor: number;
-  accentColor: number;
-  brightColor: number;
+  baseColor: number;   // torso / main shell
+  accentColor: number; // limbs
+  brightColor: number; // head
+  darkColor: number;   // recessed detail (visor, joints)
+  glowColor: number;   // emissive core + eye bar
   emissiveIntensity: number;
   scale: number;
 }
 
+// Cohesive, slightly-desaturated palette — premium low-poly reads better with
+// a controlled value range than with pure primary colors.
 const ENEMY_CONFIGS: Record<EnemyType, EnemyVisualConfig> = {
   normal: {
-    baseColor: 0xcc0000,
-    accentColor: 0x990000,
-    brightColor: 0xff3333,
-    emissiveIntensity: 0.2,
+    baseColor: 0xb02f2f,
+    accentColor: 0x7c1f1f,
+    brightColor: 0xd9544a,
+    darkColor: 0x2e1313,
+    glowColor: 0xff6a3d,
+    emissiveIntensity: 0.18,
     scale: 1.0,
   },
   fast: {
-    baseColor: 0x0066ff,
-    accentColor: 0x0044cc,
-    brightColor: 0x3399ff,
-    emissiveIntensity: 0.25,
+    baseColor: 0x2f6fd0,
+    accentColor: 0x1f4a9c,
+    brightColor: 0x5fa0ec,
+    darkColor: 0x121f38,
+    glowColor: 0x57d6ff,
+    emissiveIntensity: 0.22,
     scale: 0.7,
   },
   tank: {
-    baseColor: 0x339933,
-    accentColor: 0x226622,
-    brightColor: 0x55cc55,
-    emissiveIntensity: 0.15,
+    baseColor: 0x3f8a45,
+    accentColor: 0x2a5f30,
+    brightColor: 0x6fc06f,
+    darkColor: 0x13301a,
+    glowColor: 0x9bff6b,
+    emissiveIntensity: 0.14,
     scale: 1.5,
   },
   boss: {
-    baseColor: 0xcc00cc,
-    accentColor: 0x990099,
-    brightColor: 0xff33ff,
-    emissiveIntensity: 0.3,
+    baseColor: 0x9446c6,
+    accentColor: 0x6c2c96,
+    brightColor: 0xc77ce6,
+    darkColor: 0x24123a,
+    glowColor: 0xe85aff,
+    emissiveIntensity: 0.28,
     scale: 2.0,
   },
 };
@@ -82,6 +94,15 @@ interface SharedGeometries {
   legHigh: THREE.BoxGeometry;
   headHigh: THREE.BoxGeometry;
   eyeHigh: THREE.BoxGeometry;
+  // High-detail accent pieces (premium low-poly silhouette)
+  chestHigh: THREE.BoxGeometry;
+  coreHigh: THREE.OctahedronGeometry;
+  shoulderHigh: THREE.BoxGeometry;
+  visorHigh: THREE.BoxGeometry;
+  footHigh: THREE.BoxGeometry;
+  handHigh: THREE.BoxGeometry;
+  crestHigh: THREE.ConeGeometry;
+  hipHigh: THREE.BoxGeometry;
 
   // Medium detail - simplified
   bodyMedium: THREE.BoxGeometry;
@@ -150,7 +171,7 @@ class SmartEnemyManager {
 
   // Shared resources
   private sharedGeometries: SharedGeometries | null = null;
-  private sharedMaterials: Map<string, THREE.MeshLambertMaterial> = new Map();
+  private sharedMaterials: Map<string, THREE.MeshStandardMaterial> = new Map();
   private eyeMaterial: THREE.MeshBasicMaterial | null = null;
 
   // Object pool
@@ -222,7 +243,16 @@ class SmartEnemyManager {
       armHigh: new THREE.BoxGeometry(0.3, 1.2, 0.3),
       legHigh: new THREE.BoxGeometry(0.35, 1, 0.35),
       headHigh: new THREE.BoxGeometry(0.8, 0.8, 0.8),
-      eyeHigh: new THREE.BoxGeometry(0.12, 0.12, 0.06),
+      eyeHigh: new THREE.BoxGeometry(0.52, 0.1, 0.06),
+      // Accent pieces
+      chestHigh: new THREE.BoxGeometry(0.74, 0.78, 0.16),
+      coreHigh: new THREE.OctahedronGeometry(0.16, 0),
+      shoulderHigh: new THREE.BoxGeometry(0.42, 0.34, 0.5),
+      visorHigh: new THREE.BoxGeometry(0.72, 0.26, 0.14),
+      footHigh: new THREE.BoxGeometry(0.42, 0.2, 0.56),
+      handHigh: new THREE.BoxGeometry(0.34, 0.34, 0.34),
+      crestHigh: new THREE.ConeGeometry(0.16, 0.55, 4),
+      hipHigh: new THREE.BoxGeometry(0.92, 0.4, 0.56),
 
       // Medium detail - simplified (fewer segments)
       bodyMedium: new THREE.BoxGeometry(1, 1.5, 0.6, 1, 1, 1),
@@ -244,37 +274,68 @@ class SmartEnemyManager {
       color: 0xffff00,
     });
 
-    // Create materials for each enemy type
+    // Create materials for each enemy type.
+    // PBR (MeshStandardMaterial) gives the "robot" enemies a proper metallic
+    // sheen and lets them pick up the scene environment map — far richer than
+    // the old flat Lambert shading. Flat shading is kept for the crisp,
+    // intentional faceted silhouette.
     for (const [type, config] of Object.entries(ENEMY_CONFIGS)) {
       // Body material
-      this.sharedMaterials.set(`${type}_body`, new THREE.MeshLambertMaterial({
+      this.sharedMaterials.set(`${type}_body`, new THREE.MeshStandardMaterial({
         color: config.baseColor,
         emissive: config.baseColor,
         emissiveIntensity: config.emissiveIntensity,
+        metalness: 0.45,
+        roughness: 0.42,
         flatShading: true,
       }));
 
       // Accent material (arms/legs)
-      this.sharedMaterials.set(`${type}_accent`, new THREE.MeshLambertMaterial({
+      this.sharedMaterials.set(`${type}_accent`, new THREE.MeshStandardMaterial({
         color: config.accentColor,
         emissive: config.accentColor,
         emissiveIntensity: config.emissiveIntensity * 0.8,
+        metalness: 0.55,
+        roughness: 0.38,
         flatShading: true,
       }));
 
       // Bright material (head)
-      this.sharedMaterials.set(`${type}_bright`, new THREE.MeshLambertMaterial({
+      this.sharedMaterials.set(`${type}_bright`, new THREE.MeshStandardMaterial({
         color: config.brightColor,
         emissive: config.brightColor,
         emissiveIntensity: config.emissiveIntensity * 1.2,
+        metalness: 0.5,
+        roughness: 0.3,
         flatShading: true,
       }));
 
       // Low LOD material (single color, simplified)
-      this.sharedMaterials.set(`${type}_low`, new THREE.MeshLambertMaterial({
+      this.sharedMaterials.set(`${type}_low`, new THREE.MeshStandardMaterial({
         color: config.baseColor,
         emissive: config.baseColor,
         emissiveIntensity: config.emissiveIntensity,
+        metalness: 0.4,
+        roughness: 0.5,
+        flatShading: true,
+      }));
+
+      // Dark recessed-detail material (visor frame, joints, hips)
+      this.sharedMaterials.set(`${type}_dark`, new THREE.MeshStandardMaterial({
+        color: config.darkColor,
+        metalness: 0.7,
+        roughness: 0.45,
+        flatShading: true,
+      }));
+
+      // Glowing energy material (chest core, eye bar) — strong emissive so it
+      // catches the bloom pass and reads as a light source.
+      this.sharedMaterials.set(`${type}_glow`, new THREE.MeshStandardMaterial({
+        color: 0x000000,
+        emissive: config.glowColor,
+        emissiveIntensity: 2.4,
+        metalness: 0,
+        roughness: 0.4,
         flatShading: true,
       }));
     }
@@ -350,55 +411,103 @@ class SmartEnemyManager {
     // Clear existing meshes
     this.clearLODGroups(pooledEnemy);
 
-    // HIGH LOD - Full detail
+    // HIGH LOD — premium low-poly creature.
+    // body / arms / legs / head remain the animated parts; the extra pieces
+    // are parented to them so they follow every animation automatically.
     const highGroup = pooledEnemy.lodGroups.high;
+    const G = this.sharedGeometries;
+    const darkMat = this.sharedMaterials.get(`${type}_dark`)!;
+    const glowMat = this.sharedMaterials.get(`${type}_glow`)!;
+    const shadows = this.graphicsPreset?.shadowsEnabled ?? true;
 
-    const body = new THREE.Mesh(this.sharedGeometries.bodyHigh, bodyMat);
-    body.castShadow = this.graphicsPreset?.shadowsEnabled ?? true;
+    // ── Torso ──
+    const body = new THREE.Mesh(G.bodyHigh, bodyMat);
+    body.castShadow = shadows;
     body.position.y = 0.75;
     highGroup.add(body);
     pooledEnemy.parts.body = body;
 
-    const leftArm = new THREE.Mesh(this.sharedGeometries.armHigh, accentMat);
-    leftArm.castShadow = this.graphicsPreset?.shadowsEnabled ?? true;
+    // Chest plate + glowing power core
+    const chest = new THREE.Mesh(G.chestHigh, brightMat);
+    chest.position.set(0, 0.06, 0.3);
+    body.add(chest);
+    const core = new THREE.Mesh(G.coreHigh, glowMat);
+    core.position.set(0, 0.06, 0.41);
+    body.add(core);
+
+    // Shoulder pads
+    const lShoulder = new THREE.Mesh(G.shoulderHigh, brightMat);
+    lShoulder.castShadow = shadows;
+    lShoulder.position.set(-0.62, 0.52, 0);
+    body.add(lShoulder);
+    const rShoulder = new THREE.Mesh(G.shoulderHigh, brightMat);
+    rShoulder.castShadow = shadows;
+    rShoulder.position.set(0.62, 0.52, 0);
+    body.add(rShoulder);
+
+    // Hip block bridging torso and legs
+    const hips = new THREE.Mesh(G.hipHigh, darkMat);
+    hips.castShadow = shadows;
+    hips.position.set(0, -0.8, 0);
+    body.add(hips);
+
+    // ── Arms (+ fists) ──
+    const leftArm = new THREE.Mesh(G.armHigh, accentMat);
+    leftArm.castShadow = shadows;
     leftArm.position.set(-0.65, 0.6, 0);
     highGroup.add(leftArm);
     pooledEnemy.parts.leftArm = leftArm;
+    const lHand = new THREE.Mesh(G.handHigh, darkMat);
+    lHand.position.set(0, -0.62, 0);
+    leftArm.add(lHand);
 
-    const rightArm = new THREE.Mesh(this.sharedGeometries.armHigh, accentMat);
-    rightArm.castShadow = this.graphicsPreset?.shadowsEnabled ?? true;
+    const rightArm = new THREE.Mesh(G.armHigh, accentMat);
+    rightArm.castShadow = shadows;
     rightArm.position.set(0.65, 0.6, 0);
     highGroup.add(rightArm);
     pooledEnemy.parts.rightArm = rightArm;
+    const rHand = new THREE.Mesh(G.handHigh, darkMat);
+    rHand.position.set(0, -0.62, 0);
+    rightArm.add(rHand);
 
-    const leftLeg = new THREE.Mesh(this.sharedGeometries.legHigh, accentMat);
-    leftLeg.castShadow = this.graphicsPreset?.shadowsEnabled ?? true;
+    // ── Legs (+ feet) ──
+    const leftLeg = new THREE.Mesh(G.legHigh, accentMat);
+    leftLeg.castShadow = shadows;
     leftLeg.position.set(-0.25, -0.5, 0);
     highGroup.add(leftLeg);
     pooledEnemy.parts.leftLeg = leftLeg;
+    const lFoot = new THREE.Mesh(G.footHigh, darkMat);
+    lFoot.position.set(0, -0.56, 0.12);
+    leftLeg.add(lFoot);
 
-    const rightLeg = new THREE.Mesh(this.sharedGeometries.legHigh, accentMat);
-    rightLeg.castShadow = this.graphicsPreset?.shadowsEnabled ?? true;
+    const rightLeg = new THREE.Mesh(G.legHigh, accentMat);
+    rightLeg.castShadow = shadows;
     rightLeg.position.set(0.25, -0.5, 0);
     highGroup.add(rightLeg);
     pooledEnemy.parts.rightLeg = rightLeg;
+    const rFoot = new THREE.Mesh(G.footHigh, darkMat);
+    rFoot.position.set(0, -0.56, 0.12);
+    rightLeg.add(rFoot);
 
-    const head = new THREE.Mesh(this.sharedGeometries.headHigh, brightMat);
-    head.castShadow = this.graphicsPreset?.shadowsEnabled ?? true;
+    // ── Head (+ visor, glowing eye bar, crest) ──
+    const head = new THREE.Mesh(G.headHigh, brightMat);
+    head.castShadow = shadows;
     head.position.y = 1.9;
     highGroup.add(head);
     pooledEnemy.parts.head = head;
 
-    // Eyes
-    const leftEye = new THREE.Mesh(this.sharedGeometries.eyeHigh, this.eyeMaterial!);
-    leftEye.position.set(-0.2, 1.95, 0.41);
-    highGroup.add(leftEye);
-    pooledEnemy.parts.leftEye = leftEye;
-
-    const rightEye = new THREE.Mesh(this.sharedGeometries.eyeHigh, this.eyeMaterial!);
-    rightEye.position.set(0.2, 1.95, 0.41);
-    highGroup.add(rightEye);
-    pooledEnemy.parts.rightEye = rightEye;
+    const visor = new THREE.Mesh(G.visorHigh, darkMat);
+    visor.position.set(0, -0.02, 0.34);
+    head.add(visor);
+    const eyeBar = new THREE.Mesh(G.eyeHigh, glowMat);
+    eyeBar.position.set(0, -0.02, 0.43);
+    head.add(eyeBar);
+    pooledEnemy.parts.leftEye = eyeBar;
+    const crest = new THREE.Mesh(G.crestHigh, brightMat);
+    crest.castShadow = shadows;
+    crest.position.set(0, 0.62, -0.04);
+    crest.rotation.x = -0.32;
+    head.add(crest);
 
     // MEDIUM LOD - Simplified (no separate arms/legs, just body + head)
     const mediumGroup = pooledEnemy.lodGroups.medium;
