@@ -1217,7 +1217,8 @@ const ForestSurvivalGame = () => {
     let currentWeapon = 'pistol';
     let canShoot = true;
     let isReloading = false;
-    let unlockedWeapons = ['pistol'];
+    // Tutorial mode hands the player every weapon so they can try them all.
+    let unlockedWeapons = isTutorialMode ? Object.keys(WEAPONS) : ['pistol'];
     let isAiming = false;
     let timeScale = 1.0; // For slow-mo effects (1.0 = normal speed)
     let fovPunch = 0; // FOV punch on shooting (additive degrees)
@@ -2315,7 +2316,9 @@ const ForestSurvivalGame = () => {
         }
       }
 
-      if (isGameOver || paused) {
+      // Freeze the whole simulation while a tutorial overlay card is on screen
+      // — the scene still renders, but nothing moves and enemies cannot attack.
+      if (isGameOver || paused || tutorialActiveRef.current) {
         // Render paused state (with or without post-processing based on quality)
         if (graphicsPreset.postProcessing) {
           // Pass 1: Render scene
@@ -3000,11 +3003,13 @@ const ForestSurvivalGame = () => {
         // Performance optimization: Skip AI update for distant enemies
         const distance = enemy.mesh.position.distanceTo(camera.position);
         if (distance > MAX_AI_UPDATE_DISTANCE) {
-          // Still do basic movement toward player for distant enemies (simpler logic, reuse temp vector)
+          // Distant enemies: simple seek toward the player, frame-rate
+          // independent (×60 matches the close-range step) so they keep pace.
           _tempVec3.subVectors(camera.position, enemy.mesh.position).normalize();
-          enemy.mesh.position.x += _tempVec3.x * (enemy.speed || 2) * delta;
-          enemy.mesh.position.z += _tempVec3.z * (enemy.speed || 2) * delta;
+          enemy.mesh.position.x += _tempVec3.x * enemy.speed * delta * 60;
+          enemy.mesh.position.z += _tempVec3.z * enemy.speed * delta * 60;
           enemy.mesh.position.y = groundY;
+          enemy.mesh.rotation.y = Math.atan2(_tempVec3.x, _tempVec3.z);
           continue;
         }
 
@@ -3072,120 +3077,110 @@ const ForestSurvivalGame = () => {
             }
           }
 
-          // === OBSTACLE AVOIDANCE SYSTEM ===
-          let finalTargetPosition = enemy.targetPosition.clone();
-          if (enemy.obstacleAvoidance) {
-            const pathResult = enemy.obstacleAvoidance.calculatePath(
-              enemy.mesh.position,
-              enemy.targetPosition,
-              terrainObjects,
-              enemies,
-              enemy,
-              delta
-            );
-
-            // If path is blocked or stuck, use alternative path
-            if (!pathResult.canMoveDirectly || pathResult.isStuck) {
-              if (pathResult.alternativePath) {
-                finalTargetPosition = pathResult.alternativePath;
-              }
-              // If stuck, reset stuck detection after finding path
-              if (pathResult.isStuck) {
-                enemy.obstacleAvoidance.resetStuckDetection();
-              }
+          // === STEERING + OBSTACLE AVOIDANCE ===
+          // Seek the AI target, then add a repulsion force away from nearby
+          // trees/rocks so the enemy smoothly arcs around obstacles instead of
+          // walking into them and getting stuck.
+          const seekTarget = enemy.isDodging ? enemy.targetPosition : aiDecision.targetPosition;
+          let steerX = seekTarget.x - enemy.mesh.position.x;
+          let steerZ = seekTarget.z - enemy.mesh.position.z;
+          {
+            const sl = Math.hypot(steerX, steerZ) || 1;
+            steerX /= sl; steerZ /= sl;
+          }
+          // Repulsion from collidable terrain
+          for (let k = 0; k < terrainObjects.length; k++) {
+            const obj = terrainObjects[k];
+            if (!obj.collidable) continue;
+            const ox = enemy.mesh.position.x - obj.x;
+            const oz = enemy.mesh.position.z - obj.z;
+            const influence = obj.radius + 4.0;
+            if (Math.abs(ox) > influence || Math.abs(oz) > influence) continue;
+            const od = Math.hypot(ox, oz);
+            if (od > 0.001 && od < influence) {
+              const t = (influence - od) / influence;
+              const push = t * t * 2.6;
+              steerX += (ox / od) * push;
+              steerZ += (oz / od) * push;
             }
-
-            // Apply personal space avoidance (prevent stacking)
-            if (pathResult.avoidanceVector.length() > 0.01) {
-              finalTargetPosition.add(pathResult.avoidanceVector.multiplyScalar(2));
+          }
+          // Light separation from other enemies (reduces clumping)
+          for (let k = 0; k < enemies.length; k++) {
+            const other = enemies[k];
+            if (other === enemy || other.dead) continue;
+            const ox = enemy.mesh.position.x - other.mesh.position.x;
+            const oz = enemy.mesh.position.z - other.mesh.position.z;
+            if (Math.abs(ox) > 2.6 || Math.abs(oz) > 2.6) continue;
+            const od = Math.hypot(ox, oz);
+            if (od > 0.001 && od < 2.6) {
+              const push = ((2.6 - od) / 2.6) * 0.95;
+              steerX += (ox / od) * push;
+              steerZ += (oz / od) * push;
             }
+          }
+          {
+            const sl = Math.hypot(steerX, steerZ) || 1;
+            steerX /= sl; steerZ /= sl;
           }
 
           // === MOVEMENT ===
-          const isMoving = distance > 2.0 && (!enemy.attackSystem || enemy.attackSystem.canMove());
+          const isMoving = distance > 2.2 && (!enemy.attackSystem || enemy.attackSystem.canMove());
 
           if (isMoving) {
-            // Smooth walk time increment based on actual movement speed
-            const moveSpeedFactor = enemy.isDodging ? 2.5 : (enemy.speed * aiDecision.moveSpeed * 8);
-            enemy.walkTime += delta * moveSpeedFactor;
+            // Frame-rate independent step (×60 keeps the original 60fps feel)
+            const speedMul = enemy.isDodging ? 3.0 : aiDecision.moveSpeed;
+            const step = enemy.speed * speedMul * delta * 60;
+            const px = enemy.mesh.position.x;
+            const pz = enemy.mesh.position.z;
+            const stepX = steerX * step;
+            const stepZ = steerZ * step;
 
-            // === ENHANCED ROBOT ANIMATIONS ===
-            const animSpeed = enemy.isDodging ? 2.0 : 1.0;
-            const walkPhase = enemy.walkTime * animSpeed;
+            // Move with wall-sliding — if the full step is blocked, slide along
+            // each axis so the enemy never dead-stops against a tree.
+            let movedX = 0, movedZ = 0;
+            if (!checkTerrainCollision(px + stepX, pz + stepZ)) {
+              enemy.mesh.position.x = px + stepX;
+              enemy.mesh.position.z = pz + stepZ;
+              movedX = stepX; movedZ = stepZ;
+            } else if (!checkTerrainCollision(px + stepX, pz)) {
+              enemy.mesh.position.x = px + stepX;
+              movedX = stepX;
+            } else if (!checkTerrainCollision(px, pz + stepZ)) {
+              enemy.mesh.position.z = pz + stepZ;
+              movedZ = stepZ;
+            }
+            const movedLen = Math.hypot(movedX, movedZ);
 
-            // Smooth leg animation with lerp for realistic motion
+            // Face the actual direction of travel for natural walking; when
+            // essentially blocked, keep facing the player.
+            let faceX: number, faceZ: number;
+            if (movedLen > 0.0005) { faceX = movedX; faceZ = movedZ; }
+            else { faceX = camera.position.x - enemy.mesh.position.x; faceZ = camera.position.z - enemy.mesh.position.z; }
+            const targetAngle = Math.atan2(faceX, faceZ);
+            let angleDiff = targetAngle - enemy.mesh.rotation.y;
+            while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+            while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+            enemy.mesh.rotation.y += angleDiff * Math.min(1, delta * 9);
+
+            // Walk animation driven by how far the enemy ACTUALLY moved this
+            // frame — the stride stays planted to the ground (no gliding) and
+            // the legs stop when the enemy is blocked.
+            enemy.walkTime += movedLen * (enemy.isDodging ? 4.2 : 2.8);
+            const walkPhase = enemy.walkTime;
+            const stride = movedLen > 0.0005 ? 0.62 : 0.0;
             if (enemy.leftLeg && enemy.rightLeg) {
-              const leftLegTarget = Math.sin(walkPhase) * 0.6;
-              const rightLegTarget = Math.sin(walkPhase + Math.PI) * 0.6;
-              enemy.leftLeg.rotation.x = THREE.MathUtils.lerp(enemy.leftLeg.rotation.x, leftLegTarget, 0.15);
-              enemy.rightLeg.rotation.x = THREE.MathUtils.lerp(enemy.rightLeg.rotation.x, rightLegTarget, 0.15);
+              enemy.leftLeg.rotation.x = THREE.MathUtils.lerp(enemy.leftLeg.rotation.x, Math.sin(walkPhase) * stride, 0.2);
+              enemy.rightLeg.rotation.x = THREE.MathUtils.lerp(enemy.rightLeg.rotation.x, Math.sin(walkPhase + Math.PI) * stride, 0.2);
             }
-
-            // Arm swing animation (opposite to legs for natural walk)
             if (enemy.leftArm && enemy.rightArm) {
-              const leftArmTarget = Math.sin(walkPhase + Math.PI) * 0.4;
-              const rightArmTarget = Math.sin(walkPhase) * 0.4;
-              enemy.leftArm.rotation.x = THREE.MathUtils.lerp(enemy.leftArm.rotation.x, leftArmTarget, 0.12);
-              enemy.rightArm.rotation.x = THREE.MathUtils.lerp(enemy.rightArm.rotation.x, rightArmTarget, 0.12);
+              enemy.leftArm.rotation.x = THREE.MathUtils.lerp(enemy.leftArm.rotation.x, Math.sin(walkPhase + Math.PI) * stride * 0.7, 0.18);
+              enemy.rightArm.rotation.x = THREE.MathUtils.lerp(enemy.rightArm.rotation.x, Math.sin(walkPhase) * stride * 0.7, 0.18);
             }
-
-            // Body bob (vertical movement while walking)
-            const bodyBob = Math.abs(Math.sin(walkPhase * 2)) * 0.08;
+            // Body bob synced to the stride
+            const bodyBob = Math.abs(Math.sin(walkPhase)) * 0.07 * (movedLen > 0.0005 ? 1 : 0);
             enemy.mesh.position.y = groundY + bodyBob;
-
-            // Subtle body tilt while moving (lean into movement)
             if (enemy.torso) {
-              const tiltAmount = enemy.isDodging ? 0.15 : 0.05;
-              enemy.torso.rotation.x = THREE.MathUtils.lerp(enemy.torso.rotation.x, tiltAmount, 0.1);
-            }
-
-            // Movement direction
-            const moveDirX = finalTargetPosition.x - enemy.mesh.position.x;
-            const moveDirZ = finalTargetPosition.z - enemy.mesh.position.z;
-            const moveLength = Math.sqrt(moveDirX * moveDirX + moveDirZ * moveDirZ);
-
-            if (moveLength > 0) {
-              const normalizedX = moveDirX / moveLength;
-              const normalizedZ = moveDirZ / moveLength;
-
-              // Apply speed multiplier (faster when dodging)
-              const speedMultiplier = enemy.isDodging ? 3.0 : aiDecision.moveSpeed;
-              const newX = enemy.mesh.position.x + normalizedX * enemy.speed * speedMultiplier;
-              const newZ = enemy.mesh.position.z + normalizedZ * enemy.speed * speedMultiplier;
-
-              // Try to move - if collision, the obstacle avoidance already calculated alternative
-              if (!checkTerrainCollision(newX, newZ)) {
-                enemy.mesh.position.x = newX;
-                enemy.mesh.position.z = newZ;
-              } else if (enemy.obstacleAvoidance) {
-                // Collision detected - try moving perpendicular to escape
-                const perpX = -normalizedZ;
-                const perpZ = normalizedX;
-                const escapeX = enemy.mesh.position.x + perpX * enemy.speed * 2;
-                const escapeZ = enemy.mesh.position.z + perpZ * enemy.speed * 2;
-                if (!checkTerrainCollision(escapeX, escapeZ)) {
-                  enemy.mesh.position.x = escapeX;
-                  enemy.mesh.position.z = escapeZ;
-                }
-              }
-
-              // Look at player (or dodge direction if dodging) with angle-wrapped smooth rotation
-              let lookAtX, lookAtZ;
-              if (enemy.isDodging && enemy.dodgeDirection) {
-                lookAtX = enemy.mesh.position.x + enemy.dodgeDirection.x;
-                lookAtZ = enemy.mesh.position.z + enemy.dodgeDirection.z;
-              } else {
-                lookAtX = camera.position.x;
-                lookAtZ = camera.position.z;
-              }
-              const dx = lookAtX - enemy.mesh.position.x;
-              const dz = lookAtZ - enemy.mesh.position.z;
-              const targetAngle = Math.atan2(dx, dz);
-              // Angle wrapping to prevent 360° spins when crossing ±π
-              let angleDiff = targetAngle - enemy.mesh.rotation.y;
-              while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
-              while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
-              enemy.mesh.rotation.y += angleDiff * 0.12;
+              enemy.torso.rotation.x = THREE.MathUtils.lerp(enemy.torso.rotation.x, enemy.isDodging ? 0.14 : 0.05, 0.1);
             }
           } else {
             // === IDLE ANIMATION ===
@@ -3915,6 +3910,7 @@ const ForestSurvivalGame = () => {
             wave={gameState.wave}
             onMainMenu={returnToMenu}
             onSkillTree={() => { setIsPaused(false); setShowSkillTree(true); }}
+            showSkillTree={gameMode !== 'tutorial'}
             t={t}
           />
         </div>

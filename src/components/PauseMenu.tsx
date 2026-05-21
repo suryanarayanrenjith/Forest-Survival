@@ -9,10 +9,12 @@ interface PauseMenuProps {
   wave: number;
   onMainMenu: () => void;
   onSkillTree: () => void;
+  /** When false the Skill Tree action is hidden (e.g. Tutorial mode). */
+  showSkillTree?: boolean;
   t: (key: string) => string;
 }
 
-const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMenu, onSkillTree }: PauseMenuProps) => {
+const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMenu, onSkillTree, showSkillTree = true }: PauseMenuProps) => {
   const stats = [
     { icon: Heart, label: 'Health', value: `${Math.floor(health)}`, color: '#f87171' },
     { icon: Crosshair, label: 'Ammo', value: `${ammo}/${maxAmmo}`, color: '#fbbf24' },
@@ -74,6 +76,7 @@ const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMe
 
         {/* Actions */}
         <div className="flex flex-col gap-2.5">
+          {showSkillTree && (
           <button
             onClick={onSkillTree}
             className="group flex items-center gap-3 w-full rounded-xl px-4 py-3.5 border border-white/10
@@ -85,6 +88,7 @@ const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMe
             <span className="flex-1 text-left text-sm font-bold text-white tracking-wide">Skill Tree</span>
             <ChevronRight className="w-4 h-4 text-gray-600 group-hover:text-gray-300 group-hover:translate-x-0.5 transition-all" strokeWidth={2} />
           </button>
+          )}
 
           <button
             onClick={onMainMenu}

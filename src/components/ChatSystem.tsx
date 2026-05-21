@@ -261,7 +261,7 @@ const ChatSystem = ({ manager, isVisible }: ChatSystemProps) => {
     <div className="absolute bottom-2 sm:bottom-4 left-2 sm:left-4 space-y-2" style={{ zIndex: 30 }}>
       {/* Chat Messages - Responsive sizing */}
       {showChat && (
-        <div className="w-[280px] sm:w-80 md:w-96 h-48 sm:h-56 md:h-64 bg-black/80 backdrop-blur-sm border-2 border-gray-600/50 rounded-lg overflow-hidden flex flex-col">
+        <div className="w-[280px] sm:w-80 md:w-96 h-48 sm:h-56 md:h-64 bg-[#0b0f15]/95 backdrop-blur-md border border-white/10 rounded-2xl overflow-hidden flex flex-col">
           {/* Header */}
           <div className="px-3 py-2 flex items-center justify-between border-b border-white/[0.07]">
             <div className="flex items-center gap-2">
@@ -317,16 +317,16 @@ const ChatSystem = ({ manager, isVisible }: ChatSystemProps) => {
           </div>
 
           {/* Input Area */}
-          <div className="p-1.5 sm:p-2 border-t border-gray-600/50 bg-gray-900/50">
-            <div className="flex gap-1 sm:gap-2">
+          <div className="p-2 border-t border-white/[0.07]">
+            <div className="flex gap-1.5">
               <input
                 ref={inputRef}
                 type="text"
                 value={inputValue}
                 onChange={(e) => setInputValue(e.target.value)}
                 onKeyPress={handleKeyPress}
-                placeholder="Chat..."
-                className={`flex-1 px-2 sm:px-3 py-1 bg-gray-800 text-white text-xs sm:text-sm rounded border border-gray-600/50 focus:outline-none focus:border-green-500/50 min-w-0 ${chatCooldown ? 'opacity-50' : ''}`}
+                placeholder="Type a message…"
+                className={`flex-1 px-3 py-1.5 bg-white/[0.04] text-white text-xs sm:text-sm rounded-lg border border-white/10 placeholder-gray-600 focus:outline-none focus:border-emerald-400/50 transition-colors min-w-0 ${chatCooldown ? 'opacity-50' : ''}`}
                 maxLength={100}
                 disabled={chatCooldown}
               />
@@ -350,32 +350,32 @@ const ChatSystem = ({ manager, isVisible }: ChatSystemProps) => {
         </div>
       )}
 
-      {/* Emote Picker - Responsive */}
+      {/* Emote Picker */}
       {showEmotes && (
-        <div className="w-[280px] sm:w-80 md:w-96 bg-black/90 backdrop-blur-sm border-2 border-purple-500/50 rounded-lg p-2 sm:p-3">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-purple-400 font-bold text-xs sm:text-sm">Quick Emotes</span>
-            {emoteCooldown && (
-              <span className="text-yellow-400 text-[10px]">Cooldown...</span>
-            )}
-            <button
-              onClick={() => setShowEmotes(false)}
-              className="text-gray-500 hover:text-white transition-colors"
-              aria-label="Close emotes"
-            >
-              <X className="w-3.5 h-3.5" strokeWidth={2.5} />
-            </button>
+        <div className="w-[280px] sm:w-80 md:w-96 bg-[#0b0f15]/95 backdrop-blur-md border border-white/10 rounded-2xl p-3">
+          <div className="flex items-center justify-between mb-2.5">
+            <span className="text-xs font-semibold tracking-[0.12em] text-gray-300 uppercase">Quick Emotes</span>
+            <div className="flex items-center gap-2">
+              {emoteCooldown && <span className="text-amber-400 text-[10px] font-semibold">Cooldown…</span>}
+              <button
+                onClick={() => setShowEmotes(false)}
+                className="text-gray-500 hover:text-white transition-colors"
+                aria-label="Close emotes"
+              >
+                <X className="w-3.5 h-3.5" strokeWidth={2.5} />
+              </button>
+            </div>
           </div>
-          <div className="grid grid-cols-4 gap-1 sm:gap-2">
+          <div className="grid grid-cols-4 gap-1.5">
             {EMOTES.map((emote) => (
               <button
                 key={emote.id}
                 onClick={() => sendEmote(emote)}
                 disabled={emoteCooldown}
-                className={`bg-purple-900/40 hover:bg-purple-800/60 border border-purple-500/30 hover:border-purple-400/50 rounded px-1 sm:px-2 py-1.5 sm:py-2 text-center transition-all transform hover:scale-105 ${emoteCooldown ? 'opacity-50 cursor-not-allowed' : ''}`}
+                className={`flex flex-col items-center gap-0.5 rounded-lg border border-white/10 bg-white/[0.03] px-1 py-2 transition-all hover:bg-white/[0.07] ${emoteCooldown ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
-                <div className="text-lg sm:text-2xl mb-0.5 sm:mb-1">{emote.icon}</div>
-                <div className="text-white text-[8px] sm:text-xs truncate">{emote.label.split(' ')[0]}</div>
+                <div className="text-lg sm:text-xl">{emote.icon}</div>
+                <div className="text-gray-300 text-[9px] sm:text-[10px] font-medium truncate">{emote.label.split(' ')[0]}</div>
               </button>
             ))}
           </div>

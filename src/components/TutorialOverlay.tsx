@@ -42,88 +42,87 @@ export const TutorialOverlay: React.FC<TutorialOverlayProps> = ({
 
   return (
     <div className="fixed inset-0 z-50">
-      {/* Dark overlay — clickable to dismiss optional steps */}
-      <div className="absolute inset-0 bg-black/60" />
+      {/* Dimmed backdrop */}
+      <div className="absolute inset-0" style={{ background: 'rgba(5,8,10,0.6)', backdropFilter: 'blur(2px)' }} />
 
-      {/* Tutorial card — positioned safely within viewport */}
+      {/* Tutorial card */}
       <div
-        className="absolute pointer-events-auto w-[90vw] max-w-lg"
+        className="absolute pointer-events-auto w-[90vw] max-w-md"
         style={{
           ...getPositionStyle(position),
           animation: 'tutorialEnter 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards',
         }}
       >
-        <div className="bg-gradient-to-br from-gray-900 to-gray-800 border-2 border-cyan-400 rounded-xl shadow-2xl overflow-hidden"
-          style={{ boxShadow: '0 0 30px rgba(6, 182, 212, 0.3)' }}
-        >
-          {/* Icon and Title */}
-          <div className="bg-gradient-to-r from-cyan-500 to-blue-500 p-4 flex items-center gap-3">
-            <div className="flex items-center justify-center w-11 h-11 rounded-xl bg-white/15 flex-shrink-0">
-              <GraduationCap className="w-6 h-6 text-white" strokeWidth={2} />
+        <div className="rounded-2xl border border-white/10 bg-[#0b0f15] overflow-hidden shadow-2xl">
+          {/* Accent edge */}
+          <div className="h-0.5 w-full bg-emerald-400" />
+
+          {/* Header */}
+          <div className="flex items-center gap-3 px-5 pt-4 pb-3">
+            <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-emerald-500/12 flex-shrink-0">
+              <GraduationCap className="w-5 h-5 text-emerald-400" strokeWidth={2} />
             </div>
-            <h2 className="text-xl font-bold text-white">{currentStep.title}</h2>
+            <div className="min-w-0">
+              <div className="text-[10px] font-semibold tracking-[0.2em] text-gray-500 uppercase">Tutorial</div>
+              <h2 className="text-base font-bold text-white truncate">{currentStep.title}</h2>
+            </div>
           </div>
 
           {/* Content */}
-          <div className="p-5 space-y-3">
-            <p className="text-gray-300 text-base font-medium">{currentStep.description}</p>
+          <div className="px-5 pb-5 space-y-3">
+            <p className="text-sm text-gray-300 leading-relaxed">{currentStep.description}</p>
 
             {/* Instructions */}
-            <div className="bg-black/40 rounded-lg p-3 space-y-1.5">
-              {currentStep.instructions.map((instruction, idx) => (
-                <div key={idx} className="flex items-start gap-2">
-                  <span className="text-cyan-400 font-bold mt-0.5">•</span>
-                  <p className="text-gray-200 text-sm">{instruction}</p>
-                </div>
-              ))}
-            </div>
+            {currentStep.instructions.length > 0 && (
+              <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-3 space-y-1.5">
+                {currentStep.instructions.map((instruction, idx) => (
+                  <div key={idx} className="flex items-start gap-2">
+                    <span className="text-emerald-400 mt-1.5 w-1 h-1 rounded-full bg-emerald-400 flex-shrink-0" />
+                    <p className="text-xs text-gray-300 leading-relaxed">{instruction}</p>
+                  </div>
+                ))}
+              </div>
+            )}
 
-            {/* Progress bar */}
+            {/* Progress */}
             <div>
-              <div className="flex justify-between text-xs text-gray-400 mb-1">
-                <span>Tutorial Progress</span>
+              <div className="flex justify-between text-[10px] font-semibold tracking-[0.12em] text-gray-500 uppercase mb-1.5">
+                <span>Progress</span>
                 <span>{Math.round(progress)}%</span>
               </div>
-              <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-gradient-to-r from-cyan-500 to-blue-500 transition-all duration-500"
-                  style={{ width: `${progress}%` }}
-                />
+              <div className="h-1 rounded-full bg-white/10 overflow-hidden">
+                <div className="h-full rounded-full bg-emerald-400 transition-all duration-500" style={{ width: `${progress}%` }} />
               </div>
             </div>
 
-            {/* Action buttons — always visible */}
-            <div className="flex gap-2 justify-between pt-1">
-              {/* Skip this step (for optional steps) */}
-              {!currentStep.required && onSkip && (
-                <button
-                  onClick={onSkip}
-                  className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-lg transition-colors text-sm"
-                >
-                  Skip Step
-                </button>
-              )}
-
-              {/* End Tutorial button — always available so user can exit anytime */}
+            {/* Actions */}
+            <div className="flex items-center gap-2 pt-1">
               {onEndTutorial && (
                 <button
                   onClick={onEndTutorial}
-                  className="px-4 py-2 bg-red-900/60 hover:bg-red-800/80 text-red-300 hover:text-red-200 rounded-lg transition-colors text-sm border border-red-500/30"
+                  className="text-xs font-semibold text-gray-500 transition-colors hover:text-gray-300"
                 >
                   End Tutorial
                 </button>
               )}
-
               <div className="flex-1" />
-
-              {/* Continue / Got it button */}
+              {!currentStep.required && onSkip && (
+                <button
+                  onClick={onSkip}
+                  className="rounded-lg px-3.5 py-2 text-xs font-semibold text-gray-300 border border-white/10
+                    transition-colors hover:bg-white/[0.06]"
+                >
+                  Skip
+                </button>
+              )}
               {onNext && (
                 <button
                   onClick={onNext}
-                  className="px-6 py-2 bg-cyan-500 hover:bg-cyan-400 text-white font-bold rounded-lg transition-all duration-150 text-sm hover:scale-105 active:scale-95"
-                  style={{ boxShadow: '0 0 12px rgba(6, 182, 212, 0.4)' }}
+                  className="rounded-lg px-5 py-2 text-xs font-bold tracking-wide text-[#04130a]
+                    transition-all duration-150 hover:-translate-y-0.5"
+                  style={{ background: 'linear-gradient(135deg, #34d399, #22c55e)' }}
                 >
-                  Got it!
+                  Got it
                 </button>
               )}
             </div>
