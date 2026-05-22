@@ -44,6 +44,7 @@ export class GunModel {
   private swayOffset = { rotX: 0, rotY: 0 };
   private walkOffset = { x: 0, y: 0, rotZ: 0, rotX: 0 };
   private reloadRotZ: number = 0;
+  private reloadDip: number = 0; // whole-gun dip during a reload (0..1)
 
   // Jump / fall weapon inertia + landing dip
   private jumpOffset = { y: 0, rotX: 0 };
@@ -856,51 +857,64 @@ export class GunModel {
       }
     }
 
-    // Advanced reload animation
+    // Prominent reload animation — the whole weapon dips and rolls toward
+    // the player, the magazine visibly drops out and a fresh one is slammed
+    // home, then the slide/bolt is racked. Reads as a deliberate, weighty
+    // action on every weapon.
     if (this.isReloading) {
-      this.reloadAnimation += delta * 2.5;
+      this.reloadAnimation += delta * 2.0;
+      const ra = this.reloadAnimation;
 
-      // Stage 1: Magazine eject (0.0 - 0.2)
-      if (this.reloadAnimation < 0.2) {
-        const progress = this.reloadAnimation / 0.2;
+      // Whole-gun dip envelope — ease in, hold, ease out.
+      this.reloadDip =
+        ra < 0.16 ? ra / 0.16 :
+        ra > 0.84 ? Math.max(0, (1 - ra) / 0.16) :
+        1;
+
+      // Stage 1: Magazine drops out (0.0 - 0.24)
+      if (ra < 0.24) {
+        const p = ra / 0.24;
         if (this.magazine) {
-          this.magazine.position.y = this.magRestY - progress * 3;
-          this.magazine.rotation.x = progress * 1.5;
-          this.magazine.rotation.z = progress * 0.5;
+          this.magazine.position.y = this.magRestY - p * 4.6;
+          this.magazine.rotation.x = p * 1.9;
+          this.magazine.rotation.z = p * 0.8;
         }
-        if (this.slide) this.slide.position.z = this.slideRest + progress * 0.5;
-        this.reloadRotZ = 0;
+        if (this.slide) this.slide.position.z = this.slideRest + p * 0.6;
+        this.reloadRotZ = p * 0.6;
       }
-      // Stage 2: Magazine gone (0.2 - 0.4)
-      else if (this.reloadAnimation < 0.4) {
-        const progress = (this.reloadAnimation - 0.2) / 0.2;
+      // Stage 2: Magazine away, hand reaches for a fresh one (0.24 - 0.46)
+      else if (ra < 0.46) {
         if (this.magazine) this.magazine.visible = false;
-        this.reloadRotZ = progress * 0.3;
+        this.reloadRotZ = 0.6;
       }
-      // Stage 3: New magazine insert (0.4 - 0.7)
-      else if (this.reloadAnimation < 0.7) {
-        const progress = (this.reloadAnimation - 0.4) / 0.3;
+      // Stage 3: Fresh magazine slammed in (0.46 - 0.74)
+      else if (ra < 0.74) {
+        const p = (ra - 0.46) / 0.28;
         if (this.magazine) {
           this.magazine.visible = true;
-          this.magazine.position.y = this.magRestY - 3 + progress * 3;
-          this.magazine.rotation.x = 0;
+          this.magazine.position.y = this.magRestY - 4.6 * (1 - p);
+          this.magazine.rotation.x = (1 - p) * 1.3;
           this.magazine.rotation.z = 0;
         }
-        this.reloadRotZ = 0.3;
+        this.reloadRotZ = 0.6;
       }
-      // Stage 4: Seat magazine, release slide/bolt (0.7 - 1.0)
-      else if (this.reloadAnimation < 1.0) {
-        const progress = (this.reloadAnimation - 0.7) / 0.3;
-        if (this.magazine) this.magazine.position.y = this.magRestY;
-        if (this.slide) this.slide.position.z = this.slideRest + (1 - progress) * 0.5;
-        if (this.bolt) this.bolt.position.z = this.boltRest + (1 - progress) * 1.2;
-        this.reloadRotZ = (1 - progress) * 0.3;
+      // Stage 4: Seat the mag, rack the slide/bolt, recover (0.74 - 1.0)
+      else if (ra < 1.0) {
+        const p = (ra - 0.74) / 0.26;
+        if (this.magazine) {
+          this.magazine.position.y = this.magRestY;
+          this.magazine.rotation.x = 0;
+        }
+        if (this.slide) this.slide.position.z = this.slideRest + (1 - p) * 0.6;
+        if (this.bolt) this.bolt.position.z = this.boltRest + (1 - p) * 1.3;
+        this.reloadRotZ = (1 - p) * 0.6;
       }
       // Complete
       else {
         this.isReloading = false;
         this.reloadAnimation = 0;
         this.reloadRotZ = 0;
+        this.reloadDip = 0;
         if (this.magazine) {
           this.magazine.position.y = this.magRestY;
           this.magazine.rotation.x = 0;
@@ -912,6 +926,7 @@ export class GunModel {
       }
     } else {
       this.reloadRotZ *= 0.9;
+      this.reloadDip *= 0.85;
     }
   }
 
@@ -1031,18 +1046,21 @@ export class GunModel {
     const dash = Math.sin(this.dashAnim * Math.PI);
     const land = Math.sin(this.landAnim * Math.PI);
 
+    // Reload pulls the weapon down and in toward the player
+    const reload = this.reloadDip;
+
     this.group.position.x =
-      baseX + this.walkOffset.x * swayMul + SP_X * sprint + runX;
+      baseX + this.walkOffset.x * swayMul + SP_X * sprint + runX - reload * 0.07;
     this.group.position.y =
       baseY + this.walkOffset.y * swayMul + SP_Y * sprint + runY
-      + this.jumpOffset.y - land * 0.12 + abil * 0.07 - dash * 0.05;
+      + this.jumpOffset.y - land * 0.12 + abil * 0.07 - dash * 0.05 - reload * 0.16;
     this.group.position.z =
-      baseZ + this.recoilOffset.z + SP_Z * sprint + dash * 0.16;
+      baseZ + this.recoilOffset.z + SP_Z * sprint + dash * 0.16 + reload * 0.12;
 
     this.group.rotation.x =
       (this.swayOffset.rotX + this.walkOffset.rotX) * swayMul
       + this.recoilOffset.rotX + SP_RX * sprint + runRotX
-      + this.jumpOffset.rotX - land * 0.18;
+      + this.jumpOffset.rotX - land * 0.18 - reload * 0.42;
     this.group.rotation.y =
       this.swayOffset.rotY * swayMul + SP_RY * sprint;
     this.group.rotation.z =

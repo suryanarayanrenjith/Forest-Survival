@@ -7,10 +7,12 @@ import { WEAPONS } from '../types/game';
 
 /** One ability slot's live state for the HUD ability bar. */
 export interface AbilityHudItem {
-  key: string;       // keybind label, e.g. 'Q'
-  name: string;      // ability name, e.g. 'Dash'
-  cooldown: number;  // 0..1 — 1 means fully recharged / ready
-  active: boolean;   // ability is currently active
+  key: string;        // keybind label, e.g. 'Q'
+  name: string;       // ability name, e.g. 'Dash'
+  cooldown: number;   // 0..1 — 1 means fully recharged / ready
+  active: boolean;    // ability is currently active
+  unlocked?: boolean; // false = still locked behind a score threshold
+  unlockScore?: number; // score required to unlock
 }
 
 interface HUDProps {
@@ -218,15 +220,18 @@ const HUD = ({
 
 /** A single ability slot with a radial cooldown sweep that "refills". */
 const AbilitySlot = ({ ability }: { ability: AbilityHudItem }) => {
-  const Icon = ABILITY_ICONS[ability.name] ?? Zap;
-  const ready = ability.cooldown >= 1;
+  const locked = ability.unlocked === false;
+  const Icon = locked ? Lock : (ABILITY_ICONS[ability.name] ?? Zap);
+  const ready = !locked && ability.cooldown >= 1;
   const deg = Math.min(360, Math.max(0, ability.cooldown * 360));
 
   return (
     <div className="flex flex-col items-center gap-1">
       <div
         className={`relative flex items-center justify-center w-12 h-12 rounded-xl border transition-colors duration-200 ${
-          ability.active
+          locked
+            ? 'border-white/[0.07] bg-black/55'
+            : ability.active
             ? 'border-emerald-400/80 bg-emerald-500/25'
             : ready
             ? 'border-emerald-400/55 bg-emerald-500/10'
@@ -235,11 +240,13 @@ const AbilitySlot = ({ ability }: { ability: AbilityHudItem }) => {
         style={ready && !ability.active ? { animation: 'abilityReady 2.4s ease-in-out infinite' } : undefined}
       >
         <Icon
-          className={`w-5 h-5 ${ability.active ? 'text-emerald-200' : ready ? 'text-emerald-300' : 'text-gray-500'}`}
+          className={`${locked ? 'w-4 h-4' : 'w-5 h-5'} ${
+            locked ? 'text-gray-600' : ability.active ? 'text-emerald-200' : ready ? 'text-emerald-300' : 'text-gray-500'
+          }`}
           strokeWidth={2.25}
         />
         {/* Radial cooldown sweep — the dark wedge shrinks clockwise as it recharges */}
-        {!ready && (
+        {!locked && !ready && (
           <div
             className="absolute inset-0 rounded-xl pointer-events-none"
             style={{ background: `conic-gradient(rgba(0,0,0,0) ${deg}deg, rgba(3,6,10,0.82) ${deg}deg)` }}
@@ -249,14 +256,16 @@ const AbilitySlot = ({ ability }: { ability: AbilityHudItem }) => {
         <kbd
           className={`absolute -top-1.5 -right-1.5 px-1 min-w-[15px] h-[15px] flex items-center justify-center
             rounded bg-[#0b0f15] border text-[9px] font-bold font-mono ${
-            ready ? 'border-emerald-400/50 text-emerald-300' : 'border-white/15 text-gray-400'
+            ready ? 'border-emerald-400/50 text-emerald-300' : 'border-white/15 text-gray-500'
           }`}
         >
           {ability.key}
         </kbd>
       </div>
-      <span className={`text-[9px] font-semibold tracking-wide uppercase ${ready ? 'text-gray-300' : 'text-gray-600'}`}>
-        {ability.name}
+      <span className={`text-[9px] font-semibold tracking-wide uppercase ${
+        locked ? 'text-gray-600' : ready ? 'text-gray-300' : 'text-gray-500'
+      }`}>
+        {locked ? `${ability.unlockScore ?? 0} pts` : ability.name}
       </span>
     </div>
   );

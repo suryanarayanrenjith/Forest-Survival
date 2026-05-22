@@ -379,6 +379,16 @@ const ForestSurvivalGame = () => {
     // Initialize ability system (for all modes)
     const abilitySystem = new AbilitySystem();
 
+    // Score needed to unlock each ability — Dash is free, the rest unlock
+    // progressively (just like weapons). Tutorial mode unlocks everything.
+    const abilityUnlockScore: Record<string, number> = {
+      dash: 0,
+      shield: 200,
+      speed: 500,
+      heal: 900,
+      invincible: 1500,
+    };
+
     // Initialize achievement system
     const achievementSystem = new AchievementSystem();
     achievementSystem.onUnlock((achievement: any) => {
@@ -742,7 +752,11 @@ const ForestSurvivalGame = () => {
           color = adjustSaturation(color, saturation);
           color = adjustTemperature(color, temperature);
           color *= colorTint;
-          color = ACESFilm(color);
+          // CRITICAL: clamp negatives before ACES. ACES is a rational curve —
+          // feeding it a negative channel returns a spurious POSITIVE value,
+          // which flipped the zero-blue channel of orange/red bullets up to
+          // 1.0 and rendered them pink. Clamping keeps pure hues pure.
+          color = ACESFilm(max(color, vec3(0.0)));
 
           vec2 center = vUv - 0.5;
           float dist = length(center);
@@ -1385,58 +1399,6 @@ const ForestSurvivalGame = () => {
       scene.add(ambientParticles);
     }
 
-    // === GROUND MIST ===
-    // Soft fog billboards drifting low to the ground. Combined with the
-    // distance fog they give the world genuine atmospheric depth so it no
-    // longer reads as a blank, endless plane — proper AAA ground fog.
-    const groundMist: THREE.Sprite[] = [];
-    let groundMistTexture: THREE.CanvasTexture | null = null;
-    {
-      const mistCount = Math.round(20 * graphicsPreset.particleDensity);
-      if (gameSettings.particles && mistCount > 0) {
-        // Soft radial puff texture, shared by every mist sprite
-        const mc = document.createElement('canvas');
-        mc.width = 128;
-        mc.height = 128;
-        const mctx = mc.getContext('2d')!;
-        const mg = mctx.createRadialGradient(64, 64, 0, 64, 64, 64);
-        mg.addColorStop(0, 'rgba(255,255,255,0.9)');
-        mg.addColorStop(0.5, 'rgba(255,255,255,0.4)');
-        mg.addColorStop(1, 'rgba(255,255,255,0)');
-        mctx.fillStyle = mg;
-        mctx.fillRect(0, 0, 128, 128);
-        groundMistTexture = new THREE.CanvasTexture(mc);
-
-        // Mist colour — the fog colour lifted toward white so wisps read
-        // as soft haze rather than dark blobs, even on dark maps.
-        const fogHex = scene.fog ? (scene.fog as THREE.FogExp2).color.getHex() : 0xbfcad0;
-        const mistColor = new THREE.Color(fogHex).lerp(new THREE.Color(0xffffff), 0.34);
-
-        for (let i = 0; i < mistCount; i++) {
-          const mat = new THREE.SpriteMaterial({
-            map: groundMistTexture,
-            color: mistColor,
-            transparent: true,
-            opacity: 0.05 + Math.random() * 0.11,
-            depthWrite: false,
-          });
-          const sprite = new THREE.Sprite(mat);
-          const scl = 16 + Math.random() * 20;
-          sprite.scale.set(scl, scl * 0.5, 1);
-          sprite.position.set(
-            camera.position.x + (Math.random() - 0.5) * 95,
-            1.5 + Math.random() * 5.5,
-            camera.position.z + (Math.random() - 0.5) * 95,
-          );
-          (sprite as any)._driftX = (Math.random() - 0.5) * 0.7;
-          (sprite as any)._driftZ = (Math.random() - 0.5) * 0.7;
-          sprite.renderOrder = 5;
-          scene.add(sprite);
-          groundMist.push(sprite);
-        }
-      }
-    }
-
     // Game state
     let health = 100;
     let ammo = 12;
@@ -1867,8 +1829,14 @@ const ForestSurvivalGame = () => {
     let dashTimer = 0;
     let dashDirection = new THREE.Vector3();
 
-    const euler = new THREE.Euler(0, 0, 0, 'YXZ');
+    const euler = new THREE.Euler(0, 0, 0, 'YXZ');   // base aim (mouse only)
     const PI_2 = Math.PI / 2;
+    // Camera recoil — a transient kick added on top of the mouse aim each
+    // shot, then smoothly recovered. Decoupled from `euler` so it never
+    // fights the player's mouse input.
+    let recoilPitch = 0;
+    let recoilYaw = 0;
+    const _recoilEuler = new THREE.Euler(0, 0, 0, 'YXZ');
 
     const onKeyDown = (e: KeyboardEvent) => {
       // CRITICAL: Always set the key state first to ensure movement works
@@ -1955,7 +1923,12 @@ const ForestSurvivalGame = () => {
 
       if (abilityKeys[e.code] !== undefined && !paused) {
         const abilityType = abilityKeys[e.code];
-        {
+        // Abilities unlock by score (Dash is always available). Locked
+        // abilities can't be cast — show how to unlock them instead.
+        if (!isTutorialMode && score < abilityUnlockScore[abilityType]) {
+          setPowerUpMessage(`Ability locked — unlocks at ${abilityUnlockScore[abilityType]} pts`);
+          setTimeout(() => setPowerUpMessage(''), 1600);
+        } else {
           const success = abilitySystem.useAbility(abilityType);
           if (success) {
             soundManager.play('powerUp', 0.6);
@@ -2230,7 +2203,12 @@ const ForestSurvivalGame = () => {
         // FOV punch — subtle widening on each shot
         fovPunch = Math.min(fovPunch + recoilAmount * 60, 3);
 
-        // Gun model handles visual recoil animation (no camera tilt!)
+        // CAMERA RECOIL — a real kick up the player has to ride and control.
+        // Pitch climbs each shot (capped), with a small random horizontal
+        // sway so sustained fire walks the aim like a real weapon.
+        recoilPitch = Math.min(recoilPitch + recoilAmount * 2.7, 0.34);
+        recoilYaw += (Math.random() - 0.5) * recoilAmount * 1.6;
+        recoilYaw = Math.max(-0.12, Math.min(0.12, recoilYaw));
       }
     };
 
@@ -2293,14 +2271,13 @@ const ForestSurvivalGame = () => {
     const onMouseMove = (e: MouseEvent) => {
       if (!paused && !isGameOver) {
         if (document.pointerLockElement === renderer.domElement || mouseDown) {
-          // CLEAN CAMERA ROTATION - Pure mouse movement with sensitivity from settings
-          // This prevents any camera tilt accumulation issues
-          euler.setFromQuaternion(camera.quaternion);
+          // Mouse only updates the BASE aim (`euler`). The render loop
+          // composes base aim + recoil into the final camera rotation, so
+          // recoil and mouse input never corrupt each other.
           const baseSens = 0.002 * sensitivityMultiplier;
           euler.y -= e.movementX * baseSens;
           euler.x -= e.movementY * baseSens;
           euler.x = Math.max(-PI_2, Math.min(PI_2, euler.x));
-          camera.quaternion.setFromEuler(euler);
         }
       }
     };
@@ -2751,6 +2728,8 @@ const ForestSurvivalGame = () => {
           return {
             cooldown: abilitySystem.getCooldownPercent(type) / 100,
             active: a ? a.active : false,
+            unlocked: isTutorialMode || score >= abilityUnlockScore[type],
+            unlockScore: abilityUnlockScore[type],
           };
         };
         setAbilityHud([
@@ -2758,6 +2737,8 @@ const ForestSurvivalGame = () => {
             key: 'Q', name: 'Dash',
             cooldown: dashCooldown <= 0 ? 1 : Math.max(0, 1 - dashCooldown / dashCooldownTime),
             active: isDashing,
+            unlocked: true,
+            unlockScore: 0,
           },
           { key: 'E', name: 'Shield', ...abil('shield') },
           { key: 'F', name: 'Sprint', ...abil('speed') },
@@ -2894,6 +2875,20 @@ const ForestSurvivalGame = () => {
       // Decay FOV punch
       fovPunch *= 0.92;
 
+      // === CAMERA RECOIL ===
+      // Recover the recoil kick smoothly, then compose (base aim + recoil)
+      // into the final camera rotation. Aiming down sights tightens recoil.
+      const recoilRecover = Math.min(1, rawDelta * 8.5);
+      recoilPitch += (0 - recoilPitch) * recoilRecover;
+      recoilYaw += (0 - recoilYaw) * recoilRecover;
+      _recoilEuler.set(
+        Math.max(-PI_2, Math.min(PI_2, euler.x + recoilPitch)),
+        euler.y + recoilYaw,
+        0,
+        'YXZ',
+      );
+      camera.quaternion.setFromEuler(_recoilEuler);
+
       // Update ambient particles — drift and re-center around player
       if (ambientParticles) {
         const posAttr = ambientParticles.geometry.getAttribute('position') as THREE.BufferAttribute;
@@ -2918,21 +2913,6 @@ const ForestSurvivalGame = () => {
           }
         }
         posAttr.needsUpdate = true;
-      }
-
-      // Drift the ground mist and re-centre wisps that wander off
-      if (groundMist.length > 0) {
-        for (const m of groundMist) {
-          m.position.x += (m as any)._driftX * rawDelta;
-          m.position.z += (m as any)._driftZ * rawDelta;
-          const mdx = m.position.x - camera.position.x;
-          const mdz = m.position.z - camera.position.z;
-          if (Math.abs(mdx) > 58 || Math.abs(mdz) > 58) {
-            m.position.x = camera.position.x + (Math.random() - 0.5) * 95;
-            m.position.z = camera.position.z + (Math.random() - 0.5) * 95;
-            m.position.y = 1.5 + Math.random() * 5.5;
-          }
-        }
       }
 
       // Removed player light update for performance
@@ -3504,7 +3484,21 @@ const ForestSurvivalGame = () => {
         const groundY = 1.0 * baseScale;
 
         // Performance optimization: Skip AI update for distant enemies
-        const distance = enemy.mesh.position.distanceTo(camera.position);
+        let distance = enemy.mesh.position.distanceTo(camera.position);
+
+        // === ANTI-ESCAPE RECYCLING ===
+        // An enemy that falls far behind — deep in the fog, out of sight —
+        // is relocated into a ring around the player. You can't outrun the
+        // wave; enemies keep closing in from every side until it's cleared.
+        if (distance > 96) {
+          const ang = Math.random() * Math.PI * 2;
+          const rad = 46 + Math.random() * 22;
+          enemy.mesh.position.x = camera.position.x + Math.cos(ang) * rad;
+          enemy.mesh.position.z = camera.position.z + Math.sin(ang) * rad;
+          enemy.mesh.position.y = groundY;
+          distance = enemy.mesh.position.distanceTo(camera.position);
+        }
+
         if (distance > MAX_AI_UPDATE_DISTANCE) {
           // Distant enemies: simple seek toward the player, frame-rate
           // independent (×60 matches the close-range step) so they keep pace.
@@ -4071,13 +4065,6 @@ const ForestSurvivalGame = () => {
       sharedBulletGeo.dispose();
       bulletMaterialCache.forEach(m => m.dispose());
       bulletMaterialCache.clear();
-
-      // Cleanup ground mist
-      for (const m of groundMist) {
-        scene.remove(m);
-        (m.material as THREE.SpriteMaterial).dispose();
-      }
-      groundMistTexture?.dispose();
 
       // Cleanup weather system
       weatherSystem.clear();
