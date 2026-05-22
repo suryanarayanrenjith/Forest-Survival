@@ -708,7 +708,11 @@ const ForestSurvivalGame = () => {
         }
 
         vec3 adjustTemperature(vec3 color, float temp) {
-          return color + vec3(temp, 0.0, -temp) * 0.15;
+          // Multiplicative white-balance. An ADDITIVE offset here used to
+          // inject blue into colours with a zero blue channel — which turned
+          // orange rifle/launcher rounds purple on cool-toned maps. Scaling
+          // each channel instead keeps pure hues pure (0 * anything = 0).
+          return color * (1.0 + vec3(temp, 0.0, -temp) * 0.15);
         }
 
         vec3 ACESFilm(vec3 x) {
@@ -1441,6 +1445,20 @@ const ForestSurvivalGame = () => {
     interface Crater { mesh: THREE.Object3D; life: number; maxLife: number; }
     const craters: Crater[] = [];
 
+    // Shared bullet resources — one low-poly sphere geometry for every bullet
+    // and a per-colour material cache, so firing doesn't allocate (and churn
+    // the GC) on every single shot.
+    const sharedBulletGeo = new THREE.SphereGeometry(0.1, 8, 6);
+    const bulletMaterialCache = new Map<number, THREE.MeshBasicMaterial>();
+    const getBulletMaterial = (color: number): THREE.MeshBasicMaterial => {
+      let m = bulletMaterialCache.get(color);
+      if (!m) {
+        m = new THREE.MeshBasicMaterial({ color, toneMapped: false });
+        bulletMaterialCache.set(color, m);
+      }
+      return m;
+    };
+
 // Create enemy with OPTIMIZED pooled meshes from SmartEnemyManager
     // Returns null if enemy limit reached (adaptive performance management)
     const createEnemy = (x: number, z: number, type: 'normal' | 'fast' | 'tank' | 'boss' = 'normal'): Enemy | null => {
@@ -2098,15 +2116,8 @@ const ForestSurvivalGame = () => {
             bullet.position.copy(camera.position);
             bullet.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, -1), direction);
           } else {
-            const bulletGeometry = new THREE.SphereGeometry(0.1);
-            // toneMapped:false renders the literal bullet colour. Without it,
-            // ACES tone mapping + exposure push the saturated colours off-hue
-            // (e.g. rifle/shotgun rounds reading as pink instead of orange/red).
-            const bulletMaterial = new THREE.MeshBasicMaterial({
-              color: weapon.bulletColor,
-              toneMapped: false,
-            });
-            bullet = new THREE.Mesh(bulletGeometry, bulletMaterial);
+            // Shared geometry + cached material — no per-shot allocation
+            bullet = new THREE.Mesh(sharedBulletGeo, getBulletMaterial(weapon.bulletColor));
             bullet.position.copy(camera.position);
           }
           scene.add(bullet);
@@ -3830,6 +3841,56 @@ const ForestSurvivalGame = () => {
       }
     };
 
+    // === SHADER PRE-WARM ===
+    // The first time a material is rendered the GPU compiles + links its
+    // shader program — a synchronous stall that caused the brief freeze on
+    // the first shot. Spawn one of every combat effect, render a full frame
+    // (which compiles every shader program), then clean them up. After this
+    // all gameplay shaders are hot and firing is hitch-free.
+    const warmUpShaders = () => {
+      const wp = camera.position.clone();
+      wp.z -= 4; // just in front of the camera
+      const warm: THREE.Object3D[] = [];
+
+      const warmBullet = new THREE.Mesh(sharedBulletGeo, getBulletMaterial(0xffff00));
+      warmBullet.position.copy(wp);
+      scene.add(warmBullet); warm.push(warmBullet);
+
+      const warmRocket = createRocketProjectile();
+      warmRocket.position.copy(wp);
+      scene.add(warmRocket); warm.push(warmRocket);
+
+      const warmFlash = new MuzzleFlash(scene, wp, 0xffaa00);
+      const warmTracer = new BulletTracer(scene, wp, wp.clone(), 0xffffaa);
+      const warmImpact = new ImpactEffect(scene, wp, 0xffaa00, 2);
+      const warmBlood = new BloodSplatter(scene, wp, new THREE.Vector3(0, 1, 0), 2);
+
+      try {
+        // A real frame compiles every shader program in every render path
+        if (graphicsPreset.postProcessing) composePostFX();
+        else renderer.render(scene, camera);
+      } catch (err) {
+        console.warn('[Warmup] pre-compile render failed:', err);
+      }
+
+      // Tear the warmup objects back down — they were only here to compile
+      warm.forEach(o => scene.remove(o));
+      warmFlash.dispose(scene);
+      warmTracer.dispose(scene);
+      warmImpact.dispose(scene);
+      warmBlood.dispose(scene);
+      warmRocket.traverse(o => {
+        if (o instanceof THREE.Mesh) {
+          o.geometry.dispose();
+          const mat = o.material;
+          if (Array.isArray(mat)) mat.forEach(m => m.dispose());
+          else mat.dispose();
+        }
+      });
+      // sharedBulletGeo / cached bullet material are reused — not disposed
+    };
+    warmUpShaders();
+
     animate();
 
     const handleResize = () => {
@@ -3900,6 +3961,11 @@ const ForestSurvivalGame = () => {
       blurMaterial.dispose();
       finalMaterial.dispose();
       postQuad.geometry.dispose();
+
+      // Cleanup shared bullet resources
+      sharedBulletGeo.dispose();
+      bulletMaterialCache.forEach(m => m.dispose());
+      bulletMaterialCache.clear();
 
       // Cleanup weather system
       weatherSystem.clear();

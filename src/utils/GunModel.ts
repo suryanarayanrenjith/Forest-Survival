@@ -106,6 +106,7 @@ export class GunModel {
       transparent: true,
       opacity: 0.16,
       depthWrite: false,
+      side: THREE.DoubleSide, // visible as a faint layer from either side
       envMapIntensity: 1.4,
     });
   }
@@ -303,7 +304,8 @@ export class GunModel {
 
     // Red-dot optic — mount, housing, lens, glowing dot
     this.p(new THREE.BoxGeometry(0.5, 0.55, 0.9), black, 0, 1.45, -1, false);
-    const optic = this.p(new THREE.CylinderGeometry(0.4, 0.4, 0.95, 16), black, 0, 1.95, -1);
+    // openEnded so you can see straight through the optic when aiming
+    const optic = this.p(new THREE.CylinderGeometry(0.4, 0.4, 0.95, 16, 1, true), black, 0, 1.95, -1);
     optic.rotation.x = Math.PI / 2;
     const lens = this.p(
       new THREE.CircleGeometry(0.33, 16),
@@ -510,11 +512,12 @@ export class GunModel {
 
     // Tactical scope — tube, bells, rings, lenses, turrets
     const scopeMount = this.mat(0x0a0a0a, 0.8, 0.3);
-    const scope = this.p(new THREE.CylinderGeometry(0.42, 0.42, 4.4, 18), black, 0, 1.55, -1.4);
+    // All scope tubes are openEnded — closed caps would block the sight line
+    const scope = this.p(new THREE.CylinderGeometry(0.42, 0.42, 4.4, 18, 1, true), black, 0, 1.55, -1.4);
     scope.rotation.x = Math.PI / 2;
-    const frontBell = this.p(new THREE.CylinderGeometry(0.56, 0.42, 0.9, 18), black, 0, 1.55, -3.7);
+    const frontBell = this.p(new THREE.CylinderGeometry(0.56, 0.42, 0.9, 18, 1, true), black, 0, 1.55, -3.7);
     frontBell.rotation.x = Math.PI / 2;
-    const rearBell = this.p(new THREE.CylinderGeometry(0.42, 0.52, 0.8, 18), black, 0, 1.55, 1.1);
+    const rearBell = this.p(new THREE.CylinderGeometry(0.42, 0.52, 0.8, 18, 1, true), black, 0, 1.55, 1.1);
     rearBell.rotation.x = Math.PI / 2;
     // Lenses
     const frontLens = this.p(new THREE.CircleGeometry(0.5, 18), glass, 0, 1.55, -4.18, false);
@@ -683,7 +686,7 @@ export class GunModel {
 
     // Optical sight unit on top
     this.p(new THREE.BoxGeometry(0.5, 0.6, 0.5), black, 0, 1, -2.2, false);
-    const optic = this.p(new THREE.CylinderGeometry(0.3, 0.3, 1.4, 14), black, 0, 1.45, -2.2);
+    const optic = this.p(new THREE.CylinderGeometry(0.3, 0.3, 1.4, 14, 1, true), black, 0, 1.45, -2.2);
     optic.rotation.x = Math.PI / 2;
     const lens = this.p(
       new THREE.CircleGeometry(0.24, 14),

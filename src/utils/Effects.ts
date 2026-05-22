@@ -1,5 +1,29 @@
 import * as THREE from 'three';
 
+/**
+ * Shared muzzle-flash texture. The flash gradient is identical every shot, so
+ * building a fresh <canvas> + GPU texture each time (the old behaviour) just
+ * churned memory and stuttered auto-fire weapons. Built once, reused forever.
+ */
+let sharedFlashTexture: THREE.CanvasTexture | null = null;
+function getFlashTexture(): THREE.CanvasTexture {
+  if (sharedFlashTexture) return sharedFlashTexture;
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 128;
+  const context = canvas.getContext('2d')!;
+  const gradient = context.createRadialGradient(64, 64, 0, 64, 64, 64);
+  gradient.addColorStop(0, 'rgba(255, 255, 200, 1)');
+  gradient.addColorStop(0.3, 'rgba(255, 200, 50, 0.9)');
+  gradient.addColorStop(0.6, 'rgba(255, 140, 0, 0.6)');
+  gradient.addColorStop(0.85, 'rgba(255, 80, 0, 0.3)');
+  gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, 128, 128);
+  sharedFlashTexture = new THREE.CanvasTexture(canvas);
+  return sharedFlashTexture;
+}
+
 export class MuzzleFlash {
   light: THREE.PointLight;
   sprite: THREE.Sprite;
@@ -15,26 +39,10 @@ export class MuzzleFlash {
     this.light.castShadow = false; // Don't cast shadows for performance
     scene.add(this.light);
 
-    // Create realistic fire sprite
-    const canvas = document.createElement('canvas');
-    canvas.width = 128;
-    canvas.height = 128;
-    const context = canvas.getContext('2d')!;
-
-    // Create realistic gun fire gradient (bright center, fading to orange edges)
-    const gradient = context.createRadialGradient(64, 64, 0, 64, 64, 64);
-    gradient.addColorStop(0, 'rgba(255, 255, 200, 1)'); // Bright yellow-white center
-    gradient.addColorStop(0.3, 'rgba(255, 200, 50, 0.9)'); // Yellow
-    gradient.addColorStop(0.6, 'rgba(255, 140, 0, 0.6)'); // Orange
-    gradient.addColorStop(0.85, 'rgba(255, 80, 0, 0.3)'); // Dark orange
-    gradient.addColorStop(1, 'rgba(0, 0, 0, 0)'); // Transparent edge
-
-    context.fillStyle = gradient;
-    context.fillRect(0, 0, 128, 128);
-
-    const texture = new THREE.CanvasTexture(canvas);
+    // Sprite uses the shared flash texture (per-instance material for the
+    // animated opacity, but the expensive texture is reused).
     const spriteMaterial = new THREE.SpriteMaterial({
-      map: texture,
+      map: getFlashTexture(),
       blending: THREE.AdditiveBlending,
       transparent: true,
       depthWrite: false
@@ -68,8 +76,9 @@ export class MuzzleFlash {
   dispose(scene: THREE.Scene) {
     scene.remove(this.light);
     scene.remove(this.sprite);
+    // Dispose only the per-instance material — the texture map is shared
+    // across every flash and must NOT be disposed here.
     if (this.sprite.material instanceof THREE.SpriteMaterial) {
-      this.sprite.material.map?.dispose();
       this.sprite.material.dispose();
     }
   }
