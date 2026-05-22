@@ -1,6 +1,17 @@
 import { useEffect, useState } from 'react';
-import { Heart, Crosshair, Skull, Waves, Flame, Lock } from 'lucide-react';
+import {
+  Heart, Crosshair, Skull, Waves, Flame, Lock,
+  Zap, Shield as ShieldIcon, Wind, Ghost, Plus, type LucideIcon,
+} from 'lucide-react';
 import { WEAPONS } from '../types/game';
+
+/** One ability slot's live state for the HUD ability bar. */
+export interface AbilityHudItem {
+  key: string;       // keybind label, e.g. 'Q'
+  name: string;      // ability name, e.g. 'Dash'
+  cooldown: number;  // 0..1 — 1 means fully recharged / ready
+  active: boolean;   // ability is currently active
+}
 
 interface HUDProps {
   health: number;
@@ -19,9 +30,25 @@ interface HUDProps {
   hideStatsPanel?: boolean;
   /** Tutorial mode — the player can't be hurt, so health shows as unlimited. */
   unlimitedHealth?: boolean;
+  /** Tutorial mode — hide the wave counter (no wave progression in tutorial). */
+  hideWave?: boolean;
+  /** Live ability cooldown state for the ability bar. */
+  abilities?: AbilityHudItem[];
 }
 
-const HUD = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, weaponName, combo, unlockedWeapons, currentWeapon, hideStatsPanel = false, unlimitedHealth = false }: HUDProps) => {
+const ABILITY_ICONS: Record<string, LucideIcon> = {
+  Dash: Zap,
+  Shield: ShieldIcon,
+  Sprint: Wind,
+  Ghost: Ghost,
+  Heal: Plus,
+};
+
+const HUD = ({
+  health, ammo, maxAmmo, enemiesKilled, score, wave, weaponName, combo,
+  unlockedWeapons, currentWeapon, hideStatsPanel = false, unlimitedHealth = false,
+  hideWave = false, abilities = [],
+}: HUDProps) => {
   const [scorePopup, setScorePopup] = useState(false);
   const [prevScore, setPrevScore] = useState(score);
 
@@ -100,10 +127,12 @@ const HUD = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, weaponName, co
                 <Skull className="w-3.5 h-3.5 text-gray-500" strokeWidth={2.25} />
                 <span className="text-sm font-semibold text-gray-200 tabular-nums">{enemiesKilled}</span>
               </div>
-              <div className="flex items-center gap-1.5">
-                <Waves className="w-3.5 h-3.5 text-emerald-500" strokeWidth={2.25} />
-                <span className="text-sm font-semibold text-emerald-300 tabular-nums">{wave}</span>
-              </div>
+              {!hideWave && (
+                <div className="flex items-center gap-1.5">
+                  <Waves className="w-3.5 h-3.5 text-emerald-500" strokeWidth={2.25} />
+                  <span className="text-sm font-semibold text-emerald-300 tabular-nums">{wave}</span>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -119,6 +148,17 @@ const HUD = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, weaponName, co
             <Flame className="w-4 h-4 text-orange-400" strokeWidth={2.25} fill="currentColor" />
             <span className="text-base font-bold text-orange-200 tabular-nums tracking-wide">{combo}x</span>
             <span className="text-[10px] font-semibold tracking-[0.2em] text-orange-300/80 uppercase">Combo</span>
+          </div>
+        </div>
+      )}
+
+      {/* ===== Bottom Center — Ability Bar ===== */}
+      {abilities.length > 0 && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 select-none">
+          <div className="flex items-end gap-2 rounded-2xl border border-white/10 bg-black/55 backdrop-blur-md px-3 py-2.5">
+            {abilities.map((a) => (
+              <AbilitySlot key={a.key} ability={a} />
+            ))}
           </div>
         </div>
       )}
@@ -162,35 +202,64 @@ const HUD = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, weaponName, co
         </div>
       </div>
 
-      {/* ===== Bottom Left — Controls ===== */}
-      <div className="absolute bottom-4 left-4 select-none hidden sm:block">
-        <div className="rounded-xl border border-white/[0.07] bg-black/40 backdrop-blur-sm px-3 py-2">
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-gray-500">
-            <Control keyLabel="RMB" action="Lock Mouse" />
-            <Control keyLabel="Scroll" action="Switch Weapon" />
-            <Control keyLabel="R" action="Reload" />
-            <Control keyLabel="Space" action="Jump" />
-          </div>
-        </div>
-      </div>
-
       <style>{`
         @keyframes comboIn {
           0% { transform: translateX(-50%) scale(0.6); opacity: 0; }
           100% { transform: translateX(-50%) scale(1); opacity: 1; }
+        }
+        @keyframes abilityReady {
+          0%, 100% { box-shadow: 0 0 0 0 rgba(52,211,153,0.0); }
+          50% { box-shadow: 0 0 10px 1px rgba(52,211,153,0.45); }
         }
       `}</style>
     </>
   );
 };
 
-const Control = ({ keyLabel, action }: { keyLabel: string; action: string }) => (
-  <div className="flex items-center gap-1.5">
-    <kbd className="px-1.5 py-0.5 rounded bg-white/10 text-gray-300 font-mono text-[9px] font-semibold min-w-[1.5rem] text-center">
-      {keyLabel}
-    </kbd>
-    <span>{action}</span>
-  </div>
-);
+/** A single ability slot with a radial cooldown sweep that "refills". */
+const AbilitySlot = ({ ability }: { ability: AbilityHudItem }) => {
+  const Icon = ABILITY_ICONS[ability.name] ?? Zap;
+  const ready = ability.cooldown >= 1;
+  const deg = Math.min(360, Math.max(0, ability.cooldown * 360));
+
+  return (
+    <div className="flex flex-col items-center gap-1">
+      <div
+        className={`relative flex items-center justify-center w-12 h-12 rounded-xl border transition-colors duration-200 ${
+          ability.active
+            ? 'border-emerald-400/80 bg-emerald-500/25'
+            : ready
+            ? 'border-emerald-400/55 bg-emerald-500/10'
+            : 'border-white/10 bg-black/45'
+        }`}
+        style={ready && !ability.active ? { animation: 'abilityReady 2.4s ease-in-out infinite' } : undefined}
+      >
+        <Icon
+          className={`w-5 h-5 ${ability.active ? 'text-emerald-200' : ready ? 'text-emerald-300' : 'text-gray-500'}`}
+          strokeWidth={2.25}
+        />
+        {/* Radial cooldown sweep — the dark wedge shrinks clockwise as it recharges */}
+        {!ready && (
+          <div
+            className="absolute inset-0 rounded-xl pointer-events-none"
+            style={{ background: `conic-gradient(rgba(0,0,0,0) ${deg}deg, rgba(3,6,10,0.82) ${deg}deg)` }}
+          />
+        )}
+        {/* Keybind chip */}
+        <kbd
+          className={`absolute -top-1.5 -right-1.5 px-1 min-w-[15px] h-[15px] flex items-center justify-center
+            rounded bg-[#0b0f15] border text-[9px] font-bold font-mono ${
+            ready ? 'border-emerald-400/50 text-emerald-300' : 'border-white/15 text-gray-400'
+          }`}
+        >
+          {ability.key}
+        </kbd>
+      </div>
+      <span className={`text-[9px] font-semibold tracking-wide uppercase ${ready ? 'text-gray-300' : 'text-gray-600'}`}>
+        {ability.name}
+      </span>
+    </div>
+  );
+};
 
 export default HUD;

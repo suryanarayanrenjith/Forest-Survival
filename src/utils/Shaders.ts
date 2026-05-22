@@ -82,20 +82,24 @@ export const skyDomeFragmentShader = `
       vec3 horizon = skyColorHorizon;
       sky = mix(horizon, zenith, pow(h, 0.45));
 
-      // Warm the part of the sky around the sun.
-      vec3 sunColor = vec3(1.0, 0.96, 0.84);
+      // Warm, volumetric glow around the sun — feeds the bloom pass so the
+      // sun reads as a radiant, hazy light source rather than a flat dot.
+      vec3 sunColor = vec3(1.0, 0.95, 0.82);
       float glow = pow(max(sd, 0.0), 6.0);
       float wideGlow = pow(max(sd, 0.0), 1.6);
-      sky += sunColor * wideGlow * 0.18;
-      sky += sunColor * glow * 0.7;
+      float hugeGlow = pow(max(sd, 0.0), 0.7);
+      sky += sunColor * hugeGlow * 0.10;
+      sky += sunColor * wideGlow * 0.30;
+      sky += sunColor * glow * 1.25;
 
-      // Crisp sun disk.
+      // Crisp, hot sun disk — blooms strongly.
       float disk = smoothstep(0.9986, 0.9994, sd);
-      sky += sunColor * disk * 7.0;
+      sky += sunColor * disk * 9.0;
 
-      // Atmospheric horizon haze for depth.
-      float haze = pow(1.0 - h, 3.0);
-      sky += horizon * haze * 0.30;
+      // Atmospheric horizon haze for depth — thicker band so the horizon
+      // dissolves into atmosphere instead of ending at a hard edge.
+      float haze = pow(1.0 - h, 2.4);
+      sky += horizon * haze * 0.55;
 
       // Drifting volumetric cloud bands.
       float cloudMask = smoothstep(0.04, 0.45, dir.y);

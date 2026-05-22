@@ -20,7 +20,7 @@ import { AbilitySystem } from './utils/AbilitySystem';
 import { AchievementSystem } from './utils/AchievementSystem';
 import { EnhancedPowerUpSystem } from './utils/EnhancedPowerUps';
 import { DayCycleSystem } from './utils/DayCycleSystem';
-import HUD from './components/HUD';
+import HUD, { type AbilityHudItem } from './components/HUD';
 import MainMenu from './components/MainMenu';
 import ClassicMenu from './components/ClassicMenu';
 import GameOver from './components/GameOver';
@@ -115,6 +115,7 @@ const ForestSurvivalGame = () => {
   const [isPaused, setIsPaused] = useState(false);
   const [showWaveComplete, setShowWaveComplete] = useState(false);
   const [powerUpMessage, setPowerUpMessage] = useState<string>('');
+  const [abilityHud, setAbilityHud] = useState<AbilityHudItem[]>([]);
   const [userSettings, setUserSettings] = useState<UserSettings>(() => gameSettingsManager.getSettings());
   const [currentFPS, setCurrentFPS] = useState(0);
 
@@ -476,9 +477,15 @@ const ForestSurvivalGame = () => {
     let atmosphericSettings = dayCycleSystem.getSettings(actualTimeOfDay);
 
     // Blend map colors with atmospheric settings for unique map feel
-    // Map fog settings override base fog for specific map atmospheres
+    // Map fog settings override base fog for specific map atmospheres.
+    // Boosted ~1.6x for real atmospheric depth — the world fades into haze
+    // instead of reading as an endless, blank flat plane. Clamped so enemies
+    // are still readable as they close in.
     const mapFogDensity = 1.0 / ((mapConfig.fogFar - mapConfig.fogNear) / 2);
-    const blendedFogDensity = (atmosphericSettings.fogDensity + mapFogDensity) / 2;
+    const blendedFogDensity = Math.min(
+      0.026,
+      ((atmosphericSettings.fogDensity + mapFogDensity) / 2) * 1.62,
+    );
 
     // Use dynamic atmospheric settings blended with map config
     scene.fog = new THREE.FogExp2(
@@ -1378,6 +1385,58 @@ const ForestSurvivalGame = () => {
       scene.add(ambientParticles);
     }
 
+    // === GROUND MIST ===
+    // Soft fog billboards drifting low to the ground. Combined with the
+    // distance fog they give the world genuine atmospheric depth so it no
+    // longer reads as a blank, endless plane — proper AAA ground fog.
+    const groundMist: THREE.Sprite[] = [];
+    let groundMistTexture: THREE.CanvasTexture | null = null;
+    {
+      const mistCount = Math.round(20 * graphicsPreset.particleDensity);
+      if (gameSettings.particles && mistCount > 0) {
+        // Soft radial puff texture, shared by every mist sprite
+        const mc = document.createElement('canvas');
+        mc.width = 128;
+        mc.height = 128;
+        const mctx = mc.getContext('2d')!;
+        const mg = mctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+        mg.addColorStop(0, 'rgba(255,255,255,0.9)');
+        mg.addColorStop(0.5, 'rgba(255,255,255,0.4)');
+        mg.addColorStop(1, 'rgba(255,255,255,0)');
+        mctx.fillStyle = mg;
+        mctx.fillRect(0, 0, 128, 128);
+        groundMistTexture = new THREE.CanvasTexture(mc);
+
+        // Mist colour — the fog colour lifted toward white so wisps read
+        // as soft haze rather than dark blobs, even on dark maps.
+        const fogHex = scene.fog ? (scene.fog as THREE.FogExp2).color.getHex() : 0xbfcad0;
+        const mistColor = new THREE.Color(fogHex).lerp(new THREE.Color(0xffffff), 0.34);
+
+        for (let i = 0; i < mistCount; i++) {
+          const mat = new THREE.SpriteMaterial({
+            map: groundMistTexture,
+            color: mistColor,
+            transparent: true,
+            opacity: 0.05 + Math.random() * 0.11,
+            depthWrite: false,
+          });
+          const sprite = new THREE.Sprite(mat);
+          const scl = 16 + Math.random() * 20;
+          sprite.scale.set(scl, scl * 0.5, 1);
+          sprite.position.set(
+            camera.position.x + (Math.random() - 0.5) * 95,
+            1.5 + Math.random() * 5.5,
+            camera.position.z + (Math.random() - 0.5) * 95,
+          );
+          (sprite as any)._driftX = (Math.random() - 0.5) * 0.7;
+          (sprite as any)._driftZ = (Math.random() - 0.5) * 0.7;
+          sprite.renderOrder = 5;
+          scene.add(sprite);
+          groundMist.push(sprite);
+        }
+      }
+    }
+
     // Game state
     let health = 100;
     let ammo = 12;
@@ -1390,6 +1449,11 @@ const ForestSurvivalGame = () => {
     let wave = 1;
     let waveTransitioning = false; // Guards wave-complete logic during the inter-wave delay
     let waveTimeoutId: number | null = null; // Tracked so it can be cancelled on unmount
+    // Enemies still left to spawn this wave. The wave only completes once this
+    // hits 0 AND every living enemy is dead — so it can't be blocked by the
+    // continuous spawner endlessly topping the count back up. (Unused in
+    // tutorial mode, which has no wave progression.)
+    let waveEnemiesRemaining = 0;
     let isGameOver = false;
     let paused = false;
     let combo = 0;
@@ -1405,6 +1469,7 @@ const ForestSurvivalGame = () => {
     let timeScale = 1.0; // For slow-mo effects (1.0 = normal speed)
     let fovPunch = 0; // FOV punch on shooting (additive degrees)
     let fovCheckAccum = 0; // throttles re-reading the FOV setting
+    let abilityHudAccum = 0; // throttles ability-bar HUD updates
 
     // Track player velocity for AI prediction
     let playerVelocity = new THREE.Vector3(0, 0, 0);
@@ -1655,108 +1720,98 @@ const ForestSurvivalGame = () => {
 
     // Difficulty settings already defined at top of useEffect
 
-    const spawnWave = () => {
-      const baseCount = 5 + wave * 2;
-      const enemyCount = Math.floor(baseCount * diffSettings.spawnMult);
-
-      for (let i = 0; i < enemyCount; i++) {
-        // Check adaptive enemy limit from SmartEnemyManager
-        if (!smartEnemyManager.canSpawnMore()) break;
-
-        const angle = (Math.PI * 2 * i) / enemyCount;
-        const distance = 40 + Math.random() * 30;
+    // Spawns up to `count` enemies in a ring around the player. Returns how
+    // many actually spawned (the enemy cap / pool may permit fewer).
+    const spawnEnemyBatch = (count: number): number => {
+      const adaptiveMax = smartEnemyManager.getCurrentMaxEnemies();
+      const hardish = classicDifficulty === 'hard' || classicDifficulty === 'adaptive';
+      let spawned = 0;
+      for (let i = 0; i < count; i++) {
+        if (enemies.length >= adaptiveMax || !smartEnemyManager.canSpawnMore()) break;
+        const angle = Math.random() * Math.PI * 2;
+        const distance = 42 + Math.random() * 26;
         const x = Math.cos(angle) * distance + camera.position.x;
         const z = Math.sin(angle) * distance + camera.position.z;
-
-        // Determine enemy type based on wave
         let type: 'normal' | 'fast' | 'tank' | 'boss' = 'normal';
         const rand = Math.random();
-        if (wave >= 5 && rand < 0.1) type = 'boss';
-        else if (wave >= 3 && rand < 0.3) type = 'tank';
-        else if (wave >= 2 && rand < 0.5) type = 'fast';
-
+        if (wave >= 5 && rand < (hardish ? 0.12 : 0.08)) type = 'boss';
+        else if (wave >= 3 && rand < (hardish ? 0.32 : 0.24)) type = 'tank';
+        else if (wave >= 2 && rand < (hardish ? 0.5 : 0.42)) type = 'fast';
         const enemy = createEnemy(x, z, type);
-        if (enemy) enemies.push(enemy); // Only add if successfully created
+        if (enemy) { enemies.push(enemy); spawned++; }
       }
+      return spawned;
+    };
 
-      // Spawn power-ups more frequently with weighted spawn chances
-      if (wave % 2 === 0) {
-        for (let i = 0; i < 2; i++) {
-          const angle = Math.random() * Math.PI * 2;
-          const distance = 20 + Math.random() * 15;
-
-          // Weighted powerup spawning - common types spawn more frequently
-          const roll = Math.random();
-          let type: PowerUp['type'];
-          if (roll < 0.30) {
-            type = 'health';      // 30% chance
-          } else if (roll < 0.55) {
-            type = 'ammo';        // 25% chance
-          } else if (roll < 0.75) {
-            type = 'speed';       // 20% chance
-          } else if (roll < 0.88) {
-            type = 'damage';      // 13% chance - rare
-          } else if (roll < 0.96) {
-            type = 'shield';      // 8% chance - rare
-          } else {
-            type = 'infinite_ammo'; // 4% chance - very rare
-          }
-
-          powerUps.push(createPowerUp(
-            Math.cos(angle) * distance + camera.position.x,
-            Math.sin(angle) * distance + camera.position.z,
-            type
-          ));
-        }
+    // Weighted power-up drop at the start of a wave.
+    const spawnWavePowerUps = () => {
+      for (let i = 0; i < 2; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const distance = 20 + Math.random() * 15;
+        const roll = Math.random();
+        let type: PowerUp['type'];
+        if (roll < 0.30) type = 'health';
+        else if (roll < 0.55) type = 'ammo';
+        else if (roll < 0.75) type = 'speed';
+        else if (roll < 0.88) type = 'damage';
+        else if (roll < 0.96) type = 'shield';
+        else type = 'infinite_ammo';
+        powerUps.push(createPowerUp(
+          Math.cos(angle) * distance + camera.position.x,
+          Math.sin(angle) * distance + camera.position.z,
+          type,
+        ));
       }
     };
 
-    // Continuous enemy spawning
+    const spawnWave = () => {
+      if (isTutorialMode) {
+        // Tutorial — no wave progression. A light practice group is seeded
+        // here and topped up endlessly by continuousSpawn().
+        spawnEnemyBatch(5);
+        return;
+      }
+      // Solo / multiplayer — a finite, fully clearable wave. The opening
+      // burst spawns now; continuousSpawn() trickles in the rest.
+      waveEnemiesRemaining = Math.floor((10 + wave * 5) * diffSettings.spawnMult);
+      const opening = Math.min(7, waveEnemiesRemaining);
+      waveEnemiesRemaining -= spawnEnemyBatch(opening);
+      if (wave % 2 === 0) spawnWavePowerUps();
+    };
+
+    // Continuous enemy spawning — paces how fast the wave budget drains in.
     let lastSpawnTime = Date.now();
 
-    // Determine spawn interval based on difficulty (adaptive uses medium as base, AI system will adjust)
     const getSpawnSettings = () => {
       switch (classicDifficulty) {
-        case 'easy': return { interval: 10000, maxEnemies: 25, baseSpawn: 2 };
-        case 'medium': return { interval: 7000, maxEnemies: 35, baseSpawn: 3 };
-        case 'hard': return { interval: 5000, maxEnemies: 50, baseSpawn: 4 };
-        case 'adaptive': return { interval: 8000, maxEnemies: 40, baseSpawn: 3 }; // Balanced start
-        default: return { interval: 7000, maxEnemies: 35, baseSpawn: 3 };
+        case 'easy': return { interval: 5000, baseSpawn: 3 };
+        case 'medium': return { interval: 4000, baseSpawn: 4 };
+        case 'hard': return { interval: 3000, baseSpawn: 5 };
+        case 'adaptive': return { interval: 4500, baseSpawn: 4 };
+        default: return { interval: 4000, baseSpawn: 4 };
       }
     };
     const spawnSettings = getSpawnSettings();
-    const spawnInterval = spawnSettings.interval;
-    // Note: Max enemies now dynamically managed by SmartEnemyManager
 
     const continuousSpawn = () => {
       const currentTime = Date.now();
+      if (currentTime - lastSpawnTime <= spawnSettings.interval) return;
+      if (enemies.length >= smartEnemyManager.getCurrentMaxEnemies() || !smartEnemyManager.canSpawnMore()) return;
 
-      // Use SmartEnemyManager's adaptive limit instead of static maxEnemies
-      const adaptiveMax = smartEnemyManager.getCurrentMaxEnemies();
-      if (currentTime - lastSpawnTime > spawnInterval && enemies.length < adaptiveMax && smartEnemyManager.canSpawnMore()) {
-        const baseSpawn = spawnSettings.baseSpawn;
-        const spawnCount = Math.floor(baseSpawn + Math.random() * 3);
+      if (isTutorialMode) {
+        // Tutorial — endless light trickle so there's always a target.
+        spawnEnemyBatch(Math.floor(spawnSettings.baseSpawn + Math.random() * 2));
+        lastSpawnTime = currentTime;
+        return;
+      }
 
-        for (let i = 0; i < spawnCount; i++) {
-          // Check adaptive limit on each spawn
-          if (!smartEnemyManager.canSpawnMore()) break;
-
-          const angle = Math.random() * Math.PI * 2;
-          const distance = 50 + Math.random() * 20;
-          const x = Math.cos(angle) * distance + camera.position.x;
-          const z = Math.sin(angle) * distance + camera.position.z;
-
-          // Determine enemy type (adaptive uses medium-balanced probabilities)
-          let type: 'normal' | 'fast' | 'tank' | 'boss' = 'normal';
-          const rand = Math.random();
-          const isHardOrAdaptive = classicDifficulty === 'hard' || classicDifficulty === 'adaptive';
-          if (wave >= 3 && rand < (isHardOrAdaptive ? 0.12 : 0.05)) type = 'boss';
-          else if (wave >= 2 && rand < (isHardOrAdaptive ? 0.30 : 0.2)) type = 'tank';
-          else if (rand < (isHardOrAdaptive ? 0.45 : 0.4)) type = 'fast';
-
-          const enemy = createEnemy(x, z, type);
-          if (enemy) enemies.push(enemy); // Only add if successfully created
-        }
+      // Solo / multiplayer — only spawn what's left of this wave's budget.
+      if (waveEnemiesRemaining > 0) {
+        const batch = Math.min(
+          waveEnemiesRemaining,
+          Math.floor(spawnSettings.baseSpawn + Math.random() * 3),
+        );
+        waveEnemiesRemaining -= spawnEnemyBatch(batch);
         lastSpawnTime = currentTime;
       }
     };
@@ -1889,24 +1944,31 @@ const ForestSurvivalGame = () => {
         return;
       }
 
-      // Ability activation (E, F, V, B for 4 abilities - C is now crouch)
-      const abilityKeys: Record<string, number> = {
-        'KeyE': 0, // Shield
-        'KeyF': 1, // Speed Boost
-        'KeyV': 2, // Explosive Shot
-        'KeyB': 3  // Heal
+      // Ability activation — keys map directly to ability TYPE (the old
+      // index-based mapping was off by one, so E actually cast Dash).
+      const abilityKeys: Record<string, 'shield' | 'speed' | 'invincible' | 'heal'> = {
+        'KeyE': 'shield',     // Energy Shield
+        'KeyF': 'speed',      // Sprint (speed boost)
+        'KeyV': 'invincible', // Ghost Mode
+        'KeyB': 'heal',       // Quick Heal
       };
 
       if (abilityKeys[e.code] !== undefined && !paused) {
-        const abilityIndex = abilityKeys[e.code];
-        const abilities = abilitySystem.getAllAbilities();
-        if (abilities[abilityIndex]) {
-          const success = abilitySystem.useAbility(abilities[abilityIndex].type);
+        const abilityType = abilityKeys[e.code];
+        {
+          const success = abilitySystem.useAbility(abilityType);
           if (success) {
             soundManager.play('powerUp', 0.6);
             gunModel.triggerAbility(); // Quick weapon flourish on cast
+            // Quick Heal restores HP immediately
+            if (abilityType === 'heal') {
+              health = Math.min(100, health + 30);
+              setPowerUpMessage('+30 Health');
+              setTimeout(() => setPowerUpMessage(''), 1200);
+              updateGameState();
+            }
             // Create visual effect
-            const effect = abilitySystem.createAbilityEffect(scene, camera.position, abilities[abilityIndex].type);
+            const effect = abilitySystem.createAbilityEffect(scene, camera.position, abilityType);
             scene.add(effect);
             setTimeout(() => scene.remove(effect), 2000);
 
@@ -2408,9 +2470,10 @@ const ForestSurvivalGame = () => {
         powerUps.push(ammoDrop);
       }
       updateGameState();
-      // Wave complete — count only living enemies (corpses linger during death anim)
+      // Wave complete — only once the whole wave budget has spawned AND
+      // every living enemy is dead. Tutorial mode has no wave progression.
       const livingEnemies = enemies.reduce((n, e) => n + (e.dead ? 0 : 1), 0);
-      if (livingEnemies === 0 && !waveTransitioning) {
+      if (!isTutorialMode && waveEnemiesRemaining <= 0 && livingEnemies === 0 && !waveTransitioning) {
         waveTransitioning = true;
         wave++;
         combo = 0;
@@ -2678,6 +2741,31 @@ const ForestSurvivalGame = () => {
       // Update ability system
       const abilityEffects = abilitySystem.update(delta);
 
+      // Push ability cooldown state to the HUD ability bar (throttled — the
+      // CSS transition smooths the gaps between updates).
+      abilityHudAccum += rawDelta;
+      if (abilityHudAccum >= 0.12) {
+        abilityHudAccum = 0;
+        const abil = (type: 'shield' | 'speed' | 'invincible' | 'heal') => {
+          const a = abilitySystem.getAbility(type);
+          return {
+            cooldown: abilitySystem.getCooldownPercent(type) / 100,
+            active: a ? a.active : false,
+          };
+        };
+        setAbilityHud([
+          {
+            key: 'Q', name: 'Dash',
+            cooldown: dashCooldown <= 0 ? 1 : Math.max(0, 1 - dashCooldown / dashCooldownTime),
+            active: isDashing,
+          },
+          { key: 'E', name: 'Shield', ...abil('shield') },
+          { key: 'F', name: 'Sprint', ...abil('speed') },
+          { key: 'V', name: 'Ghost', ...abil('invincible') },
+          { key: 'B', name: 'Heal', ...abil('heal') },
+        ]);
+      }
+
       // Update enhanced power-ups (airdrops)
       enhancedPowerUps.updateAirdrops(delta, scene);
 
@@ -2830,6 +2918,21 @@ const ForestSurvivalGame = () => {
           }
         }
         posAttr.needsUpdate = true;
+      }
+
+      // Drift the ground mist and re-centre wisps that wander off
+      if (groundMist.length > 0) {
+        for (const m of groundMist) {
+          m.position.x += (m as any)._driftX * rawDelta;
+          m.position.z += (m as any)._driftZ * rawDelta;
+          const mdx = m.position.x - camera.position.x;
+          const mdz = m.position.z - camera.position.z;
+          if (Math.abs(mdx) > 58 || Math.abs(mdz) > 58) {
+            m.position.x = camera.position.x + (Math.random() - 0.5) * 95;
+            m.position.z = camera.position.z + (Math.random() - 0.5) * 95;
+            m.position.y = 1.5 + Math.random() * 5.5;
+          }
+        }
       }
 
       // Removed player light update for performance
@@ -3911,8 +4014,6 @@ const ForestSurvivalGame = () => {
     window.addEventListener('resize', handleResize);
 
     return () => {
-      const mountNode = mountRef.current;
-
       window.removeEventListener('resize', handleResize);
       document.removeEventListener('keydown', onKeyDown);
       document.removeEventListener('keyup', onKeyUp);
@@ -3949,9 +4050,13 @@ const ForestSurvivalGame = () => {
         waveTimeoutId = null;
       }
 
-      if (mountNode && renderer.domElement) {
-        mountNode.removeChild(renderer.domElement);
-      }
+      // Detach the canvas safely. By the time this cleanup runs the game
+      // view may already have been unmounted (e.g. for the game-over screen)
+      // and re-mounted as a fresh node — so `mountRef.current` is now a
+      // DIFFERENT div, and removeChild(oldCanvas) against it throws a
+      // NotFoundError, aborting the rest of cleanup and crashing the restart.
+      // .remove() detaches the element from wherever it is and never throws.
+      renderer.domElement?.remove();
 
       // Cleanup post-processing
       renderTarget1.dispose();
@@ -3966,6 +4071,13 @@ const ForestSurvivalGame = () => {
       sharedBulletGeo.dispose();
       bulletMaterialCache.forEach(m => m.dispose());
       bulletMaterialCache.clear();
+
+      // Cleanup ground mist
+      for (const m of groundMist) {
+        scene.remove(m);
+        (m.material as THREE.SpriteMaterial).dispose();
+      }
+      groundMistTexture?.dispose();
 
       // Cleanup weather system
       weatherSystem.clear();
@@ -4208,6 +4320,8 @@ const ForestSurvivalGame = () => {
           currentWeapon={gameState.currentWeapon}
           hideStatsPanel={gameMode === 'multiplayer'}
           unlimitedHealth={gameMode === 'tutorial'}
+          hideWave={gameMode === 'tutorial'}
+          abilities={abilityHud}
         />
       </div>
 
