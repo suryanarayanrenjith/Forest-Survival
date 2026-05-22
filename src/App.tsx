@@ -126,7 +126,7 @@ const ForestSurvivalGame = () => {
   const [multiplayerGameMode, setMultiplayerGameMode] = useState<'coop' | 'survival'>('coop');
   const [isSpectating, setIsSpectating] = useState(false); // Track if local player is eliminated and spectating
   const [, setMultiplayerKillFeed] = useState<Array<{ id: string; killerName: string; victimName: string; victimColor: number; weapon: string; timestamp: number }>>([]);
-  const [, setLastKillerInfo] = useState<{ killerName: string; weapon: string } | null>(null);
+  const [lastKillerInfo, setLastKillerInfo] = useState<{ killerName: string; weapon: string } | null>(null);
   const [, setMpStatsTick] = useState(0); // Force HUD re-render for remote player stats
   const [gameRestartKey, setGameRestartKey] = useState(0); // Bump to force game useEffect re-run on restart
   const multiplayerTimeLimitRef = useRef<number | undefined>(undefined);
@@ -300,10 +300,15 @@ const ForestSurvivalGame = () => {
       setGameRestartKey(k => k + 1);
     });
 
-    // Poll remote player stats so MultiplayerHUD reflects live kills/deaths/score
-    const statsInterval = setInterval(() => {
-      setMpStatsTick(v => (v + 1) % 1000000);
-    }, 400);
+    // Refresh the HUD / leaderboard the instant any player's stats change —
+    // an arriving player_update or enemy_killed bumps the tick immediately so
+    // kills and scores are reflected in real time, not on a polling delay.
+    const bumpStats = () => setMpStatsTick(v => (v + 1) % 1000000);
+    const unsubPlayerUpdate = multiplayerManager.onMessage('player_update', bumpStats);
+    const unsubEnemyKilled = multiplayerManager.onMessage('enemy_killed', bumpStats);
+
+    // Low-frequency fallback poll (covers timeouts / disconnects)
+    const statsInterval = setInterval(bumpStats, 1000);
 
     // Clean stale kill feed entries (entries auto-fade after 5s)
     const killFeedInterval = setInterval(() => {
@@ -320,6 +325,8 @@ const ForestSurvivalGame = () => {
       unsubGameOver();
       unsubKilled();
       unsubRestart();
+      unsubPlayerUpdate();
+      unsubEnemyKilled();
       clearInterval(statsInterval);
       clearInterval(killFeedInterval);
     };
@@ -345,7 +352,9 @@ const ForestSurvivalGame = () => {
 
     // Read user settings from localStorage for game configuration
     const currentUserSettings = gameSettingsManager.getSettings();
-    const baseFOV = currentUserSettings.fov;
+    // `let` so the render loop can pick up live FOV changes from the
+    // settings menu (e.g. opened mid-game from the pause menu).
+    let baseFOV = currentUserSettings.fov;
     const sensitivityMultiplier = gameSettingsManager.getSensitivityMultiplier();
 
     // Determine configuration based on difficulty and mode
@@ -610,9 +619,16 @@ const ForestSurvivalGame = () => {
       { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, format: THREE.RGBAFormat }
     );
 
+    // Second half-res target so the bloom blur can ping-pong between buffers
+    const bloomTargetB = new THREE.WebGLRenderTarget(
+      Math.max(1, Math.floor(window.innerWidth / 2)),
+      Math.max(1, Math.floor(window.innerHeight / 2)),
+      { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, format: THREE.RGBAFormat }
+    );
+
     // Bright-pass extraction shader — extracts only bright pixels for bloom
     const brightPassMaterial = new THREE.ShaderMaterial({
-      uniforms: { tDiffuse: { value: null }, threshold: { value: 0.65 } },
+      uniforms: { tDiffuse: { value: null }, threshold: { value: 0.62 } },
       vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
       fragmentShader: `
         uniform sampler2D tDiffuse;
@@ -621,8 +637,41 @@ const ForestSurvivalGame = () => {
         void main() {
           vec4 color = texture2D(tDiffuse, vUv);
           float brightness = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
-          float soft = smoothstep(threshold - 0.1, threshold + 0.1, brightness);
-          gl_FragColor = vec4(color.rgb * soft, 1.0);
+          float soft = smoothstep(threshold - 0.12, threshold + 0.12, brightness);
+          // Slight super-brightening so bloom on lights/embers blooms hot
+          gl_FragColor = vec4(color.rgb * soft * (1.0 + soft * 0.5), 1.0);
+        }
+      `
+    });
+
+    // Separable 9-tap Gaussian blur — turns the bright-pass into a soft,
+    // wide glow. Run horizontally then vertically, a couple of iterations,
+    // for a smooth cinematic bloom rather than hard bright pixels.
+    const blurMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        tDiffuse: { value: null },
+        direction: { value: new THREE.Vector2(1, 0) },
+        resolution: {
+          value: new THREE.Vector2(
+            Math.max(1, Math.floor(window.innerWidth / 2)),
+            Math.max(1, Math.floor(window.innerHeight / 2)),
+          ),
+        },
+      },
+      vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+      fragmentShader: `
+        uniform sampler2D tDiffuse;
+        uniform vec2 direction;
+        uniform vec2 resolution;
+        varying vec2 vUv;
+        void main() {
+          vec2 texel = direction / resolution;
+          vec4 sum = texture2D(tDiffuse, vUv) * 0.227027;
+          sum += texture2D(tDiffuse, vUv + texel * 1.3846) * 0.316216;
+          sum += texture2D(tDiffuse, vUv - texel * 1.3846) * 0.316216;
+          sum += texture2D(tDiffuse, vUv + texel * 3.2308) * 0.070270;
+          sum += texture2D(tDiffuse, vUv - texel * 3.2308) * 0.070270;
+          gl_FragColor = sum;
         }
       `
     });
@@ -700,6 +749,47 @@ const ForestSurvivalGame = () => {
     const postScene = new THREE.Scene();
     postScene.add(postQuad);
     const postCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+    /**
+     * Full post-processing pipeline:
+     *   1. scene  -> renderTarget1
+     *   2. bright-pass -> bloomTarget
+     *   3. separable Gaussian blur (H+V, 2 iterations) ping-ponging the
+     *      bloom buffers — produces a soft, wide cinematic glow
+     *   4. final composite (scene + bloom + grading) -> screen
+     */
+    const composePostFX = () => {
+      // Pass 1 — render the 3D scene into the main target
+      renderer.setRenderTarget(renderTarget1);
+      renderer.render(scene, camera);
+
+      // Pass 2 — extract bright pixels
+      postQuad.material = brightPassMaterial;
+      brightPassMaterial.uniforms.tDiffuse.value = renderTarget1.texture;
+      renderer.setRenderTarget(bloomTarget);
+      renderer.render(postScene, postCamera);
+
+      // Pass 3 — blur the bright pixels into a soft glow
+      postQuad.material = blurMaterial;
+      for (let iteration = 0; iteration < 2; iteration++) {
+        blurMaterial.uniforms.tDiffuse.value = bloomTarget.texture;
+        blurMaterial.uniforms.direction.value.set(1, 0);
+        renderer.setRenderTarget(bloomTargetB);
+        renderer.render(postScene, postCamera);
+
+        blurMaterial.uniforms.tDiffuse.value = bloomTargetB.texture;
+        blurMaterial.uniforms.direction.value.set(0, 1);
+        renderer.setRenderTarget(bloomTarget);
+        renderer.render(postScene, postCamera);
+      }
+
+      // Pass 4 — composite scene + bloom + colour grading to the screen
+      postQuad.material = finalMaterial;
+      finalMaterial.uniforms.tDiffuse.value = renderTarget1.texture;
+      finalMaterial.uniforms.tBloom.value = bloomTarget.texture;
+      renderer.setRenderTarget(null);
+      renderer.render(postScene, postCamera);
+    };
 
     // Post-processing material created
 
@@ -1017,6 +1107,16 @@ const ForestSurvivalGame = () => {
         }
       }
 
+      // Lush instanced grass — one draw call per chunk, biome-tinted, with
+      // a shader wind sway. Streams in/out with the chunk like other terrain.
+      const grassField = biomeSystem.createGrassField(
+        startX, startZ, CHUNK_SIZE, biome, graphicsPreset.terrainDetail,
+      );
+      if (grassField) {
+        terrainObjects.push(grassField);
+        scene.add(grassField.mesh);
+      }
+
       // Update ground color based on biome in this area
       biomeSystem.updateGroundMaterial(ground, biome);
     };
@@ -1235,8 +1335,10 @@ const ForestSurvivalGame = () => {
 
     // AMBIENT FLOATING PARTICLES (dust motes / fireflies)
     let ambientParticles: THREE.Points | null = null;
-    const AMBIENT_PARTICLE_COUNT = 200;
-    if (gameSettings.particles && graphicsPreset.particleDensity > 30) {
+    // particleDensity is a 0-1 multiplier — ambient motes spawn on medium+
+    // (the old `> 30` check could never be true, so they never appeared).
+    const AMBIENT_PARTICLE_COUNT = Math.round(200 * graphicsPreset.particleDensity);
+    if (gameSettings.particles && graphicsPreset.particleDensity >= 0.5) {
       const isNight = timeOfDay === 'night';
       const particleGeo = new THREE.BufferGeometry();
       const positions = new Float32Array(AMBIENT_PARTICLE_COUNT * 3);
@@ -1277,6 +1379,10 @@ const ForestSurvivalGame = () => {
     let ammo = 12;
     let score = 0;
     let enemiesKilled = 0;
+    // Once the local player is eliminated (multiplayer spectate / single-player
+    // game over) this latches true so enemies can't keep "re-killing" a dead
+    // player — which previously spammed the kill feed and death broadcasts.
+    let playerEliminated = false;
     let wave = 1;
     let waveTransitioning = false; // Guards wave-complete logic during the inter-wave delay
     let waveTimeoutId: number | null = null; // Tracked so it can be cancelled on unmount
@@ -1294,6 +1400,7 @@ const ForestSurvivalGame = () => {
     let isAiming = false;
     let timeScale = 1.0; // For slow-mo effects (1.0 = normal speed)
     let fovPunch = 0; // FOV punch on shooting (additive degrees)
+    let fovCheckAccum = 0; // throttles re-reading the FOV setting
 
     // Track player velocity for AI prediction
     let playerVelocity = new THREE.Vector3(0, 0, 0);
@@ -1329,6 +1436,10 @@ const ForestSurvivalGame = () => {
     const bullets: Bullet[] = [];
     const powerUps: PowerUp[] = [];
     const particles: Particle[] = [];
+
+    // Temporary explosion craters left by the rocket launcher
+    interface Crater { mesh: THREE.Object3D; life: number; maxLife: number; }
+    const craters: Crater[] = [];
 
 // Create enemy with OPTIMIZED pooled meshes from SmartEnemyManager
     // Returns null if enemy limit reached (adaptive performance management)
@@ -1886,6 +1997,60 @@ const ForestSurvivalGame = () => {
     renderer.domElement.addEventListener('click', onCanvasClick);
     renderer.domElement.addEventListener('contextmenu', onContextMenu);
 
+    // Builds a detailed rocket projectile for the launcher — body, warhead
+    // nose, tail fins and a glowing exhaust, so the round reads as a real
+    // rocket rather than a flat coloured dot.
+    const createRocketProjectile = (): THREE.Mesh => {
+      // Body geometry pre-rotated so the mesh's -Z axis is the nose direction
+      const bodyGeo = new THREE.CylinderGeometry(0.13, 0.16, 1.0, 12);
+      bodyGeo.rotateX(Math.PI / 2);
+      const body = new THREE.Mesh(
+        bodyGeo,
+        new THREE.MeshStandardMaterial({ color: 0x4b5159, metalness: 0.6, roughness: 0.4 }),
+      );
+      body.castShadow = true;
+
+      // Warhead nose cone
+      const noseGeo = new THREE.ConeGeometry(0.16, 0.55, 12);
+      noseGeo.rotateX(-Math.PI / 2);
+      const nose = new THREE.Mesh(
+        noseGeo,
+        new THREE.MeshStandardMaterial({
+          color: 0xc23a1a, metalness: 0.4, roughness: 0.5,
+          emissive: 0x501608, emissiveIntensity: 0.6,
+        }),
+      );
+      nose.position.z = -0.75;
+      body.add(nose);
+
+      // Tail fins
+      const finMat = new THREE.MeshStandardMaterial({ color: 0x202428, metalness: 0.5, roughness: 0.6 });
+      for (let f = 0; f < 4; f++) {
+        const fin = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.34, 0.34), finMat);
+        const a = (f / 4) * Math.PI * 2;
+        fin.position.set(Math.cos(a) * 0.17, Math.sin(a) * 0.17, 0.45);
+        fin.rotation.z = a;
+        body.add(fin);
+      }
+
+      // Glowing exhaust plume
+      const exhaustGeo = new THREE.ConeGeometry(0.14, 0.7, 10);
+      exhaustGeo.rotateX(Math.PI / 2); // flares backward (+Z)
+      const exhaust = new THREE.Mesh(
+        exhaustGeo,
+        new THREE.MeshBasicMaterial({ color: 0xffae3a, transparent: true, opacity: 0.9, toneMapped: false }),
+      );
+      exhaust.position.z = 0.85;
+      body.add(exhaust);
+
+      // Engine glow light
+      const glow = new THREE.PointLight(0xff7a22, 2.2, 9);
+      glow.position.z = 0.9;
+      body.add(glow);
+
+      return body;
+    };
+
     // Enhanced shooting
     const shoot = () => {
       if (ammo > 0 && !isGameOver && !paused && canShoot && !isReloading && !tutorialActiveRef.current) {
@@ -1913,6 +2078,8 @@ const ForestSurvivalGame = () => {
         gunLight.intensity = 5;
         setTimeout(() => { gunLight.intensity = 0; }, 50);
 
+        const isLauncher = currentWeapon === 'launcher';
+
         for (let i = 0; i < bulletsToFire; i++) {
           const direction = new THREE.Vector3();
           camera.getWorldDirection(direction);
@@ -1924,12 +2091,24 @@ const ForestSurvivalGame = () => {
           direction.z += (Math.random() - 0.5) * weapon.spread * spreadMultiplier;
           direction.normalize();
 
-          const bulletGeometry = new THREE.SphereGeometry(0.1);
-          const bulletMaterial = new THREE.MeshBasicMaterial({
-            color: weapon.bulletColor
-          });
-          const bullet = new THREE.Mesh(bulletGeometry, bulletMaterial);
-          bullet.position.copy(camera.position);
+          let bullet: THREE.Mesh;
+          if (isLauncher) {
+            // Launcher fires a real rocket projectile, oriented along its flight path
+            bullet = createRocketProjectile();
+            bullet.position.copy(camera.position);
+            bullet.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, -1), direction);
+          } else {
+            const bulletGeometry = new THREE.SphereGeometry(0.1);
+            // toneMapped:false renders the literal bullet colour. Without it,
+            // ACES tone mapping + exposure push the saturated colours off-hue
+            // (e.g. rifle/shotgun rounds reading as pink instead of orange/red).
+            const bulletMaterial = new THREE.MeshBasicMaterial({
+              color: weapon.bulletColor,
+              toneMapped: false,
+            });
+            bullet = new THREE.Mesh(bulletGeometry, bulletMaterial);
+            bullet.position.copy(camera.position);
+          }
           scene.add(bullet);
 
           // Apply damage boost powerup if active
@@ -1938,14 +2117,17 @@ const ForestSurvivalGame = () => {
           bullets.push({
             mesh: bullet,
             velocity: direction.multiplyScalar(weapon.bulletSpeed),
-            life: 100,
-            damage: bulletDamage
+            life: isLauncher ? 240 : 100,
+            damage: bulletDamage,
+            isRocket: isLauncher,
           });
 
-          // Bullet tracer
-          const tracerEnd = camera.position.clone().add(direction.clone().multiplyScalar(50));
-          const tracer = new BulletTracer(scene, camera.position.clone(), tracerEnd, weapon.bulletColor);
-          bulletTracers.push(tracer);
+          // Bullet tracer — rockets skip it (they trail their own exhaust glow)
+          if (!isLauncher) {
+            const tracerEnd = camera.position.clone().add(direction.clone().multiplyScalar(50));
+            const tracer = new BulletTracer(scene, camera.position.clone(), tracerEnd, weapon.bulletColor);
+            bulletTracers.push(tracer);
+          }
         }
 
         // Muzzle flash at gun position
@@ -2147,6 +2329,188 @@ const ForestSurvivalGame = () => {
     const _moveRight = new THREE.Vector3();
     const _tempVec3 = new THREE.Vector3();
     const _tempVec3_2 = new THREE.Vector3();
+
+    // Extracted enemy-kill handler — shared by direct bullet hits and the
+    // rocket launcher's area-of-effect so score, combos, drops, achievements
+    // and wave progression all behave identically however an enemy dies.
+    const handleEnemyKilled = (enemy: Enemy, isCritical: boolean) => {
+      enemy.dead = true;
+      enemy.deathTime = 1.0;
+      score += enemy.scoreValue;
+      enemiesKilled++;
+      soundManager.play('enemyDeath', 0.6);
+      if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
+      if (isCritical) {
+        timeScale = 0.3;
+        setTimeout(() => { timeScale = 1.0; }, 200);
+      }
+      const currentTime = Date.now();
+      const killTime = (currentTime - lastKillTime) / 1000;
+      if (currentTime - lastKillTime < 2000) {
+        combo++;
+        killStreak++;
+        score += combo * 5;
+      } else {
+        combo = 1;
+      }
+      lastKillTime = currentTime;
+      adaptiveDifficulty.recordKill(killTime);
+      spawnSystem.recordKill(enemy.mesh.position, enemy.type);
+      combatCoach.recordShot(true, isCritical);
+      missionSystem.updateProgress('elimination', 1);
+      if (enemy.type === 'boss') missionSystem.updateProgress('boss_hunt', 1);
+      if (killStreak >= 3) missionSystem.updateProgress('streak', 1);
+      if (combo >= 3) missionSystem.updateProgress('combo', 1);
+      tutorial.recordAction('kill', 1);
+      if (isCritical) triggerHeadshotFlash(); else triggerKillFlash();
+      skillTree.awardPoints(1);
+      const stState = skillTree.getState();
+      setSkillTreeData({
+        skills: skillTree.getAllSkills(),
+        availablePoints: stState.availablePoints,
+        spentPoints: stState.spentPoints,
+        totalPoints: stState.totalPoints,
+        detectedPlayStyle: 'balanced',
+        recommendations: [],
+      });
+      if (gameSettingsManager.getSetting('killFeed')) {
+        if (isCritical) addKillFeedEntry('HEADSHOT!', 'headshot');
+        else addKillFeedEntry('Enemy Eliminated', 'kill');
+        if (combo >= 5 && combo % 5 === 0) addKillFeedEntry(`${combo}x COMBO!`, 'combo');
+        if (killStreak === 10) addKillFeedEntry('10 Kill Streak!', 'combo');
+        else if (killStreak === 20) addKillFeedEntry('20 Kill Streak!', 'combo');
+        else if (killStreak === 30) addKillFeedEntry('30 Kill Streak! UNSTOPPABLE!', 'combo');
+      }
+      createParticles(enemy.mesh.position, 0x00ff00, 8);
+      achievementSystem.updateProgress('first_blood', 1);
+      if (enemiesKilled >= 10) achievementSystem.updateProgress('slayer', 1);
+      if (enemiesKilled >= 50) achievementSystem.updateProgress('assassin', 1);
+      if (enemiesKilled >= 100) achievementSystem.updateProgress('legend', 1);
+      if (isCritical) {
+        achievementSystem.updateProgress('marksman', 1);
+        achievementSystem.updateProgress('ace', 1);
+      }
+      if (combo >= 5) achievementSystem.updateProgress('perfectionist', 1);
+      if (isMultiplayer && multiplayerManager) multiplayerManager.incrementKills();
+      if (Math.random() < 0.4) {
+        const ammoDrop = createPowerUp(enemy.mesh.position.x, enemy.mesh.position.z, 'ammo');
+        powerUps.push(ammoDrop);
+      }
+      updateGameState();
+      // Wave complete — count only living enemies (corpses linger during death anim)
+      const livingEnemies = enemies.reduce((n, e) => n + (e.dead ? 0 : 1), 0);
+      if (livingEnemies === 0 && !waveTransitioning) {
+        waveTransitioning = true;
+        wave++;
+        combo = 0;
+        killStreak = 0;
+        setShowWaveComplete(true);
+        soundManager.play('waveComplete', 1.0);
+        if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry(`Wave ${wave - 1} Complete!`, 'wave');
+        waveTimeoutId = window.setTimeout(() => {
+          waveTimeoutId = null;
+          setShowWaveComplete(false);
+          spawnWave();
+          waveTransitioning = false;
+        }, 3000);
+        updateGameState();
+      }
+    };
+
+    // Leaves a temporary scorched crater ("ditch") at an explosion site.
+    const createCrater = (pos: THREE.Vector3) => {
+      const crater = new THREE.Group();
+      const scorch = new THREE.Mesh(
+        new THREE.CircleGeometry(4.6, 28),
+        new THREE.MeshStandardMaterial({
+          color: 0x070604, roughness: 1, metalness: 0,
+          transparent: true, opacity: 0.92, depthWrite: false,
+        }),
+      );
+      scorch.rotation.x = -Math.PI / 2;
+      scorch.receiveShadow = true;
+      crater.add(scorch);
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(3.1, 4.85, 28),
+        new THREE.MeshStandardMaterial({
+          color: 0x241509, roughness: 1,
+          transparent: true, opacity: 0.85, depthWrite: false, side: THREE.DoubleSide,
+        }),
+      );
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.y = 0.03;
+      crater.add(ring);
+      // Debris chunks thrown up around the rim
+      const debrisMat = new THREE.MeshStandardMaterial({
+        color: 0x1c1206, roughness: 0.95, transparent: true, opacity: 1,
+      });
+      for (let d = 0; d < 10; d++) {
+        const a = (d / 10) * Math.PI * 2 + Math.random() * 0.5;
+        const r = 3 + Math.random() * 1.9;
+        const s = 0.3 + Math.random() * 0.55;
+        const chunk = new THREE.Mesh(new THREE.BoxGeometry(s, s * 0.7, s), debrisMat);
+        chunk.position.set(Math.cos(a) * r, s * 0.3, Math.sin(a) * r);
+        chunk.rotation.set(Math.random(), Math.random(), Math.random());
+        chunk.castShadow = true;
+        crater.add(chunk);
+      }
+      // Remember each part's starting opacity so the fade-out is proportional
+      crater.traverse((o) => {
+        if (o instanceof THREE.Mesh && !Array.isArray(o.material)) {
+          o.material.userData.baseOpacity = (o.material as THREE.Material & { opacity: number }).opacity;
+        }
+      });
+      crater.position.set(pos.x, 0.06, pos.z);
+      scene.add(crater);
+      craters.push({ mesh: crater, life: 10, maxLife: 10 });
+    };
+
+    // Explosion flash, sparks, smoke, shake and crater.
+    const spawnExplosionFX = (pos: THREE.Vector3) => {
+      soundManager.play('enemyDeath', 0.9);
+      if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
+      createParticles(pos, 0xff7722, 60);
+      createParticles(pos, 0x222222, 28);
+      const flash = new THREE.PointLight(0xff8a3a, 45, 38);
+      flash.position.set(pos.x, pos.y + 1, pos.z);
+      scene.add(flash);
+      let step = 0;
+      const fade = () => {
+        step++;
+        flash.intensity = 45 * (1 - step / 7);
+        if (step >= 7) scene.remove(flash);
+        else setTimeout(fade, 38);
+      };
+      setTimeout(fade, 38);
+      createCrater(pos);
+    };
+
+    // Detonates a rocket — area-of-effect damage with distance falloff.
+    const explodeRocket = (pos: THREE.Vector3, baseDamage: number) => {
+      const RADIUS = 9;
+      spawnExplosionFX(pos);
+      for (let j = enemies.length - 1; j >= 0; j--) {
+        const e = enemies[j];
+        if (e.dead) continue;
+        const dist = e.mesh.position.distanceTo(pos);
+        if (dist > RADIUS) continue;
+        // Full damage at the centre, tapering to ~35% at the blast edge
+        const falloff = 1 - (dist / RADIUS) * 0.65;
+        const dmg = baseDamage * falloff;
+        e.health -= dmg;
+        e.damageFlashTime = 0.4;
+        adaptiveDifficulty.recordDamage(dmg, true);
+        if (gameSettingsManager.getSetting('damageNumbers')) {
+          _tempVec3_2.copy(e.mesh.position).project(camera);
+          const sx = (_tempVec3_2.x * 0.5 + 0.5) * 100;
+          const sy = (-_tempVec3_2.y * 0.5 + 0.5) * 100;
+          addDamageNumber(Math.floor(dmg), sx, sy, false, false);
+        }
+        _tempVec3.subVectors(e.mesh.position, pos).normalize();
+        bloodSplatters.push(new BloodSplatter(scene, e.mesh.position.clone(), _tempVec3, 10));
+        if (e.health <= 0) handleEnemyKilled(e, false);
+      }
+    };
 
     const animate = () => {
       animationId = requestAnimationFrame(animate);
@@ -2395,25 +2759,15 @@ const ForestSurvivalGame = () => {
         }
       }
 
+      // Drive the grass wind sway
+      biomeSystem.updateGrass(clock.getElapsedTime());
+
       // Freeze the whole simulation while a tutorial overlay card is on screen
       // — the scene still renders, but nothing moves and enemies cannot attack.
       if (isGameOver || paused || tutorialActiveRef.current) {
         // Render paused state (with or without post-processing based on quality)
         if (graphicsPreset.postProcessing) {
-          // Pass 1: Render scene
-          renderer.setRenderTarget(renderTarget1);
-          renderer.render(scene, camera);
-          // Pass 2: Extract bright pixels for bloom
-          postQuad.material = brightPassMaterial;
-          brightPassMaterial.uniforms.tDiffuse.value = renderTarget1.texture;
-          renderer.setRenderTarget(bloomTarget);
-          renderer.render(postScene, postCamera);
-          // Pass 3: Final composite with bloom
-          postQuad.material = finalMaterial;
-          finalMaterial.uniforms.tDiffuse.value = renderTarget1.texture;
-          finalMaterial.uniforms.tBloom.value = bloomTarget.texture;
-          renderer.setRenderTarget(null);
-          renderer.render(postScene, postCamera);
+          composePostFX();
         } else {
           renderer.render(scene, camera);
         }
@@ -2423,8 +2777,19 @@ const ForestSurvivalGame = () => {
       // Update gun animations - recoil handles its own offset
       gunModel.updateRecoil(delta);
 
-      // Aiming zoom effect only (position/rotation handled by gun model)
-      const targetFov = (isAiming && WEAPONS[currentWeapon].canAim) ? 50 : baseFOV;
+      // Re-read the FOV setting a few times a second so changes made in the
+      // settings menu (even mid-game from the pause screen) apply live.
+      fovCheckAccum += rawDelta;
+      if (fovCheckAccum >= 0.4) {
+        fovCheckAccum = 0;
+        const liveFov = gameSettingsManager.getSetting('fov');
+        if (typeof liveFov === 'number' && liveFov > 0) baseFOV = liveFov;
+      }
+
+      // Aiming zoom — a consistent ~22° zoom relative to the chosen FOV
+      const targetFov = (isAiming && WEAPONS[currentWeapon].canAim)
+        ? Math.max(40, baseFOV - 22)
+        : baseFOV;
       camera.fov = THREE.MathUtils.lerp(camera.fov, targetFov + fovPunch, delta * 8);
       camera.updateProjectionMatrix();
       // Decay FOV punch
@@ -2704,6 +3069,33 @@ const ForestSurvivalGame = () => {
         }
       }
 
+      // Update explosion craters — fade out, then dispose
+      for (let i = craters.length - 1; i >= 0; i--) {
+        const crater = craters[i];
+        crater.life -= rawDelta;
+        if (crater.life <= 0) {
+          crater.mesh.traverse((o) => {
+            if (o instanceof THREE.Mesh) {
+              o.geometry.dispose();
+              const m = o.material;
+              if (Array.isArray(m)) m.forEach((mm) => mm.dispose());
+              else m.dispose();
+            }
+          });
+          scene.remove(crater.mesh);
+          craters.splice(i, 1);
+          continue;
+        }
+        // Hold fully visible for the first 70%, then fade over the last 30%
+        const fadeT = Math.min(1, crater.life / (crater.maxLife * 0.3));
+        crater.mesh.traverse((o) => {
+          if (o instanceof THREE.Mesh && !Array.isArray(o.material)) {
+            const mat = o.material as THREE.Material & { opacity: number };
+            mat.opacity = (mat.userData.baseOpacity ?? 1) * fadeT;
+          }
+        });
+      }
+
       // Apply camera shake effect
       if (cameraShakeIntensity > 0.001) {
         const shakeX = (Math.random() - 0.5) * cameraShakeIntensity;
@@ -2812,7 +3204,34 @@ const ForestSurvivalGame = () => {
         bullet.mesh.position.add(bullet.velocity);
         bullet.life--;
 
+        // Rockets detonate on contact with the ground or any obstacle they
+        // are at/below the height of (trees, walls), creating an AoE blast.
+        if (bullet.isRocket) {
+          const rp = bullet.mesh.position;
+          let hitTerrain = rp.y <= 0.4;
+          if (!hitTerrain) {
+            for (const obj of terrainObjects) {
+              if (!obj.collidable) continue;
+              const dx = rp.x - obj.x;
+              const dz = rp.z - obj.z;
+              if (dx * dx + dz * dz < obj.radius * obj.radius
+                  && (obj.height === undefined || rp.y <= obj.height)) {
+                hitTerrain = true;
+                break;
+              }
+            }
+          }
+          if (hitTerrain) {
+            explodeRocket(rp.clone(), bullet.damage);
+            scene.remove(bullet.mesh);
+            bullets.splice(i, 1);
+            continue;
+          }
+        }
+
         if (bullet.life <= 0) {
+          // A rocket that runs out of range still detonates where it stops
+          if (bullet.isRocket) explodeRocket(bullet.mesh.position.clone(), bullet.damage);
           scene.remove(bullet.mesh);
           bullets.splice(i, 1);
           continue;
@@ -2821,6 +3240,13 @@ const ForestSurvivalGame = () => {
         for (let j = enemies.length - 1; j >= 0; j--) {
           const enemy = enemies[j];
           if (!enemy.dead && checkCollision(bullet.mesh.position, enemy.mesh.position, 2)) {
+            // Rockets explode on first contact — the blast handles all damage
+            if (bullet.isRocket) {
+              explodeRocket(bullet.mesh.position.clone(), bullet.damage);
+              scene.remove(bullet.mesh);
+              bullets.splice(i, 1);
+              break;
+            }
             // === CRITICAL HIT SYSTEM (HEADSHOTS) ===
             let damage = bullet.damage;
             let isCritical = false;
@@ -2892,147 +3318,7 @@ const ForestSurvivalGame = () => {
             bloodSplatters.push(blood);
 
             if (enemy.health <= 0) {
-              enemy.dead = true;
-              enemy.deathTime = 1.0; // Death animation duration
-              score += enemy.scoreValue;
-              enemiesKilled++;
-              soundManager.play('enemyDeath', 0.6);
-
-              // FUN EFFECTS: Screen shake on kill (if enabled in settings)
-              if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
-
-              // FUN EFFECTS: Slow-mo on headshot kills
-              if (isCritical) {
-                timeScale = 0.3; // Slow motion
-                setTimeout(() => { timeScale = 1.0; }, 200); // Return to normal after 200ms real time
-              }
-
-              const currentTime = Date.now();
-              const killTime = (currentTime - lastKillTime) / 1000;
-
-              if (currentTime - lastKillTime < 2000) {
-                combo++;
-                killStreak++;
-                score += combo * 5;
-              } else {
-                combo = 1;
-              }
-              lastKillTime = currentTime;
-
-              // 🤖 Record kill for AI systems
-              adaptiveDifficulty.recordKill(killTime);
-              spawnSystem.recordKill(enemy.mesh.position, enemy.type);
-              combatCoach.recordShot(true, isCritical); // Final confirmation of hit
-              missionSystem.updateProgress('elimination', 1);
-              if (enemy.type === 'boss') {
-                missionSystem.updateProgress('boss_hunt', 1);
-              }
-              if (killStreak >= 3) {
-                missionSystem.updateProgress('streak', 1);
-              }
-              if (combo >= 3) {
-                missionSystem.updateProgress('combo', 1);
-              }
-              tutorial.recordAction('kill', 1);
-
-              // Kill confirmation flash
-              if (isCritical) {
-                triggerHeadshotFlash();
-              } else {
-                triggerKillFlash();
-              }
-
-              // Award XP to skill tree (1 point per kill)
-              skillTree.awardPoints(1);
-              const stState = skillTree.getState();
-              setSkillTreeData({
-                skills: skillTree.getAllSkills(),
-                availablePoints: stState.availablePoints,
-                spentPoints: stState.spentPoints,
-                totalPoints: stState.totalPoints,
-                detectedPlayStyle: 'balanced',
-                recommendations: [],
-              });
-
-              // Add kill feed entries (if enabled in settings)
-              if (gameSettingsManager.getSetting('killFeed')) {
-                if (isCritical) {
-                  addKillFeedEntry('HEADSHOT!', 'headshot');
-                } else {
-                  addKillFeedEntry('Enemy Eliminated', 'kill');
-                }
-
-                // Add combo notifications
-                if (combo >= 5 && combo % 5 === 0) {
-                  addKillFeedEntry(`${combo}x COMBO!`, 'combo');
-                }
-
-                // Add streak notifications
-                if (killStreak === 10) {
-                  addKillFeedEntry('10 Kill Streak!', 'combo');
-                } else if (killStreak === 20) {
-                  addKillFeedEntry('20 Kill Streak!', 'combo');
-                } else if (killStreak === 30) {
-                  addKillFeedEntry('30 Kill Streak! UNSTOPPABLE!', 'combo');
-                }
-              }
-
-              createParticles(enemy.mesh.position, 0x00ff00, 8); // Reduced particles
-
-              // === ACHIEVEMENT TRACKING ===
-              achievementSystem.updateProgress('first_blood', 1);
-              if (enemiesKilled >= 10) achievementSystem.updateProgress('slayer', 1);
-              if (enemiesKilled >= 50) achievementSystem.updateProgress('assassin', 1);
-              if (enemiesKilled >= 100) achievementSystem.updateProgress('legend', 1);
-              if (isCritical) {
-                achievementSystem.updateProgress('marksman', 1);
-                achievementSystem.updateProgress('ace', 1);
-              }
-              if (combo >= 5) {
-                achievementSystem.updateProgress('perfectionist', 1);
-              }
-
-              // === MULTIPLAYER: Broadcast kill ===
-              if (isMultiplayer && multiplayerManager) {
-                multiplayerManager.incrementKills();
-              }
-
-              // === AMMO DROP SYSTEM ===
-              // 40% chance to drop ammo on death
-              if (Math.random() < 0.4) {
-                const ammoDrop = createPowerUp(
-                  enemy.mesh.position.x,
-                  enemy.mesh.position.z,
-                  'ammo'
-                );
-                powerUps.push(ammoDrop);
-              }
-
-              // Don't remove immediately - death animation will handle it
-
-              updateGameState();
-
-              // Check for wave complete - endless mode
-              // Count only LIVING enemies: freshly-killed enemies remain in the
-              // array briefly while their death animation plays, so a plain
-              // `enemies.length === 0` check would never become true.
-              const livingEnemies = enemies.reduce((n, e) => n + (e.dead ? 0 : 1), 0);
-              if (livingEnemies === 0 && !waveTransitioning) {
-                waveTransitioning = true;
-                wave++;
-                combo = 0;
-                killStreak = 0;
-                setShowWaveComplete(true);
-                soundManager.play('waveComplete', 1.0);
-                if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry(`Wave ${wave - 1} Complete!`, 'wave');
-                waveTimeoutId = window.setTimeout(() => {
-                  waveTimeoutId = null;
-                  setShowWaveComplete(false);
-                  spawnWave();
-                  waveTransitioning = false;
-                }, 3000);
-                updateGameState();
-              }
+              handleEnemyKilled(enemy, isCritical);
             }
             break;
           }
@@ -3380,7 +3666,8 @@ const ForestSurvivalGame = () => {
           if (hitPlayer || overlapDamage) {
             // Tutorial mode grants unlimited health — the player can never be
             // hurt, so the tutorial is a safe, pressure-free practice space.
-            if (!abilityEffects.isInvincible && !isTutorialMode) {
+            // An eliminated player takes no further damage (spectating).
+            if (!abilityEffects.isInvincible && !isTutorialMode && !playerEliminated) {
               let damage = enemy.attackSystem.getDamage();
 
               // Apply ability shield if active
@@ -3441,6 +3728,7 @@ const ForestSurvivalGame = () => {
               // Game over check
               if (health <= 0) {
                 health = 0;
+                playerEliminated = true; // Latch — no more damage / re-deaths
                 document.exitPointerLock();
 
                 // Sync death in multiplayer
@@ -3535,20 +3823,7 @@ const ForestSurvivalGame = () => {
 
       // === RENDERING (with optional post-processing based on graphics quality) ===
       if (graphicsPreset.postProcessing) {
-        // Pass 1: Render scene to main target
-        renderer.setRenderTarget(renderTarget1);
-        renderer.render(scene, camera);
-        // Pass 2: Extract bright pixels for bloom
-        postQuad.material = brightPassMaterial;
-        brightPassMaterial.uniforms.tDiffuse.value = renderTarget1.texture;
-        renderer.setRenderTarget(bloomTarget);
-        renderer.render(postScene, postCamera);
-        // Pass 3: Final composite with real bloom
-        postQuad.material = finalMaterial;
-        finalMaterial.uniforms.tDiffuse.value = renderTarget1.texture;
-        finalMaterial.uniforms.tBloom.value = bloomTarget.texture;
-        renderer.setRenderTarget(null);
-        renderer.render(postScene, postCamera);
+        composePostFX();
       } else {
         // Low quality: Direct render (no post-processing for maximum performance)
         renderer.render(scene, camera);
@@ -3565,7 +3840,11 @@ const ForestSurvivalGame = () => {
       const newHeight = Math.floor(window.innerHeight * graphicsPreset.pixelRatio);
       renderer.setSize(newWidth, newHeight, false);
       renderTarget1.setSize(newWidth, newHeight);
-      bloomTarget.setSize(Math.max(1, Math.floor(newWidth / 2)), Math.max(1, Math.floor(newHeight / 2)));
+      const halfW = Math.max(1, Math.floor(newWidth / 2));
+      const halfH = Math.max(1, Math.floor(newHeight / 2));
+      bloomTarget.setSize(halfW, halfH);
+      bloomTargetB.setSize(halfW, halfH);
+      blurMaterial.uniforms.resolution.value.set(halfW, halfH);
     };
 
     window.addEventListener('resize', handleResize);
@@ -3615,6 +3894,10 @@ const ForestSurvivalGame = () => {
 
       // Cleanup post-processing
       renderTarget1.dispose();
+      bloomTarget.dispose();
+      bloomTargetB.dispose();
+      brightPassMaterial.dispose();
+      blurMaterial.dispose();
       finalMaterial.dispose();
       postQuad.geometry.dispose();
 
@@ -3824,6 +4107,7 @@ const ForestSurvivalGame = () => {
           localPlayer={localPlayer}
           alivePlayers={alivePlayers}
           allPlayers={allPlayers}
+          killerInfo={lastKillerInfo}
           onMainMenu={returnToMenu}
         />
       </div>

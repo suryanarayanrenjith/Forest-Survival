@@ -3,58 +3,64 @@
 export type GraphicsQuality = 'low' | 'medium' | 'high';
 
 export interface GraphicsPreset {
+  /** Internal render scale (0-1). 1 = native resolution. */
   pixelRatio: number;
+  /** Directional-light shadow map resolution. */
   shadowMapSize: number;
+  /** Whether real-time shadows are rendered at all. */
   shadowsEnabled: boolean;
+  /** Hardware MSAA on the canvas. */
   antialias: boolean;
+  /** Bloom + colour-grading post-processing pipeline. */
   postProcessing: boolean;
+  /** 0-1 multiplier for particle-effect density. */
   particleDensity: number;
+  /** Max simultaneous enemies the spawner targets. */
   maxEnemies: number;
+  /** World draw distance in units (camera far / fog / culling). */
   viewDistance: number;
-  effectsQuality: number; // 0-1 multiplier for effects
-  terrainDetail: number; // 0-1 multiplier for terrain objects
-  playerShadow: boolean;
+  /** 0-1 multiplier for grass / terrain object density. */
+  terrainDetail: number;
 }
 
+// Three clean performance tiers. Every field below is read and applied by
+// the engine — there are no dead knobs.
 export const GRAPHICS_PRESETS: Record<GraphicsQuality, GraphicsPreset> = {
+  // LOW — maximum performance: no shadows, no post-FX, reduced resolution.
   low: {
-    pixelRatio: 0.5,
+    pixelRatio: 0.6,
     shadowMapSize: 512,
     shadowsEnabled: false,
     antialias: false,
     postProcessing: false,
-    particleDensity: 0.3,
-    maxEnemies: 15,
-    viewDistance: 80,
-    effectsQuality: 0.3,
+    particleDensity: 0.35,
+    maxEnemies: 16,
+    viewDistance: 90,
     terrainDetail: 0.5,
-    playerShadow: false,
   },
+  // MEDIUM — balanced: soft shadows + bloom at a slightly reduced resolution.
   medium: {
-    pixelRatio: 0.75,
+    pixelRatio: 0.8,
     shadowMapSize: 1024,
     shadowsEnabled: true,
     antialias: false,
     postProcessing: true,
-    particleDensity: 0.6,
-    maxEnemies: 25,
-    viewDistance: 120,
-    effectsQuality: 0.6,
-    terrainDetail: 0.75,
-    playerShadow: true,
+    particleDensity: 0.65,
+    maxEnemies: 28,
+    viewDistance: 140,
+    terrainDetail: 0.8,
   },
+  // HIGH — full fidelity: native resolution, MSAA, high-res soft shadows.
   high: {
-    pixelRatio: 1,
+    pixelRatio: 1.0,
     shadowMapSize: 2048,
     shadowsEnabled: true,
     antialias: true,
     postProcessing: true,
     particleDensity: 1.0,
-    maxEnemies: 40,
+    maxEnemies: 42,
     viewDistance: 200,
-    effectsQuality: 1.0,
     terrainDetail: 1.0,
-    playerShadow: true,
   },
 };
 

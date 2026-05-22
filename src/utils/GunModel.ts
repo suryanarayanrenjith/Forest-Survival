@@ -93,6 +93,23 @@ export class GunModel {
     });
   }
 
+  /**
+   * Transparent optic glass. Real scopes are see-through — using a near-clear
+   * material means aiming down a scoped weapon no longer paints a solid colour
+   * over the screen; the player can see the enemy through the lens.
+   */
+  private glassMat(tint: number): THREE.MeshStandardMaterial {
+    return new THREE.MeshStandardMaterial({
+      color: tint,
+      metalness: 0.1,
+      roughness: 0.05,
+      transparent: true,
+      opacity: 0.16,
+      depthWrite: false,
+      envMapIntensity: 1.4,
+    });
+  }
+
   private createGunModel(type: WeaponType) {
     // Dispose the previous weapon's GPU resources before clearing.
     this.group.traverse((obj) => {
@@ -290,11 +307,16 @@ export class GunModel {
     optic.rotation.x = Math.PI / 2;
     const lens = this.p(
       new THREE.CircleGeometry(0.33, 16),
-      this.mat(0x06140f, 0.4, 0.15, { emissive: 0x1a5c3a, emissiveIntensity: 0.5 }),
+      this.glassMat(0x2a3a44),
       0, 1.95, -1.46, false,
     );
     lens.rotation.y = Math.PI;
-    this.p(new THREE.CircleGeometry(0.07, 12), new THREE.MeshBasicMaterial({ color: 0xff2222 }), 0, 1.95, -1.43, false);
+    // Bright red dot floats on the clear glass — the actual aiming reticle
+    this.p(
+      new THREE.CircleGeometry(0.06, 12),
+      new THREE.MeshBasicMaterial({ color: 0xff2222, toneMapped: false }),
+      0, 1.95, -1.44, false,
+    );
 
     // Flip-up backup sights
     this.p(new THREE.BoxGeometry(0.32, 0.4, 0.12), black, 0, 1.42, -4.6, false);
@@ -450,7 +472,7 @@ export class GunModel {
     const olive = this.mat(0x2f3322, 0.5, 0.55);
     const black = this.mat(0x090a0c, 0.95, 0.1);
     const steel = this.mat(0x23252b, 0.88, 0.22);
-    const glass = this.mat(0x041208, 0.5, 0.1, { emissive: 0x1a6638, emissiveIntensity: 0.55 });
+    const glass = this.glassMat(0x2c3c46); // see-through scope lenses
 
     // Receiver
     this.p(new THREE.BoxGeometry(1.5, 1.15, 4.2), steel, 0, 0.15, 0);
@@ -498,7 +520,11 @@ export class GunModel {
     const frontLens = this.p(new THREE.CircleGeometry(0.5, 18), glass, 0, 1.55, -4.18, false);
     frontLens.rotation.y = Math.PI;
     this.p(new THREE.CircleGeometry(0.46, 18), glass, 0, 1.55, 1.52, false);
-    this.p(new THREE.CircleGeometry(0.06, 10), new THREE.MeshBasicMaterial({ color: 0x33ff66 }), 0, 1.55, 1.5, false);
+    this.p(
+      new THREE.CircleGeometry(0.05, 10),
+      new THREE.MeshBasicMaterial({ color: 0x33ff66, toneMapped: false }),
+      0, 1.55, 1.49, false,
+    );
     // Elevation + windage turrets
     this.p(new THREE.CylinderGeometry(0.2, 0.2, 0.35, 12), scopeMount, 0, 2.1, -1, false);
     const wind = this.p(new THREE.CylinderGeometry(0.2, 0.2, 0.35, 12), scopeMount, 0.55, 1.55, -1, false);
@@ -661,7 +687,7 @@ export class GunModel {
     optic.rotation.x = Math.PI / 2;
     const lens = this.p(
       new THREE.CircleGeometry(0.24, 14),
-      this.mat(0x0a1410, 0.4, 0.15, { emissive: 0x1a5530, emissiveIntensity: 0.5 }),
+      this.glassMat(0x2a3a44),
       0, 1.45, -2.92, false,
     );
     lens.rotation.y = Math.PI;

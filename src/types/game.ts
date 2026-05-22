@@ -174,6 +174,8 @@ export interface Bullet {
   velocity: THREE.Vector3;
   life: number;
   damage: number;
+  /** Rocket-launcher projectile — explodes with area damage + a crater. */
+  isRocket?: boolean;
 }
 
 export type PowerUpType = 'health' | 'ammo' | 'speed' | 'damage' | 'shield' | 'infinite_ammo';

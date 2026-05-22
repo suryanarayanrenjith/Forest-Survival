@@ -372,6 +372,16 @@ export class MultiplayerManager {
             this.checkGameOver();
           }
         }
+
+        // Forward to registered handlers so leaderboards / HUDs reflect a
+        // player's kills, score and health the instant the update arrives —
+        // no polling delay.
+        {
+          const playerUpdateHandlers = this.messageHandlers.get('player_update');
+          if (playerUpdateHandlers) {
+            playerUpdateHandlers.forEach(handler => handler(message));
+          }
+        }
         break;
 
       case 'player_left':

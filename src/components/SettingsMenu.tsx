@@ -254,9 +254,11 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
                 </div>
                 <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-gray-500">
                   <span>Shadows · {GRAPHICS_PRESETS[settings.graphicsQuality].shadowsEnabled ? 'On' : 'Off'}</span>
-                  <span>Post-FX · {GRAPHICS_PRESETS[settings.graphicsQuality].postProcessing ? 'On' : 'Off'}</span>
+                  <span>Bloom &amp; Post-FX · {GRAPHICS_PRESETS[settings.graphicsQuality].postProcessing ? 'On' : 'Off'}</span>
                   <span>Resolution · {Math.round(GRAPHICS_PRESETS[settings.graphicsQuality].pixelRatio * 100)}%</span>
-                  <span>Player Shadow · {GRAPHICS_PRESETS[settings.graphicsQuality].playerShadow ? 'On' : 'Off'}</span>
+                  <span>Anti-aliasing · {GRAPHICS_PRESETS[settings.graphicsQuality].antialias ? 'On' : 'Off'}</span>
+                  <span>Draw Distance · {GRAPHICS_PRESETS[settings.graphicsQuality].viewDistance}m</span>
+                  <span>Max Enemies · {GRAPHICS_PRESETS[settings.graphicsQuality].maxEnemies}</span>
                 </div>
               </div>
               <Slider label="Field of View" icon={Eye} value={settings.fov} min={60} max={120} suffix="°" onChange={(v) => updateSetting('fov', v)} />

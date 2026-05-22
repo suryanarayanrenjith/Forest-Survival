@@ -20,9 +20,129 @@ interface BiomeConfig {
 export class BiomeSystem {
   private biomeConfigs: Map<BiomeType, BiomeConfig>;
 
+  // === GRASS SYSTEM ===
+  // Per-biome grass tint + density (0 = none). Shared geometry + per-biome
+  // materials keep thousands of instanced blades cheap to render.
+  private grassConfigs: Record<BiomeType, { color: number; density: number }> = {
+    forest:   { color: 0x3c7a2c, density: 1.0 },
+    volcanic: { color: 0x3a2218, density: 0.12 },
+    tundra:   { color: 0x9ab0a8, density: 0.3 },
+    desert:   { color: 0xc2a866, density: 0.22 },
+    swamp:    { color: 0x4c6a32, density: 0.95 },
+    military: { color: 0x5e6e3e, density: 0.5 },
+    crystal:  { color: 0x46c8b6, density: 0.42 },
+    ruins:    { color: 0x52823a, density: 0.66 },
+  };
+  private grassGeo: THREE.BufferGeometry | null = null;
+  private grassMaterials: Map<BiomeType, THREE.MeshStandardMaterial> = new Map();
+  // Shared time uniform driving the grass wind sway (updated each frame)
+  private grassTime = { value: 0 };
+
   constructor(_scene: THREE.Scene) {
     this.biomeConfigs = new Map();
     this.initializeBiomes();
+  }
+
+  /** Advance the grass wind animation — call once per frame. */
+  updateGrass(time: number) {
+    this.grassTime.value = time;
+  }
+
+  /** Lazily-built tapered grass blade (6 verts, 2 triangles). */
+  private getGrassGeometry(): THREE.BufferGeometry {
+    if (this.grassGeo) return this.grassGeo;
+    const g = new THREE.BufferGeometry();
+    const positions = new Float32Array([
+      -0.07, 0, 0,   0.07, 0, 0,   -0.022, 0.62, 0,
+       0.07, 0, 0,   0.022, 0.62, 0,  -0.022, 0.62, 0,
+    ]);
+    g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    g.computeVertexNormals();
+    this.grassGeo = g;
+    return g;
+  }
+
+  /** Per-biome grass material with a wind sway injected into the shader. */
+  private getGrassMaterial(biome: BiomeType): THREE.MeshStandardMaterial {
+    const cached = this.grassMaterials.get(biome);
+    if (cached) return cached;
+    const mat = new THREE.MeshStandardMaterial({
+      color: this.grassConfigs[biome].color,
+      roughness: 0.82,
+      metalness: 0.0,
+      side: THREE.DoubleSide,
+      flatShading: true,
+    });
+    // Inject a per-instance wind sway — the blade tip bends, the base stays
+    // anchored (sway scales with height²). Phase varies by world position.
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.uTime = this.grassTime;
+      shader.vertexShader = 'uniform float uTime;\n' + shader.vertexShader;
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+         float gWindH = transformed.y;
+         float gWindP = uTime * 1.5 + instanceMatrix[3].x * 0.18 + instanceMatrix[3].z * 0.18;
+         float gWindS = gWindH * gWindH * 0.55;
+         transformed.x += sin(gWindP) * gWindS;
+         transformed.z += cos(gWindP * 0.8) * gWindS * 0.6;`,
+      );
+    };
+    this.grassMaterials.set(biome, mat);
+    return mat;
+  }
+
+  /**
+   * Builds a chunk-sized field of instanced grass tufts. Returns a single
+   * TerrainObject (one InstancedMesh = one draw call) so the existing chunk
+   * culling can stream it in and out. Returns null for biomes with no grass.
+   */
+  createGrassField(
+    startX: number, startZ: number, size: number, biome: BiomeType, detailMult = 1,
+  ): TerrainObject | null {
+    const density = this.grassConfigs[biome].density;
+    if (density <= 0) return null;
+
+    const count = Math.floor(640 * density * Math.max(0.4, detailMult));
+    if (count < 8) return null;
+
+    const mesh = new THREE.InstancedMesh(this.getGrassGeometry(), this.getGrassMaterial(biome), count);
+    mesh.receiveShadow = true;
+    mesh.castShadow = false;
+    mesh.frustumCulled = true;
+
+    const dummy = new THREE.Object3D();
+    let placed = 0;
+    const clusters = Math.max(1, Math.floor(count / 6));
+    for (let c = 0; c < clusters && placed < count; c++) {
+      const cx = startX + Math.random() * size;
+      const cz = startZ + Math.random() * size;
+      const perCluster = 4 + Math.floor(Math.random() * 5);
+      for (let b = 0; b < perCluster && placed < count; b++) {
+        dummy.position.set(
+          cx + (Math.random() - 0.5) * 1.5,
+          0,
+          cz + (Math.random() - 0.5) * 1.5,
+        );
+        dummy.rotation.set(
+          (Math.random() - 0.5) * 0.32,
+          Math.random() * Math.PI * 2,
+          (Math.random() - 0.5) * 0.32,
+        );
+        const s = 0.7 + Math.random() * 0.95;
+        dummy.scale.set(s, s * (0.8 + Math.random() * 0.7), s);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(placed, dummy.matrix);
+        placed++;
+      }
+    }
+    mesh.count = placed;
+    mesh.instanceMatrix.needsUpdate = true;
+
+    return {
+      mesh, x: startX + size / 2, z: startZ + size / 2,
+      type: 'bush', collidable: false, radius: size / 2,
+    };
   }
 
   private initializeBiomes() {
