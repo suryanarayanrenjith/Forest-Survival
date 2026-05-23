@@ -1,9 +1,9 @@
 import * as THREE from 'three';
-import { AIBehaviorSystem } from '../utils/AIBehaviorSystem';
-import { EnemyPerception } from '../utils/EnemyPerception';
+import { AIBehaviorSystem, type AIDecision } from '../utils/AIBehaviorSystem';
+import { EnemyPerception, type PerceptionResult } from '../utils/EnemyPerception';
 import { AttackSystem } from '../utils/AttackSystem';
 import { ObstacleAvoidance } from '../utils/ObstacleAvoidance';
-import { BulletDodging } from '../utils/BulletDodging';
+import { BulletDodging, type DodgeResult } from '../utils/BulletDodging';
 
 export interface Weapon {
   name: string;
@@ -167,6 +167,17 @@ export interface Enemy {
   dodgeDirection?: THREE.Vector3; // Direction of current dodge
   // Object pooling support
   poolId?: number; // ID for returning mesh to pool when enemy dies
+  // ── Per-enemy throttle state (used by the round-robin scheduler) ──
+  // Heavy AI/perception/dodge work is run on a slow tick (5-10 Hz) and the
+  // last result is cached so steering and animation still update at 60 Hz.
+  // Timestamps are millisecond Date.now() — when the loop sees nextXxxAt is
+  // in the past, it re-evaluates and bumps the timestamp forward.
+  nextAiAt?: number;
+  nextPerceptionAt?: number;
+  nextDodgeAt?: number;
+  cachedAiDecision?: AIDecision;
+  cachedPerception?: PerceptionResult;
+  cachedDodge?: DodgeResult;
 }
 
 export interface Bullet {

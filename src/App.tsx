@@ -6,6 +6,8 @@ import { GunModel } from './utils/GunModel';
 import { MuzzleFlash, BulletTracer, ImpactEffect, BloodSplatter } from './utils/Effects';
 import { soundManager } from './utils/SoundManager';
 import { gameSettingsManager, type UserSettings } from './utils/GameSettingsManager';
+import { PostProcessingPipeline } from './utils/PostProcessing';
+import { SpatialGrid } from './utils/SpatialGrid';
 import { AIBehaviorSystem } from './utils/AIBehaviorSystem';
 import { EnemyPerception } from './utils/EnemyPerception';
 import { AttackSystem } from './utils/AttackSystem';
@@ -105,6 +107,8 @@ const findMatchingLocale = (locale: string): string => {
 const locale = findMatchingLocale(browserLocale);
 const t = (key: string): string => TRANSLATIONS[locale]?.[key as keyof typeof TRANSLATIONS['en-US']] || TRANSLATIONS['en-US'][key as keyof typeof TRANSLATIONS['en-US']] || key;
 
+const MENU_MUSIC_URL = '/audio/Before_The_Breach.mp3';
+
 const ForestSurvivalGame = () => {
   const mountRef = useRef<HTMLDivElement>(null);
   const [gameMode, setGameMode] = useState<'none' | 'classic' | 'multiplayer' | 'tutorial'>('none');
@@ -190,6 +194,10 @@ const ForestSurvivalGame = () => {
     colorblindMode: 'none'
   });
 
+  const menuMusicRef = useRef<HTMLAudioElement | null>(null);
+  const menuMusicUnlockCleanupRef = useRef<(() => void) | null>(null);
+  const menuMusicVolumeRef = useRef(0);
+
   // Check for multiplayer session in URL on mount
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -233,6 +241,96 @@ const ForestSurvivalGame = () => {
     return () => {
       unsubscribe();
       clearInterval(interval);
+    };
+  }, []);
+
+  useEffect(() => {
+    const menuMusicVolume = Math.max(0, Math.min(1, (userSettings.masterVolume / 100) * (userSettings.musicVolume / 100)));
+    menuMusicVolumeRef.current = menuMusicVolume;
+
+    if (!menuMusicRef.current) {
+      const music = new Audio(MENU_MUSIC_URL);
+      music.loop = true;
+      music.preload = 'auto';
+      menuMusicRef.current = music;
+    }
+
+    const music = menuMusicRef.current;
+    if (!music) return;
+
+    music.volume = menuMusicVolume;
+
+    const clearUnlockListeners = () => {
+      if (!menuMusicUnlockCleanupRef.current) return;
+      menuMusicUnlockCleanupRef.current();
+      menuMusicUnlockCleanupRef.current = null;
+    };
+
+    const attachUnlockListeners = () => {
+      if (menuMusicUnlockCleanupRef.current) return;
+
+      const resumeMusic = () => {
+        const currentMusic = menuMusicRef.current;
+        if (!currentMusic) return;
+
+        currentMusic.volume = menuMusicVolumeRef.current;
+        const playResult = currentMusic.play();
+        if (playResult !== undefined) {
+          playResult
+            .then(() => {
+              clearUnlockListeners();
+            })
+            .catch(() => {
+              // Keep waiting for the next user gesture.
+            });
+        } else {
+          clearUnlockListeners();
+        }
+      };
+
+      const resumeEvents: Array<keyof WindowEventMap> = ['pointerdown', 'keydown', 'touchstart'];
+      resumeEvents.forEach((eventName) => window.addEventListener(eventName, resumeMusic));
+      menuMusicUnlockCleanupRef.current = () => {
+        resumeEvents.forEach((eventName) => window.removeEventListener(eventName, resumeMusic));
+      };
+    };
+
+    const shouldPlayMenuMusic = !gameStarted && !isMobile;
+
+    if (shouldPlayMenuMusic) {
+      if (music.paused || music.ended) {
+        const playResult = music.play();
+        if (playResult !== undefined) {
+          playResult
+            .then(() => {
+              clearUnlockListeners();
+            })
+            .catch(() => {
+              attachUnlockListeners();
+            });
+        } else {
+          clearUnlockListeners();
+        }
+      }
+    } else {
+      clearUnlockListeners();
+      music.pause();
+      music.currentTime = 0;
+    }
+  }, [gameStarted, isMobile, userSettings.masterVolume, userSettings.musicVolume]);
+
+  useEffect(() => {
+    return () => {
+      if (menuMusicUnlockCleanupRef.current) {
+        menuMusicUnlockCleanupRef.current();
+        menuMusicUnlockCleanupRef.current = null;
+      }
+
+      if (menuMusicRef.current) {
+        menuMusicRef.current.pause();
+        menuMusicRef.current.src = '';
+        menuMusicRef.current = null;
+      }
     };
   }, []);
 
@@ -660,203 +758,35 @@ const ForestSurvivalGame = () => {
     // Initialize the enemy pooling and LOD system for optimal performance
     smartEnemyManager.initialize(scene, camera, graphicsPreset);
 
-    // === AAA-QUALITY POST-PROCESSING SYSTEM ===
-    const renderTarget1 = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, {
-      minFilter: THREE.LinearFilter,
-      magFilter: THREE.LinearFilter,
-      format: THREE.RGBAFormat,
-      type: THREE.UnsignedByteType,
-      stencilBuffer: false
-    });
-
-    // Bloom render target at half resolution for performance
-    const bloomTarget = new THREE.WebGLRenderTarget(
-      Math.max(1, Math.floor(window.innerWidth / 2)),
-      Math.max(1, Math.floor(window.innerHeight / 2)),
-      { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, format: THREE.RGBAFormat }
-    );
-
-    // Second half-res target so the bloom blur can ping-pong between buffers
-    const bloomTargetB = new THREE.WebGLRenderTarget(
-      Math.max(1, Math.floor(window.innerWidth / 2)),
-      Math.max(1, Math.floor(window.innerHeight / 2)),
-      { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, format: THREE.RGBAFormat }
-    );
-
-    // Bright-pass extraction shader — extracts only bright pixels for bloom
-    const brightPassMaterial = new THREE.ShaderMaterial({
-      uniforms: { tDiffuse: { value: null }, threshold: { value: 0.62 } },
-      vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-      fragmentShader: `
-        uniform sampler2D tDiffuse;
-        uniform float threshold;
-        varying vec2 vUv;
-        void main() {
-          vec4 color = texture2D(tDiffuse, vUv);
-          float brightness = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
-          float soft = smoothstep(threshold - 0.12, threshold + 0.12, brightness);
-          // Slight super-brightening so bloom on lights/embers blooms hot
-          gl_FragColor = vec4(color.rgb * soft * (1.0 + soft * 0.5), 1.0);
-        }
-      `
-    });
-
-    // Separable 9-tap Gaussian blur — turns the bright-pass into a soft,
-    // wide glow. Run horizontally then vertically, a couple of iterations,
-    // for a smooth cinematic bloom rather than hard bright pixels.
-    const blurMaterial = new THREE.ShaderMaterial({
-      uniforms: {
-        tDiffuse: { value: null },
-        direction: { value: new THREE.Vector2(1, 0) },
-        resolution: {
-          value: new THREE.Vector2(
-            Math.max(1, Math.floor(window.innerWidth / 2)),
-            Math.max(1, Math.floor(window.innerHeight / 2)),
-          ),
-        },
-      },
-      vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-      fragmentShader: `
-        uniform sampler2D tDiffuse;
-        uniform vec2 direction;
-        uniform vec2 resolution;
-        varying vec2 vUv;
-        void main() {
-          vec2 texel = direction / resolution;
-          vec4 sum = texture2D(tDiffuse, vUv) * 0.227027;
-          sum += texture2D(tDiffuse, vUv + texel * 1.3846) * 0.316216;
-          sum += texture2D(tDiffuse, vUv - texel * 1.3846) * 0.316216;
-          sum += texture2D(tDiffuse, vUv + texel * 3.2308) * 0.070270;
-          sum += texture2D(tDiffuse, vUv - texel * 3.2308) * 0.070270;
-          gl_FragColor = sum;
-        }
-      `
-    });
-
-    // Enhanced Final Color Grading & Tone Mapping for Stunning Visuals
-    const finalShader = {
-      uniforms: {
-        tDiffuse: { value: null },
-        tBloom: { value: null },
-        brightness: { value: 1.08 }, // Brighter for better visibility and vibrancy
-        contrast: { value: atmosphericSettings.contrast * 1.12 }, // Enhanced contrast for dramatic look
-        saturation: { value: atmosphericSettings.saturation * 1.18 }, // More vibrant, stunning colors
-        vignette: { value: 0.32 }, // Reduced vignette for clearer view
-        vignetteHardness: { value: 0.6 },
-        colorTint: { value: atmosphericSettings.colorTint },
-        temperature: { value: atmosphericSettings.temperature }
-      },
-      vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-      fragmentShader: `
-        uniform sampler2D tDiffuse;
-        uniform sampler2D tBloom;
-        uniform float brightness;
-        uniform float contrast;
-        uniform float saturation;
-        uniform float vignette;
-        uniform float vignetteHardness;
-        uniform vec3 colorTint;
-        uniform float temperature;
-        varying vec2 vUv;
-
-        vec3 adjustSaturation(vec3 color, float sat) {
-          float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
-          return mix(vec3(luma), color, sat);
-        }
-
-        vec3 adjustTemperature(vec3 color, float temp) {
-          // Multiplicative white-balance. An ADDITIVE offset here used to
-          // inject blue into colours with a zero blue channel — which turned
-          // orange rifle/launcher rounds purple on cool-toned maps. Scaling
-          // each channel instead keeps pure hues pure (0 * anything = 0).
-          return color * (1.0 + vec3(temp, 0.0, -temp) * 0.15);
-        }
-
-        vec3 ACESFilm(vec3 x) {
-          float a = 2.51;
-          float b = 0.03;
-          float c = 2.43;
-          float d = 0.59;
-          float e = 0.14;
-          return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-        }
-
-        void main() {
-          vec4 baseColor = texture2D(tDiffuse, vUv);
-          vec4 bloomColor = texture2D(tBloom, vUv);
-
-          // Enhanced bloom for more stunning visuals
-          vec3 color = baseColor.rgb + bloomColor.rgb * 1.0; // Increased bloom intensity
-          color *= brightness;
-          color = (color - 0.5) * contrast + 0.5;
-          color = adjustSaturation(color, saturation);
-          color = adjustTemperature(color, temperature);
-          color *= colorTint;
-          // CRITICAL: clamp negatives before ACES. ACES is a rational curve —
-          // feeding it a negative channel returns a spurious POSITIVE value,
-          // which flipped the zero-blue channel of orange/red bullets up to
-          // 1.0 and rendered them pink. Clamping keeps pure hues pure.
-          color = ACESFilm(max(color, vec3(0.0)));
-
-          vec2 center = vUv - 0.5;
-          float dist = length(center);
-          float vig = 1.0 - smoothstep(0.0, vignetteHardness, dist * vignette);
-          color *= vig;
-
-          gl_FragColor = vec4(color, 1.0);
-        }
-      `
-    };
-
-    const finalMaterial = new THREE.ShaderMaterial(finalShader);
-
-    const postQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), finalMaterial);
-    const postScene = new THREE.Scene();
-    postScene.add(postQuad);
-    const postCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    // === AAA POST-PROCESSING (pmndrs/postprocessing) ===
+    // Bloom (mipmap blur), ACES tone mapping, SMAA, color grading, subtle
+    // chromatic aberration and vignette — all merged into a single fragment
+    // shader pass for performance. See utils/PostProcessing.ts.
+    const postFX = graphicsPreset.postProcessing
+      ? new PostProcessingPipeline(renderer, scene, camera, graphicsPreset, graphicsQuality)
+      : null;
+    if (postFX) {
+      // Initialise the grading uniforms from the current atmosphere snapshot
+      // so the first rendered frame already has the right look.
+      postFX.updateAtmosphere({
+        saturation: atmosphericSettings.saturation,
+        contrast: atmosphericSettings.contrast,
+        temperature: atmosphericSettings.temperature,
+        colorTint: atmosphericSettings.colorTint,
+      });
+    }
 
     /**
-     * Full post-processing pipeline:
-     *   1. scene  -> renderTarget1
-     *   2. bright-pass -> bloomTarget
-     *   3. separable Gaussian blur (H+V, 2 iterations) ping-ponging the
-     *      bloom buffers — produces a soft, wide cinematic glow
-     *   4. final composite (scene + bloom + grading) -> screen
+     * Render one frame. When post-processing is enabled we drive the pmndrs
+     * EffectComposer; otherwise we go straight to the canvas (Low preset).
      */
-    const composePostFX = () => {
-      // Pass 1 — render the 3D scene into the main target
-      renderer.setRenderTarget(renderTarget1);
-      renderer.render(scene, camera);
-
-      // Pass 2 — extract bright pixels
-      postQuad.material = brightPassMaterial;
-      brightPassMaterial.uniforms.tDiffuse.value = renderTarget1.texture;
-      renderer.setRenderTarget(bloomTarget);
-      renderer.render(postScene, postCamera);
-
-      // Pass 3 — blur the bright pixels into a soft glow
-      postQuad.material = blurMaterial;
-      for (let iteration = 0; iteration < 2; iteration++) {
-        blurMaterial.uniforms.tDiffuse.value = bloomTarget.texture;
-        blurMaterial.uniforms.direction.value.set(1, 0);
-        renderer.setRenderTarget(bloomTargetB);
-        renderer.render(postScene, postCamera);
-
-        blurMaterial.uniforms.tDiffuse.value = bloomTargetB.texture;
-        blurMaterial.uniforms.direction.value.set(0, 1);
-        renderer.setRenderTarget(bloomTarget);
-        renderer.render(postScene, postCamera);
+    const composePostFX = (delta: number = 0) => {
+      if (postFX) {
+        postFX.render(delta);
+      } else {
+        renderer.render(scene, camera);
       }
-
-      // Pass 4 — composite scene + bloom + colour grading to the screen
-      postQuad.material = finalMaterial;
-      finalMaterial.uniforms.tDiffuse.value = renderTarget1.texture;
-      finalMaterial.uniforms.tBloom.value = bloomTarget.texture;
-      renderer.setRenderTarget(null);
-      renderer.render(postScene, postCamera);
     };
-
-    // Post-processing material created
 
     // Check for WebGL errors (with cleanup-safe event handlers)
     const onWebGLContextLost = (event: Event) => {
@@ -2437,6 +2367,32 @@ const ForestSurvivalGame = () => {
     const _tempVec3 = new THREE.Vector3();
     const _tempVec3_2 = new THREE.Vector3();
 
+    // === SPATIAL HASH GRIDS ===
+    // Replace O(N²) and O(B×E) per-frame scans with O(near) cell lookups.
+    //
+    // ─ enemyGrid: rebuilt every frame from the alive-enemy positions; powers
+    //   enemy-enemy separation AND bullet-vs-enemy collision.
+    // ─ terrainGrid: rebuilt only when the chunk loader changes the world
+    //   (terrain is static while in combat) — powers obstacle repulsion.
+    //
+    // 7-unit cells are comfortably larger than the biggest enemy/obstacle
+    // radius, so a 1-cell query catches every meaningful neighbour.
+    const enemyGrid = new SpatialGrid<number>(7);
+    const terrainGrid = new SpatialGrid<number>(8);
+    let terrainGridStamp = -1; // bumps whenever terrainObjects changes shape
+    const rebuildTerrainGridIfStale = () => {
+      // Cheap shape hash — length covers add/remove from chunk streaming.
+      // Terrain objects don't move, so length alone is a reliable signal.
+      if (terrainGridStamp === terrainObjects.length) return;
+      terrainGridStamp = terrainObjects.length;
+      terrainGrid.clear();
+      for (let k = 0; k < terrainObjects.length; k++) {
+        const obj = terrainObjects[k];
+        if (!obj.collidable) continue;
+        terrainGrid.insert(k, obj.x, obj.z);
+      }
+    };
+
     // Extracted enemy-kill handler — shared by direct bullet hits and the
     // rocket launcher's area-of-effect so score, combos, drops, achievements
     // and wave progression all behave identically however an enemy dies.
@@ -2739,11 +2695,14 @@ const ForestSurvivalGame = () => {
       // "outside" the sphere (which is what caused the giant-blob glitch).
       skyDome.position.set(camera.position.x, 0, camera.position.z);
 
-      // Update post-processing uniforms
-      finalMaterial.uniforms.contrast.value = atmosphericSettings.contrast;
-      finalMaterial.uniforms.saturation.value = atmosphericSettings.saturation;
-      finalMaterial.uniforms.colorTint.value = atmosphericSettings.colorTint;
-      finalMaterial.uniforms.temperature.value = atmosphericSettings.temperature;
+      // Push live grading into the pmndrs effect chain so dusk/dawn/night
+      // colour shifts read on screen as the day cycle advances.
+      postFX?.updateAtmosphere({
+        saturation: atmosphericSettings.saturation,
+        contrast: atmosphericSettings.contrast,
+        temperature: atmosphericSettings.temperature,
+        colorTint: atmosphericSettings.colorTint,
+      });
 
       // Update sky dome shader
       if (skyMaterial.uniforms.time) {
@@ -2927,12 +2886,7 @@ const ForestSurvivalGame = () => {
       // Freeze the whole simulation while a tutorial overlay card is on screen
       // — the scene still renders, but nothing moves and enemies cannot attack.
       if (isGameOver || paused || tutorialActiveRef.current) {
-        // Render paused state (with or without post-processing based on quality)
-        if (graphicsPreset.postProcessing) {
-          composePostFX();
-        } else {
-          renderer.render(scene, camera);
-        }
+        composePostFX(rawDelta);
         return;
       }
 
@@ -3374,6 +3328,17 @@ const ForestSurvivalGame = () => {
         }
       }
 
+      // ── Refresh spatial grids for this frame ──
+      // Terrain rebuilds only when chunks change. Enemy grid is rebuilt
+      // each frame from alive enemies — used for bullet-vs-enemy collision
+      // and enemy-vs-enemy separation below.
+      rebuildTerrainGridIfStale();
+      enemyGrid.clear();
+      for (let k = 0; k < enemies.length; k++) {
+        const e = enemies[k];
+        if (!e.dead) enemyGrid.insert(k, e.mesh.position.x, e.mesh.position.z);
+      }
+
       // Update bullets
       for (let i = bullets.length - 1; i >= 0; i--) {
         const bullet = bullets[i];
@@ -3386,8 +3351,12 @@ const ForestSurvivalGame = () => {
           const rp = bullet.mesh.position;
           let hitTerrain = rp.y <= 0.4;
           if (!hitTerrain) {
-            for (const obj of terrainObjects) {
-              if (!obj.collidable) continue;
+            // Grid lookup — only checks terrain in the rocket's neighbourhood
+            // instead of walking the full terrainObjects array (500+ items).
+            const nearby = terrainGrid.queryRadius(rp.x, rp.z, 6);
+            for (let n = 0; n < nearby.length; n++) {
+              const obj = terrainObjects[nearby[n]];
+              if (!obj || !obj.collidable) continue;
               const dx = rp.x - obj.x;
               const dz = rp.z - obj.z;
               if (dx * dx + dz * dz < obj.radius * obj.radius
@@ -3413,14 +3382,26 @@ const ForestSurvivalGame = () => {
           continue;
         }
 
-        for (let j = enemies.length - 1; j >= 0; j--) {
+        // Grid lookup — only test enemies within a small radius of the bullet
+        // instead of every enemy in the world (was the worst N×M offender).
+        const bpx = bullet.mesh.position.x;
+        const bpz = bullet.mesh.position.z;
+        const nearbyEnemyIds = enemyGrid.queryRadius(bpx, bpz, 3);
+        // Snapshot the IDs because queryRadius reuses the returned array
+        // and the next call (terrainGrid lookup inside this loop, etc.)
+        // would overwrite it mid-iteration.
+        const nearbyIds: number[] = nearbyEnemyIds.slice();
+        let bulletConsumed = false;
+        for (let n = 0; n < nearbyIds.length && !bulletConsumed; n++) {
+          const j = nearbyIds[n];
           const enemy = enemies[j];
-          if (!enemy.dead && checkCollision(bullet.mesh.position, enemy.mesh.position, 2)) {
+          if (enemy && !enemy.dead && checkCollision(bullet.mesh.position, enemy.mesh.position, 2)) {
             // Rockets explode on first contact — the blast handles all damage
             if (bullet.isRocket) {
               explodeRocket(bullet.mesh.position.clone(), bullet.damage);
               scene.remove(bullet.mesh);
               bullets.splice(i, 1);
+              bulletConsumed = true;
               break;
             }
             // === CRITICAL HIT SYSTEM (HEADSHOTS) ===
@@ -3508,6 +3489,15 @@ const ForestSurvivalGame = () => {
       // === NEW ADVANCED AI SYSTEM ===
       // AI update distance scales with graphics quality for performance
       const MAX_AI_UPDATE_DISTANCE = Math.min(100, graphicsPreset.viewDistance * 0.6);
+      // ── Per-frame Date.now() cache + throttle intervals (milliseconds) ──
+      // Heavy systems run on a slow tick and cache their result; steering and
+      // animation still update every frame from the cached output, so movement
+      // stays smooth even though the brain is thinking ~5 times a second.
+      const frameNowMs = Date.now();
+      const AI_TICK_MS = 180;          // ~5.5 Hz behaviour tree
+      const PERCEPTION_TICK_MS = 220;  // ~4.5 Hz sight/sound — has raycasts
+      const DODGE_TICK_MS_NEAR = 110;  // ~9 Hz bullet dodging when close
+      const DODGE_TICK_MS_MID = 240;   // ~4 Hz when further out
       for (let i = enemies.length - 1; i >= 0; i--) {
         const enemy = enemies[i];
 
@@ -3597,49 +3587,78 @@ const ForestSurvivalGame = () => {
           enemy.health = Math.min(enemy.maxHealth, enemy.health + diffSettings.regenRate * delta * 10);
         }
 
-        // === PERCEPTION SYSTEM ===
-        const perception = enemy.perception?.perceive(
-          enemy.mesh.position,
-          enemy.mesh.rotation.y,
-          camera.position,
-          playerVelocity,
-          terrainObjects,
-          timeOfDay === 'night'
-        );
+        // === PERCEPTION SYSTEM (throttled — sight/sound uses raycasts) ===
+        // Re-evaluate on a slow tick and cache. The cached PerceptionResult
+        // is referenced every frame so the rest of the AI sees a stable view
+        // of the world without the per-frame raycast cost.
+        if (
+          enemy.perception &&
+          (enemy.cachedPerception === undefined || frameNowMs >= (enemy.nextPerceptionAt || 0))
+        ) {
+          enemy.cachedPerception = enemy.perception.perceive(
+            enemy.mesh.position,
+            enemy.mesh.rotation.y,
+            camera.position,
+            playerVelocity,
+            terrainObjects,
+            timeOfDay === 'night'
+          );
+          // Stagger by enemy index so 28 enemies don't all tick on the same
+          // frame — spreads the spikes across the ~220ms window.
+          enemy.nextPerceptionAt = frameNowMs + PERCEPTION_TICK_MS + (i * 17) % 90;
+        }
+        const perception = enemy.cachedPerception;
 
         const canSeePlayer = perception?.canSeePlayer || false;
         const canHearPlayer = perception?.canHearPlayer || false;
 
-        // === AI DECISION MAKING ===
+        // === AI DECISION MAKING (throttled — behaviour tree is expensive) ===
         if (enemy.aiBehavior && perception) {
-          const aiDecision = enemy.aiBehavior.makeDecision({
-            enemyPosition: enemy.mesh.position,
-            enemyRotation: enemy.mesh.rotation.y,
-            playerPosition: camera.position,
-            playerVelocity: playerVelocity,
-            distanceToPlayer: distance,
-            health: enemy.health,
-            maxHealth: enemy.maxHealth,
-            type: enemy.type,
-            allEnemies: enemies,
-            terrainObjects: terrainObjects,
-            canSeePlayer,
-            hearPlayerShooting: canHearPlayer,
-            timeSinceLastSawPlayer: perception.timeSinceLastSeen,
-            isInCover: false
-          }, delta);
+          if (
+            enemy.cachedAiDecision === undefined ||
+            frameNowMs >= (enemy.nextAiAt || 0)
+          ) {
+            enemy.cachedAiDecision = enemy.aiBehavior.makeDecision({
+              enemyPosition: enemy.mesh.position,
+              enemyRotation: enemy.mesh.rotation.y,
+              playerPosition: camera.position,
+              playerVelocity: playerVelocity,
+              distanceToPlayer: distance,
+              health: enemy.health,
+              maxHealth: enemy.maxHealth,
+              type: enemy.type,
+              allEnemies: enemies,
+              terrainObjects: terrainObjects,
+              canSeePlayer,
+              hearPlayerShooting: canHearPlayer,
+              timeSinceLastSawPlayer: perception.timeSinceLastSeen,
+              isInCover: false
+            }, delta);
+            // Stagger ticks across enemies for an even per-frame budget.
+            enemy.nextAiAt = frameNowMs + AI_TICK_MS + (i * 23) % 80;
+          }
+          const aiDecision = enemy.cachedAiDecision;
 
           // Update target position from AI decision
           enemy.targetPosition.copy(aiDecision.targetPosition);
 
-          // === BULLET DODGING SYSTEM ===
-          const currentTime = Date.now();
+          // === BULLET DODGING SYSTEM (throttled, distance-scaled) ===
           if (enemy.bulletDodging) {
-            const dodgeResult = enemy.bulletDodging.calculateDodge(
-              enemy.mesh.position,
-              bullets,
-              currentTime
-            );
+            // Close enemies get faster dodge ticks because bullets reach them
+            // sooner; mid-range enemies can afford a coarser cadence.
+            const dodgeInterval = distance < 25 ? DODGE_TICK_MS_NEAR : DODGE_TICK_MS_MID;
+            if (
+              enemy.cachedDodge === undefined ||
+              frameNowMs >= (enemy.nextDodgeAt || 0)
+            ) {
+              enemy.cachedDodge = enemy.bulletDodging.calculateDodge(
+                enemy.mesh.position,
+                bullets,
+                frameNowMs
+              );
+              enemy.nextDodgeAt = frameNowMs + dodgeInterval + (i * 11) % 60;
+            }
+            const dodgeResult = enemy.cachedDodge;
 
             if (dodgeResult.shouldDodge) {
               // Enemy is dodging! Override target with dodge direction
@@ -3647,7 +3666,7 @@ const ForestSurvivalGame = () => {
               enemy.dodgeDirection = dodgeResult.dodgeDirection.clone();
               // Apply immediate dodge movement (3x normal speed)
               const dodgeTarget = enemy.mesh.position.clone().add(
-                dodgeResult.dodgeDirection.multiplyScalar(8)
+                dodgeResult.dodgeDirection.clone().multiplyScalar(8)
               );
               enemy.targetPosition.copy(dodgeTarget);
             } else if (enemy.isDodging) {
@@ -3667,12 +3686,20 @@ const ForestSurvivalGame = () => {
             const sl = Math.hypot(steerX, steerZ) || 1;
             steerX /= sl; steerZ /= sl;
           }
-          // Repulsion from collidable terrain
-          for (let k = 0; k < terrainObjects.length; k++) {
-            const obj = terrainObjects[k];
-            if (!obj.collidable) continue;
-            const ox = enemy.mesh.position.x - obj.x;
-            const oz = enemy.mesh.position.z - obj.z;
+          // Repulsion from collidable terrain — spatial grid lookup so we
+          // only test the handful of obstacles near this enemy (was looping
+          // the entire terrainObjects array every frame per enemy).
+          const epx = enemy.mesh.position.x;
+          const epz = enemy.mesh.position.z;
+          const nearbyTerrain = terrainGrid.queryRadius(epx, epz, 6);
+          // Snapshot — the next grid query (enemy separation below) reuses
+          // the internal results array and would otherwise clobber this one.
+          const nearbyTerrainIds = nearbyTerrain.slice();
+          for (let nt = 0; nt < nearbyTerrainIds.length; nt++) {
+            const obj = terrainObjects[nearbyTerrainIds[nt]];
+            if (!obj || !obj.collidable) continue;
+            const ox = epx - obj.x;
+            const oz = epz - obj.z;
             const influence = obj.radius + 4.0;
             if (Math.abs(ox) > influence || Math.abs(oz) > influence) continue;
             const od = Math.hypot(ox, oz);
@@ -3683,12 +3710,15 @@ const ForestSurvivalGame = () => {
               steerZ += (oz / od) * push;
             }
           }
-          // Light separation from other enemies (reduces clumping)
-          for (let k = 0; k < enemies.length; k++) {
-            const other = enemies[k];
-            if (other === enemy || other.dead) continue;
-            const ox = enemy.mesh.position.x - other.mesh.position.x;
-            const oz = enemy.mesh.position.z - other.mesh.position.z;
+          // Light separation from other enemies — grid lookup, was O(N²).
+          const nearbyEnemies = enemyGrid.queryRadius(epx, epz, 3);
+          for (let ne = 0; ne < nearbyEnemies.length; ne++) {
+            const otherIdx = nearbyEnemies[ne];
+            if (otherIdx === i) continue;
+            const other = enemies[otherIdx];
+            if (!other || other.dead) continue;
+            const ox = epx - other.mesh.position.x;
+            const oz = epz - other.mesh.position.z;
             if (Math.abs(ox) > 2.6 || Math.abs(oz) > 2.6) continue;
             const od = Math.hypot(ox, oz);
             if (od > 0.001 && od < 2.6) {
@@ -3844,13 +3874,14 @@ const ForestSurvivalGame = () => {
             camera.position
           );
 
-          // Also check for overlap damage (when enemy clips into player)
-          const currentTime = Date.now();
+          // Also check for overlap damage (when enemy clips into player).
+          // Use the shared frame timestamp so Date.now() isn't called once
+          // per enemy per frame.
           const overlapDamage = enemy.attackSystem.checkOverlapDamage(
             enemy.mesh.position,
             camera.position,
             enemy.lastAttackTime,
-            currentTime
+            frameNowMs
           );
 
           if (hitPlayer || overlapDamage) {
@@ -3884,7 +3915,7 @@ const ForestSurvivalGame = () => {
               }
 
               health -= damage;
-              enemy.lastAttackTime = currentTime; // Update for overlap cooldown
+              enemy.lastAttackTime = frameNowMs; // Update for overlap cooldown
 
               if (damage > 0) {
                 // 🤖 Record damage for AI systems
@@ -4012,13 +4043,8 @@ const ForestSurvivalGame = () => {
 
       // Endless mode - no victory condition, only game over on death
 
-      // === RENDERING (with optional post-processing based on graphics quality) ===
-      if (graphicsPreset.postProcessing) {
-        composePostFX();
-      } else {
-        // Low quality: Direct render (no post-processing for maximum performance)
-        renderer.render(scene, camera);
-      }
+      // === RENDERING — pmndrs EffectComposer (or direct render on Low) ===
+      composePostFX(rawDelta);
     };
 
     // === SHADER PRE-WARM ===
@@ -4047,8 +4073,7 @@ const ForestSurvivalGame = () => {
 
       try {
         // A real frame compiles every shader program in every render path
-        if (graphicsPreset.postProcessing) composePostFX();
-        else renderer.render(scene, camera);
+        composePostFX(0.016);
       } catch (err) {
         console.warn('[Warmup] pre-compile render failed:', err);
       }
@@ -4080,12 +4105,7 @@ const ForestSurvivalGame = () => {
       const newWidth = Math.floor(window.innerWidth * graphicsPreset.pixelRatio);
       const newHeight = Math.floor(window.innerHeight * graphicsPreset.pixelRatio);
       renderer.setSize(newWidth, newHeight, false);
-      renderTarget1.setSize(newWidth, newHeight);
-      const halfW = Math.max(1, Math.floor(newWidth / 2));
-      const halfH = Math.max(1, Math.floor(newHeight / 2));
-      bloomTarget.setSize(halfW, halfH);
-      bloomTargetB.setSize(halfW, halfH);
-      blurMaterial.uniforms.resolution.value.set(halfW, halfH);
+      postFX?.setSize(newWidth, newHeight);
     };
 
     window.addEventListener('resize', handleResize);
@@ -4135,14 +4155,9 @@ const ForestSurvivalGame = () => {
       // .remove() detaches the element from wherever it is and never throws.
       renderer.domElement?.remove();
 
-      // Cleanup post-processing
-      renderTarget1.dispose();
-      bloomTarget.dispose();
-      bloomTargetB.dispose();
-      brightPassMaterial.dispose();
-      blurMaterial.dispose();
-      finalMaterial.dispose();
-      postQuad.geometry.dispose();
+      // Cleanup post-processing — EffectComposer.dispose() walks every pass
+      // and effect for us, freeing render targets and shaders.
+      postFX?.dispose();
 
       // Cleanup shared bullet resources
       sharedBulletGeo.dispose();
