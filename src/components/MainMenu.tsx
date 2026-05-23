@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import * as THREE from 'three';
-import { Swords, Users, GraduationCap, Settings, ChevronRight } from 'lucide-react';
+import { Swords, Users, GraduationCap, Settings, ChevronRight, Sparkles } from 'lucide-react';
 import SettingsMenu from './SettingsMenu';
+import CreditsMenu from './CreditsMenu';
 
 interface MainMenuProps {
   onClassicMode: () => void;
@@ -12,6 +13,7 @@ interface MainMenuProps {
 
 const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode }: MainMenuProps) => {
   const [showSettings, setShowSettings] = useState(false);
+  const [showCredits, setShowCredits] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const sceneRef = useRef<{
     scene: THREE.Scene;
@@ -320,27 +322,53 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode }: MainMenu
               );
             })}
 
-            {/* Settings */}
-            <button
-              onClick={() => setShowSettings(true)}
-              className="group mt-1 flex items-center justify-center gap-2 self-center rounded-xl px-5 py-2.5
-                text-sm font-semibold text-gray-400 border border-white/10 bg-white/[0.02]
-                transition-all duration-300 hover:text-white hover:bg-white/[0.06] hover:border-white/20"
-            >
-              <Settings className="w-4 h-4 group-hover:rotate-90 transition-transform duration-500" strokeWidth={2} />
-              Settings
-            </button>
+            {/* Settings + Credits */}
+            <div className="flex items-center justify-center gap-2 mt-1">
+              <button
+                onClick={() => setShowSettings(true)}
+                className="group flex items-center justify-center gap-2 rounded-xl px-5 py-2.5
+                  text-sm font-semibold text-gray-400 border border-white/10 bg-white/[0.02]
+                  transition-all duration-300 hover:text-white hover:bg-white/[0.06] hover:border-white/20"
+              >
+                <Settings className="w-4 h-4 group-hover:rotate-90 transition-transform duration-500" strokeWidth={2} />
+                Settings
+              </button>
+              <button
+                onClick={() => setShowCredits(true)}
+                className="group flex items-center justify-center gap-2 rounded-xl px-5 py-2.5
+                  text-sm font-semibold text-gray-400 border border-white/10 bg-white/[0.02]
+                  transition-all duration-300 hover:text-emerald-300 hover:bg-emerald-500/[0.06] hover:border-emerald-400/30"
+              >
+                <Sparkles
+                  className="w-4 h-4 transition-transform duration-500 group-hover:scale-110"
+                  strokeWidth={2}
+                  fill="currentColor"
+                />
+                Credits
+              </button>
+            </div>
           </div>
 
-          {/* Version */}
-          <p className="mt-10 text-[10px] tracking-[0.3em] text-gray-600 uppercase">
-            Version 1.0
-          </p>
+          {/* Version + author tagline */}
+          <div className="mt-10 flex flex-col items-center gap-1.5">
+            <p className="text-[10px] tracking-[0.3em] text-gray-600 uppercase">
+              Version 1.0
+            </p>
+            <button
+              onClick={() => setShowCredits(true)}
+              className="text-[11px] text-gray-500 hover:text-emerald-300 transition-colors"
+            >
+              vibe-coded by <span className="font-semibold">Surya</span>
+            </button>
+          </div>
         </div>
       )}
 
       {/* Settings Menu */}
       {showSettings && <SettingsMenu onClose={() => setShowSettings(false)} />}
+
+      {/* Credits Menu */}
+      {showCredits && <CreditsMenu onClose={() => setShowCredits(false)} />}
     </div>
   );
 };

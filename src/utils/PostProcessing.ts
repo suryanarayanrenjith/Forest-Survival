@@ -132,20 +132,31 @@ export class PostProcessingPipeline {
         SMAAPreset.MEDIUM,
     });
 
-    // Order matters: grading -> bloom (so the boosted color blooms) ->
-    // chromatic (lens) -> vignette (edge falloff) -> tone -> SMAA (last).
-    // All merged into ONE pass — single fullscreen draw on the GPU.
-    const effects = [
+    // pmndrs/postprocessing merges effects into a single fragment shader to
+    // save fullscreen draws — but CONVOLUTION effects (those that sample
+    // neighbouring pixels) cannot be merged with anything else and must
+    // each live in their own EffectPass.
+    //
+    // Non-convolution chain — bloom + colour grading + tone mapping + vignette
+    // all share one merged pass: a single fullscreen draw on the GPU.
+    this.composer.addPass(new EffectPass(
+      camera,
       this.hueSat,
       this.brightnessContrast,
       this.bloom,
-      ...(quality === 'low' ? [] : [this.chromatic]),
       this.vignette,
       this.toneMapping,
-      this.smaa,
-    ];
+    ));
 
-    this.composer.addPass(new EffectPass(camera, ...effects));
+    // Chromatic aberration is a convolution effect (per-channel UV offsets) —
+    // skipped on Low for perf, otherwise gets its own dedicated pass.
+    if (quality !== 'low') {
+      this.composer.addPass(new EffectPass(camera, this.chromatic));
+    }
+
+    // SMAA is also convolution-based (edge detection + blending). Last pass
+    // so it anti-aliases the fully-composited image.
+    this.composer.addPass(new EffectPass(camera, this.smaa));
 
     // We're not using `graphicsPreset.viewDistance` directly here, but we
     // pull the reference in so callers don't pass an unused param.
