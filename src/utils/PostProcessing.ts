@@ -75,52 +75,57 @@ export class PostProcessingPipeline {
     this.composer.addPass(new RenderPass(scene, camera));
 
     // ── BLOOM (mipmap-blur cinematic glow) ───────────────────────────────
-    // Kawase / mipmap-based blur is hierarchically wider and softer than the
-    // 9-tap Gaussian we had before — bright lights and tracers feather out
-    // with a real "halation" feel.
+    // Kawase / mipmap-based blur — only bright highlights (sun, muzzle flash,
+    // tracers, embers) feather out. Threshold tuned for LINEAR HDR input,
+    // where 0.85+ is genuinely bright (mid-grey is around 0.18-0.5).
     this.bloom = new BloomEffect({
-      intensity: quality === 'high' ? 1.05 : quality === 'medium' ? 0.85 : 0.6,
-      luminanceThreshold: 0.55,
-      luminanceSmoothing: 0.18,
+      intensity: quality === 'high' ? 0.55 : quality === 'medium' ? 0.40 : 0.28,
+      luminanceThreshold: 0.85,
+      luminanceSmoothing: 0.20,
       mipmapBlur: true,
-      radius: 0.86,
-      levels: quality === 'high' ? 8 : quality === 'medium' ? 6 : 4,
+      radius: 0.72,
+      levels: quality === 'high' ? 7 : quality === 'medium' ? 5 : 4,
     });
 
     // ── COLOR GRADING ─────────────────────────────────────────────────────
-    // Saturation/hue and brightness/contrast are split because pmndrs runs
-    // them as different shader snippets — keeps the deltas easier to tune.
+    // Start neutral. updateAtmosphere() pushes small per-frame deltas so the
+    // day cycle can warm/cool/saturate the look without ever blowing out.
     this.hueSat = new HueSaturationEffect({
-      saturation: 0.15,   // mild boost on top of whatever the atmosphere asks
+      saturation: 0.0,
       hue: 0,
     });
 
     this.brightnessContrast = new BrightnessContrastEffect({
-      brightness: 0.04,
-      contrast: 0.12,
+      // +0.06 compensates for the lost renderer.toneMappingExposure (was 1.15)
+      // now that tone mapping lives in the post pipeline.
+      brightness: 0.06,
+      contrast: 0.05,
     });
 
     // ── CHROMATIC ABERRATION (cinematic edge) ─────────────────────────────
-    // Subtle — barely perceptible at the centre, modulates outward so it
-    // reads as a real lens, not a filter. Skipped on Low for perf.
+    // Whisper-thin — should be invisible at the centre and barely perceptible
+    // at the corners. Anything more and it reads as a broken display.
     this.chromatic = new ChromaticAberrationEffect({
-      offset: new THREE.Vector2(0.0009, 0.0009),
+      offset: new THREE.Vector2(0.00035, 0.00035),
       radialModulation: true,
-      modulationOffset: 0.42,
+      modulationOffset: 0.55,
     });
 
     // ── VIGNETTE ──────────────────────────────────────────────────────────
+    // Soft falloff that frames the action without darkening playable area.
     this.vignette = new VignetteEffect({
       technique: VignetteTechnique.DEFAULT,
-      offset: 0.32,
-      darkness: 0.55,
+      offset: 0.50,
+      darkness: 0.28,
     });
 
     // ── TONE MAPPING (ACES Filmic) ────────────────────────────────────────
+    // Roll-off whites smoothly instead of clipping. whitePoint = 5 gives
+    // a bit more highlight headroom for the sun + emissive props.
     this.toneMapping = new ToneMappingEffect({
       mode: ToneMappingMode.ACES_FILMIC,
-      whitePoint: 4.0,
-      middleGrey: 0.6,
+      whitePoint: 5.0,
+      middleGrey: 0.5,
     });
 
     // ── SMAA (sub-pixel morphological AA) ─────────────────────────────────
@@ -168,22 +173,25 @@ export class PostProcessingPipeline {
    * dusk/dawn/bloodmoon shifts read on screen.
    *
    * The incoming values use the OLD shader convention where 1.0 means
-   * "no change". We remap into pmndrs' [-1, 1] convention here.
+   * "no change". We map small deltas (≤40%) into pmndrs' [-1,1] range so
+   * the day cycle gently nudges the grade without ever blowing it out.
    */
   updateAtmosphere(g: AtmosphereGrading) {
-    // saturation 1.0 => 0 offset; 1.4 => +0.4 (capped to keep it readable)
-    this.hueSat.saturation = THREE.MathUtils.clamp((g.saturation - 1.0) * 1.0 + 0.15, -1, 1);
+    // Saturation: take a 35% slice of the multiplicative delta. A typical
+    // sunset value of g.saturation = 1.2 maps to +0.07 — perceptibly more
+    // vivid, not neon.
+    this.hueSat.saturation = THREE.MathUtils.clamp((g.saturation - 1.0) * 0.35, -0.4, 0.4);
 
-    // contrast 1.0 => baseline; small boost above that, gently reduced below
-    this.brightnessContrast.contrast = THREE.MathUtils.clamp((g.contrast - 1.0) * 0.9 + 0.10, -1, 1);
+    // Contrast: keep the +0.05 baseline (set in the constructor) and add
+    // a small per-frame delta on top.
+    this.brightnessContrast.contrast = THREE.MathUtils.clamp(0.05 + (g.contrast - 1.0) * 0.25, -0.3, 0.3);
 
-    // temperature is a [-1, 1] warm/cool shift; gently colour the brightness
-    // so warm scenes feel warm and cool ones cool, without breaking neutrals.
-    this.brightnessContrast.brightness = THREE.MathUtils.clamp(0.03 + g.temperature * 0.06, -1, 1);
+    // Brightness: +0.06 baseline (compensates for lost renderer exposure)
+    // plus a subtle warm/cool tilt from temperature.
+    this.brightnessContrast.brightness = THREE.MathUtils.clamp(0.06 + g.temperature * 0.05, -0.2, 0.2);
 
-    // Update color tint — multiplied into the scene through HueSaturation's
-    // shader is not directly possible here, but we mimic the previous tint
-    // behaviour by mixing it into the brightness/contrast curve gently.
+    // Track the colour tint for future passes (not currently piped into a
+    // pmndrs effect — kept so existing call sites stay valid).
     if (g.colorTint) {
       if (g.colorTint instanceof THREE.Color) {
         this.tintColor.copy(g.colorTint);
