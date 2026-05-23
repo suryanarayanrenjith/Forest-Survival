@@ -27,6 +27,7 @@ export interface GameState {
   startTime?: number;
   hostId: string;
   map?: string; // Map ID for session persistence
+  difficulty?: 'easy' | 'medium' | 'hard' | 'adaptive'; // Host-selected difficulty
 }
 
 export type NetworkMessage =
@@ -36,6 +37,7 @@ export type NetworkMessage =
   | { type: 'player_rejected'; reason: string }
   | { type: 'game_start'; gameState: Partial<GameState> }
   | { type: 'game_restart'; gameState: Partial<GameState> }
+  | { type: 'return_to_lobby'; gameState: Partial<GameState> }
   | { type: 'game_over'; winnerId: string; finalStats: PlayerData[] }
   | { type: 'enemy_killed'; playerId: string }
   | { type: 'player_shot'; shooterId: string; targetId: string; damage: number }
@@ -504,6 +506,50 @@ export class MultiplayerManager {
         break;
       }
 
+      case 'return_to_lobby': {
+        console.log('[MultiplayerManager] ===== Received return_to_lobby message =====');
+
+        if (message.gameState) {
+          const playersMap = new Map<string, PlayerData>();
+          if (Array.isArray(message.gameState.players)) {
+            message.gameState.players.forEach((player: PlayerData) => {
+              playersMap.set(player.id, player);
+            });
+          } else if (message.gameState.players instanceof Map) {
+            message.gameState.players.forEach((player, id) => {
+              playersMap.set(id, player);
+            });
+          }
+
+          // Reset local player to fresh lobby state
+          this.localPlayer.health = this.localPlayer.maxHealth;
+          this.localPlayer.isAlive = true;
+          this.localPlayer.kills = 0;
+          this.localPlayer.deaths = 0;
+          this.localPlayer.score = 0;
+
+          this.gameState = {
+            ...message.gameState,
+            players: playersMap,
+            startTime: undefined, // clear startTime so the lobby reads as not-in-game
+          } as GameState;
+
+          // Re-sync remote players from the server-authoritative snapshot
+          this.remotePlayers.clear();
+          playersMap.forEach((player, id) => {
+            if (id !== this.localPlayer.id) {
+              this.remotePlayers.set(id, player);
+            }
+          });
+        }
+
+        const lobbyHandlers = this.messageHandlers.get('return_to_lobby');
+        if (lobbyHandlers) {
+          lobbyHandlers.forEach(handler => handler(message));
+        }
+        break;
+      }
+
       case 'game_over': {
         // Forward to registered handlers
         const handlers = this.messageHandlers.get(message.type);
@@ -764,7 +810,12 @@ export class MultiplayerManager {
    * Host-side: restart the game in the existing lobby.
    * Broadcasts game_restart so all guests reset their state without rejoining.
    */
-  restartGame(gameMode?: 'coop' | 'survival', timeLimit?: number, map?: string) {
+  restartGame(
+    gameMode?: 'coop' | 'survival',
+    timeLimit?: number,
+    map?: string,
+    difficulty?: 'easy' | 'medium' | 'hard' | 'adaptive',
+  ) {
     if (!this.isHost || !this.gameState) {
       console.warn('[MultiplayerManager] Cannot restart - not host or no game state');
       return;
@@ -777,12 +828,14 @@ export class MultiplayerManager {
     const mode = gameMode || this.gameState.gameMode;
     const tLimit = timeLimit !== undefined ? timeLimit : this.gameState.timeLimit;
     const mapId = map !== undefined ? map : this.gameState.map;
+    const diff = difficulty !== undefined ? difficulty : this.gameState.difficulty;
 
     // Update game state with fresh start time
     this.gameState.gameMode = mode;
     this.gameState.timeLimit = tLimit;
     this.gameState.startTime = Date.now();
     this.gameState.map = mapId;
+    this.gameState.difficulty = diff;
 
     // Make sure local player is in gameState.players
     this.gameState.players.set(this.localPlayer.id, this.localPlayer);
@@ -797,11 +850,55 @@ export class MultiplayerManager {
         timeLimit: this.gameState.timeLimit,
         startTime: this.gameState.startTime,
         hostId: this.gameState.hostId,
-        map: this.gameState.map
+        map: this.gameState.map,
+        difficulty: this.gameState.difficulty,
       } as any
     };
 
     this.broadcastMessage(restartMessage);
+  }
+
+  /**
+   * Host-side: send every player back to the existing lobby (no rejoin).
+   * Stats are wiped for the next match; the host then starts a new game
+   * from the lobby like normal. Guests skip the join screen because the
+   * MultiplayerManager (and therefore the PeerJS connection) is preserved.
+   */
+  returnToLobby() {
+    if (!this.isHost || !this.gameState) {
+      console.warn('[MultiplayerManager] Cannot return to lobby - not host or no game state');
+      return;
+    }
+
+    // Reset per-match stats locally
+    this.resetGameStats();
+
+    // Keep the previous match settings so the host can re-launch quickly,
+    // but clear startTime so the lobby reads as "not in a match".
+    this.gameState.startTime = undefined;
+    this.gameState.players.set(this.localPlayer.id, this.localPlayer);
+
+    console.log('[MultiplayerManager] Returning all players to lobby - Players:', this.gameState.players.size);
+
+    const lobbyMessage = {
+      type: 'return_to_lobby' as const,
+      gameState: {
+        players: Array.from(this.gameState.players.values()),
+        gameMode: this.gameState.gameMode,
+        timeLimit: this.gameState.timeLimit,
+        hostId: this.gameState.hostId,
+        map: this.gameState.map,
+        difficulty: this.gameState.difficulty,
+      } as any
+    };
+
+    this.broadcastMessage(lobbyMessage);
+
+    // Fire local handler too so the host's own UI flips to the lobby
+    const handlers = this.messageHandlers.get('return_to_lobby');
+    if (handlers) {
+      handlers.forEach(handler => handler(lobbyMessage));
+    }
   }
 
   /**
@@ -829,9 +926,14 @@ export class MultiplayerManager {
     }
   }
 
-  startGame(gameMode: 'coop' | 'survival', timeLimit?: number, map?: string) {
+  startGame(
+    gameMode: 'coop' | 'survival',
+    timeLimit?: number,
+    map?: string,
+    difficulty?: 'easy' | 'medium' | 'hard' | 'adaptive',
+  ) {
     console.log('[MultiplayerManager] ===== startGame() called =====');
-    console.log('[MultiplayerManager] gameMode:', gameMode, 'timeLimit:', timeLimit, 'map:', map);
+    console.log('[MultiplayerManager] gameMode:', gameMode, 'timeLimit:', timeLimit, 'map:', map, 'difficulty:', difficulty);
     console.log('[MultiplayerManager] isHost:', this.isHost, 'has gameState:', !!this.gameState);
 
     if (!this.isHost || !this.gameState) {
@@ -843,8 +945,9 @@ export class MultiplayerManager {
     this.gameState.timeLimit = timeLimit;
     this.gameState.startTime = Date.now();
     this.gameState.map = map;
+    this.gameState.difficulty = difficulty;
 
-    console.log(`[MultiplayerManager] Host starting game - Mode: ${gameMode}, Map: ${map}, Players: ${this.gameState.players.size}, Connections: ${this.connections.size}`);
+    console.log(`[MultiplayerManager] Host starting game - Mode: ${gameMode}, Map: ${map}, Difficulty: ${difficulty}, Players: ${this.gameState.players.size}, Connections: ${this.connections.size}`);
     console.log('[MultiplayerManager] Players:', Array.from(this.gameState.players.values()).map(p => ({ id: p.id, name: p.name })));
 
     // Convert Map to array for serialization (cast to any for network transmission)
@@ -856,7 +959,8 @@ export class MultiplayerManager {
         timeLimit: this.gameState.timeLimit,
         startTime: this.gameState.startTime,
         hostId: this.gameState.hostId,
-        map: this.gameState.map
+        map: this.gameState.map,
+        difficulty: this.gameState.difficulty,
       } as any
     };
 

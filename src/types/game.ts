@@ -216,6 +216,7 @@ export interface Keys {
 
 export interface GameState {
   health: number;
+  maxHealth: number; // dynamic, boosted by Thick Skin skill
   ammo: number;
   maxAmmo: number;
   score: number;

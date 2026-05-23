@@ -17,6 +17,7 @@ export interface AbilityHudItem {
 
 interface HUDProps {
   health: number;
+  maxHealth?: number; // optional dynamic cap (Thick Skin); defaults to 100
   ammo: number;
   maxAmmo: number;
   enemiesKilled: number;
@@ -47,7 +48,7 @@ const ABILITY_ICONS: Record<string, LucideIcon> = {
 };
 
 const HUD = ({
-  health, ammo, maxAmmo, enemiesKilled, score, wave, weaponName, combo,
+  health, maxHealth = 100, ammo, maxAmmo, enemiesKilled, score, wave, weaponName, combo,
   unlockedWeapons, currentWeapon, hideStatsPanel = false, unlimitedHealth = false,
   hideWave = false, abilities = [],
 }: HUDProps) => {
@@ -63,9 +64,13 @@ const HUD = ({
     setPrevScore(score);
   }, [score, prevScore]);
 
-  const healthPct = unlimitedHealth ? 100 : Math.max(0, Math.min(100, health));
-  const healthColor = unlimitedHealth ? '#34d399' : health > 60 ? '#34d399' : health > 30 ? '#fbbf24' : '#f87171';
-  const isLowHealth = !unlimitedHealth && health <= 30;
+  const safeMax = Math.max(1, maxHealth);
+  const healthRatio = unlimitedHealth ? 1 : Math.max(0, Math.min(1, health / safeMax));
+  const healthPct = healthRatio * 100;
+  const healthColor = unlimitedHealth
+    ? '#34d399'
+    : healthRatio > 0.6 ? '#34d399' : healthRatio > 0.3 ? '#fbbf24' : '#f87171';
+  const isLowHealth = !unlimitedHealth && healthRatio <= 0.3;
   const isLowAmmo = ammo <= Math.ceil(maxAmmo * 0.2);
 
   const weaponKeys = Object.keys(WEAPONS);

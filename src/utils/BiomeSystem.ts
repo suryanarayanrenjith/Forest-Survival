@@ -26,7 +26,7 @@ export class BiomeSystem {
   private grassConfigs: Record<BiomeType, { color: number; density: number }> = {
     forest:   { color: 0x3c7a2c, density: 1.0 },
     volcanic: { color: 0x3a2218, density: 0.12 },
-    tundra:   { color: 0x9ab0a8, density: 0.3 },
+    tundra:   { color: 0x9ab0a8, density: 0 },     // snow & ice — no grass grows here
     desert:   { color: 0xc2a866, density: 0.22 },
     swamp:    { color: 0x4c6a32, density: 0.95 },
     military: { color: 0x5e6e3e, density: 0.5 },

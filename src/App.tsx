@@ -23,6 +23,7 @@ import { DayCycleSystem } from './utils/DayCycleSystem';
 import HUD, { type AbilityHudItem } from './components/HUD';
 import MainMenu from './components/MainMenu';
 import ClassicMenu from './components/ClassicMenu';
+import TutorialMenu from './components/TutorialMenu';
 import GameOver from './components/GameOver';
 import PauseMenu from './components/PauseMenu';
 import Notifications from './components/Notifications';
@@ -108,6 +109,7 @@ const ForestSurvivalGame = () => {
   const mountRef = useRef<HTMLDivElement>(null);
   const [gameMode, setGameMode] = useState<'none' | 'classic' | 'multiplayer' | 'tutorial'>('none');
   const [showClassicMenu, setShowClassicMenu] = useState(false);
+  const [showTutorialMenu, setShowTutorialMenu] = useState(false);
   const [gameStarted, setGameStarted] = useState(false);
   const [classicDifficulty, setClassicDifficulty] = useState<'easy' | 'medium' | 'hard' | 'adaptive'>('medium');
   const [classicTimeOfDay, setClassicTimeOfDay] = useState<'day' | 'night' | 'auto'>('auto');
@@ -281,6 +283,7 @@ const ForestSurvivalGame = () => {
       setLastKillerInfo(null);
       setGameState({
         health: 100,
+        maxHealth: 100,
         ammo: 12,
         maxAmmo: 12,
         score: 0,
@@ -297,8 +300,43 @@ const ForestSurvivalGame = () => {
       if (data.gameState?.timeLimit !== undefined) {
         multiplayerTimeLimitRef.current = data.gameState.timeLimit;
       }
+      // Pick up the host's difficulty (broadcast in the game_restart payload)
+      if (data.gameState?.difficulty) {
+        setClassicDifficulty(data.gameState.difficulty);
+      }
       // Bump key to re-run the main game useEffect (fresh scene + fresh state)
       setGameRestartKey(k => k + 1);
+    });
+
+    // Host sent everyone back to the lobby after a match — tear down the
+    // game scene and show the lobby UI without forcing a peer rejoin.
+    const unsubReturnLobby = multiplayerManager.onMessage('return_to_lobby', () => {
+      console.log('[App] Received return_to_lobby - returning to lobby UI');
+      setMultiplayerGameOver(false);
+      setMultiplayerWinner(null);
+      setIsSpectating(false);
+      setMultiplayerKillFeed([]);
+      setLastKillerInfo(null);
+      setGameState({
+        health: 100,
+        maxHealth: 100,
+        ammo: 12,
+        maxAmmo: 12,
+        score: 0,
+        enemiesKilled: 0,
+        wave: 1,
+        isGameOver: false,
+        isVictory: false,
+        combo: 0,
+        killStreak: 0,
+        currentWeapon: 'pistol',
+        unlockedWeapons: ['pistol']
+      });
+      soundManager.unmute();
+      // Stop the game loop (cleanup fires because gameStarted is a dep)
+      // and surface the lobby — the manager is preserved so no rejoin needed.
+      setGameStarted(false);
+      setShowMultiplayerLobby(true);
     });
 
     // Refresh the HUD / leaderboard the instant any player's stats change —
@@ -326,6 +364,7 @@ const ForestSurvivalGame = () => {
       unsubGameOver();
       unsubKilled();
       unsubRestart();
+      unsubReturnLobby();
       unsubPlayerUpdate();
       unsubEnemyKilled();
       clearInterval(statsInterval);
@@ -335,6 +374,7 @@ const ForestSurvivalGame = () => {
 
   const [gameState, setGameState] = useState<GameState>({
     health: 100,
+    maxHealth: 100,
     ammo: 12,
     maxAmmo: 12,
     score: 0,
@@ -1118,7 +1158,10 @@ const ForestSurvivalGame = () => {
       }
 
       // Generate special biome features (water, cacti, etc.)
-      const specialFeaturesCount = Math.floor(Math.random() * 3);
+      // 1-3 biome-specific flavour features per chunk (water, cacti, crystals,
+      // bunkers etc.) — guarantees at least one per chunk so each map keeps
+      // its distinct character even in less-dense areas.
+      const specialFeaturesCount = 1 + Math.floor(Math.random() * 3);
       for (let i = 0; i < specialFeaturesCount; i++) {
         const x = startX + Math.random() * CHUNK_SIZE;
         const z = startZ + Math.random() * CHUNK_SIZE;
@@ -1408,6 +1451,14 @@ const ForestSurvivalGame = () => {
     // game over) this latches true so enemies can't keep "re-killing" a dead
     // player — which previously spammed the kill feed and death broadcasts.
     let playerEliminated = false;
+    // === SKILL TREE BONUSES ===
+    // Live snapshot of stat boosts from unlocked skills. Refreshed periodically
+    // so newly-spent points show up in gameplay within a fraction of a second.
+    let skillBonuses: Record<string, number> = skillTree.calculateStatBonuses();
+    let skillBonusAccum = 0;
+    let playerMaxHealth = 100 + (skillBonuses['maxHealth'] || 0);
+    let regenAccum = 0;
+    const skillBonus = (stat: string): number => skillBonuses[stat] || 0;
     let wave = 1;
     let waveTransitioning = false; // Guards wave-complete logic during the inter-wave delay
     let waveTimeoutId: number | null = null; // Tracked so it can be cancelled on unmount
@@ -1872,7 +1923,8 @@ const ForestSurvivalGame = () => {
       if (e.code === 'KeyQ' && !paused && !isDashing && dashCooldown <= 0) {
         isDashing = true;
         dashTimer = dashDuration;
-        dashCooldown = dashCooldownTime;
+        // Dash Mastery skill shrinks the cooldown (bonus value is negative)
+        dashCooldown = dashCooldownTime * Math.max(0.15, 1 + skillBonus('dashCooldown'));
 
         // Get dash direction based on movement keys or forward if standing still
         const dir = new THREE.Vector3();
@@ -1983,11 +2035,13 @@ const ForestSurvivalGame = () => {
         const weapon = WEAPONS[currentWeapon];
         soundManager.play('reload', 0.5);
         gunModel.triggerReload(); // Trigger reload animation
+        // Quickdraw skill speeds up the reload
+        const reloadMs = weapon.reloadTime / (1 + skillBonus('reloadSpeed'));
         setTimeout(() => {
           ammo = weapon.maxAmmo;
           isReloading = false;
           updateGameState();
-        }, weapon.reloadTime);
+        }, reloadMs);
       }
     };
 
@@ -2137,8 +2191,9 @@ const ForestSurvivalGame = () => {
           const direction = new THREE.Vector3();
           camera.getWorldDirection(direction);
 
-          // Reduce spread when aiming
-          const spreadMultiplier = (isAiming && weapon.canAim) ? 0.2 : 1.0;
+          // Reduce spread when aiming + Steady Hands skill tightens it further
+          const spreadMultiplier = ((isAiming && weapon.canAim) ? 0.2 : 1.0)
+            / (1 + skillBonus('accuracy'));
           direction.x += (Math.random() - 0.5) * weapon.spread * spreadMultiplier;
           direction.y += (Math.random() - 0.5) * weapon.spread * spreadMultiplier;
           direction.z += (Math.random() - 0.5) * weapon.spread * spreadMultiplier;
@@ -2157,8 +2212,9 @@ const ForestSurvivalGame = () => {
           }
           scene.add(bullet);
 
-          // Apply damage boost powerup if active
-          const bulletDamage = damageBoostActive ? weapon.damage * damageBoostMultiplier : weapon.damage;
+          // Apply damage boost powerup AND the Heavy Hitter skill bonus
+          const baseWeaponDamage = damageBoostActive ? weapon.damage * damageBoostMultiplier : weapon.damage;
+          const bulletDamage = baseWeaponDamage * (1 + skillBonus('weaponDamage'));
 
           bullets.push({
             mesh: bullet,
@@ -2318,6 +2374,7 @@ const ForestSurvivalGame = () => {
       checkWeaponUnlocks();
       setGameState({
         health,
+        maxHealth: playerMaxHealth,
         ammo,
         maxAmmo: WEAPONS[currentWeapon].maxAmmo,
         score,
@@ -2442,7 +2499,8 @@ const ForestSurvivalGame = () => {
       }
       if (combo >= 5) achievementSystem.updateProgress('perfectionist', 1);
       if (isMultiplayer && multiplayerManager) multiplayerManager.incrementKills();
-      if (Math.random() < 0.4) {
+      // Scavenger skill boosts the chance enemies drop ammo on death
+      if (Math.random() < 0.4 * (1 + skillBonus('powerupSpawnRate'))) {
         const ammoDrop = createPowerUp(enemy.mesh.position.x, enemy.mesh.position.z, 'ammo');
         powerUps.push(ammoDrop);
       }
@@ -2718,6 +2776,30 @@ const ForestSurvivalGame = () => {
       // Update ability system
       const abilityEffects = abilitySystem.update(delta);
 
+      // === SKILL TREE: refresh bonus snapshot + apply passives ===
+      skillBonusAccum += rawDelta;
+      if (skillBonusAccum >= 0.4) {
+        skillBonusAccum = 0;
+        skillBonuses = skillTree.calculateStatBonuses();
+        const newMax = 100 + (skillBonuses['maxHealth'] || 0);
+        if (newMax > playerMaxHealth) {
+          // Thick Skin was just upgraded — credit the player with the new HP.
+          health = Math.min(newMax, health + (newMax - playerMaxHealth));
+        }
+        playerMaxHealth = newMax;
+        if (health > playerMaxHealth) health = playerMaxHealth;
+      }
+      // Regeneration — heal HP per second from the regenRate skill bonus
+      const regenRate = skillBonuses['regenRate'] || 0;
+      if (regenRate > 0 && !playerEliminated && health < playerMaxHealth) {
+        regenAccum += rawDelta;
+        if (regenAccum >= 1) {
+          const ticks = Math.floor(regenAccum);
+          regenAccum -= ticks;
+          health = Math.min(playerMaxHealth, health + regenRate * ticks);
+        }
+      }
+
       // Push ability cooldown state to the HUD ability bar (throttled — the
       // CSS transition smooths the gaps between updates).
       abilityHudAccum += rawDelta;
@@ -2960,7 +3042,7 @@ const ForestSurvivalGame = () => {
       // Apply crouch speed reduction
       const crouchMult = isCrouching ? crouchSpeedMultiplier : 1.0;
 
-      const baseSpeed = moveSpeed * weightSpeedMultiplier * abilityEffects.speedMultiplier * powerupSpeedMult * crouchMult;
+      const baseSpeed = moveSpeed * weightSpeedMultiplier * abilityEffects.speedMultiplier * powerupSpeedMult * crouchMult * (1 + skillBonus('moveSpeed'));
       let currentSpeed = isRunning ? baseSpeed * sprintMultiplier : baseSpeed;
 
       // Apply dash speed if dashing
@@ -3359,8 +3441,8 @@ const ForestSurvivalGame = () => {
             const distanceToHead = bullet.mesh.position.distanceTo(_tempVec3);
 
             if (distanceToHead < 0.8 * hsScale) {
-              // HEADSHOT! 2x damage
-              damage *= 2;
+              // HEADSHOT! 2x damage, boosted further by the Headshot Mastery skill
+              damage *= 2 + skillBonus('headshotDamage');
               isCritical = true;
               soundManager.play('enemyHit', 0.8); // Louder hit sound
               createParticles(_tempVec3, 0xffff00, 8); // Yellow particles for crit
@@ -3776,7 +3858,8 @@ const ForestSurvivalGame = () => {
             // hurt, so the tutorial is a safe, pressure-free practice space.
             // An eliminated player takes no further damage (spectating).
             if (!abilityEffects.isInvincible && !isTutorialMode && !playerEliminated) {
-              let damage = enemy.attackSystem.getDamage();
+              // Armor Plating skill reduces all incoming damage before shields
+              let damage = enemy.attackSystem.getDamage() * Math.max(0, 1 - skillBonus('damageReduction'));
 
               // Apply ability shield if active
               if (abilityEffects.hasShield && abilityEffects.shieldHealth > 0) {
@@ -4093,12 +4176,20 @@ const ForestSurvivalGame = () => {
     setShowClassicMenu(true);
   };
 
-  // Handle tutorial mode — start an easy game with tutorial forced on
+  // Handle tutorial mode — open the tutorial map selector instead of
+  // diving straight in. The player picks a map, then the tutorial starts.
   const handleTutorialMode = () => {
     setGameMode('tutorial');
+    setShowTutorialMenu(true);
+  };
+
+  // Start the tutorial with the chosen map (all weapons + abilities unlocked,
+  // unlimited health, no waves — handled by isTutorialMode in the game loop).
+  const handleTutorialStart = (map: MapType) => {
     setClassicDifficulty('easy');
     setClassicTimeOfDay('day');
-    setSelectedMap('deep_forest');
+    setSelectedMap(map);
+    setShowTutorialMenu(false);
     soundManager.initialize();
     setGameStarted(true);
   };
@@ -4110,13 +4201,22 @@ const ForestSurvivalGame = () => {
   };
 
   // Handle multiplayer game start from lobby
-  const handleMultiplayerStartGame = (manager: MultiplayerManager, gameMode: 'coop' | 'survival', timeLimit?: number, map?: MapType) => {
-    console.log('[App] handleMultiplayerStartGame called - isHost:', manager.isGameHost(), 'map:', map);
+  const handleMultiplayerStartGame = (
+    manager: MultiplayerManager,
+    gameMode: 'coop' | 'survival',
+    timeLimit?: number,
+    map?: MapType,
+    difficulty?: 'easy' | 'medium' | 'hard' | 'adaptive',
+  ) => {
+    console.log('[App] handleMultiplayerStartGame called - isHost:', manager.isGameHost(), 'map:', map, 'difficulty:', difficulty);
     setMultiplayerManager(manager);
     setMultiplayerGameMode(gameMode);
     if (map) {
       setSelectedMap(map);
     }
+    // Host-selected difficulty applies to every client (the game effect uses
+    // `classicDifficulty` for spawn pacing, wave size, enemy aggression).
+    setClassicDifficulty(difficulty || 'medium');
     multiplayerTimeLimitRef.current = timeLimit;
     soundManager.initialize();
     soundManager.unmute();
@@ -4130,6 +4230,7 @@ const ForestSurvivalGame = () => {
     setLastKillerInfo(null);
     setGameState({
       health: 100,
+      maxHealth: 100,
       ammo: 12,
       maxAmmo: 12,
       score: 0,
@@ -4149,7 +4250,7 @@ const ForestSurvivalGame = () => {
     // Guests have their handler registered in MultiplayerLobby already
     if (manager.isGameHost()) {
       console.log('[App] Host starting game, broadcasting to all guests...');
-      manager.startGame(gameMode, timeLimit, map);
+      manager.startGame(gameMode, timeLimit, map, difficulty || 'medium');
     } else {
       console.log('[App] Guest received game_start and transitioning...');
     }
@@ -4171,50 +4272,51 @@ const ForestSurvivalGame = () => {
   };
 
   const restartGame = () => {
-    // In multiplayer, keep the lobby alive - reset state and re-broadcast game_start
+    // ── Multiplayer ────────────────────────────────────────────────────────
+    // "Play Again" sends every player back to the lobby instead of jumping
+    // straight into a new match. The lobby reuses the existing manager so
+    // no one has to re-enter the lobby ID. Only the host can initiate this.
     if (gameMode === 'multiplayer' && multiplayerManager) {
-      // Guests should wait for host restart broadcast to avoid local desync.
       if (!multiplayerManager.isGameHost()) {
-        console.log('[App] Guest requested restart - waiting for host game_restart');
+        console.log('[App] Guest requested restart - waiting for host return_to_lobby');
         return;
       }
 
-      console.log('[App] Restarting multiplayer game in existing lobby');
-
-      // Reset UI state
-      setMultiplayerGameOver(false);
-      setMultiplayerWinner(null);
-      setIsSpectating(false);
-      setMultiplayerKillFeed([]);
-      setLastKillerInfo(null);
-      setGameState({
-        health: 100,
-        ammo: 12,
-        maxAmmo: 12,
-        score: 0,
-        enemiesKilled: 0,
-        wave: 1,
-        isGameOver: false,
-        isVictory: false,
-        combo: 0,
-        killStreak: 0,
-        currentWeapon: 'pistol',
-        unlockedWeapons: ['pistol']
-      });
-
-      soundManager.unmute();
-
-      // Only host can trigger a restart for the lobby
-      if (multiplayerManager.isGameHost()) {
-        multiplayerManager.restartGame(undefined, multiplayerTimeLimitRef.current, selectedMap);
-      }
-
-      // Bump the restart key so the main game useEffect re-runs (fresh scene/state)
-      setGameRestartKey(k => k + 1);
+      console.log('[App] Host returning all players to lobby for next match');
+      // Broadcast first so guests are queued to flip into lobby view; the
+      // host's own UI flips via the local handler registered above.
+      multiplayerManager.returnToLobby();
       return;
     }
 
-    window.location.reload();
+    // ── Solo (classic / tutorial) ─────────────────────────────────────────
+    // Replay immediately with the same map/difficulty/time-of-day — no
+    // page reload, no detour through the main menu. Bumping gameRestartKey
+    // tears down the current scene and re-runs the game useEffect cleanly.
+    setGameState({
+      health: 100,
+      maxHealth: 100,
+      ammo: 12,
+      maxAmmo: 12,
+      score: 0,
+      enemiesKilled: 0,
+      wave: 1,
+      isGameOver: false,
+      isVictory: false,
+      combo: 0,
+      killStreak: 0,
+      currentWeapon: 'pistol',
+      unlockedWeapons: ['pistol']
+    });
+    setIsPaused(false);
+    setShowWaveComplete(false);
+    setPowerUpMessage('');
+    setAbilityHud([]);
+    setAchievementQueue([]);
+    setActiveMissions([]);
+    setCoachTips([]);
+    soundManager.unmute();
+    setGameRestartKey(k => k + 1);
   };
 
   const returnToMenu = () => {
@@ -4254,9 +4356,28 @@ const ForestSurvivalGame = () => {
     return <ClassicMenu onStartGame={handleClassicGameStart} onBack={() => { setShowClassicMenu(false); setGameMode('none'); }} t={t} />;
   }
 
-  // Multiplayer Lobby
+  // Tutorial Map Selector
+  if (showTutorialMenu) {
+    return <TutorialMenu onStartTutorial={handleTutorialStart} onBack={() => { setShowTutorialMenu(false); setGameMode('none'); }} t={t} />;
+  }
+
+  // Multiplayer Lobby — passes the existing manager so post-match "Play Again"
+  // lands everyone back in the same lobby without re-entering the lobby ID.
   if (showMultiplayerLobby) {
-    return <MultiplayerLobby onStartGame={handleMultiplayerStartGame} onBack={() => { setShowMultiplayerLobby(false); setGameMode('none'); }} />;
+    return (
+      <MultiplayerLobby
+        onStartGame={handleMultiplayerStartGame}
+        existingManager={multiplayerManager}
+        onBack={() => {
+          if (multiplayerManager) {
+            try { multiplayerManager.disconnect(); } catch { /* ignore */ }
+            setMultiplayerManager(null);
+          }
+          setShowMultiplayerLobby(false);
+          setGameMode('none');
+        }}
+      />
+    );
   }
 
   // Spectate Screen - Show when local player eliminated but game still ongoing
@@ -4295,6 +4416,7 @@ const ForestSurvivalGame = () => {
       <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 10 }}>
         <HUD
           health={gameState.health}
+          maxHealth={gameState.maxHealth}
           ammo={gameState.ammo}
           maxAmmo={gameState.maxAmmo}
           enemiesKilled={gameState.enemiesKilled}

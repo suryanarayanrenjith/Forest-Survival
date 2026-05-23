@@ -96,11 +96,16 @@ export class SmartSkillTreeSystem {
   }
 
   private initializeSkillTree(): void {
-    // COMBAT SKILLS
+    // Every skill below is read by the game loop and applies a real, visible
+    // effect. Unwireable / placeholder skills (sprint_efficiency, ability_*,
+    // tactical_reload, survivor_instinct, ammo_conservation, lucky) were
+    // removed so the tree only shows real, working choices.
+
+    // === COMBAT ===
     this.addSkill({
       id: 'improved_accuracy',
       name: 'Steady Hands',
-      description: 'Reduce weapon sway and improve accuracy',
+      description: 'Tighter bullet spread on every weapon.',
       category: 'combat',
       tier: 1,
       cost: 1,
@@ -108,17 +113,17 @@ export class SmartSkillTreeSystem {
       currentLevel: 0,
       icon: '🎯',
       effects: [
-        {type: 'stat_boost', stat: 'accuracy', value: 0.05, perLevel: 0.05, description: '+5% accuracy per level'}
+        { type: 'stat_boost', stat: 'accuracy', value: 0.15, perLevel: 0.15, description: '+15% accuracy per level' },
       ],
       requirements: [],
       synergiesWith: ['headshot_mastery', 'quickdraw'],
-      recommendedFor: ['aggressive', 'tactical']
+      recommendedFor: ['aggressive', 'tactical'],
     });
 
     this.addSkill({
       id: 'headshot_mastery',
       name: 'Headshot Mastery',
-      description: 'Increased headshot damage and critical chance',
+      description: 'Headshots deal far more bonus damage.',
       category: 'combat',
       tier: 2,
       cost: 2,
@@ -126,17 +131,17 @@ export class SmartSkillTreeSystem {
       currentLevel: 0,
       icon: '💀',
       effects: [
-        {type: 'stat_boost', stat: 'headshotDamage', value: 0.25, perLevel: 0.25, description: '+25% headshot damage per level'}
+        { type: 'stat_boost', stat: 'headshotDamage', value: 0.3, perLevel: 0.3, description: '+30% headshot bonus damage per level' },
       ],
-      requirements: [{type: 'skill', value: 'improved_accuracy'}],
-      synergiesWith: ['improved_accuracy', 'precision_shooter'],
-      recommendedFor: ['aggressive', 'tactical']
+      requirements: [{ type: 'skill', value: 'improved_accuracy' }],
+      synergiesWith: ['improved_accuracy'],
+      recommendedFor: ['aggressive', 'tactical'],
     });
 
     this.addSkill({
       id: 'quickdraw',
       name: 'Quickdraw',
-      description: 'Faster weapon switching and reload speed',
+      description: 'Reload your weapon noticeably faster.',
       category: 'combat',
       tier: 2,
       cost: 2,
@@ -144,18 +149,17 @@ export class SmartSkillTreeSystem {
       currentLevel: 0,
       icon: '⚡',
       effects: [
-        {type: 'stat_boost', stat: 'reloadSpeed', value: 0.15, perLevel: 0.1, description: '+15% reload speed per level'},
-        {type: 'stat_boost', stat: 'switchSpeed', value: 0.2, perLevel: 0.15, description: '+20% weapon switch speed per level'}
+        { type: 'stat_boost', stat: 'reloadSpeed', value: 0.2, perLevel: 0.15, description: '+20% reload speed per level' },
       ],
-      requirements: [{type: 'skill', value: 'improved_accuracy'}],
-      synergiesWith: ['run_and_gun', 'tactical_reload'],
-      recommendedFor: ['aggressive', 'speedrunner']
+      requirements: [{ type: 'skill', value: 'improved_accuracy' }],
+      synergiesWith: [],
+      recommendedFor: ['aggressive', 'speedrunner'],
     });
 
     this.addSkill({
       id: 'damage_boost',
       name: 'Heavy Hitter',
-      description: 'Increase all weapon damage',
+      description: 'Every bullet hits harder.',
       category: 'combat',
       tier: 3,
       cost: 3,
@@ -163,18 +167,18 @@ export class SmartSkillTreeSystem {
       currentLevel: 0,
       icon: '💥',
       effects: [
-        {type: 'stat_boost', stat: 'weaponDamage', value: 0.1, perLevel: 0.08, description: '+10% weapon damage per level'}
+        { type: 'stat_boost', stat: 'weaponDamage', value: 0.1, perLevel: 0.1, description: '+10% weapon damage per level' },
       ],
-      requirements: [{type: 'skill', value: 'headshot_mastery'}, {type: 'level', value: 5}],
-      synergiesWith: ['armor_piercing', 'explosive_rounds'],
-      recommendedFor: ['aggressive']
+      requirements: [{ type: 'skill', value: 'headshot_mastery' }],
+      synergiesWith: ['headshot_mastery'],
+      recommendedFor: ['aggressive'],
     });
 
-    // SURVIVAL SKILLS
+    // === SURVIVAL ===
     this.addSkill({
       id: 'thick_skin',
       name: 'Thick Skin',
-      description: 'Increase maximum health',
+      description: 'Raises your maximum health.',
       category: 'survival',
       tier: 1,
       cost: 1,
@@ -182,17 +186,17 @@ export class SmartSkillTreeSystem {
       currentLevel: 0,
       icon: '❤️',
       effects: [
-        {type: 'stat_boost', stat: 'maxHealth', value: 10, perLevel: 10, description: '+10 max health per level'}
+        { type: 'stat_boost', stat: 'maxHealth', value: 15, perLevel: 15, description: '+15 max health per level' },
       ],
       requirements: [],
       synergiesWith: ['regeneration', 'damage_reduction'],
-      recommendedFor: ['defensive', 'balanced']
+      recommendedFor: ['defensive', 'balanced'],
     });
 
     this.addSkill({
       id: 'regeneration',
       name: 'Regeneration',
-      description: 'Slowly regenerate health over time',
+      description: 'Slowly heal over time, even in combat.',
       category: 'survival',
       tier: 2,
       cost: 2,
@@ -200,17 +204,17 @@ export class SmartSkillTreeSystem {
       currentLevel: 0,
       icon: '🔄',
       effects: [
-        {type: 'passive', value: 1, perLevel: 1, description: 'Regenerate 1 HP/second per level'}
+        { type: 'stat_boost', stat: 'regenRate', value: 2, perLevel: 2, description: '+2 HP/second per level' },
       ],
-      requirements: [{type: 'skill', value: 'thick_skin'}],
-      synergiesWith: ['thick_skin', 'survivor_instinct'],
-      recommendedFor: ['defensive', 'balanced']
+      requirements: [{ type: 'skill', value: 'thick_skin' }],
+      synergiesWith: ['thick_skin'],
+      recommendedFor: ['defensive', 'balanced'],
     });
 
     this.addSkill({
       id: 'damage_reduction',
       name: 'Armor Plating',
-      description: 'Reduce damage taken from enemies',
+      description: 'Reduce all incoming damage from enemies.',
       category: 'survival',
       tier: 2,
       cost: 2,
@@ -218,36 +222,18 @@ export class SmartSkillTreeSystem {
       currentLevel: 0,
       icon: '🛡️',
       effects: [
-        {type: 'stat_boost', stat: 'damageReduction', value: 0.1, perLevel: 0.08, description: '+10% damage reduction per level'}
+        { type: 'stat_boost', stat: 'damageReduction', value: 0.12, perLevel: 0.1, description: '+12% damage reduction per level' },
       ],
-      requirements: [{type: 'skill', value: 'thick_skin'}],
-      synergiesWith: ['thick_skin', 'last_stand'],
-      recommendedFor: ['defensive']
+      requirements: [{ type: 'skill', value: 'thick_skin' }],
+      synergiesWith: ['thick_skin'],
+      recommendedFor: ['defensive'],
     });
 
-    this.addSkill({
-      id: 'survivor_instinct',
-      name: 'Survivor Instinct',
-      description: 'Gain temporary damage reduction when health is low',
-      category: 'survival',
-      tier: 3,
-      cost: 3,
-      maxLevel: 1,
-      currentLevel: 0,
-      icon: '⚡',
-      effects: [
-        {type: 'passive', value: 0.3, description: '30% damage reduction when below 30% health'}
-      ],
-      requirements: [{type: 'skill', value: 'regeneration'}],
-      synergiesWith: ['regeneration', 'second_wind'],
-      recommendedFor: ['defensive', 'balanced']
-    });
-
-    // MOBILITY SKILLS
+    // === MOBILITY ===
     this.addSkill({
       id: 'fleet_footed',
       name: 'Fleet Footed',
-      description: 'Increase movement speed',
+      description: 'Move faster on foot.',
       category: 'mobility',
       tier: 1,
       cost: 1,
@@ -255,17 +241,17 @@ export class SmartSkillTreeSystem {
       currentLevel: 0,
       icon: '👟',
       effects: [
-        {type: 'stat_boost', stat: 'moveSpeed', value: 0.1, perLevel: 0.08, description: '+10% movement speed per level'}
+        { type: 'stat_boost', stat: 'moveSpeed', value: 0.1, perLevel: 0.08, description: '+10% movement speed per level' },
       ],
       requirements: [],
-      synergiesWith: ['dash_mastery', 'parkour'],
-      recommendedFor: ['speedrunner', 'tactical']
+      synergiesWith: ['dash_mastery'],
+      recommendedFor: ['speedrunner', 'tactical'],
     });
 
     this.addSkill({
       id: 'dash_mastery',
       name: 'Dash Mastery',
-      description: 'Reduce dash cooldown and increase distance',
+      description: 'Cuts the dash cooldown — dash more often.',
       category: 'mobility',
       tier: 2,
       cost: 2,
@@ -273,93 +259,18 @@ export class SmartSkillTreeSystem {
       currentLevel: 0,
       icon: '💨',
       effects: [
-        {type: 'stat_boost', stat: 'dashCooldown', value: -0.2, perLevel: -0.15, description: '-20% dash cooldown per level'},
-        {type: 'stat_boost', stat: 'dashDistance', value: 0.15, perLevel: 0.1, description: '+15% dash distance per level'}
+        { type: 'stat_boost', stat: 'dashCooldown', value: -0.2, perLevel: -0.15, description: '-20% dash cooldown per level' },
       ],
-      requirements: [{type: 'skill', value: 'fleet_footed'}],
-      synergiesWith: ['fleet_footed', 'evasive_maneuvers'],
-      recommendedFor: ['speedrunner', 'aggressive']
+      requirements: [{ type: 'skill', value: 'fleet_footed' }],
+      synergiesWith: ['fleet_footed'],
+      recommendedFor: ['speedrunner', 'aggressive'],
     });
 
-    this.addSkill({
-      id: 'sprint_efficiency',
-      name: 'Sprint Efficiency',
-      description: 'Increased sprint speed and duration',
-      category: 'mobility',
-      tier: 2,
-      cost: 2,
-      maxLevel: 3,
-      currentLevel: 0,
-      icon: '🏃',
-      effects: [
-        {type: 'stat_boost', stat: 'sprintSpeed', value: 0.15, perLevel: 0.1, description: '+15% sprint speed per level'},
-        {type: 'stat_boost', stat: 'sprintDuration', value: 0.2, perLevel: 0.15, description: '+20% sprint duration per level'}
-      ],
-      requirements: [{type: 'skill', value: 'fleet_footed'}],
-      synergiesWith: ['dash_mastery', 'run_and_gun'],
-      recommendedFor: ['speedrunner']
-    });
-
-    // TACTICAL SKILLS
-    this.addSkill({
-      id: 'ability_haste',
-      name: 'Ability Haste',
-      description: 'Reduce all ability cooldowns',
-      category: 'tactical',
-      tier: 1,
-      cost: 1,
-      maxLevel: 5,
-      currentLevel: 0,
-      icon: '⏱️',
-      effects: [
-        {type: 'stat_boost', stat: 'abilityCooldown', value: -0.1, perLevel: -0.08, description: '-10% ability cooldown per level'}
-      ],
-      requirements: [],
-      synergiesWith: ['ability_power', 'tactical_genius'],
-      recommendedFor: ['tactical', 'balanced']
-    });
-
-    this.addSkill({
-      id: 'ability_power',
-      name: 'Ability Power',
-      description: 'Increase effectiveness of all abilities',
-      category: 'tactical',
-      tier: 2,
-      cost: 2,
-      maxLevel: 3,
-      currentLevel: 0,
-      icon: '✨',
-      effects: [
-        {type: 'stat_boost', stat: 'abilityPower', value: 0.2, perLevel: 0.15, description: '+20% ability effectiveness per level'}
-      ],
-      requirements: [{type: 'skill', value: 'ability_haste'}],
-      synergiesWith: ['ability_haste', 'energy_shield_boost'],
-      recommendedFor: ['tactical']
-    });
-
-    this.addSkill({
-      id: 'tactical_reload',
-      name: 'Tactical Reload',
-      description: 'Reloading doesn\'t interrupt ability cooldowns',
-      category: 'tactical',
-      tier: 3,
-      cost: 2,
-      maxLevel: 1,
-      currentLevel: 0,
-      icon: '🔄',
-      effects: [
-        {type: 'passive', value: 1, description: 'Reload while using abilities'}
-      ],
-      requirements: [{type: 'skill', value: 'ability_power'}, {type: 'skill', value: 'quickdraw'}],
-      synergiesWith: ['quickdraw', 'ability_haste'],
-      recommendedFor: ['tactical', 'aggressive']
-    });
-
-    // SUPPORT SKILLS
+    // === SUPPORT ===
     this.addSkill({
       id: 'scavenger',
       name: 'Scavenger',
-      description: 'Increased powerup spawn rate',
+      description: 'Enemies drop ammo more often when killed.',
       category: 'support',
       tier: 1,
       cost: 1,
@@ -367,47 +278,11 @@ export class SmartSkillTreeSystem {
       currentLevel: 0,
       icon: '📦',
       effects: [
-        {type: 'stat_boost', stat: 'powerupSpawnRate', value: 0.15, perLevel: 0.1, description: '+15% powerup spawn rate per level'}
+        { type: 'stat_boost', stat: 'powerupSpawnRate', value: 0.2, perLevel: 0.15, description: '+20% drop chance per level' },
       ],
       requirements: [],
-      synergiesWith: ['lucky', 'ammo_conservation'],
-      recommendedFor: ['balanced', 'speedrunner']
-    });
-
-    this.addSkill({
-      id: 'ammo_conservation',
-      name: 'Ammo Conservation',
-      description: 'Chance to not consume ammo on shot',
-      category: 'support',
-      tier: 2,
-      cost: 2,
-      maxLevel: 3,
-      currentLevel: 0,
-      icon: '♻️',
-      effects: [
-        {type: 'passive', value: 0.1, perLevel: 0.08, description: '10% chance per level to not consume ammo'}
-      ],
-      requirements: [{type: 'skill', value: 'scavenger'}],
-      synergiesWith: ['scavenger', 'infinite_potential'],
-      recommendedFor: ['balanced', 'speedrunner']
-    });
-
-    this.addSkill({
-      id: 'lucky',
-      name: 'Lucky',
-      description: 'Increased rare powerup chance',
-      category: 'support',
-      tier: 2,
-      cost: 2,
-      maxLevel: 3,
-      currentLevel: 0,
-      icon: '🍀',
-      effects: [
-        {type: 'stat_boost', stat: 'rarePowerupChance', value: 0.2, perLevel: 0.15, description: '+20% rare powerup chance per level'}
-      ],
-      requirements: [{type: 'skill', value: 'scavenger'}],
-      synergiesWith: ['scavenger', 'treasure_hunter'],
-      recommendedFor: ['balanced']
+      synergiesWith: [],
+      recommendedFor: ['balanced', 'speedrunner'],
     });
   }
 

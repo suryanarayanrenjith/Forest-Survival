@@ -2,15 +2,29 @@ import { useState, useEffect, useRef } from 'react';
 import {
   Users, ArrowLeft, Server, LogIn, Copy, SlidersHorizontal, Clock,
   ChevronDown, Crown, Play, X, Loader2, Wifi, Check, Pencil, Dices,
-  Trees, Flame, Snowflake, Mountain, Droplet, Shield, Gem, Landmark, type LucideIcon,
+  Trees, Flame, Snowflake, Mountain, Droplet, Shield, Gem, Landmark,
+  Crosshair, Skull, Cpu, type LucideIcon,
 } from 'lucide-react';
 import { MultiplayerManager } from '../utils/MultiplayerManager';
 import type { PlayerData } from '../utils/MultiplayerManager';
 import { MAP_CONFIGS, type MapType } from '../utils/MapSystem';
 
+export type MpDifficulty = 'easy' | 'medium' | 'hard' | 'adaptive';
+
 interface MultiplayerLobbyProps {
-  onStartGame: (manager: MultiplayerManager, gameMode: 'coop' | 'survival', timeLimit?: number, map?: MapType) => void;
+  onStartGame: (
+    manager: MultiplayerManager,
+    gameMode: 'coop' | 'survival',
+    timeLimit?: number,
+    map?: MapType,
+    difficulty?: MpDifficulty,
+  ) => void;
   onBack: () => void;
+  /** When set, the lobby reuses this manager instead of creating a new one
+   *  or auto-rejoining from the URL. Used after a match ends so the host
+   *  can hit "Play Again" and have everyone land back in the same lobby
+   *  without re-entering the lobby ID. */
+  existingManager?: MultiplayerManager | null;
   t?: (key: string) => string;
 }
 
@@ -173,7 +187,7 @@ const Styles = () => (
   `}</style>
 );
 
-const MultiplayerLobby = ({ onStartGame, onBack }: MultiplayerLobbyProps) => {
+const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: MultiplayerLobbyProps) => {
   const [view, setView] = useState<'menu' | 'host' | 'join'>('menu');
   const [playerName, setPlayerName] = useState(() => generatePlayerName());
   const [lobbyId, setLobbyId] = useState('');
@@ -183,6 +197,7 @@ const MultiplayerLobby = ({ onStartGame, onBack }: MultiplayerLobbyProps) => {
   const [error, setError] = useState('');
   const [connectedPlayers, setConnectedPlayers] = useState<PlayerData[]>([]);
   const [gameMode, setGameMode] = useState<'coop' | 'survival'>('coop');
+  const [difficulty, setDifficulty] = useState<MpDifficulty>('medium');
   const [timeLimit, setTimeLimit] = useState<number>(300);
   const [hasTimeLimit, setHasTimeLimit] = useState(false);
   const [selectedMap, setSelectedMap] = useState<MapType>('deep_forest');
@@ -191,8 +206,32 @@ const MultiplayerLobby = ({ onStartGame, onBack }: MultiplayerLobbyProps) => {
   const lobbyCreatedRef = useRef(false);
   const autoJoinAttemptedRef = useRef(false);
 
+  // Reuse a manager from a previous match (Play Again) — skip menu/URL paths.
+  useEffect(() => {
+    if (!existingManager || manager) return;
+
+    const localPlayer = existingManager.getLocalPlayer();
+    autoJoinAttemptedRef.current = true; // prevent any URL-based auto-rejoin
+    lobbyCreatedRef.current = true;      // prevent the host auto-create effect
+
+    setPlayerName(localPlayer.name);
+    setManager(existingManager);
+    // Seed the player list immediately so the lobby doesn't flash empty
+    // while the 200ms poll catches up.
+    setConnectedPlayers(existingManager.getAllPlayers());
+
+    if (existingManager.isGameHost()) {
+      setLobbyId(localPlayer.id);
+      setView('host');
+    } else {
+      setJoinLobbyId(existingManager.getLobbyId());
+      setView('join');
+    }
+  }, [existingManager]);
+
   // Check URL params on mount for session persistence
   useEffect(() => {
+    if (existingManager) return; // already-connected manager is in charge
     if (autoJoinAttemptedRef.current) return;
 
     const { lobby, role, name } = getURLParams();
@@ -256,7 +295,8 @@ const MultiplayerLobby = ({ onStartGame, onBack }: MultiplayerLobbyProps) => {
         const gameMode = data.gameState.gameMode || 'coop';
         const timeLimit = data.gameState.timeLimit;
         const map = data.gameState.map as MapType | undefined;
-        onStartGame(manager, gameMode, timeLimit, map);
+        const difficulty = (data.gameState.difficulty as MpDifficulty | undefined) || 'medium';
+        onStartGame(manager, gameMode, timeLimit, map, difficulty);
       }
     });
 
@@ -346,7 +386,7 @@ const MultiplayerLobby = ({ onStartGame, onBack }: MultiplayerLobbyProps) => {
 
   const handleStartGame = () => {
     if (manager && connectedPlayers.length >= 2) {
-      onStartGame(manager, gameMode, hasTimeLimit ? timeLimit : undefined, selectedMap);
+      onStartGame(manager, gameMode, hasTimeLimit ? timeLimit : undefined, selectedMap, difficulty);
     }
   };
 
@@ -551,6 +591,36 @@ const MultiplayerLobby = ({ onStartGame, onBack }: MultiplayerLobbyProps) => {
                       {label}
                     </button>
                   ))}
+                </div>
+              </div>
+
+              {/* Difficulty */}
+              <div>
+                <label className="block text-[10px] font-semibold tracking-[0.15em] text-gray-500 uppercase mb-1.5">Difficulty</label>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {([
+                    ['easy', 'Easy', 'Casual', Shield, '#34d399'],
+                    ['medium', 'Medium', 'Balanced', Crosshair, '#fbbf24'],
+                    ['hard', 'Hard', 'Brutal', Skull, '#f87171'],
+                    ['adaptive', 'Adaptive', 'AI-paced', Cpu, '#22d3ee'],
+                  ] as const).map(([val, label, desc, Icon, color]) => {
+                    const active = difficulty === val;
+                    return (
+                      <button
+                        key={val}
+                        onClick={() => setDifficulty(val)}
+                        className="flex flex-col items-center justify-center py-2.5 px-1 rounded-lg border transition-all duration-200 hover:-translate-y-0.5"
+                        style={{
+                          borderColor: active ? `${color}99` : 'rgba(255,255,255,0.08)',
+                          background: active ? `${color}1f` : 'rgba(255,255,255,0.03)',
+                        }}
+                      >
+                        <Icon className="w-4 h-4 mb-1" style={{ color: active ? color : '#9ca3af' }} strokeWidth={2} />
+                        <span className={`text-[11px] font-bold ${active ? 'text-white' : 'text-gray-300'}`}>{label}</span>
+                        <span className="text-[9px] text-gray-500">{desc}</span>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
