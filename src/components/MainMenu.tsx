@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef } from 'react';
-import * as THREE from 'three';
+import { useState } from 'react';
 import { Swords, Users, GraduationCap, Settings, ChevronRight, Sparkles } from 'lucide-react';
+import MenuShell from './MenuShell';
 import SettingsMenu from './SettingsMenu';
 import CreditsMenu from './CreditsMenu';
 
@@ -14,189 +14,6 @@ interface MainMenuProps {
 const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode }: MainMenuProps) => {
   const [showSettings, setShowSettings] = useState(false);
   const [showCredits, setShowCredits] = useState(false);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const sceneRef = useRef<{
-    scene: THREE.Scene;
-    camera: THREE.PerspectiveCamera;
-    renderer: THREE.WebGLRenderer;
-    animationId: number;
-  } | null>(null);
-
-  useEffect(() => {
-    if (!canvasRef.current) return;
-
-    // Minimal rotating forest scene
-    const scene = new THREE.Scene();
-    scene.fog = new THREE.Fog(0x0a1f0a, 10, 50);
-
-    const camera = new THREE.PerspectiveCamera(
-      60,
-      window.innerWidth / window.innerHeight,
-      0.1,
-      100
-    );
-    camera.position.set(0, 8, 20);
-    camera.lookAt(0, 0, 0);
-
-    const renderer = new THREE.WebGLRenderer({
-      canvas: canvasRef.current,
-      antialias: true,
-      alpha: true,
-    });
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.setClearColor(0x0a1f0a, 1);
-
-    // Minimal particle stars
-    const starsGeometry = new THREE.BufferGeometry();
-    const starCount = 800;
-    const positions = new Float32Array(starCount * 3);
-
-    for (let i = 0; i < starCount * 3; i += 3) {
-      positions[i] = (Math.random() - 0.5) * 80;
-      positions[i + 1] = Math.random() * 40;
-      positions[i + 2] = (Math.random() - 0.5) * 80;
-    }
-
-    starsGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    const starsMaterial = new THREE.PointsMaterial({
-      size: 0.15,
-      color: 0x88ff88,
-      transparent: true,
-      opacity: 0.6,
-    });
-    const stars = new THREE.Points(starsGeometry, starsMaterial);
-    scene.add(stars);
-
-    // Create forest circle
-    const forest: THREE.Group[] = [];
-    const treeCount = 40;
-    const radius = 15;
-
-    for (let i = 0; i < treeCount; i++) {
-      const angle = (i / treeCount) * Math.PI * 2;
-      const tree = new THREE.Group();
-
-      // Trunk
-      const trunkGeometry = new THREE.CylinderGeometry(0.15, 0.2, 2.5, 6);
-      const trunkMaterial = new THREE.MeshStandardMaterial({
-        color: 0x2d1810,
-        roughness: 0.9,
-        flatShading: true,
-      });
-      const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
-      trunk.castShadow = true;
-      tree.add(trunk);
-
-      // Foliage - pyramid style
-      const foliageGeometry = new THREE.ConeGeometry(1, 2.5, 6);
-      const foliageMaterial = new THREE.MeshStandardMaterial({
-        color: 0x1a4d1a,
-        roughness: 0.8,
-        flatShading: true,
-      });
-      const foliage = new THREE.Mesh(foliageGeometry, foliageMaterial);
-      foliage.position.y = 2;
-      foliage.castShadow = true;
-      tree.add(foliage);
-
-      // Position in circle
-      const x = Math.cos(angle) * radius;
-      const z = Math.sin(angle) * radius;
-      tree.position.set(x, 0, z);
-      tree.rotation.y = -angle + Math.PI / 2;
-
-      scene.add(tree);
-      forest.push(tree);
-    }
-
-    // Ground
-    const groundGeometry = new THREE.CircleGeometry(25, 32);
-    const groundMaterial = new THREE.MeshStandardMaterial({
-      color: 0x0d1f0d,
-      roughness: 0.9,
-    });
-    const ground = new THREE.Mesh(groundGeometry, groundMaterial);
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.y = -0.1;
-    ground.receiveShadow = true;
-    scene.add(ground);
-
-    // Lighting
-    const ambientLight = new THREE.AmbientLight(0x2d4d2d, 0.4);
-    scene.add(ambientLight);
-
-    const dirLight = new THREE.DirectionalLight(0x88ff88, 0.8);
-    dirLight.position.set(5, 10, 5);
-    dirLight.castShadow = true;
-    scene.add(dirLight);
-
-    const fillLight = new THREE.DirectionalLight(0x4d8d4d, 0.3);
-    fillLight.position.set(-5, 5, -5);
-    scene.add(fillLight);
-
-    // Initialize sceneRef first
-    sceneRef.current = { scene, camera, renderer, animationId: 0 };
-
-    // Store initial angles for trees
-    forest.forEach((tree, i) => {
-      tree.userData.angle = (i / treeCount) * Math.PI * 2;
-    });
-
-    // Animation with visibility detection for performance
-    let time = 0;
-    let isVisible = true;
-
-    const handleVisibilityChange = () => {
-      isVisible = !document.hidden;
-    };
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-
-    const animate = () => {
-      if (sceneRef.current) {
-        sceneRef.current.animationId = requestAnimationFrame(animate);
-      }
-
-      // Skip rendering when tab is not visible (major performance boost)
-      if (!isVisible) return;
-
-      time += 0.003;
-
-      // Rotate entire forest
-      forest.forEach((tree) => {
-        tree.position.x = Math.cos(tree.userData.angle + time) * radius;
-        tree.position.z = Math.sin(tree.userData.angle + time) * radius;
-        tree.rotation.y = -(tree.userData.angle + time) + Math.PI / 2;
-      });
-
-      // Subtle camera sway
-      camera.position.x = Math.sin(time * 0.3) * 1;
-      camera.position.y = 8 + Math.sin(time * 0.5) * 0.5;
-      camera.lookAt(0, 0, 0);
-
-      renderer.render(scene, camera);
-    };
-
-    animate();
-
-    // Handle resize
-    const handleResize = () => {
-      camera.aspect = window.innerWidth / window.innerHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
-    };
-
-    window.addEventListener('resize', handleResize);
-
-    return () => {
-      window.removeEventListener('resize', handleResize);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      if (sceneRef.current) {
-        cancelAnimationFrame(sceneRef.current.animationId);
-        renderer.dispose();
-      }
-    };
-  }, []);
 
   const modes = [
     {
@@ -243,12 +60,7 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode }: MainMenu
 
   return (
     <div className="relative w-full h-screen overflow-hidden bg-[#05080a]">
-      {/* 3D Background Canvas */}
-      <canvas
-        ref={canvasRef}
-        className="absolute inset-0 w-full h-full"
-        style={{ display: 'block' }}
-      />
+      <MenuShell variant="main" />
 
       {/* Cinematic vignette + readability overlay */}
       <div className="absolute inset-0 bg-gradient-to-b from-black/55 via-black/35 to-black/80" />

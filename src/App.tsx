@@ -15,8 +15,9 @@ import { ObstacleAvoidance } from './utils/ObstacleAvoidance';
 import { BulletDodging } from './utils/BulletDodging';
 import { WeatherSystem } from './utils/WeatherSystem';
 import { BiomeSystem } from './utils/BiomeSystem';
-import { createSkyDomeMaterial, updateShaderTime } from './utils/Shaders';
+import { createAtmosphericHazeMaterial, createSkyDomeMaterial, updateShaderTime } from './utils/Shaders';
 import { getMapConfig, DEFAULT_MAP, type MapType } from './utils/MapSystem';
+import { getHDRIEnvironmentIntensity, loadHDRIEnvironment, type HDRIEnvironmentProfile } from './utils/HDRIEnvironment';
 import { MultiplayerManager } from './utils/MultiplayerManager';
 import { AbilitySystem } from './utils/AbilitySystem';
 import { AchievementSystem } from './utils/AchievementSystem';
@@ -54,6 +55,7 @@ import { TutorialOverlay, CoachTipsDisplay } from './components/TutorialOverlay'
 import { EnhancedSettings, type GameSettings } from './components/EnhancedSettings';
 import { StatsGallery } from './components/StatsGallery';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import ShaderProcessingScreen from './components/ShaderProcessingScreen';
 
 interface Translations {
   [key: string]: {
@@ -107,6 +109,55 @@ const findMatchingLocale = (locale: string): string => {
 const locale = findMatchingLocale(browserLocale);
 const t = (key: string): string => TRANSLATIONS[locale]?.[key as keyof typeof TRANSLATIONS['en-US']] || TRANSLATIONS['en-US'][key as keyof typeof TRANSLATIONS['en-US']] || key;
 
+const createEnhancedSettingsDefaults = (userSettings: UserSettings): GameSettings => ({
+  graphicsQuality: gameSettingsManager.getGraphicsQuality(),
+  shadowQuality: 'medium',
+  postProcessing: true,
+  particles: true,
+  particleDensity: 75,
+  viewDistance: 150,
+  masterVolume: userSettings.masterVolume,
+  musicVolume: userSettings.musicVolume,
+  sfxVolume: userSettings.sfxVolume,
+  difficulty: 'medium',
+  showTutorial: true,
+  showHints: true,
+  showDamageNumbers: userSettings.damageNumbers,
+  screenShake: userSettings.screenShake,
+  autoReload: false,
+  adaptiveDifficulty: true,
+  mouseSensitivity: userSettings.sensitivity,
+  invertY: false,
+  toggleAim: false,
+  showFPS: userSettings.showFPS,
+  showMinimap: true,
+  uiScale: 100,
+  colorblindMode: 'none',
+});
+
+const syncEnhancedSettingsWithUserSettings = (currentSettings: GameSettings, userSettings: UserSettings): GameSettings => ({
+  ...currentSettings,
+  graphicsQuality: userSettings.graphicsQuality,
+  masterVolume: userSettings.masterVolume,
+  musicVolume: userSettings.musicVolume,
+  sfxVolume: userSettings.sfxVolume,
+  mouseSensitivity: userSettings.sensitivity,
+  showFPS: userSettings.showFPS,
+  screenShake: userSettings.screenShake,
+  showDamageNumbers: userSettings.damageNumbers,
+});
+
+const enhancedSettingsToUserSettings = (settings: GameSettings): Partial<UserSettings> => ({
+  graphicsQuality: settings.graphicsQuality,
+  masterVolume: settings.masterVolume,
+  musicVolume: settings.musicVolume,
+  sfxVolume: settings.sfxVolume,
+  sensitivity: settings.mouseSensitivity,
+  showFPS: settings.showFPS,
+  screenShake: settings.screenShake,
+  damageNumbers: settings.showDamageNumbers,
+});
+
 const MENU_MUSIC_URL = '/audio/Before_The_Breach.mp3';
 
 const ForestSurvivalGame = () => {
@@ -115,6 +166,7 @@ const ForestSurvivalGame = () => {
   const [showClassicMenu, setShowClassicMenu] = useState(false);
   const [showTutorialMenu, setShowTutorialMenu] = useState(false);
   const [gameStarted, setGameStarted] = useState(false);
+  const [showShaderProcessing, setShowShaderProcessing] = useState(false);
   const [classicDifficulty, setClassicDifficulty] = useState<'easy' | 'medium' | 'hard' | 'adaptive'>('medium');
   const [classicTimeOfDay, setClassicTimeOfDay] = useState<'day' | 'night' | 'auto'>('auto');
   const [selectedMap, setSelectedMap] = useState<MapType>(DEFAULT_MAP);
@@ -168,31 +220,7 @@ const ForestSurvivalGame = () => {
   });
 
   // Game settings
-  const [gameSettings, setGameSettings] = useState<GameSettings>({
-    graphicsQuality: 'high',
-    shadowQuality: 'medium',
-    postProcessing: true,
-    particles: true,
-    particleDensity: 75,
-    viewDistance: 150,
-    masterVolume: 80,
-    musicVolume: 70,
-    sfxVolume: 85,
-    difficulty: 'medium',
-    showTutorial: true,
-    showHints: true,
-    showDamageNumbers: true,
-    screenShake: true,
-    autoReload: false,
-    adaptiveDifficulty: true,
-    mouseSensitivity: 50,
-    invertY: false,
-    toggleAim: false,
-    showFPS: false,
-    showMinimap: true,
-    uiScale: 100,
-    colorblindMode: 'none'
-  });
+  const [gameSettings, setGameSettings] = useState<GameSettings>(() => createEnhancedSettingsDefaults(gameSettingsManager.getSettings()));
 
   const menuMusicRef = useRef<HTMLAudioElement | null>(null);
   const menuMusicUnlockCleanupRef = useRef<(() => void) | null>(null);
@@ -231,6 +259,7 @@ const ForestSurvivalGame = () => {
   useEffect(() => {
     const unsubscribe = gameSettingsManager.subscribe((settings) => {
       setUserSettings(settings);
+      setGameSettings((currentSettings) => syncEnhancedSettingsWithUserSettings(currentSettings, settings));
     });
 
     // Also refresh settings periodically in case localStorage was changed from settings menu
@@ -503,11 +532,15 @@ const ForestSurvivalGame = () => {
     //   medium   — enemies roughly match a walking player; sprint to escape.
     //   hard     — enemies keep pace with a sprinting player; relentless.
     //   adaptive — starts gentle, the AI difficulty system ramps it up.
+    // Difficulty tuned for a more approachable curve — easy is genuinely
+    // easy (slower, weaker enemies, fewer of them), medium is a moderate
+    // ramp, hard is challenging but not punishing. Adaptive splits the
+    // difference and lets the AI nudge from there.
     const classicSettings = {
-      easy: { healthMult: 1.5, speedMult: 0.85, damageMult: 1.5, spawnMult: 1.3, regenRate: 0 },
-      medium: { healthMult: 2.5, speedMult: 1.55, damageMult: 2.2, spawnMult: 1.8, regenRate: 0.2 },
-      hard: { healthMult: 4.0, speedMult: 2.35, damageMult: 3.5, spawnMult: 2.5, regenRate: 0.5 },
-      adaptive: { healthMult: 2.0, speedMult: 1.15, damageMult: 2.0, spawnMult: 1.5, regenRate: 0.1 } // Starts balanced, AI adjusts
+      easy:     { healthMult: 0.9, speedMult: 0.6,  damageMult: 0.8, spawnMult: 0.7, regenRate: 0 },
+      medium:   { healthMult: 1.6, speedMult: 1.1,  damageMult: 1.4, spawnMult: 1.1, regenRate: 0.1 },
+      hard:     { healthMult: 2.6, speedMult: 1.6,  damageMult: 2.1, spawnMult: 1.6, regenRate: 0.25 },
+      adaptive: { healthMult: 1.4, speedMult: 0.95, damageMult: 1.3, spawnMult: 1.0, regenRate: 0.05 } // Starts gentle, AI ramps up
     };
     const diffSettings = { ...classicSettings[classicDifficulty], progressive: classicDifficulty === 'adaptive', rampRate: classicDifficulty === 'adaptive' ? 0.05 : 0 };
 
@@ -663,15 +696,24 @@ const ForestSurvivalGame = () => {
       stencil: graphicsPreset.postProcessing,
       depth: true,
       alpha: false,
-      logarithmicDepthBuffer: graphicsQuality === 'high' // Only on high for best performance
+        logarithmicDepthBuffer: graphicsQuality === 'high' || graphicsQuality === 'ultra' // Highest tiers get the better precision path
     });
     renderer.setSize(renderWidth, renderHeight, false);
     renderer.setPixelRatio(1); // Fixed at 1, we handle scaling via renderWidth/Height
     renderer.shadowMap.enabled = graphicsPreset.shadowsEnabled;
     // Soft (PCF) shadows on medium+ for realistic penumbra; basic only on low.
     renderer.shadowMap.type = graphicsQuality === 'low' ? THREE.BasicShadowMap : THREE.PCFSoftShadowMap;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping; // Cinematic tone mapping
-    renderer.toneMappingExposure = timeOfDay === 'day' ? 1.15 : 1.5;
+    // Tone mapping happens in the post pipeline (ACES Filmic). When the
+    // post FX is disabled (Low preset) the renderer's built-in ACES Filmic
+    // takes over so the raw signal still maps cleanly to display range
+    // instead of clipping.
+    if (graphicsPreset.postProcessing) {
+      renderer.toneMapping = THREE.NoToneMapping;
+      renderer.toneMappingExposure = 1.0;
+    } else {
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.0;
+    }
     renderer.outputColorSpace = THREE.SRGBColorSpace;
 
     // Style canvas to scale up render to full screen
@@ -765,6 +807,16 @@ const ForestSurvivalGame = () => {
     const postFX = graphicsPreset.postProcessing
       ? new PostProcessingPipeline(renderer, scene, camera, graphicsPreset, graphicsQuality)
       : null;
+    // Reusable sun-direction vector we feed to the post-FX light-shafts.
+    const _sunDirection = new THREE.Vector3();
+    const computeSunDirection = (): THREE.Vector3 => {
+      _sunDirection.set(
+        atmosphericSettings.lightPosition.x,
+        atmosphericSettings.lightPosition.y,
+        atmosphericSettings.lightPosition.z,
+      );
+      return _sunDirection.normalize();
+    };
     if (postFX) {
       // Initialise the grading uniforms from the current atmosphere snapshot
       // so the first rendered frame already has the right look.
@@ -772,7 +824,10 @@ const ForestSurvivalGame = () => {
         saturation: atmosphericSettings.saturation,
         contrast: atmosphericSettings.contrast,
         temperature: atmosphericSettings.temperature,
+        exposure: atmosphericSettings.exposure,
         colorTint: atmosphericSettings.colorTint,
+        sunDirection: computeSunDirection(),
+        isNight: !atmosphericSettings.sunVisible,
       });
     }
 
@@ -800,12 +855,14 @@ const ForestSurvivalGame = () => {
     renderer.domElement.addEventListener('webglcontextlost', onWebGLContextLost);
     renderer.domElement.addEventListener('webglcontextrestored', onWebGLContextRestored);
 
-    // Enhanced RTX-Style Lighting System with Dynamic Day Cycle
-    const ambientLight = new THREE.AmbientLight(atmosphericSettings.ambientColor, atmosphericSettings.ambientIntensity * 1.2);
+    // Enhanced RTX-Style Lighting System with Dynamic Day Cycle.
+    // Multipliers stay at 1.0 — the DayCycleSystem values are now tuned for
+    // the AGX post pipeline, so an extra +20% on top blows out the sky.
+    const ambientLight = new THREE.AmbientLight(atmosphericSettings.ambientColor, atmosphericSettings.ambientIntensity);
     scene.add(ambientLight);
 
     // Main directional light (Sun/Moon) with enhanced RTX-like shadows
-    const mainLight = new THREE.DirectionalLight(atmosphericSettings.lightColor, atmosphericSettings.lightIntensity * 1.15);
+    const mainLight = new THREE.DirectionalLight(atmosphericSettings.lightColor, atmosphericSettings.lightIntensity);
     mainLight.position.set(
       atmosphericSettings.lightPosition.x,
       atmosphericSettings.lightPosition.y,
@@ -813,21 +870,23 @@ const ForestSurvivalGame = () => {
     );
     mainLight.castShadow = graphicsPreset.shadowsEnabled;
 
-    // Shadow settings based on graphics quality.
-    // A tighter frustum concentrates the shadow map's resolution near the
-    // player, giving noticeably crisper, more grounded contact shadows.
+    // Shadow settings based on graphics quality. Bias values restored to
+    // SAFER ranges — the previous tighter values were causing shadow acne
+    // on dynamic enemies (random black patches on robot bodies as they
+    // moved through the shadow frustum). Keep PCF soft penumbra for that
+    // AAA "sun directional shadow" feel.
     mainLight.shadow.camera.near = 1;
     mainLight.shadow.camera.far = graphicsPreset.viewDistance * 2;
-    const shadowRange = graphicsQuality === 'high' ? 100 : graphicsQuality === 'medium' ? 72 : 48;
+    const shadowRange = graphicsQuality === 'ultra' ? 120 : graphicsQuality === 'high' ? 100 : graphicsQuality === 'medium' ? 72 : 48;
     mainLight.shadow.camera.left = -shadowRange;
     mainLight.shadow.camera.right = shadowRange;
     mainLight.shadow.camera.top = shadowRange;
     mainLight.shadow.camera.bottom = -shadowRange;
     mainLight.shadow.mapSize.width = graphicsPreset.shadowMapSize;
     mainLight.shadow.mapSize.height = graphicsPreset.shadowMapSize;
-    mainLight.shadow.bias = -0.00018;
-    mainLight.shadow.normalBias = 0.035; // Reduces shadow acne / peter-panning
-    mainLight.shadow.radius = graphicsQuality === 'high' ? 2.5 : graphicsQuality === 'medium' ? 1.6 : 1.0;
+    mainLight.shadow.bias = -0.00022;
+    mainLight.shadow.normalBias = 0.04;
+    mainLight.shadow.radius = graphicsQuality === 'ultra' ? 2.5 : graphicsQuality === 'high' ? 2.0 : graphicsQuality === 'medium' ? 1.4 : 0.9;
     mainLight.shadow.camera.updateProjectionMatrix();
     scene.add(mainLight);
     // Target follows player so directional shadows stay centered on the camera
@@ -839,14 +898,14 @@ const ForestSurvivalGame = () => {
     const skyLight = new THREE.HemisphereLight(
       skyColor.getHex(),
       groundColor.getHex(),
-      atmosphericSettings.ambientIntensity * 0.9
+      atmosphericSettings.ambientIntensity * 0.6
     );
     scene.add(skyLight);
 
-    // Volumetric god-ray light (follows sun direction, gives directional bounce feel)
+    // Soft warm bounce (sun-side) — faked indirect kick, not an additional sun.
     const volumetricLight = new THREE.DirectionalLight(
-      atmosphericSettings.sunVisible ? 0xffe8b8 : 0x9aaee0,
-      atmosphericSettings.sunVisible ? 0.55 : 0.7
+      atmosphericSettings.sunVisible ? 0xffe8b8 : 0x9ab2e6,
+      atmosphericSettings.sunVisible ? 0.55 : 0.55
     );
     volumetricLight.position.set(
       atmosphericSettings.lightPosition.x * 0.5,
@@ -858,8 +917,8 @@ const ForestSurvivalGame = () => {
 
     // Fill light (opposite side of main light for balanced illumination)
     const fillLight = new THREE.DirectionalLight(
-      atmosphericSettings.sunVisible ? 0xbcd6ff : 0x8a9ccc,
-      atmosphericSettings.sunVisible ? 0.45 : 0.85
+      atmosphericSettings.sunVisible ? 0xbcd6ff : 0x7a92d2,
+      atmosphericSettings.sunVisible ? 0.45 : 0.65
     );
     fillLight.position.set(
       -atmosphericSettings.lightPosition.x * 0.6,
@@ -869,10 +928,10 @@ const ForestSurvivalGame = () => {
     scene.add(fillLight);
     scene.add(fillLight.target);
 
-    // Rim/Back light for dramatic silhouettes
+    // Rim/Back light for dramatic silhouettes.
     const rimLight = new THREE.DirectionalLight(
-      atmosphericSettings.sunVisible ? 0xffffff : 0xd6e4ff,
-      atmosphericSettings.sunVisible ? 0.6 : 1.0
+      atmosphericSettings.sunVisible ? 0xffffff : 0xc4d2ff,
+      atmosphericSettings.sunVisible ? 0.55 : 0.8
     );
     rimLight.position.set(
       atmosphericSettings.lightPosition.x * 0.3,
@@ -883,11 +942,13 @@ const ForestSurvivalGame = () => {
     scene.add(rimLight.target);
 
     // Additional ambient fill for better night visibility (moonlight bounce)
-    const nightFillLight = new THREE.AmbientLight(0x556db0, atmosphericSettings.sunVisible ? 0.0 : 1.1);
+    const nightFillLight = new THREE.AmbientLight(0x5c7ac0, atmosphericSettings.sunVisible ? 0.0 : 1.0);
     scene.add(nightFillLight);
 
-    // Player-attached night lantern — softly illuminates surroundings when sun is down
-    const playerNightLantern = new THREE.PointLight(0xaec6ff, 0, 42, 1.6);
+    // Player-attached night lantern — softly illuminates surroundings when
+    // sun is down. Wider radius + warmer-cool blend so the player has a
+    // gentle pool of moonlight following them through the forest.
+    const playerNightLantern = new THREE.PointLight(0xc4d8ff, 0, 55, 1.5);
     playerNightLantern.position.set(0, 3, 0);
     camera.add(playerNightLantern);
 
@@ -914,15 +975,18 @@ const ForestSurvivalGame = () => {
     const groundGeometry = new THREE.PlaneGeometry(mapConfig.groundSize || 2000, mapConfig.groundSize || 2000, 40, 40);
     // Blend map ground colors with day/night variations
     const isDay = atmosphericSettings.sunVisible;
-    const groundBaseColor = isDay ? mapConfig.groundColor : new THREE.Color(mapConfig.groundColor).multiplyScalar(0.5).getHex();
-    const groundEmissive = isDay ? mapConfig.groundEmissive : new THREE.Color(mapConfig.groundEmissive).multiplyScalar(0.6).getHex();
+    const groundBaseColor = isDay ? mapConfig.groundColor : new THREE.Color(mapConfig.groundColor).multiplyScalar(0.45).getHex();
+    // Emissive on the ground was previously cranked high to compensate for a
+    // dim image — the new AGX pipeline doesn't need it, and high emissive
+    // makes the ground read as a glowing carpet under bloom.
+    const groundEmissive = isDay ? mapConfig.groundEmissive : new THREE.Color(mapConfig.groundEmissive).multiplyScalar(0.5).getHex();
     const groundMaterial = new THREE.MeshStandardMaterial({
       color: groundBaseColor,
       flatShading: true,
       emissive: groundEmissive,
-      emissiveIntensity: isDay ? 0.15 : 0.4,
-      roughness: 0.85,
-      metalness: 0.05
+      emissiveIntensity: isDay ? 0.0 : 0.15,
+      roughness: 0.9,
+      metalness: 0.02,
     });
     const ground = new THREE.Mesh(groundGeometry, groundMaterial);
     ground.rotation.x = -Math.PI / 2;
@@ -945,9 +1009,6 @@ const ForestSurvivalGame = () => {
       ground.position.z = playerZ;
     };
 
-    // REMOVED grass patches for maximum performance
-    // Low-poly aesthetic doesn't need extra details
-
     // === ADVANCED SKY DOME SYSTEM ===
     const skyGeometry = new THREE.SphereGeometry(500, 32, 32);
     const skyTopColor = new THREE.Color(mapConfig.hasSpecialWeather ? mapConfig.skyColor : atmosphericSettings.skyColor);
@@ -969,21 +1030,73 @@ const ForestSurvivalGame = () => {
     skyDome.frustumCulled = false;
     scene.add(skyDome);
 
+    const hazeGeometry = graphicsQuality === 'low'
+      ? null
+      : new THREE.SphereGeometry(420, 32, 16);
+    const hazeMaterial = hazeGeometry
+      ? createAtmosphericHazeMaterial(
+          new THREE.Color(mapConfig.hasSpecialWeather ? mapConfig.fogColor : atmosphericSettings.fogColor),
+          new THREE.Vector3(
+            atmosphericSettings.lightPosition.x,
+            atmosphericSettings.lightPosition.y,
+            atmosphericSettings.lightPosition.z
+          ),
+          (graphicsQuality === 'ultra' ? 0.10 : graphicsQuality === 'high' ? 0.08 : 0.06) * (mapConfig.hasSpecialWeather ? 1.25 : 1.0),
+          !atmosphericSettings.sunVisible
+        )
+      : null;
+    const atmosphericHaze = hazeGeometry && hazeMaterial
+      ? new THREE.Mesh(hazeGeometry, hazeMaterial)
+      : null;
+    if (atmosphericHaze) {
+      atmosphericHaze.renderOrder = -900;
+      atmosphericHaze.frustumCulled = false;
+      scene.add(atmosphericHaze);
+    }
+
     // === IMAGE-BASED LIGHTING ===
-    // Generate an environment map from the sky/scene so metallic surfaces
-    // (weapons especially) pick up real reflections and read as polished
-    // metal instead of flat matte plastic. Generated once at startup.
-    let envMapTexture: THREE.Texture | null = null;
+    // Generate a fast local PMREM first, then replace it with Poly Haven HDRI
+    // lighting when the async HDR loader resolves. The visible sky remains
+    // the authored shader dome; the HDRI drives reflections and material IBL.
+    let isSceneDisposed = false;
+    let environmentRenderTarget: THREE.WebGLRenderTarget | null = null;
+    let hdriEnvironmentProfile: HDRIEnvironmentProfile | null = null;
     try {
       const pmrem = new THREE.PMREMGenerator(renderer);
       pmrem.compileEquirectangularShader();
-      const envRT = pmrem.fromScene(scene, 0.04);
-      envMapTexture = envRT.texture;
-      scene.environment = envMapTexture;
+      environmentRenderTarget = pmrem.fromScene(scene, 0.04);
+      scene.environment = environmentRenderTarget.texture;
+      scene.environmentIntensity = 0.72;
       pmrem.dispose();
     } catch (err) {
       console.warn('[App] Environment map generation failed:', err);
     }
+
+    void loadHDRIEnvironment(renderer, selectedMap, graphicsQuality)
+      .then((loadedEnvironment) => {
+        if (!loadedEnvironment) return;
+        if (isSceneDisposed) {
+          loadedEnvironment.renderTarget.dispose();
+          return;
+        }
+
+        environmentRenderTarget?.dispose();
+        environmentRenderTarget = loadedEnvironment.renderTarget;
+        hdriEnvironmentProfile = loadedEnvironment.profile;
+        scene.environment = loadedEnvironment.texture;
+        scene.environmentRotation.y = loadedEnvironment.profile.rotationY;
+        scene.environmentIntensity = getHDRIEnvironmentIntensity(
+          loadedEnvironment.profile,
+          atmosphericSettings.sunVisible,
+          atmosphericSettings.ambientIntensity,
+        );
+        console.log(
+          `[Graphics] HDRI environment loaded: ${loadedEnvironment.profile.label} (${loadedEnvironment.resolution})`,
+        );
+      })
+      .catch((err) => {
+        console.warn('[App] HDRI environment loading failed; using generated sky IBL fallback:', err);
+      });
 
     // === WEATHER SYSTEM ===
     const weatherSystem = new WeatherSystem(scene, camera);
@@ -998,8 +1111,6 @@ const ForestSurvivalGame = () => {
     const waterBodies: THREE.Mesh[] = [];
     const CHUNK_SIZE = 100;
     const loadedChunks = new Set<string>();
-
-    // Old terrain generation functions removed - now using BiomeSystem
 
     // Returns true if a collidable object of the given radius placed at (x,z)
     // would overlap an existing collidable terrain object. Used to keep rocks,
@@ -1369,6 +1480,7 @@ const ForestSurvivalGame = () => {
 
       ambientParticles = new THREE.Points(particleGeo, particleMat);
       ambientParticles.frustumCulled = false;
+      ambientParticles.userData.cannotReceiveAO = true;
       scene.add(ambientParticles);
     }
 
@@ -1453,18 +1565,51 @@ const ForestSurvivalGame = () => {
     interface Crater { mesh: THREE.Object3D; life: number; maxLife: number; }
     const craters: Crater[] = [];
 
-    // Shared bullet resources — one low-poly sphere geometry for every bullet
-    // and a per-colour material cache, so firing doesn't allocate (and churn
-    // the GC) on every single shot.
-    const sharedBulletGeo = new THREE.SphereGeometry(0.1, 8, 6);
-    const bulletMaterialCache = new Map<number, THREE.MeshBasicMaterial>();
-    const getBulletMaterial = (color: number): THREE.MeshBasicMaterial => {
-      let m = bulletMaterialCache.get(color);
-      if (!m) {
-        m = new THREE.MeshBasicMaterial({ color, toneMapped: false });
-        bulletMaterialCache.set(color, m);
+    // ── GLOWING BULLET ───────────────────────────────────────────────────
+    // Plain MeshBasicMaterial with an HDR-multiplied colour. Custom shader
+    // materials caused TRAA / motion blur to misbehave on Ultra (no
+    // velocity output) — basic materials integrate cleanly with the whole
+    // post pipeline and bloom catches the HDR colour for the tracer glow.
+    const sharedBulletGeo = new THREE.SphereGeometry(0.14, 12, 10);
+    const sharedBulletGlowGeo = new THREE.SphereGeometry(0.32, 10, 8);
+    const bulletCoreMaterialCache = new Map<number, THREE.MeshBasicMaterial>();
+    const bulletGlowMaterialCache = new Map<number, THREE.MeshBasicMaterial>();
+
+    const buildBullet = (color: number): THREE.Group => {
+      let coreMat = bulletCoreMaterialCache.get(color);
+      if (!coreMat) {
+        // HDR colour ×3 so bloom catches it and AGX/ACES preserves
+        // identity. toneMapped:false bypasses the renderer-side tonemap
+        // since the post pipeline already handles tonemapping.
+        coreMat = new THREE.MeshBasicMaterial({
+          color: new THREE.Color(color).multiplyScalar(3.0),
+          toneMapped: false,
+          fog: false,
+        });
+        bulletCoreMaterialCache.set(color, coreMat);
       }
-      return m;
+      let glowMat = bulletGlowMaterialCache.get(color);
+      if (!glowMat) {
+        glowMat = new THREE.MeshBasicMaterial({
+          color: new THREE.Color(color).multiplyScalar(1.2),
+          toneMapped: false,
+          fog: false,
+          transparent: true,
+          opacity: 0.45,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        });
+        bulletGlowMaterialCache.set(color, glowMat);
+      }
+      const group = new THREE.Group();
+      const core = new THREE.Mesh(sharedBulletGeo, coreMat);
+      const glow = new THREE.Mesh(sharedBulletGlowGeo, glowMat);
+      core.userData.cannotReceiveAO = true;
+      glow.userData.cannotReceiveAO = true;
+      group.add(glow);
+      group.add(core);
+      group.userData.cannotReceiveAO = true;
+      return group;
     };
 
 // Create enemy with OPTIMIZED pooled meshes from SmartEnemyManager
@@ -1635,19 +1780,91 @@ const ForestSurvivalGame = () => {
           break;
       }
 
-      const material = new THREE.MeshLambertMaterial({
-        color,
-        emissive: color,
-        emissiveIntensity: 0.5,
-        flatShading: true
+      // ── Powerup body — ADDITIVE-blended MeshBasic, mathematically
+      // immune to "black overlay" issues. The pmndrs postprocessing
+      // pipeline has well-documented quirks with semi-transparent custom
+      // materials (see three.js issues #27184 etc) where opaque meshes
+      // with depth write occasionally get clobbered by the bloom prefilter
+      // or AO transparency-aware passes. Additive blending bypasses the
+      // problem entirely: the cube ALWAYS contributes its colour on top
+      // of whatever is behind, so the worst case is "translucent" not
+      // "black".
+      //
+      // `depthWrite: false` keeps it out of the depth buffer so N8AO can't
+      // see it as an occluder. `depthTest: true` still lets trees and
+      // walls occlude it. `renderOrder: 990` sorts it after the world.
+      const coreMat = new THREE.MeshBasicMaterial({
+        color: new THREE.Color(color).multiplyScalar(2.4),
+        toneMapped: false,
+        fog: false,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        depthTest: true,
       });
-      const mesh = new THREE.Mesh(geometry, material);
-      mesh.position.set(x, 2, z);
-      mesh.castShadow = false;
-      scene.add(mesh);
+      const core = new THREE.Mesh(geometry, coreMat);
+      core.position.set(x, 2, z);
+      core.userData.cannotReceiveAO = true;
+      core.castShadow = false;
+      core.renderOrder = 990;
+      scene.add(core);
+
+      // Sprite halo — a 2D billboard sprite that ALWAYS faces the camera.
+      // Sprites bypass all 3D-mesh material concerns and are immune to
+      // every post-process interaction; their only failure mode is being
+      // hidden behind something with depth-write, which is fine here.
+      const haloCanvas = document.createElement('canvas');
+      haloCanvas.width = 128;
+      haloCanvas.height = 128;
+      const haloCtx = haloCanvas.getContext('2d')!;
+      const haloGrad = haloCtx.createRadialGradient(64, 64, 0, 64, 64, 64);
+      haloGrad.addColorStop(0, 'rgba(255,255,255,0.9)');
+      haloGrad.addColorStop(0.3, 'rgba(255,255,255,0.55)');
+      haloGrad.addColorStop(0.7, 'rgba(255,255,255,0.15)');
+      haloGrad.addColorStop(1, 'rgba(255,255,255,0)');
+      haloCtx.fillStyle = haloGrad;
+      haloCtx.fillRect(0, 0, 128, 128);
+      const haloTex = new THREE.CanvasTexture(haloCanvas);
+      const haloSprite = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: haloTex,
+        color: new THREE.Color(color).multiplyScalar(2.0),
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        toneMapped: false,
+        fog: false,
+      }));
+      haloSprite.scale.set(2.4, 2.4, 1);
+      haloSprite.position.set(x, 2, z);
+      haloSprite.userData.cannotReceiveAO = true;
+      haloSprite.renderOrder = 988;
+
+      // Ground flare — additive disc on the grass below the pickup.
+      const flareGeo = new THREE.CircleGeometry(1.2, 24);
+      const flareMat = new THREE.MeshBasicMaterial({
+        color: new THREE.Color(color).multiplyScalar(1.4),
+        toneMapped: false,
+        fog: false,
+        transparent: true,
+        opacity: 0.5,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      });
+      const flare = new THREE.Mesh(flareGeo, flareMat);
+      flare.rotation.x = -Math.PI / 2;
+      flare.position.set(x, 0.05, z);
+      flare.userData.cannotReceiveAO = true;
+      flare.renderOrder = 987;
+
+      // Stash both extras on the core so they can be removed on pickup or
+      // during warmup teardown.
+      core.userData.flare = flare;
+      core.userData.halo = haloSprite;
+      scene.add(haloSprite);
+      scene.add(flare);
 
       return {
-        mesh,
+        mesh: core,
         type,
         position: new THREE.Vector3(x, 2, z),
         collected: false
@@ -1660,8 +1877,6 @@ const ForestSurvivalGame = () => {
       const effect = new ImpactEffect(scene, position, color, scaledCount);
       impactEffects.push(effect);
     };
-
-    // Difficulty settings already defined at top of useEffect
 
     // Spawns up to `count` enemies in a ring around the player. Returns how
     // many actually spawned (the enemy cap / pool may permit fewer).
@@ -1716,8 +1931,10 @@ const ForestSurvivalGame = () => {
       }
       // Solo / multiplayer — a finite, fully clearable wave. The opening
       // burst spawns now; continuousSpawn() trickles in the rest.
-      waveEnemiesRemaining = Math.floor((10 + wave * 5) * diffSettings.spawnMult);
-      const opening = Math.min(7, waveEnemiesRemaining);
+      // Wave size: 7 + wave*3 (was 10 + wave*5) — smaller waves so the
+      // pace stays manageable, especially on Easy.
+      waveEnemiesRemaining = Math.max(4, Math.floor((7 + wave * 3) * diffSettings.spawnMult));
+      const opening = Math.min(5, waveEnemiesRemaining);
       waveEnemiesRemaining -= spawnEnemyBatch(opening);
       if (wave % 2 === 0) spawnWavePowerUps();
     };
@@ -1727,11 +1944,14 @@ const ForestSurvivalGame = () => {
 
     const getSpawnSettings = () => {
       switch (classicDifficulty) {
-        case 'easy': return { interval: 5000, baseSpawn: 3 };
-        case 'medium': return { interval: 4000, baseSpawn: 4 };
-        case 'hard': return { interval: 3000, baseSpawn: 5 };
-        case 'adaptive': return { interval: 4500, baseSpawn: 4 };
-        default: return { interval: 4000, baseSpawn: 4 };
+        // Wider intervals and smaller batches across the board so the
+        // player isn't drowning in adds. Easy in particular is now a
+        // gentle drip-feed rather than a steady horde.
+        case 'easy':     return { interval: 6500, baseSpawn: 2 };
+        case 'medium':   return { interval: 5000, baseSpawn: 3 };
+        case 'hard':     return { interval: 3800, baseSpawn: 4 };
+        case 'adaptive': return { interval: 5500, baseSpawn: 3 };
+        default:         return { interval: 5000, baseSpawn: 3 };
       }
     };
     const spawnSettings = getSpawnSettings();
@@ -1926,11 +2146,6 @@ const ForestSurvivalGame = () => {
             const effect = abilitySystem.createAbilityEffect(scene, camera.position, abilityType);
             scene.add(effect);
             setTimeout(() => scene.remove(effect), 2000);
-
-            // Broadcast ability usage in multiplayer
-            if (isMultiplayer && multiplayerManager) {
-              // TODO: Add ability sync message type to MultiplayerManager
-            }
           }
         }
       }
@@ -2085,6 +2300,11 @@ const ForestSurvivalGame = () => {
       glow.position.z = 0.9;
       body.add(glow);
 
+      // The exhaust + body would otherwise be dimmed by N8AO — tag them
+      // and the whole projectile group as AO-exempt.
+      body.userData.cannotReceiveAO = true;
+      body.traverse((o) => { o.userData.cannotReceiveAO = true; });
+
       return body;
     };
 
@@ -2129,15 +2349,17 @@ const ForestSurvivalGame = () => {
           direction.z += (Math.random() - 0.5) * weapon.spread * spreadMultiplier;
           direction.normalize();
 
-          let bullet: THREE.Mesh;
+          let bullet: THREE.Object3D;
           if (isLauncher) {
             // Launcher fires a real rocket projectile, oriented along its flight path
             bullet = createRocketProjectile();
             bullet.position.copy(camera.position);
             bullet.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, -1), direction);
           } else {
-            // Shared geometry + cached material — no per-shot allocation
-            bullet = new THREE.Mesh(sharedBulletGeo, getBulletMaterial(weapon.bulletColor));
+            // Shared geometry + cached material — no per-shot allocation.
+            // buildBullet tags the mesh so N8AO ignores it (unlit colours
+            // otherwise get crushed to near-black by the AO pass).
+            bullet = buildBullet(weapon.bulletColor);
             bullet.position.copy(camera.position);
           }
           scene.add(bullet);
@@ -2596,10 +2818,6 @@ const ForestSurvivalGame = () => {
         frameCount++;
       }
 
-      // === UPDATE ADVANCED GRAPHICS SYSTEMS ===
-      // Weather system disabled to improve performance
-      // weatherSystem.update(delta, camera.position);
-
       // Update day-night cycle system
       atmosphericSettings = dayCycleSystem.update(delta);
 
@@ -2637,8 +2855,8 @@ const ForestSurvivalGame = () => {
         atmosphericSettings.lightPosition.y * 0.8,
         atmosphericSettings.lightPosition.z * 0.5
       );
-      volumetricLight.color.setHex(atmosphericSettings.sunVisible ? 0xffe8b8 : 0x9aaee0);
-      volumetricLight.intensity = atmosphericSettings.sunVisible ? 0.55 : 0.7;
+      volumetricLight.color.setHex(atmosphericSettings.sunVisible ? 0xffe8b8 : 0x9ab2e6);
+      volumetricLight.intensity = atmosphericSettings.sunVisible ? 0.55 : 0.55;
       volumetricLight.position.set(
         camera.position.x + volumetricLightBaseOffset.x,
         volumetricLightBaseOffset.y,
@@ -2652,8 +2870,8 @@ const ForestSurvivalGame = () => {
         atmosphericSettings.lightPosition.y * 0.4,
         -atmosphericSettings.lightPosition.z * 0.6
       );
-      fillLight.color.setHex(atmosphericSettings.sunVisible ? 0xbcd6ff : 0x8a9ccc);
-      fillLight.intensity = atmosphericSettings.sunVisible ? 0.45 : 0.85;
+      fillLight.color.setHex(atmosphericSettings.sunVisible ? 0xbcd6ff : 0x7a92d2);
+      fillLight.intensity = atmosphericSettings.sunVisible ? 0.45 : 0.65;
       fillLight.position.set(
         camera.position.x + fillLightBaseOffset.x,
         fillLightBaseOffset.y,
@@ -2667,8 +2885,8 @@ const ForestSurvivalGame = () => {
         atmosphericSettings.lightPosition.y * 1.2,
         atmosphericSettings.lightPosition.z
       );
-      rimLight.color.setHex(atmosphericSettings.sunVisible ? 0xffffff : 0xd6e4ff);
-      rimLight.intensity = atmosphericSettings.sunVisible ? 0.6 : 1.0;
+      rimLight.color.setHex(atmosphericSettings.sunVisible ? 0xffffff : 0xc4d2ff);
+      rimLight.intensity = atmosphericSettings.sunVisible ? 0.55 : 0.8;
       rimLight.position.set(
         camera.position.x + rimLightBaseOffset.x,
         rimLightBaseOffset.y,
@@ -2688,12 +2906,38 @@ const ForestSurvivalGame = () => {
       skyLight.intensity = atmosphericSettings.ambientIntensity * 0.9;
 
       // Nighttime moonlight fill + attached lantern so players can see
-      nightFillLight.intensity = atmosphericSettings.sunVisible ? 0.0 : 1.1;
+      nightFillLight.intensity = atmosphericSettings.sunVisible ? 0.0 : 1.0;
       playerNightLantern.intensity = atmosphericSettings.sunVisible ? 0.0 : 1.4;
 
       // Keep the sky dome centered on the player so the player never walks
       // "outside" the sphere (which is what caused the giant-blob glitch).
       skyDome.position.set(camera.position.x, 0, camera.position.z);
+
+      if (atmosphericHaze && hazeMaterial) {
+        atmosphericHaze.position.copy(camera.position);
+        hazeMaterial.uniforms.time.value += delta;
+        hazeMaterial.uniforms.hazeColor.value.setHex(
+          mapConfig.hasSpecialWeather ? mapConfig.fogColor : atmosphericSettings.fogColor
+        );
+        hazeMaterial.uniforms.sunPosition.value.set(
+          atmosphericSettings.lightPosition.x,
+          atmosphericSettings.lightPosition.y,
+          atmosphericSettings.lightPosition.z
+        );
+        hazeMaterial.uniforms.isNight.value = !atmosphericSettings.sunVisible;
+        hazeMaterial.uniforms.density.value =
+          (graphicsQuality === 'ultra' ? 0.10 : graphicsQuality === 'high' ? 0.08 : 0.06) *
+          (mapConfig.hasSpecialWeather ? 1.25 : 1.0) *
+          (atmosphericSettings.sunVisible ? 1.0 : 0.82);
+      }
+
+      if (hdriEnvironmentProfile) {
+        scene.environmentIntensity = getHDRIEnvironmentIntensity(
+          hdriEnvironmentProfile,
+          atmosphericSettings.sunVisible,
+          atmosphericSettings.ambientIntensity,
+        );
+      }
 
       // Push live grading into the pmndrs effect chain so dusk/dawn/night
       // colour shifts read on screen as the day cycle advances.
@@ -2701,7 +2945,11 @@ const ForestSurvivalGame = () => {
         saturation: atmosphericSettings.saturation,
         contrast: atmosphericSettings.contrast,
         temperature: atmosphericSettings.temperature,
+        exposure: atmosphericSettings.exposure,
+        bloomStrength: atmosphericSettings.bloomStrength,
         colorTint: atmosphericSettings.colorTint,
+        sunDirection: computeSunDirection(),
+        isNight: !atmosphericSettings.sunVisible,
       });
 
       // Update sky dome shader
@@ -2950,8 +3198,6 @@ const ForestSurvivalGame = () => {
         }
         posAttr.needsUpdate = true;
       }
-
-      // Removed player light update for performance
 
       // Update dash cooldown
       if (dashCooldown > 0) {
@@ -3262,11 +3508,32 @@ const ForestSurvivalGame = () => {
       for (const powerUp of powerUps) {
         if (!powerUp.collected) {
           powerUp.mesh.rotation.y += delta * 2;
-          powerUp.mesh.position.y = 2 + Math.sin(Date.now() * 0.003) * 0.3;
+          const bobY = 2 + Math.sin(Date.now() * 0.003) * 0.3;
+          powerUp.mesh.position.y = bobY;
+          // Bob the sprite halo in sync so the glow tracks the floating core.
+          const halo = powerUp.mesh.userData.halo as THREE.Sprite | undefined;
+          if (halo) halo.position.y = bobY;
 
           if (checkCollision(camera.position, powerUp.position, 2)) {
             powerUp.collected = true;
             scene.remove(powerUp.mesh);
+            // Each powerup has two attached effect meshes (ground flare +
+            // sprite halo) stored in userData. Remove & dispose both so
+            // the spot doesn't keep glowing after pickup.
+            const userData = (powerUp.mesh as THREE.Object3D).userData;
+            const flare = userData.flare as THREE.Mesh | undefined;
+            if (flare) {
+              scene.remove(flare);
+              flare.geometry.dispose();
+              (flare.material as THREE.Material).dispose();
+            }
+            const halo = userData.halo as THREE.Sprite | undefined;
+            if (halo) {
+              scene.remove(halo);
+              const haloMat = halo.material as THREE.SpriteMaterial;
+              haloMat.map?.dispose();
+              haloMat.dispose();
+            }
             soundManager.play('powerUp', 0.8);
 
             switch(powerUp.type) {
@@ -4041,8 +4308,6 @@ const ForestSurvivalGame = () => {
         }
       }
 
-      // Endless mode - no victory condition, only game over on death
-
       // === RENDERING — pmndrs EffectComposer (or direct render on Low) ===
       composePostFX(rawDelta);
     };
@@ -4057,10 +4322,25 @@ const ForestSurvivalGame = () => {
       const wp = camera.position.clone();
       wp.z -= 4; // just in front of the camera
       const warm: THREE.Object3D[] = [];
+      const warmPowerUps: PowerUp[] = [];
 
-      const warmBullet = new THREE.Mesh(sharedBulletGeo, getBulletMaterial(0xffff00));
-      warmBullet.position.copy(wp);
-      scene.add(warmBullet); warm.push(warmBullet);
+      const warmBulletColors = Array.from(new Set(Object.values(WEAPONS).map((weapon) => weapon.bulletColor)));
+      warmBulletColors.forEach((color, index) => {
+        const warmBullet = buildBullet(color);
+        warmBullet.position.copy(wp).add(new THREE.Vector3((index - warmBulletColors.length / 2) * 0.8, 0, 0));
+        scene.add(warmBullet);
+        warm.push(warmBullet);
+      });
+
+      const warmPowerUpTypes: PowerUp['type'][] = ['health', 'ammo', 'speed', 'damage', 'shield', 'infinite_ammo'];
+      warmPowerUpTypes.forEach((type, index) => {
+        const warmPowerUp = createPowerUp(
+          wp.x + (index - warmPowerUpTypes.length / 2) * 0.85,
+          wp.z,
+          type,
+        );
+        warmPowerUps.push(warmPowerUp);
+      });
 
       const warmRocket = createRocketProjectile();
       warmRocket.position.copy(wp);
@@ -4080,6 +4360,27 @@ const ForestSurvivalGame = () => {
 
       // Tear the warmup objects back down — they were only here to compile
       warm.forEach(o => scene.remove(o));
+      warmPowerUps.forEach((powerUp) => {
+        const mesh = powerUp.mesh;
+        const flare = mesh.userData.flare as THREE.Mesh | undefined;
+        if (flare) {
+          scene.remove(flare);
+          flare.geometry.dispose();
+          (flare.material as THREE.Material).dispose();
+        }
+        const halo = mesh.userData.halo as THREE.Sprite | undefined;
+        if (halo) {
+          scene.remove(halo);
+          const haloMat = halo.material as THREE.SpriteMaterial;
+          haloMat.map?.dispose();
+          haloMat.dispose();
+        }
+        scene.remove(mesh);
+        mesh.geometry.dispose();
+        const mat = mesh.material;
+        if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+        else mat.dispose();
+      });
       warmFlash.dispose(scene);
       warmTracer.dispose(scene);
       warmImpact.dispose(scene);
@@ -4094,9 +4395,14 @@ const ForestSurvivalGame = () => {
       });
       // sharedBulletGeo / cached bullet material are reused — not disposed
     };
-    warmUpShaders();
-
-    animate();
+    const warmupFrame = window.requestAnimationFrame(() => {
+      try {
+        warmUpShaders();
+      } finally {
+        setShowShaderProcessing(false);
+        animate();
+      }
+    });
 
     const handleResize = () => {
       camera.aspect = window.innerWidth / window.innerHeight;
@@ -4111,6 +4417,8 @@ const ForestSurvivalGame = () => {
     window.addEventListener('resize', handleResize);
 
     return () => {
+      isSceneDisposed = true;
+      cancelAnimationFrame(warmupFrame);
       window.removeEventListener('resize', handleResize);
       document.removeEventListener('keydown', onKeyDown);
       document.removeEventListener('keyup', onKeyUp);
@@ -4161,8 +4469,11 @@ const ForestSurvivalGame = () => {
 
       // Cleanup shared bullet resources
       sharedBulletGeo.dispose();
-      bulletMaterialCache.forEach(m => m.dispose());
-      bulletMaterialCache.clear();
+      sharedBulletGlowGeo.dispose();
+      bulletCoreMaterialCache.forEach(m => m.dispose());
+      bulletCoreMaterialCache.clear();
+      bulletGlowMaterialCache.forEach(m => m.dispose());
+      bulletGlowMaterialCache.clear();
 
       // Cleanup weather system
       weatherSystem.clear();
@@ -4172,13 +4483,16 @@ const ForestSurvivalGame = () => {
       if (skyMaterial instanceof THREE.Material) {
         skyMaterial.dispose();
       }
+      hazeGeometry?.dispose();
+      hazeMaterial?.dispose();
 
       // Cleanup SmartEnemyManager (releases pooled resources)
       smartEnemyManager.dispose();
 
-      if (envMapTexture) {
+      if (environmentRenderTarget) {
         scene.environment = null;
-        envMapTexture.dispose();
+        environmentRenderTarget.dispose();
+        environmentRenderTarget = null;
       }
 
       renderer.dispose();
@@ -4206,6 +4520,7 @@ const ForestSurvivalGame = () => {
     setSelectedMap(map);
     setShowTutorialMenu(false);
     soundManager.initialize();
+    setShowShaderProcessing(true);
     setGameStarted(true);
   };
 
@@ -4259,6 +4574,7 @@ const ForestSurvivalGame = () => {
       unlockedWeapons: ['pistol']
     });
 
+    setShowShaderProcessing(true);
     setGameStarted(true);
 
     // Start the game in multiplayer manager (host broadcasts to guests)
@@ -4283,6 +4599,7 @@ const ForestSurvivalGame = () => {
     console.log('[App] Starting classic game with map:', map);
     soundManager.initialize();
     setShowClassicMenu(false);
+    setShowShaderProcessing(true);
     setGameStarted(true);
   };
 
@@ -4331,6 +4648,7 @@ const ForestSurvivalGame = () => {
     setActiveMissions([]);
     setCoachTips([]);
     soundManager.unmute();
+    setShowShaderProcessing(true);
     setGameRestartKey(k => k + 1);
   };
 
@@ -4426,6 +4744,7 @@ const ForestSurvivalGame = () => {
     <div className="relative w-full h-screen overflow-hidden bg-black">
       <Analytics />
       <SpeedInsights />
+      <ShaderProcessingScreen visible={showShaderProcessing && gameStarted} />
       <div ref={mountRef} className="absolute inset-0" style={{ zIndex: 0 }} />
 
       <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 10 }}>
@@ -4448,9 +4767,6 @@ const ForestSurvivalGame = () => {
           abilities={abilityHud}
         />
       </div>
-
-      {/* Ability HUD - Disabled temporarily as it needs to be accessed from game loop scope */}
-      {/* AbilitySystem needs to be made available outside useEffect for this to work */}
 
       {/* FPS Counter - shown if enabled in settings */}
       {userSettings.showFPS && gameStarted && (
@@ -4736,36 +5052,14 @@ const ForestSurvivalGame = () => {
         <EnhancedSettings
           settings={gameSettings}
           onSettingsChange={(newSettings) => {
-            setGameSettings(prev => ({ ...prev, ...newSettings }));
+            const nextSettings = { ...gameSettings, ...newSettings };
+            setGameSettings(nextSettings);
+            gameSettingsManager.updateSettings(enhancedSettingsToUserSettings(nextSettings));
           }}
           onClose={() => setShowEnhancedSettings(false)}
           onReset={() => {
-            // Reset to default settings
-            setGameSettings({
-              graphicsQuality: 'high',
-              shadowQuality: 'medium',
-              postProcessing: true,
-              particles: true,
-              particleDensity: 75,
-              viewDistance: 150,
-              masterVolume: 80,
-              musicVolume: 70,
-              sfxVolume: 85,
-              difficulty: 'medium',
-              showTutorial: true,
-              showHints: true,
-              showDamageNumbers: true,
-              screenShake: true,
-              autoReload: false,
-              adaptiveDifficulty: true,
-              mouseSensitivity: 50,
-              invertY: false,
-              toggleAim: false,
-              showFPS: false,
-              showMinimap: true,
-              uiScale: 100,
-              colorblindMode: 'none'
-            });
+            gameSettingsManager.resetToDefaults();
+            setGameSettings(createEnhancedSettingsDefaults(gameSettingsManager.getSettings()));
           }}
         />
       )}

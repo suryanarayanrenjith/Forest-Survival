@@ -51,6 +51,8 @@ export class MuzzleFlash {
     this.sprite = new THREE.Sprite(spriteMaterial);
     this.sprite.position.copy(position);
     this.sprite.scale.set(0.8, 0.8, 0.8); // Larger, more visible flash
+    // Tag for N8AO bypass — unlit sprites otherwise get crushed by AO.
+    this.sprite.userData.cannotReceiveAO = true;
     scene.add(this.sprite);
 
     this.lifetime = 0.08; // Shorter, snappier flash
@@ -101,6 +103,7 @@ export class BulletTracer {
     });
 
     this.line = new THREE.Line(geometry, material);
+    this.line.userData.cannotReceiveAO = true;
     scene.add(this.line);
     this.lifetime = 0.04; // Shorter tracer duration
   }
@@ -170,6 +173,7 @@ export class ImpactEffect {
     });
 
     this.particles = new THREE.Points(geometry, material);
+    this.particles.userData.cannotReceiveAO = true;
     scene.add(this.particles);
     this.lifetime = 0.6; // Longer visible impact
   }
@@ -255,6 +259,7 @@ export class BloodSplatter {
     });
 
     this.particles = new THREE.Points(geometry, material);
+    this.particles.userData.cannotReceiveAO = true;
     scene.add(this.particles);
     this.lifetime = 1.0;
   }

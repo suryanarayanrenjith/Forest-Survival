@@ -20,6 +20,8 @@ export interface AtmosphericSettings {
   temperature: number; // Color temperature for grading
   saturation: number;
   contrast: number;
+  /** Master linear exposure (1.0 = neutral). Drives the post-FX EV adapter. */
+  exposure: number;
 }
 
 export class DayCycleSystem {
@@ -28,102 +30,125 @@ export class DayCycleSystem {
   private autoCycleEnabled: boolean = false;
   private currentSettings: AtmosphericSettings;
 
-  // Predefined settings for each time period
+  // Predefined settings for each time period.
+  //
+  // Numbers are tuned for AGX tonemapping with a master exposure pass.
+  // AGX behaves like a real film stock — it needs ENOUGH light in the
+  // scene to expose properly, while gently rolling off true HDR
+  // highlights instead of blowing them out. Lights are intentionally
+  // pushed past the "physically correct" range here because the AGX
+  // curve compresses them; under-lighting reads as a dark, muddy frame.
   private readonly timeSettings: Record<string, AtmosphericSettings> = {
     night: {
-      skyColor: 0x15172e,
-      fogColor: 0x23284a,
-      fogDensity: 0.0035,
-      ambientColor: 0x6a88d6,
-      ambientIntensity: 1.85,
-      lightColor: 0xbfd6ff,
-      lightIntensity: 3.2,
-      lightPosition: { x: -80, y: 160, z: 100 },
+      // Neon-noir twist: cobalt sky with magenta moon halo, channels the
+      // Returnal / Control after-dark palette. Moonlight is warmer and
+      // ambient is generous so the forest reads with detail, not as a
+      // black silhouette. Saturation pumped HIGH so the cool palette
+      // and any emissive powerups/bullets really pop against the dark
+      // plate.
+      skyColor: 0x0a1235,
+      fogColor: 0x1c2a55,
+      fogDensity: 0.0036,
+      ambientColor: 0x97b0ee,
+      ambientIntensity: 1.55,
+      lightColor: 0xc8dcff,
+      lightIntensity: 2.8,
+      lightPosition: { x: -60, y: 70, z: -120 },
       sunVisible: false,
       moonVisible: true,
       starIntensity: 1.0,
-      cloudOpacity: 0.3,
-      bloomStrength: 2.2,
-      colorTint: new THREE.Vector3(0.92, 0.94, 1.05),
-      temperature: -0.12,
-      saturation: 1.05,
-      contrast: 1.08
+      cloudOpacity: 0.25,
+      bloomStrength: 2.4,
+      colorTint: new THREE.Vector3(0.84, 0.92, 1.14),
+      temperature: -0.16,
+      saturation: 1.32,
+      contrast: 1.2,
+      exposure: 1.05,
     },
     dawn: {
-      skyColor: 0xff6b4a,
-      fogColor: 0xff8866,
-      fogDensity: 0.008,
-      ambientColor: 0xffaa88,
-      ambientIntensity: 0.9,
-      lightColor: 0xffaa77,
-      lightIntensity: 2.0,
-      lightPosition: { x: 150, y: 30, z: -50 },
+      skyColor: 0xd47854,
+      fogColor: 0xdba488,
+      fogDensity: 0.006,
+      ambientColor: 0xeaba94,
+      ambientIntensity: 0.8,
+      lightColor: 0xffba88,
+      lightIntensity: 2.8,
+      lightPosition: { x: 100, y: 35, z: -120 },
       sunVisible: true,
       moonVisible: false,
       starIntensity: 0.3,
       cloudOpacity: 0.6,
-      bloomStrength: 3.0,
-      colorTint: new THREE.Vector3(1.0, 0.85, 0.7),
-      temperature: 0.4,
-      saturation: 1.3,
-      contrast: 1.15
+      bloomStrength: 2.8,
+      colorTint: new THREE.Vector3(1.1, 0.9, 0.76),
+      temperature: 0.34,
+      saturation: 1.42,
+      contrast: 1.18,
+      exposure: 1.22,
     },
     day: {
-      skyColor: 0x87CEEB,
-      fogColor: 0xbcd3ee,
-      fogDensity: 0.0025,
-      ambientColor: 0xffffff,
-      ambientIntensity: 1.25,
-      lightColor: 0xfff2d4,
-      lightIntensity: 3.2,
-      lightPosition: { x: 100, y: 180, z: -50 },
+      // Rich saturated blue sky + warm golden sunlight, channelling the
+      // Cyberpunk 2077 / Horizon midday look. Higher ambient + main light
+      // intensity than is "physically correct" — ACES_FILMIC tonemaps
+      // them back into a punchy display range, and the result reads as
+      // genuine bright daytime instead of overcast.
+      skyColor: 0x4d9fd6,
+      fogColor: 0xa5c4dc,
+      fogDensity: 0.0018,
+      ambientColor: 0xfafbff,
+      ambientIntensity: 1.85,
+      lightColor: 0xfff0c8,
+      lightIntensity: 4.2,
+      lightPosition: { x: 70, y: 85, z: -130 },
       sunVisible: true,
       moonVisible: false,
       starIntensity: 0.0,
       cloudOpacity: 0.85,
-      bloomStrength: 2.4,
-      colorTint: new THREE.Vector3(1.02, 1.0, 0.96),
-      temperature: 0.08,
-      saturation: 1.35,
-      contrast: 1.18
+      bloomStrength: 2.0,
+      colorTint: new THREE.Vector3(1.06, 1.0, 0.94),
+      temperature: 0.12,
+      saturation: 1.45,
+      contrast: 1.14,
+      exposure: 1.2,
     },
     dusk: {
-      skyColor: 0xff4466,
-      fogColor: 0xcc5577,
-      fogDensity: 0.007,
-      ambientColor: 0xff8899,
-      ambientIntensity: 0.85,
-      lightColor: 0xff6644,
-      lightIntensity: 2.2,
-      lightPosition: { x: -120, y: 40, z: 80 },
+      skyColor: 0xc04860,
+      fogColor: 0xa05368,
+      fogDensity: 0.0055,
+      ambientColor: 0xd6808c,
+      ambientIntensity: 0.75,
+      lightColor: 0xff7d52,
+      lightIntensity: 2.8,
+      lightPosition: { x: -90, y: 40, z: -110 },
       sunVisible: true,
       moonVisible: false,
       starIntensity: 0.4,
       cloudOpacity: 0.7,
-      bloomStrength: 3.2,
-      colorTint: new THREE.Vector3(1.0, 0.75, 0.6),
-      temperature: 0.5,
-      saturation: 1.4,
-      contrast: 1.2
+      bloomStrength: 3.0,
+      colorTint: new THREE.Vector3(1.1, 0.78, 0.58),
+      temperature: 0.42,
+      saturation: 1.45,
+      contrast: 1.2,
+      exposure: 1.18,
     },
     twilight: {
-      skyColor: 0x3a2c70,
-      fogColor: 0x4b3a85,
+      skyColor: 0x2d2660,
+      fogColor: 0x3a3278,
       fogDensity: 0.004,
-      ambientColor: 0x8a99cc,
-      ambientIntensity: 1.4,
-      lightColor: 0x99aadd,
+      ambientColor: 0x96a8d6,
+      ambientIntensity: 0.85,
+      lightColor: 0xa6b8ee,
       lightIntensity: 2.4,
-      lightPosition: { x: -100, y: 110, z: 120 },
+      lightPosition: { x: -70, y: 60, z: -120 },
       sunVisible: false,
       moonVisible: true,
       starIntensity: 0.7,
       cloudOpacity: 0.4,
-      bloomStrength: 2.6,
-      colorTint: new THREE.Vector3(0.9, 0.9, 1.05),
-      temperature: -0.08,
-      saturation: 1.08,
-      contrast: 1.12
+      bloomStrength: 2.4,
+      colorTint: new THREE.Vector3(0.92, 0.94, 1.12),
+      temperature: -0.12,
+      saturation: 1.28,
+      contrast: 1.18,
+      exposure: 1.12,
     }
   };
 
@@ -201,7 +226,8 @@ export class DayCycleSystem {
       colorTint: this.lerpVector(settings1.colorTint, settings2.colorTint, t),
       temperature: settings1.temperature + (settings2.temperature - settings1.temperature) * t,
       saturation: settings1.saturation + (settings2.saturation - settings1.saturation) * t,
-      contrast: settings1.contrast + (settings2.contrast - settings1.contrast) * t
+      contrast: settings1.contrast + (settings2.contrast - settings1.contrast) * t,
+      exposure: settings1.exposure + (settings2.exposure - settings1.exposure) * t,
     };
   }
 

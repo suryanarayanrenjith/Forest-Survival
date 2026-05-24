@@ -52,11 +52,13 @@ const KillFeed = ({ visible }: KillFeedProps) => {
   }, []);
 
   useEffect(() => {
+    // Entries fade after 2.5 s — quick enough not to crowd the HUD during
+    // active combat but long enough for the player to register each event.
     const interval = setInterval(() => {
       const now = Date.now();
-      killFeedEntries = killFeedEntries.filter(entry => now - entry.timestamp < 5000);
+      killFeedEntries = killFeedEntries.filter(entry => now - entry.timestamp < 2500);
       setEntries([...killFeedEntries]);
-    }, 1000);
+    }, 500);
 
     return () => clearInterval(interval);
   }, []);
@@ -74,7 +76,7 @@ const KillFeed = ({ visible }: KillFeedProps) => {
             className="flex items-center gap-2 rounded-lg border border-white/10 bg-black/65 backdrop-blur-md px-3 py-1.5"
             style={{
               opacity: index === 0 ? 1 : 0.7,
-              animation: `kfIn 0.25s ease-out ${index * 0.04}s both, kfOut 0.5s ease-in 4.5s both`,
+              animation: `kfIn 0.22s ease-out ${index * 0.04}s both, kfOut 0.35s ease-in 2.0s both`,
             }}
           >
             <Icon className="w-3.5 h-3.5 flex-shrink-0" style={{ color: meta.color }} strokeWidth={2.25} />

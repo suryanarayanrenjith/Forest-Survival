@@ -1,6 +1,6 @@
 import {
   Sparkles, Heart, Code2, ExternalLink, X, ArrowLeft,
-  Cpu, Wand2, Palette, Boxes, Gamepad2, Zap, ArrowUpRight,
+  Cpu, Wand2, Palette, Boxes, Zap, ArrowUpRight, Layers3, Shield, Aperture,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -18,7 +18,11 @@ interface TechItem {
 const TECH_STACK: TechItem[] = [
   { label: 'React 19',          hint: 'TypeScript · strict',     icon: Code2,   accent: '#38bdf8' },
   { label: 'Three.js',          hint: 'r180 · WebGL2',           icon: Boxes,   accent: '#34d399' },
+  { label: '@react-three/fiber', hint: 'Loader scene · Canvas',   icon: Layers3, accent: '#60a5fa' },
+  { label: '@react-three/drei',  hint: 'Preload · helpers',       icon: Sparkles, accent: '#a78bfa' },
   { label: 'pmndrs Postprocessing', hint: 'Bloom · ACES · SMAA', icon: Wand2,   accent: '#c084fc' },
+  { label: 'n8ao',              hint: 'Ultra-tier SSAO',          icon: Shield,  accent: '#22c55e' },
+  { label: 'realism-effects',   hint: 'TRAA · motion blur',       icon: Aperture, accent: '#f97316' },
   { label: 'Tailwind + Lucide', hint: 'Design system',           icon: Palette, accent: '#fbbf24' },
   { label: 'PeerJS',            hint: 'P2P multiplayer',         icon: Cpu,     accent: '#f87171' },
   { label: 'Vite',              hint: 'HMR · ESBuild',           icon: Zap,     accent: '#fb923c' },
@@ -32,34 +36,10 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
       className="fixed inset-0 z-50 flex items-center justify-center p-4 overflow-y-auto"
       style={{ background: 'rgba(5,8,10,0.94)', backdropFilter: 'blur(14px)' }}
     >
-      {/* Soft atmospheric backdrop — emerald radial glow + faint grid */}
-      <div
-        className="pointer-events-none absolute inset-0"
-        style={{
-          background:
-            'radial-gradient(ellipse 60% 50% at 50% 30%, rgba(34,197,94,0.10), transparent 70%)',
-        }}
-      />
-      <div
-        className="pointer-events-none absolute inset-0 opacity-[0.04]"
-        style={{
-          backgroundImage:
-            'linear-gradient(rgba(255,255,255,0.5) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.5) 1px, transparent 1px)',
-          backgroundSize: '38px 38px',
-        }}
-      />
-
       <div
         className="relative w-full max-w-2xl rounded-2xl border border-white/10 bg-[#0b0f15] overflow-hidden"
         style={{ animation: 'crFade 0.4s cubic-bezier(0.16,1,0.3,1) forwards' }}
       >
-        {/* Top emerald accent line + ambient glow */}
-        <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-emerald-400/80 to-transparent" />
-        <div
-          className="pointer-events-none absolute -top-32 left-1/2 -translate-x-1/2 w-[420px] h-[260px] rounded-full"
-          style={{ background: 'radial-gradient(circle, rgba(34,197,94,0.22) 0%, transparent 70%)' }}
-        />
-
         {/* Header */}
         <div className="relative flex items-center justify-between px-5 sm:px-6 py-4 border-b border-white/[0.07]">
           <div className="flex items-center gap-3">
@@ -85,87 +65,25 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
         </div>
 
         <div className="relative p-5 sm:p-7 space-y-6 max-h-[78vh] overflow-y-auto">
-          {/* ── Hero — vibe-coded by Surya ─────────────────────────────── */}
-          <div className="relative rounded-2xl overflow-hidden">
-            {/* Layered gradient backdrop */}
-            <div
-              className="absolute inset-0 rounded-2xl"
+          {/* ── Hero ─────────────────────────────────────────────────── */}
+          <div className="rounded-2xl border border-white/10 bg-white/[0.02] px-5 sm:px-6 py-6 sm:py-7">
+            <h3
+              className="text-4xl sm:text-5xl font-black tracking-tight leading-[0.95] mb-3"
               style={{
-                background:
-                  'radial-gradient(120% 80% at 0% 0%, rgba(34,197,94,0.18) 0%, transparent 60%),' +
-                  'radial-gradient(120% 80% at 100% 100%, rgba(56,189,248,0.10) 0%, transparent 60%),' +
-                  'linear-gradient(160deg, rgba(11,15,21,0.6) 0%, rgba(11,15,21,0.9) 100%)',
+                background: 'linear-gradient(180deg, #f0fdf4 0%, #86efac 45%, #22c55e 100%)',
+                WebkitBackgroundClip: 'text',
+                WebkitTextFillColor: 'transparent',
+                backgroundClip: 'text',
+                filter: 'drop-shadow(0 4px 20px rgba(34,197,94,0.45))',
               }}
-            />
-            <div className="absolute inset-0 rounded-2xl border border-emerald-400/30" />
-            <div className="absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-emerald-400/70 to-transparent" />
+            >
+              Surya
+            </h3>
 
-            <div className="relative px-5 sm:px-6 py-6">
-              {/* Chip row */}
-              <div className="flex items-center gap-2 mb-3.5">
-                <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-emerald-400/30 bg-emerald-500/10">
-                  <Gamepad2 className="w-3 h-3 text-emerald-300" strokeWidth={2.5} />
-                  <span className="text-[10px] font-bold tracking-[0.18em] text-emerald-300 uppercase">
-                    Vibe-Coded
-                  </span>
-                </span>
-                <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-white/10 bg-white/[0.03]">
-                  <span className="text-[10px] font-bold tracking-[0.18em] text-gray-300 uppercase">
-                    2026
-                  </span>
-                </span>
-              </div>
-
-              {/* Hero name */}
-              <p className="text-[11px] tracking-[0.32em] text-emerald-300/80 font-semibold uppercase mb-1">
-                Designed · Directed · Shipped by
-              </p>
-              <h3
-                className="text-5xl sm:text-6xl font-black tracking-tight leading-[0.95] mb-4"
-                style={{
-                  background: 'linear-gradient(180deg, #f0fdf4 0%, #86efac 45%, #22c55e 100%)',
-                  WebkitBackgroundClip: 'text',
-                  WebkitTextFillColor: 'transparent',
-                  backgroundClip: 'text',
-                  filter: 'drop-shadow(0 4px 20px rgba(34,197,94,0.45))',
-                }}
-              >
-                Surya
-              </h3>
-
-              {/* Pull-quote style description */}
-              <p className="text-[14px] leading-relaxed text-gray-300/95 max-w-prose">
-                A full first-person survival shooter — wave-based combat, multiplayer, abilities,
-                skill trees, weather, day-night cycles, eight biomes, and a real post-processing
-                pipeline — conjured into existence one prompt at a time. Every system, every
-                shader, every interface was specified by direction, refined by conversation, and
-                shipped by intent.
-              </p>
-
-              {/* Decorative stat strip */}
-              <div className="mt-5 grid grid-cols-3 gap-2 sm:gap-3">
-                {[
-                  { value: '7', label: 'AI Systems',   color: '#34d399' },
-                  { value: '8', label: 'Biome Maps',   color: '#fbbf24' },
-                  { value: '7', label: 'Weapons',      color: '#f87171' },
-                ].map((s) => (
-                  <div
-                    key={s.label}
-                    className="rounded-xl border border-white/[0.07] bg-black/30 py-2.5 text-center backdrop-blur-sm"
-                  >
-                    <div
-                      className="text-2xl font-black tabular-nums"
-                      style={{ color: s.color, textShadow: `0 0 14px ${s.color}55` }}
-                    >
-                      {s.value}
-                    </div>
-                    <div className="text-[9px] font-semibold tracking-[0.15em] text-gray-500 uppercase mt-0.5">
-                      {s.label}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+            <p className="text-[14px] leading-relaxed text-gray-300/90 max-w-prose">
+              A first-person survival shooter built using AI with wave combat, multiplayer, abilities,
+              weather, day-night cycles.
+            </p>
           </div>
 
           {/* ── Portfolio CTA ──────────────────────────────────────────── */}
@@ -242,10 +160,7 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
             <p className="flex items-center justify-center gap-1.5 text-[11px] text-gray-500">
               Crafted with
               <Heart className="w-3.5 h-3.5 text-red-400" strokeWidth={2.25} fill="currentColor" />
-              and an obscene number of prompts
-            </p>
-            <p className="mt-1.5 text-[10px] tracking-[0.3em] text-gray-600 uppercase">
-              © 2026 · Forest Survival
+              and a lot of care
             </p>
           </div>
 

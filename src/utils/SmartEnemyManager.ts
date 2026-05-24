@@ -47,12 +47,18 @@ interface EnemyVisualConfig {
 
 // Cohesive, slightly-desaturated palette — premium low-poly reads better with
 // a controlled value range than with pure primary colors.
+// Dark accent colours brightened — the previous near-black values
+// (e.g. 0x2e1313) rendered as solid "black panels" on enemy bodies
+// under the high-contrast ACES tonemap, which the player perceived as
+// a rendering glitch. Bumped roughly +30% lightness while keeping the
+// same hue, so visor / joint / hip details stay visibly DARK without
+// looking like overlay errors.
 const ENEMY_CONFIGS: Record<EnemyType, EnemyVisualConfig> = {
   normal: {
     baseColor: 0xb02f2f,
     accentColor: 0x7c1f1f,
     brightColor: 0xd9544a,
-    darkColor: 0x2e1313,
+    darkColor: 0x5a2a2a,
     glowColor: 0xff6a3d,
     emissiveIntensity: 0.18,
     scale: 1.0,
@@ -61,7 +67,7 @@ const ENEMY_CONFIGS: Record<EnemyType, EnemyVisualConfig> = {
     baseColor: 0x2f6fd0,
     accentColor: 0x1f4a9c,
     brightColor: 0x5fa0ec,
-    darkColor: 0x121f38,
+    darkColor: 0x2a3a64,
     glowColor: 0x57d6ff,
     emissiveIntensity: 0.22,
     scale: 0.7,
@@ -70,7 +76,7 @@ const ENEMY_CONFIGS: Record<EnemyType, EnemyVisualConfig> = {
     baseColor: 0x3f8a45,
     accentColor: 0x2a5f30,
     brightColor: 0x6fc06f,
-    darkColor: 0x13301a,
+    darkColor: 0x2e5238,
     glowColor: 0x9bff6b,
     emissiveIntensity: 0.14,
     scale: 1.5,
@@ -79,7 +85,7 @@ const ENEMY_CONFIGS: Record<EnemyType, EnemyVisualConfig> = {
     baseColor: 0x9446c6,
     accentColor: 0x6c2c96,
     brightColor: 0xc77ce6,
-    darkColor: 0x24123a,
+    darkColor: 0x432a60,
     glowColor: 0xe85aff,
     emissiveIntensity: 0.28,
     scale: 2.0,
@@ -279,14 +285,24 @@ class SmartEnemyManager {
     // sheen and lets them pick up the scene environment map — far richer than
     // the old flat Lambert shading. Flat shading is kept for the crisp,
     // intentional faceted silhouette.
+    // CRITICAL: enemy materials use VERY low metalness + strong emissive
+    // so they're SELF-LIT and don't depend on the environment / ambient
+    // light. At evening / night the env map is dim, ambient is low, and
+    // any material that relies on those will render as a dark silhouette.
+    // By driving brightness from EMISSIVE (which is constant regardless
+    // of scene lighting), the enemies stay visible 24/7.
+    //
+    // The emissive multipliers below are intentionally HIGH (3-4×) — the
+    // ACES tonemap rolls them back to a sensible range, and bloom catches
+    // their highlights for a proper "self-illuminated robot" look.
     for (const [type, config] of Object.entries(ENEMY_CONFIGS)) {
-      // Body material
+      // Body material — strongest emissive boost so the torso reads bright.
       this.sharedMaterials.set(`${type}_body`, new THREE.MeshStandardMaterial({
         color: config.baseColor,
         emissive: config.baseColor,
-        emissiveIntensity: config.emissiveIntensity,
-        metalness: 0.45,
-        roughness: 0.42,
+        emissiveIntensity: config.emissiveIntensity * 4.5,
+        metalness: 0.0,
+        roughness: 0.6,
         flatShading: true,
       }));
 
@@ -294,9 +310,9 @@ class SmartEnemyManager {
       this.sharedMaterials.set(`${type}_accent`, new THREE.MeshStandardMaterial({
         color: config.accentColor,
         emissive: config.accentColor,
-        emissiveIntensity: config.emissiveIntensity * 0.8,
-        metalness: 0.55,
-        roughness: 0.38,
+        emissiveIntensity: config.emissiveIntensity * 3.5,
+        metalness: 0.0,
+        roughness: 0.55,
         flatShading: true,
       }));
 
@@ -304,9 +320,9 @@ class SmartEnemyManager {
       this.sharedMaterials.set(`${type}_bright`, new THREE.MeshStandardMaterial({
         color: config.brightColor,
         emissive: config.brightColor,
-        emissiveIntensity: config.emissiveIntensity * 1.2,
-        metalness: 0.5,
-        roughness: 0.3,
+        emissiveIntensity: config.emissiveIntensity * 5.0,
+        metalness: 0.0,
+        roughness: 0.5,
         flatShading: true,
       }));
 
@@ -314,17 +330,21 @@ class SmartEnemyManager {
       this.sharedMaterials.set(`${type}_low`, new THREE.MeshStandardMaterial({
         color: config.baseColor,
         emissive: config.baseColor,
-        emissiveIntensity: config.emissiveIntensity,
-        metalness: 0.4,
-        roughness: 0.5,
+        emissiveIntensity: config.emissiveIntensity * 4.5,
+        metalness: 0.0,
+        roughness: 0.6,
         flatShading: true,
       }));
 
-      // Dark recessed-detail material (visor frame, joints, hips)
+      // Dark recessed-detail material (visor frame, joints, hips).
+      // Brighter darkColor + meaningful emissive so it reads as DARK
+      // not BLACK in low-light conditions.
       this.sharedMaterials.set(`${type}_dark`, new THREE.MeshStandardMaterial({
         color: config.darkColor,
-        metalness: 0.7,
-        roughness: 0.45,
+        emissive: config.darkColor,
+        emissiveIntensity: 1.2,
+        metalness: 0.0,
+        roughness: 0.75,
         flatShading: true,
       }));
 
@@ -333,7 +353,7 @@ class SmartEnemyManager {
       this.sharedMaterials.set(`${type}_glow`, new THREE.MeshStandardMaterial({
         color: 0x000000,
         emissive: config.glowColor,
-        emissiveIntensity: 2.4,
+        emissiveIntensity: 4.0,
         metalness: 0,
         roughness: 0.4,
         flatShading: true,

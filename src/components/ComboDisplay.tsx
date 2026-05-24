@@ -26,8 +26,8 @@ const ComboDisplay = ({ combo, killStreak, visible }: ComboDisplayProps) => {
 
       hideTimeoutRef.current = setTimeout(() => {
         setFadeOut(true);
-        setTimeout(() => setShowNotification(false), 400);
-      }, 3000);
+        setTimeout(() => setShowNotification(false), 300);
+      }, 1800);
     }
 
     return () => {

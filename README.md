@@ -162,7 +162,8 @@ npm run preview    # Preview production build
 |----------|------------|
 | Framework | React 19 |
 | Language | TypeScript 5 (strict) |
-| 3D Engine | Three.js |
+| 3D Engine | Three.js + @react-three/fiber + @react-three/drei |
+| Post-processing | pmndrs/postprocessing + n8ao + realism-effects |
 | Build Tool | Vite 7 |
 | Styling | Tailwind CSS |
 | Icons | lucide-react |

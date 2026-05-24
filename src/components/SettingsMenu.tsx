@@ -6,6 +6,7 @@ import {
   Eye, Activity, Skull, Hash, Check, Headphones, type LucideIcon,
 } from 'lucide-react';
 import { soundManager } from '../utils/SoundManager';
+import { gameSettingsManager } from '../utils/GameSettingsManager';
 import { type GraphicsQuality, GRAPHICS_PRESETS } from '../utils/GameSettingsManager';
 
 interface SettingsMenuProps {
@@ -52,7 +53,7 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
   });
 
   useEffect(() => {
-    localStorage.setItem('gameSettings', JSON.stringify(settings));
+    gameSettingsManager.updateSettings(settings);
     soundManager.setVolume((settings.masterVolume / 100) * (settings.sfxVolume / 100));
   }, [settings]);
 
@@ -229,10 +230,16 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
                   <Monitor className="w-4 h-4 text-gray-400" strokeWidth={2.25} />
                   <span className="text-sm font-semibold text-gray-300">Graphics Quality</span>
                 </div>
-                <div className="grid grid-cols-3 gap-2">
-                  {(['low', 'medium', 'high'] as const).map((quality) => {
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {(['low', 'medium', 'high', 'ultra'] as const).map((quality) => {
                     const active = settings.graphicsQuality === quality;
-                    const desc = quality === 'high' ? 'Best visuals' : quality === 'medium' ? 'Balanced' : 'Best performance';
+                    const desc = quality === 'ultra'
+                      ? 'Cinematic'
+                      : quality === 'high'
+                        ? 'Best visuals'
+                        : quality === 'medium'
+                          ? 'Balanced'
+                          : 'Best performance';
                     return (
                       <button
                         key={quality}

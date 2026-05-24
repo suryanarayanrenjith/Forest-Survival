@@ -1,6 +1,6 @@
 // Game Settings Manager - Handles reading/writing user settings from localStorage
 
-export type GraphicsQuality = 'low' | 'medium' | 'high';
+export type GraphicsQuality = 'low' | 'medium' | 'high' | 'ultra';
 
 export interface GraphicsPreset {
   /** Internal render scale (0-1). 1 = native resolution. */
@@ -23,8 +23,12 @@ export interface GraphicsPreset {
   terrainDetail: number;
 }
 
-// Three clean performance tiers. Every field below is read and applied by
+// Four clean performance tiers. Every field below is read and applied by
 // the engine — there are no dead knobs.
+//
+// `maxEnemies` is a hard ceiling the spawner respects regardless of
+// difficulty multiplier — keeping it low prevents the screen from ever
+// filling with robots even on Hard.
 export const GRAPHICS_PRESETS: Record<GraphicsQuality, GraphicsPreset> = {
   // LOW — maximum performance: no shadows, no post-FX, reduced resolution.
   low: {
@@ -34,7 +38,7 @@ export const GRAPHICS_PRESETS: Record<GraphicsQuality, GraphicsPreset> = {
     antialias: false,
     postProcessing: false,
     particleDensity: 0.35,
-    maxEnemies: 16,
+    maxEnemies: 12,
     viewDistance: 90,
     terrainDetail: 0.5,
   },
@@ -46,7 +50,7 @@ export const GRAPHICS_PRESETS: Record<GraphicsQuality, GraphicsPreset> = {
     antialias: false,
     postProcessing: true,
     particleDensity: 0.65,
-    maxEnemies: 28,
+    maxEnemies: 20,
     viewDistance: 140,
     terrainDetail: 0.8,
   },
@@ -58,8 +62,20 @@ export const GRAPHICS_PRESETS: Record<GraphicsQuality, GraphicsPreset> = {
     antialias: true,
     postProcessing: true,
     particleDensity: 1.0,
-    maxEnemies: 42,
+    maxEnemies: 30,
     viewDistance: 200,
+    terrainDetail: 1.0,
+  },
+  // ULTRA — cinematic: the browser's most aggressive visual tier.
+  ultra: {
+    pixelRatio: 1.1,
+    shadowMapSize: 4096,
+    shadowsEnabled: true,
+    antialias: true,
+    postProcessing: true,
+    particleDensity: 1.0,
+    maxEnemies: 38,
+    viewDistance: 240,
     terrainDetail: 1.0,
   },
 };
@@ -93,7 +109,7 @@ export const defaultUserSettings: UserSettings = {
   damageNumbers: true,
   crosshairStyle: 'cross',
   crosshairColor: '#22c55e',
-  graphicsQuality: 'high', // Default to highest quality
+  graphicsQuality: 'high', // Default to the high tier
 };
 
 const STORAGE_KEY = 'gameSettings';
@@ -198,12 +214,14 @@ class GameSettingsManager {
 
   // Get the current graphics preset based on quality setting
   getGraphicsPreset(): GraphicsPreset {
-    return GRAPHICS_PRESETS[this.settings.graphicsQuality] || GRAPHICS_PRESETS.high;
+    const quality = this.getGraphicsQuality();
+    return GRAPHICS_PRESETS[quality] || GRAPHICS_PRESETS.high;
   }
 
   // Get graphics quality level
   getGraphicsQuality(): GraphicsQuality {
-    return this.settings.graphicsQuality || 'high';
+    const quality = this.settings.graphicsQuality as GraphicsQuality;
+    return GRAPHICS_PRESETS[quality] ? quality : 'high';
   }
 
   // Set graphics quality

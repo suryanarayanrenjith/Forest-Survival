@@ -2,6 +2,7 @@ import {
   ArrowLeft, GraduationCap,
   Trees, Flame, Snowflake, Mountain, Droplet, Shield, Gem, Landmark, type LucideIcon,
 } from 'lucide-react';
+import MenuShell from './MenuShell';
 import { MAP_CONFIGS, type MapType } from '../utils/MapSystem';
 
 interface TutorialMenuProps {
@@ -24,7 +25,12 @@ const MAP_ICONS: Record<MapType, LucideIcon> = {
 const TutorialMenu = ({ onStartTutorial, onBack }: TutorialMenuProps) => {
   return (
     <div className="relative w-full h-screen bg-[#05080a] overflow-hidden">
-      <div className="absolute inset-0 bg-gradient-to-b from-black/65 via-black/45 to-black/85 pointer-events-none" />
+      <MenuShell variant="tutorial" />
+      <div className="absolute inset-0 bg-gradient-to-b from-black/45 via-black/28 to-black/72 pointer-events-none" />
+      <div
+        className="absolute inset-0 pointer-events-none"
+        style={{ background: 'radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.58) 100%)' }}
+      />
 
       {/* Back */}
       <button

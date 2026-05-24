@@ -181,7 +181,9 @@ export interface Enemy {
 }
 
 export interface Bullet {
-  mesh: THREE.Mesh;
+  // Group for compound bullets (glow + core), Mesh for the rocket. Both
+  // expose .position / .quaternion / .add to scene the same way.
+  mesh: THREE.Object3D;
   velocity: THREE.Vector3;
   life: number;
   damage: number;

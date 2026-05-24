@@ -176,9 +176,13 @@ export class EnhancedPowerUpSystem {
     // Crate
     const crateGeometry = new THREE.BoxGeometry(2, 2, 2);
     const crateMaterial = new THREE.MeshStandardMaterial({
-      color: 0x8b4513,
-      roughness: 0.8,
-      metalness: 0.2
+      color: 0x9a5b22,
+      emissive: 0x3b1d0d,
+      emissiveIntensity: 0.35,
+      roughness: 0.78,
+      metalness: 0.08,
+      toneMapped: false,
+      fog: false,
     });
     const crate = new THREE.Mesh(crateGeometry, crateMaterial);
     crate.castShadow = true;
@@ -186,12 +190,12 @@ export class EnhancedPowerUpSystem {
 
     // Power-up indicator
     const indicatorGeometry = new THREE.BoxGeometry(1.5, 1.5, 1.5);
-    const indicatorMaterial = new THREE.MeshStandardMaterial({
+    const indicatorMaterial = new THREE.MeshBasicMaterial({
       color: config.color,
-      emissive: config.emissiveColor,
-      emissiveIntensity: 0.5,
       transparent: true,
-      opacity: 0.8
+      opacity: 0.92,
+      toneMapped: false,
+      fog: false,
     });
     const indicator = new THREE.Mesh(indicatorGeometry, indicatorMaterial);
     indicator.position.y = 0.5;
@@ -199,14 +203,20 @@ export class EnhancedPowerUpSystem {
 
     // Parachute
     const parachuteGeometry = new THREE.ConeGeometry(3, 2, 8);
-    const parachuteMaterial = new THREE.MeshStandardMaterial({
+    const parachuteMaterial = new THREE.MeshBasicMaterial({
       color: 0xffffff,
-      side: THREE.DoubleSide
+      side: THREE.DoubleSide,
+      toneMapped: false,
+      fog: false,
     });
     const parachute = new THREE.Mesh(parachuteGeometry, parachuteMaterial);
     parachute.position.y = 4;
     parachute.rotation.x = Math.PI;
     group.add(parachute);
+
+    const glowLight = new THREE.PointLight(config.emissiveColor, 1.75, 11);
+    glowLight.position.y = 1.5;
+    group.add(glowLight);
 
     // Starting position (high in the air)
     const startY = 100;

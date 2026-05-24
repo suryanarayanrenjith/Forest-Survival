@@ -10,14 +10,18 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@react-three/drei": "^10.7.7",
+    "@react-three/fiber": "^9.6.1",
     "@types/three": "^0.180.0",
     "@vercel/analytics": "^1.5.0",
     "@vercel/speed-insights": "^1.2.0",
     "lucide-react": "^1.16.0",
+    "n8ao": "^1.10.1",
     "peerjs": "^1.5.5",
     "postprocessing": "^6.39.1",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
+    "realism-effects": "^1.1.2",
     "three": "^0.180.0"
   },
   "devDependencies": {

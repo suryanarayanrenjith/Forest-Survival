@@ -1,10 +1,10 @@
-import { useState, useEffect, useRef } from 'react';
-import * as THREE from 'three';
+import { useState } from 'react';
 import {
   ArrowLeft, Dices, Sparkles, ChevronDown, Play, Cpu,
   Shield, Crosshair, Skull, CloudSun, Sun, Moon,
   Trees, Flame, Snowflake, Mountain, Droplet, Gem, Landmark, type LucideIcon,
 } from 'lucide-react';
+import MenuShell from './MenuShell';
 import { MAP_CONFIGS, getRandomMap, type MapType } from '../utils/MapSystem';
 
 interface ClassicMenuProps {
@@ -30,125 +30,6 @@ const ClassicMenu = ({ onStartGame, onBack }: ClassicMenuProps) => {
   const [selectedMap, setSelectedMap] = useState<MapType>('deep_forest');
   const [isRandomMode, setIsRandomMode] = useState(false);
   const [showMapSelector, setShowMapSelector] = useState(false);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const sceneRef = useRef<{
-    scene: THREE.Scene;
-    camera: THREE.PerspectiveCamera;
-    renderer: THREE.WebGLRenderer;
-    animationId: number;
-  } | null>(null);
-
-  useEffect(() => {
-    if (!canvasRef.current) return;
-
-    const scene = new THREE.Scene();
-    scene.fog = new THREE.Fog(0x0a1f0a, 10, 50);
-
-    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
-    camera.position.set(0, 8, 20);
-    camera.lookAt(0, 0, 0);
-
-    const renderer = new THREE.WebGLRenderer({ canvas: canvasRef.current, antialias: true, alpha: true });
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.setClearColor(0x0a1f0a, 1);
-
-    const starsGeometry = new THREE.BufferGeometry();
-    const starCount = 800;
-    const positions = new Float32Array(starCount * 3);
-    for (let i = 0; i < starCount * 3; i += 3) {
-      positions[i] = (Math.random() - 0.5) * 80;
-      positions[i + 1] = Math.random() * 40;
-      positions[i + 2] = (Math.random() - 0.5) * 80;
-    }
-    starsGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    const starsMaterial = new THREE.PointsMaterial({ size: 0.15, color: 0x88ff88, transparent: true, opacity: 0.6 });
-    const stars = new THREE.Points(starsGeometry, starsMaterial);
-    scene.add(stars);
-
-    const forest: THREE.Group[] = [];
-    const treeCount = 40;
-    const radius = 15;
-    for (let i = 0; i < treeCount; i++) {
-      const angle = (i / treeCount) * Math.PI * 2;
-      const tree = new THREE.Group();
-      const trunk = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.15, 0.2, 2.5, 6),
-        new THREE.MeshStandardMaterial({ color: 0x2d1810, roughness: 0.9, flatShading: true })
-      );
-      trunk.castShadow = true;
-      tree.add(trunk);
-      const foliage = new THREE.Mesh(
-        new THREE.ConeGeometry(1, 2.5, 6),
-        new THREE.MeshStandardMaterial({ color: 0x1a4d1a, roughness: 0.8, flatShading: true })
-      );
-      foliage.position.y = 2;
-      foliage.castShadow = true;
-      tree.add(foliage);
-      tree.position.set(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
-      tree.rotation.y = -angle + Math.PI / 2;
-      scene.add(tree);
-      forest.push(tree);
-    }
-
-    const ground = new THREE.Mesh(
-      new THREE.CircleGeometry(25, 32),
-      new THREE.MeshStandardMaterial({ color: 0x0d1f0d, roughness: 0.9 })
-    );
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.y = -0.1;
-    ground.receiveShadow = true;
-    scene.add(ground);
-
-    scene.add(new THREE.AmbientLight(0x2d4d2d, 0.4));
-    const dirLight = new THREE.DirectionalLight(0x88ff88, 0.8);
-    dirLight.position.set(5, 10, 5);
-    dirLight.castShadow = true;
-    scene.add(dirLight);
-    const fillLight = new THREE.DirectionalLight(0x4d8d4d, 0.3);
-    fillLight.position.set(-5, 5, -5);
-    scene.add(fillLight);
-
-    sceneRef.current = { scene, camera, renderer, animationId: 0 };
-    forest.forEach((tree, i) => { tree.userData.angle = (i / treeCount) * Math.PI * 2; });
-
-    let time = 0;
-    let isVisible = true;
-    const handleVisibilityChange = () => { isVisible = !document.hidden; };
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-
-    const animate = () => {
-      if (sceneRef.current) sceneRef.current.animationId = requestAnimationFrame(animate);
-      if (!isVisible) return;
-      time += 0.003;
-      forest.forEach((tree) => {
-        tree.position.x = Math.cos(tree.userData.angle + time) * radius;
-        tree.position.z = Math.sin(tree.userData.angle + time) * radius;
-        tree.rotation.y = -(tree.userData.angle + time) + Math.PI / 2;
-      });
-      camera.position.x = Math.sin(time * 0.3) * 1;
-      camera.position.y = 8 + Math.sin(time * 0.5) * 0.5;
-      camera.lookAt(0, 0, 0);
-      renderer.render(scene, camera);
-    };
-    animate();
-
-    const handleResize = () => {
-      camera.aspect = window.innerWidth / window.innerHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
-    };
-    window.addEventListener('resize', handleResize);
-
-    return () => {
-      window.removeEventListener('resize', handleResize);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      if (sceneRef.current) {
-        cancelAnimationFrame(sceneRef.current.animationId);
-        renderer.dispose();
-      }
-    };
-  }, []);
 
   const difficulties: { key: 'easy' | 'medium' | 'hard' | 'adaptive'; icon: LucideIcon; label: string; desc: string; color: string }[] = [
     { key: 'easy', icon: Shield, label: 'Easy', desc: 'Casual', color: '#34d399' },
@@ -167,8 +48,12 @@ const ClassicMenu = ({ onStartGame, onBack }: ClassicMenuProps) => {
 
   return (
     <div className="relative w-full h-screen bg-[#05080a] overflow-hidden">
-      <canvas ref={canvasRef} className="fixed inset-0 w-full h-full pointer-events-none" style={{ display: 'block', zIndex: 0 }} />
-      <div className="fixed inset-0 z-[1] pointer-events-none bg-gradient-to-b from-black/65 via-black/45 to-black/85" />
+      <MenuShell variant="classic" />
+      <div className="fixed inset-0 z-[1] pointer-events-none bg-gradient-to-b from-black/50 via-black/30 to-black/75" />
+      <div
+        className="fixed inset-0 z-[1] pointer-events-none"
+        style={{ background: 'radial-gradient(ellipse at center, transparent 42%, rgba(0,0,0,0.55) 100%)' }}
+      />
 
       {/* Back */}
       <button
