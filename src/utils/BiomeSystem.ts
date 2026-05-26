@@ -17,8 +17,104 @@ interface BiomeConfig {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared resource pools.
+//
+// The old BiomeSystem allocated a fresh `MeshStandardMaterial` and matching
+// `BufferGeometry` for every single tree / rock / bush in every chunk. With a
+// 3x3 chunk load radius and a forest biome (~40 trees, ~35 bushes, ~15 rocks
+// per chunk × 4-5 sub-meshes each), the world easily creates 1500+ unique
+// materials and 1500+ unique geometries — burning RAM, hammering the shader
+// cache and shredding draw-call sort coherence.
+//
+// We deduplicate aggressively: any material with the same options reuses one
+// instance, and any geometry built from the same constructor + args reuses
+// one instance. Per-object visual variety still comes through via mesh
+// transforms (scale, rotation, position) which are free.
+//
+// All pools live on the BiomeSystem instance so they're released for GC when
+// the game scene tears down, no leaks between runs.
+// ─────────────────────────────────────────────────────────────────────────────
+
+type StdMatOpts = THREE.MeshStandardMaterialParameters;
+
+function hashStdMatOpts(o: StdMatOpts): string {
+  return [
+    'std',
+    o.color ?? 0,
+    o.emissive ?? 0,
+    o.emissiveIntensity ?? 0,
+    o.roughness ?? 1,
+    o.metalness ?? 0,
+    o.flatShading ? 1 : 0,
+    o.transparent ? 1 : 0,
+    o.opacity ?? 1,
+    (o as any).side ?? 0,
+  ].join(':');
+}
+
 export class BiomeSystem {
   private biomeConfigs: Map<BiomeType, BiomeConfig>;
+
+  // === SHARED MATERIAL / GEOMETRY POOLS ===
+  private matPool = new Map<string, THREE.Material>();
+  private geoPool = new Map<string, THREE.BufferGeometry>();
+
+  /** Reuse a MeshStandardMaterial with the given options, or create + cache it. */
+  private mat(opts: StdMatOpts): THREE.MeshStandardMaterial {
+    const key = hashStdMatOpts(opts);
+    const cached = this.matPool.get(key);
+    if (cached) return cached as THREE.MeshStandardMaterial;
+    const fresh = new THREE.MeshStandardMaterial(opts);
+    this.matPool.set(key, fresh);
+    return fresh;
+  }
+
+  /**
+   * Reuse a geometry built by `factory`, or create + cache it.
+   * `key` identifies the exact geometry — same key always yields the same
+   * instance, so per-object scaling must be done on the mesh, not the geo.
+   */
+  private geo<T extends THREE.BufferGeometry>(key: string, factory: () => T): T {
+    const cached = this.geoPool.get(key);
+    if (cached) return cached as T;
+    const fresh = factory();
+    this.geoPool.set(key, fresh);
+    return fresh;
+  }
+
+  // === Common unit primitives (built once, scaled per-instance) ===
+  // Heights/radii are 1 by default; meshes scale to the desired size.
+  private unitCyl(rTop: number, rBot: number, radial: number, key: string): THREE.CylinderGeometry {
+    return this.geo(`cyl:${key}`, () => new THREE.CylinderGeometry(rTop, rBot, 1, radial)) as THREE.CylinderGeometry;
+  }
+  private unitCone(radius: number, radial: number, key: string): THREE.ConeGeometry {
+    return this.geo(`cone:${key}`, () => new THREE.ConeGeometry(radius, 1, radial)) as THREE.ConeGeometry;
+  }
+  private unitBox(key: string): THREE.BoxGeometry {
+    return this.geo(`box:${key}`, () => new THREE.BoxGeometry(1, 1, 1)) as THREE.BoxGeometry;
+  }
+  private unitSphere(radial: number, segs: number, key: string): THREE.SphereGeometry {
+    return this.geo(`sph:${key}`, () => new THREE.SphereGeometry(1, radial, segs)) as THREE.SphereGeometry;
+  }
+  private unitDodec(detail: number): THREE.DodecahedronGeometry {
+    return this.geo(`dodec:${detail}`, () => new THREE.DodecahedronGeometry(1, detail)) as THREE.DodecahedronGeometry;
+  }
+  private unitOcta(detail: number): THREE.OctahedronGeometry {
+    return this.geo(`octa:${detail}`, () => new THREE.OctahedronGeometry(1, detail)) as THREE.OctahedronGeometry;
+  }
+  private unitIco(detail: number): THREE.IcosahedronGeometry {
+    return this.geo(`ico:${detail}`, () => new THREE.IcosahedronGeometry(1, detail)) as THREE.IcosahedronGeometry;
+  }
+  private unitTet(detail: number): THREE.TetrahedronGeometry {
+    return this.geo(`tet:${detail}`, () => new THREE.TetrahedronGeometry(1, detail)) as THREE.TetrahedronGeometry;
+  }
+  private circle(radius: number, segs: number): THREE.CircleGeometry {
+    return this.geo(`circ:${radius}:${segs}`, () => new THREE.CircleGeometry(radius, segs)) as THREE.CircleGeometry;
+  }
+  private torus(r: number, t: number, ts: number, rs: number): THREE.TorusGeometry {
+    return this.geo(`torus:${r}:${t}:${ts}:${rs}`, () => new THREE.TorusGeometry(r, t, ts, rs)) as THREE.TorusGeometry;
+  }
 
   // === GRASS SYSTEM ===
   // Per-biome grass tint + density (0 = none). Shared geometry + per-biome
@@ -41,6 +137,17 @@ export class BiomeSystem {
   constructor(_scene: THREE.Scene) {
     this.biomeConfigs = new Map();
     this.initializeBiomes();
+  }
+
+  /** Release every pooled resource. Called when the game scene tears down. */
+  dispose() {
+    this.matPool.forEach((m) => m.dispose());
+    this.geoPool.forEach((g) => g.dispose());
+    this.matPool.clear();
+    this.geoPool.clear();
+    this.grassMaterials.forEach((m) => m.dispose());
+    this.grassMaterials.clear();
+    if (this.grassGeo) { this.grassGeo.dispose(); this.grassGeo = null; }
   }
 
   /** Advance the grass wind animation — call once per frame. */
@@ -68,13 +175,13 @@ export class BiomeSystem {
     if (cached) return cached;
     const mat = new THREE.MeshStandardMaterial({
       color: this.grassConfigs[biome].color,
-      roughness: 0.82,
-      metalness: 0.0,
+      roughness: 0.62,
+      metalness: 0.03,
+      emissive: this.grassConfigs[biome].color,
+      emissiveIntensity: 0.16,
       side: THREE.DoubleSide,
       flatShading: true,
     });
-    // Inject a per-instance wind sway — the blade tip bends, the base stays
-    // anchored (sway scales with height²). Phase varies by world position.
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.uTime = this.grassTime;
       shader.vertexShader = 'uniform float uTime;\n' + shader.vertexShader;
@@ -371,26 +478,25 @@ export class BiomeSystem {
   private createForestTree(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
     const height = 8 + Math.random() * 5;
-    // Tapered bark trunk
-    const trunk = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.34, 0.72, height, 7),
-      new THREE.MeshStandardMaterial({ color: 0x3d2a18, flatShading: true, roughness: 0.95, metalness: 0.0, emissive: 0x140d06, emissiveIntensity: 0.1 })
-    );
+    const trunkMat = this.mat({ color: 0x3d2a18, flatShading: true, roughness: 0.95, metalness: 0.0, emissive: 0x140d06, emissiveIntensity: 0.1 });
+    const trunk = new THREE.Mesh(this.unitCyl(0.34, 0.72, 7, 'forestTrunk'), trunkMat);
+    trunk.scale.set(1, height, 1);
     trunk.castShadow = true; trunk.receiveShadow = true;
     group.add(trunk);
-    // Layered canopy — darker at the shaded base, brighter toward the lit top
-    // for natural depth. Slight per-layer hue keeps the forest from going flat.
-    const canopy = [0x0e4d1c, 0x166327, 0x1f7c33, 0x32953f];
+    // Layered canopy — 4 cones with shared geometry per layer, shared materials per palette color.
+    const canopyPalette = [0x0e4d1c, 0x166327, 0x1f7c33, 0x32953f];
     const layers = 4;
     for (let i = 0; i < layers; i++) {
       const t = i / (layers - 1);
-      const cone = new THREE.Mesh(
-        new THREE.ConeGeometry(4.2 - i * 0.85, 4.4 - i * 0.7, 7),
-        new THREE.MeshStandardMaterial({
-          color: canopy[i], flatShading: true, roughness: 0.88, metalness: 0.0,
-          emissive: canopy[i], emissiveIntensity: 0.1 + t * 0.07,
-        })
-      );
+      const color = canopyPalette[i];
+      const coneRadius = 4.2 - i * 0.85;
+      const coneHeight = 4.4 - i * 0.7;
+      const coneMat = this.mat({
+        color, flatShading: true, roughness: 0.62 - t * 0.08, metalness: 0.04,
+        emissive: color, emissiveIntensity: 0.12 + t * 0.10,
+      });
+      const cone = new THREE.Mesh(this.unitCone(coneRadius, 7, `forestCanopy${i}`), coneMat);
+      cone.scale.set(1, coneHeight, 1);
       cone.position.y = height / 2 + 0.3 + i * 2.7;
       cone.rotation.y = Math.random() * Math.PI;
       cone.castShadow = true; cone.receiveShadow = true;
@@ -402,10 +508,9 @@ export class BiomeSystem {
 
   private createForestRock(x: number, z: number): TerrainObject {
     const size = 0.8 + Math.random() * 1.5;
-    const rock = new THREE.Mesh(
-      new THREE.DodecahedronGeometry(size, 0),
-      new THREE.MeshStandardMaterial({ color: 0x5a6a5a, flatShading: true, roughness: 0.9, metalness: 0.05, emissive: 0x2a3a2a, emissiveIntensity: 0.05 })
-    );
+    const rockMat = this.mat({ color: 0x5a6a5a, flatShading: true, roughness: 0.68, metalness: 0.10, emissive: 0x2a3a2a, emissiveIntensity: 0.06 });
+    const rock = new THREE.Mesh(this.unitDodec(0), rockMat);
+    rock.scale.setScalar(size);
     rock.castShadow = true; rock.receiveShadow = true;
     rock.position.set(x, size * 0.5, z);
     rock.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
@@ -418,11 +523,11 @@ export class BiomeSystem {
     const colors = [0x1a6a1a, 0x156515, 0x2a7a2a];
     for (let i = 0; i < 3; i++) {
       const color = colors[Math.floor(Math.random() * colors.length)];
-      const part = new THREE.Mesh(
-        new THREE.SphereGeometry(bushSize * (1 - i * 0.15), 4, 3),
-        new THREE.MeshStandardMaterial({ color, flatShading: true, roughness: 0.9, metalness: 0.05, emissive: color, emissiveIntensity: 0.1 })
-      );
-      part.position.set((Math.random() - 0.5) * bushSize * 0.5, bushSize * (1 - i * 0.15), (Math.random() - 0.5) * bushSize * 0.5);
+      const bushMat = this.mat({ color, flatShading: true, roughness: 0.6, metalness: 0.04, emissive: color, emissiveIntensity: 0.14 });
+      const partSize = bushSize * (1 - i * 0.15);
+      const part = new THREE.Mesh(this.unitSphere(4, 3, 'bushSphere'), bushMat);
+      part.scale.setScalar(partSize);
+      part.position.set((Math.random() - 0.5) * bushSize * 0.5, partSize, (Math.random() - 0.5) * bushSize * 0.5);
       part.castShadow = true; part.receiveShadow = true;
       group.add(part);
     }
@@ -432,10 +537,9 @@ export class BiomeSystem {
 
   private createForestBoulder(x: number, z: number): TerrainObject {
     const size = 2.5 + Math.random() * 2;
-    const boulder = new THREE.Mesh(
-      new THREE.IcosahedronGeometry(size, 0),
-      new THREE.MeshStandardMaterial({ color: 0x555555, flatShading: true, roughness: 0.9, metalness: 0.2, emissive: 0x2a2a2a, emissiveIntensity: 0.08 })
-    );
+    const boulderMat = this.mat({ color: 0x555555, flatShading: true, roughness: 0.65, metalness: 0.22, emissive: 0x2a2a2a, emissiveIntensity: 0.10 });
+    const boulder = new THREE.Mesh(this.unitIco(0), boulderMat);
+    boulder.scale.setScalar(size);
     boulder.castShadow = true; boulder.receiveShadow = true;
     boulder.position.set(x, size * 0.6, z);
     boulder.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
@@ -445,18 +549,15 @@ export class BiomeSystem {
   private createFallenLog(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
     const length = 4 + Math.random() * 4;
-    const log = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.5, 0.6, length, 6),
-      new THREE.MeshStandardMaterial({ color: 0x4a3520, flatShading: true, roughness: 0.95 })
-    );
+    const logMat = this.mat({ color: 0x4a3520, flatShading: true, roughness: 0.95 });
+    const log = new THREE.Mesh(this.unitCyl(0.5, 0.6, 6, 'fallenLog'), logMat);
+    log.scale.set(1, length, 1);
     log.rotation.z = Math.PI / 2; log.position.y = 0.5;
     log.castShadow = true; log.receiveShadow = true;
     group.add(log);
-    const moss = new THREE.Mesh(
-      new THREE.SphereGeometry(0.6, 4, 3),
-      new THREE.MeshStandardMaterial({ color: 0x2a6a2a, flatShading: true, emissive: 0x1a4a1a, emissiveIntensity: 0.15 })
-    );
-    moss.position.set(0, 0.8, 0); moss.scale.set(2, 0.4, 1);
+    const mossMat = this.mat({ color: 0x2a6a2a, flatShading: true, emissive: 0x1a4a1a, emissiveIntensity: 0.15 });
+    const moss = new THREE.Mesh(this.unitSphere(4, 3, 'mossSph'), mossMat);
+    moss.position.set(0, 0.8, 0); moss.scale.set(2 * 0.6, 0.4 * 0.6, 1 * 0.6);
     group.add(moss);
     group.position.set(x, 0, z); group.rotation.y = Math.random() * Math.PI;
     return { mesh: group, x, z, type: 'tree', collidable: true, radius: 2, height: 1.5 };
@@ -464,13 +565,16 @@ export class BiomeSystem {
 
   private createMushroomCluster(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
+    const stemMat = this.mat({ color: 0xddc8a0, flatShading: true });
+    const capRed = this.mat({ color: 0xcc3322, flatShading: true, emissive: 0x331100, emissiveIntensity: 0.15 });
+    const capOrange = this.mat({ color: 0xdd8833, flatShading: true, emissive: 0x331100, emissiveIntensity: 0.15 });
     for (let i = 0; i < 3 + Math.floor(Math.random() * 3); i++) {
       const h = 0.5 + Math.random() * 0.8;
-      const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.1, h, 5), new THREE.MeshStandardMaterial({ color: 0xddc8a0, flatShading: true }));
-      const cap = new THREE.Mesh(
-        new THREE.ConeGeometry(0.25 + Math.random() * 0.15, 0.3, 6),
-        new THREE.MeshStandardMaterial({ color: Math.random() > 0.5 ? 0xcc3322 : 0xdd8833, flatShading: true, emissive: 0x331100, emissiveIntensity: 0.15 })
-      );
+      const stem = new THREE.Mesh(this.unitCyl(0.08, 0.1, 5, 'mushStem'), stemMat);
+      stem.scale.set(1, h, 1);
+      const capRadius = 0.25 + Math.random() * 0.15;
+      const cap = new THREE.Mesh(this.unitCone(capRadius, 6, `mushCap${capRadius.toFixed(2)}`), Math.random() > 0.5 ? capRed : capOrange);
+      cap.scale.set(1, 0.3, 1);
       cap.position.y = h / 2 + 0.1; cap.rotation.x = Math.PI;
       stem.position.y = h / 2;
       const m = new THREE.Group(); m.add(stem); m.add(cap);
@@ -488,38 +592,37 @@ export class BiomeSystem {
   private createCharredStump(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
     const height = 3 + Math.random() * 4;
-    const trunk = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.32, 0.78, height, 6),
-      new THREE.MeshStandardMaterial({ color: 0x161210, flatShading: true, roughness: 0.95, metalness: 0.18, emissive: 0x140600, emissiveIntensity: 0.12 })
-    );
+    const trunkMat = this.mat({ color: 0x161210, flatShading: true, roughness: 0.95, metalness: 0.18, emissive: 0x140600, emissiveIntensity: 0.12 });
+    const trunk = new THREE.Mesh(this.unitCyl(0.32, 0.78, 6, 'charredTrunk'), trunkMat);
+    trunk.scale.set(1, height, 1);
     trunk.castShadow = true; trunk.receiveShadow = true;
     group.add(trunk);
     // Glowing magma veins running up the charred bark
-    const crackMat = new THREE.MeshStandardMaterial({ color: 0x000000, emissive: 0xff5512, emissiveIntensity: 2.2, flatShading: true });
+    const crackMat = this.mat({ color: 0x000000, emissive: 0xff5512, emissiveIntensity: 2.2, flatShading: true });
+    const crackBox = this.unitBox('crackBox');
     for (let i = 0; i < 4; i++) {
       const a = (i / 4) * Math.PI * 2 + Math.random();
-      const crack = new THREE.Mesh(new THREE.BoxGeometry(0.09, height * (0.5 + Math.random() * 0.35), 0.09), crackMat);
+      const crackH = height * (0.5 + Math.random() * 0.35);
+      const crack = new THREE.Mesh(crackBox, crackMat);
+      crack.scale.set(0.09, crackH, 0.09);
       crack.position.set(Math.cos(a) * 0.42, (Math.random() - 0.3) * height * 0.3, Math.sin(a) * 0.42);
       crack.rotation.z = (Math.random() - 0.5) * 0.3;
       group.add(crack);
     }
     // Charred broken branches
+    const branchMat = this.mat({ color: 0x0c0807, flatShading: true, roughness: 0.95 });
     for (let i = 0; i < 2; i++) {
-      const branch = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.05, 0.16, 1.5, 4),
-        new THREE.MeshStandardMaterial({ color: 0x0c0807, flatShading: true, roughness: 0.95 })
-      );
+      const branch = new THREE.Mesh(this.unitCyl(0.05, 0.16, 4, 'charredBranch'), branchMat);
+      branch.scale.set(1, 1.5, 1);
       branch.position.set(i === 0 ? 0.5 : -0.5, height * 0.3 * (i + 1), 0);
       branch.rotation.z = (i === 0 ? 1 : -1) * (0.5 + Math.random() * 0.8);
       branch.castShadow = true;
       group.add(branch);
     }
     // Smouldering ember bed at the base
-    const ember = new THREE.Mesh(
-      new THREE.SphereGeometry(0.85, 5, 3),
-      new THREE.MeshStandardMaterial({ color: 0x000000, emissive: 0xff3a00, emissiveIntensity: 1.6, transparent: true, opacity: 0.55 })
-    );
-    ember.position.y = -height / 2 + 0.25; ember.scale.set(1, 0.3, 1);
+    const emberMat = this.mat({ color: 0x000000, emissive: 0xff3a00, emissiveIntensity: 1.6, transparent: true, opacity: 0.55 });
+    const ember = new THREE.Mesh(this.unitSphere(5, 3, 'emberSph'), emberMat);
+    ember.position.y = -height / 2 + 0.25; ember.scale.set(0.85, 0.85 * 0.3, 0.85);
     group.add(ember);
     group.position.set(x, height / 2, z);
     return { mesh: group, x, z, type: 'tree', collidable: true, radius: 2.0, height: 99 };
@@ -528,27 +631,22 @@ export class BiomeSystem {
   private createObsidianShard(x: number, z: number): TerrainObject {
     const size = 1 + Math.random() * 1.5;
     const group = new THREE.Group();
-    // Glossy obsidian shard — low roughness reads as polished volcanic glass
-    const shard = new THREE.Mesh(
-      new THREE.TetrahedronGeometry(size, 0),
-      new THREE.MeshStandardMaterial({ color: 0x09090c, flatShading: true, roughness: 0.08, metalness: 0.85, emissive: 0x1a0a06, emissiveIntensity: 0.18 })
-    );
+    const shardMat = this.mat({ color: 0x09090c, flatShading: true, roughness: 0.08, metalness: 0.85, emissive: 0x1a0a06, emissiveIntensity: 0.18 });
+    const tet = this.unitTet(0);
+    const shard = new THREE.Mesh(tet, shardMat);
+    shard.scale.setScalar(size);
     shard.castShadow = true; shard.receiveShadow = true;
     shard.rotation.set(Math.random() * 0.5, Math.random() * Math.PI, Math.random() * 0.3);
     group.add(shard);
-    // Smaller satellite shard + a molten glow at the base
-    const shard2 = new THREE.Mesh(
-      new THREE.TetrahedronGeometry(size * 0.5, 0),
-      (shard.material as THREE.Material)
-    );
+    const shard2 = new THREE.Mesh(tet, shardMat);
+    shard2.scale.setScalar(size * 0.5);
     shard2.position.set(size * 0.7, -size * 0.35, size * 0.3);
     shard2.rotation.set(Math.random(), Math.random() * Math.PI, Math.random());
     shard2.castShadow = true;
     group.add(shard2);
-    const glow = new THREE.Mesh(
-      new THREE.CircleGeometry(size * 0.9, 8),
-      new THREE.MeshStandardMaterial({ color: 0x000000, emissive: 0xff4a14, emissiveIntensity: 1.4, transparent: true, opacity: 0.5 })
-    );
+    const glowMat = this.mat({ color: 0x000000, emissive: 0xff4a14, emissiveIntensity: 1.4, transparent: true, opacity: 0.5 });
+    const glow = new THREE.Mesh(this.circle(0.9, 8), glowMat);
+    glow.scale.setScalar(size);
     glow.rotation.x = -Math.PI / 2; glow.position.y = -size * 0.55;
     group.add(glow);
     group.position.set(x, size * 0.6, z);
@@ -557,11 +655,13 @@ export class BiomeSystem {
 
   private createEmberPatch(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
+    const emberRed = this.mat({ color: 0xff4400, emissive: 0xff3300, emissiveIntensity: 0.8, flatShading: true });
+    const emberOrange = this.mat({ color: 0xff6600, emissive: 0xff3300, emissiveIntensity: 0.8, flatShading: true });
+    const sph = this.unitSphere(3, 2, 'emberPatchSph');
     for (let i = 0; i < 4 + Math.floor(Math.random() * 3); i++) {
-      const ember = new THREE.Mesh(
-        new THREE.SphereGeometry(0.15 + Math.random() * 0.2, 3, 2),
-        new THREE.MeshStandardMaterial({ color: Math.random() > 0.5 ? 0xff4400 : 0xff6600, emissive: 0xff3300, emissiveIntensity: 0.6 + Math.random() * 0.4, flatShading: true })
-      );
+      const s = 0.15 + Math.random() * 0.2;
+      const ember = new THREE.Mesh(sph, Math.random() > 0.5 ? emberRed : emberOrange);
+      ember.scale.setScalar(s);
       ember.position.set((Math.random() - 0.5) * 2, 0.1 + Math.random() * 0.3, (Math.random() - 0.5) * 2);
       group.add(ember);
     }
@@ -572,17 +672,16 @@ export class BiomeSystem {
   private createVolcanicBoulder(x: number, z: number): TerrainObject {
     const size = 2.5 + Math.random() * 2;
     const group = new THREE.Group();
-    const boulder = new THREE.Mesh(
-      new THREE.IcosahedronGeometry(size, 1),
-      new THREE.MeshStandardMaterial({ color: 0x2a1a15, flatShading: true, roughness: 0.9, metalness: 0.15 })
-    );
+    const boulderMat = this.mat({ color: 0x2a1a15, flatShading: true, roughness: 0.9, metalness: 0.15 });
+    const boulder = new THREE.Mesh(this.unitIco(1), boulderMat);
+    boulder.scale.setScalar(size);
     boulder.castShadow = true; boulder.receiveShadow = true;
     group.add(boulder);
+    const veinMat = this.mat({ color: 0xff2200, emissive: 0xff4400, emissiveIntensity: 0.8, flatShading: true });
+    const veinBox = this.unitBox('veinBox');
     for (let i = 0; i < 3; i++) {
-      const vein = new THREE.Mesh(
-        new THREE.BoxGeometry(0.1, size * 0.8, 0.1),
-        new THREE.MeshStandardMaterial({ color: 0xff2200, emissive: 0xff4400, emissiveIntensity: 0.8, flatShading: true })
-      );
+      const vein = new THREE.Mesh(veinBox, veinMat);
+      vein.scale.set(0.1, size * 0.8, 0.1);
       vein.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
       group.add(vein);
     }
@@ -593,26 +692,21 @@ export class BiomeSystem {
 
   private createLavaPool(x: number, z: number): TerrainObject {
     const radius = 2 + Math.random() * 2.5;
-    const pool = new THREE.Mesh(
-      new THREE.CircleGeometry(radius, 12),
-      new THREE.MeshStandardMaterial({ color: 0xff4400, emissive: 0xff2200, emissiveIntensity: 0.8, roughness: 0.2, metalness: 0.3, transparent: true, opacity: 0.9 })
-    );
+    const poolMat = this.mat({ color: 0xff4400, emissive: 0xff2200, emissiveIntensity: 0.8, roughness: 0.2, metalness: 0.3, transparent: true, opacity: 0.9 });
+    const pool = new THREE.Mesh(this.circle(1, 12), poolMat);
+    pool.scale.setScalar(radius);
     pool.rotation.x = -Math.PI / 2; pool.position.set(x, 0.05, z); pool.receiveShadow = true;
     return { mesh: pool, x, z, type: 'water', collidable: false, radius };
   }
 
   private createSmokeVent(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
-    const ring = new THREE.Mesh(
-      new THREE.TorusGeometry(0.8, 0.3, 4, 6),
-      new THREE.MeshStandardMaterial({ color: 0x2a1a10, flatShading: true, roughness: 0.95 })
-    );
+    const ringMat = this.mat({ color: 0x2a1a10, flatShading: true, roughness: 0.95 });
+    const ring = new THREE.Mesh(this.torus(0.8, 0.3, 4, 6), ringMat);
     ring.rotation.x = -Math.PI / 2; ring.position.y = 0.3; ring.castShadow = true;
     group.add(ring);
-    const vent = new THREE.Mesh(
-      new THREE.CircleGeometry(0.6, 6),
-      new THREE.MeshStandardMaterial({ color: 0xff6600, emissive: 0xff4400, emissiveIntensity: 1.0 })
-    );
+    const ventMat = this.mat({ color: 0xff6600, emissive: 0xff4400, emissiveIntensity: 1.0 });
+    const vent = new THREE.Mesh(this.circle(0.6, 6), ventMat);
     vent.rotation.x = -Math.PI / 2; vent.position.y = 0.15;
     group.add(vent);
     group.position.set(x, 0, z);
@@ -626,28 +720,25 @@ export class BiomeSystem {
   private createFrozenPine(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
     const height = 6 + Math.random() * 4;
-    const trunk = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.3, 0.5, height, 5),
-      new THREE.MeshStandardMaterial({ color: 0x3a2a20, flatShading: true, roughness: 0.9, metalness: 0.1 })
-    );
+    const trunkMat = this.mat({ color: 0x3a2a20, flatShading: true, roughness: 0.9, metalness: 0.1 });
+    const trunk = new THREE.Mesh(this.unitCyl(0.3, 0.5, 5, 'frozenPineTrunk'), trunkMat);
+    trunk.scale.set(1, height, 1);
     trunk.castShadow = true; trunk.receiveShadow = true;
     group.add(trunk);
-    // Frosted pine layers — cold blue-green needles, crisp snow caps
-    const needle = [0x1f4a40, 0x2a5e4e, 0x39705c];
+    const needles = [0x1f4a40, 0x2a5e4e, 0x39705c];
+    const snowMat = this.mat({ color: 0xeef4fb, flatShading: true, emissive: 0xb9d4ea, emissiveIntensity: 0.22, roughness: 0.35, metalness: 0.15 });
     for (let i = 0; i < 3; i++) {
       const size = 3 - i * 0.6;
-      const foliage = new THREE.Mesh(
-        new THREE.ConeGeometry(size * 0.72, 4 - i * 1.0, 6),
-        new THREE.MeshStandardMaterial({ color: needle[i], flatShading: true, emissive: needle[i], emissiveIntensity: 0.12, roughness: 0.82, metalness: 0.05 })
-      );
+      const color = needles[i];
+      const needleMat = this.mat({ color, flatShading: true, emissive: color, emissiveIntensity: 0.20, roughness: 0.55, metalness: 0.06 });
+      const foliage = new THREE.Mesh(this.unitCone(size * 0.72, 6, `frozenPineCone${i}`), needleMat);
+      foliage.scale.set(1, 4 - i * 1.0, 1);
       foliage.position.y = height / 2 + i * 2.5;
       foliage.rotation.y = Math.random() * Math.PI;
       foliage.castShadow = true;
       group.add(foliage);
-      const snow = new THREE.Mesh(
-        new THREE.ConeGeometry(size * 0.54, 1.05, 6),
-        new THREE.MeshStandardMaterial({ color: 0xeef4fb, flatShading: true, emissive: 0xb9d4ea, emissiveIntensity: 0.22, roughness: 0.35, metalness: 0.15 })
-      );
+      const snow = new THREE.Mesh(this.unitCone(size * 0.54, 6, `frozenPineSnow${i}`), snowMat);
+      snow.scale.set(1, 1.05, 1);
       snow.position.y = height / 2 + i * 2.5 + 1.25;
       snow.rotation.y = foliage.rotation.y;
       snow.castShadow = true;
@@ -660,19 +751,15 @@ export class BiomeSystem {
   private createIceChunk(x: number, z: number): TerrainObject {
     const size = 1 + Math.random() * 1.5;
     const group = new THREE.Group();
-    // Polished glassy ice
-    const ice = new THREE.Mesh(
-      new THREE.IcosahedronGeometry(size, 0),
-      new THREE.MeshStandardMaterial({ color: 0x9fcfe6, flatShading: true, roughness: 0.06, metalness: 0.3, transparent: true, opacity: 0.72, emissive: 0x3d7fa6, emissiveIntensity: 0.2 })
-    );
+    const iceMat = this.mat({ color: 0x9fcfe6, flatShading: true, roughness: 0.06, metalness: 0.3, transparent: true, opacity: 0.72, emissive: 0x3d7fa6, emissiveIntensity: 0.2 });
+    const ice = new THREE.Mesh(this.unitIco(0), iceMat);
+    ice.scale.setScalar(size);
     ice.castShadow = true; ice.receiveShadow = true;
     ice.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
     group.add(ice);
-    // Frozen inner core — gives the ice visible depth
-    const core = new THREE.Mesh(
-      new THREE.OctahedronGeometry(size * 0.45, 0),
-      new THREE.MeshStandardMaterial({ color: 0xdff1fb, emissive: 0x8fc8e6, emissiveIntensity: 0.5, flatShading: true })
-    );
+    const coreMat = this.mat({ color: 0xdff1fb, emissive: 0x8fc8e6, emissiveIntensity: 0.5, flatShading: true });
+    const core = new THREE.Mesh(this.unitOcta(0), coreMat);
+    core.scale.setScalar(size * 0.45);
     core.rotation.set(Math.random(), Math.random(), Math.random());
     group.add(core);
     group.position.set(x, size * 0.5, z);
@@ -681,11 +768,9 @@ export class BiomeSystem {
 
   private createSnowMound(x: number, z: number): TerrainObject {
     const size = 0.8 + Math.random() * 1.0;
-    const mound = new THREE.Mesh(
-      new THREE.SphereGeometry(size, 5, 4),
-      new THREE.MeshStandardMaterial({ color: 0xe8f0f8, flatShading: true, roughness: 0.6, metalness: 0.05, emissive: 0xc0d8e8, emissiveIntensity: 0.1 })
-    );
-    mound.scale.y = 0.5; mound.position.set(x, size * 0.25, z);
+    const moundMat = this.mat({ color: 0xe8f0f8, flatShading: true, roughness: 0.6, metalness: 0.05, emissive: 0xc0d8e8, emissiveIntensity: 0.1 });
+    const mound = new THREE.Mesh(this.unitSphere(5, 4, 'snowMound'), moundMat);
+    mound.scale.set(size, size * 0.5, size); mound.position.set(x, size * 0.25, z);
     mound.castShadow = true; mound.receiveShadow = true;
     return { mesh: mound, x, z, type: 'bush', collidable: false, radius: size };
   }
@@ -694,17 +779,15 @@ export class BiomeSystem {
     const group = new THREE.Group();
     const width = 4 + Math.random() * 3;
     const height = 3 + Math.random() * 2;
-    const wall = new THREE.Mesh(
-      new THREE.BoxGeometry(width, height, 1.5),
-      new THREE.MeshStandardMaterial({ color: 0x8ab8d8, flatShading: true, roughness: 0.05, metalness: 0.5, transparent: true, opacity: 0.7, emissive: 0x4488aa, emissiveIntensity: 0.2 })
-    );
+    const wallMat = this.mat({ color: 0x8ab8d8, flatShading: true, roughness: 0.05, metalness: 0.5, transparent: true, opacity: 0.7, emissive: 0x4488aa, emissiveIntensity: 0.2 });
+    const wall = new THREE.Mesh(this.unitBox('iceWall'), wallMat);
+    wall.scale.set(width, height, 1.5);
     wall.castShadow = true; wall.receiveShadow = true;
     group.add(wall);
+    const spikeMat = this.mat({ color: 0xa0d0e8, flatShading: true, roughness: 0.05, metalness: 0.5, transparent: true, opacity: 0.75 });
     for (let i = 0; i < 3; i++) {
-      const spike = new THREE.Mesh(
-        new THREE.ConeGeometry(0.3, 1.5, 4),
-        new THREE.MeshStandardMaterial({ color: 0xa0d0e8, flatShading: true, roughness: 0.05, metalness: 0.5, transparent: true, opacity: 0.75 })
-      );
+      const spike = new THREE.Mesh(this.unitCone(0.3, 4, 'iceSpike'), spikeMat);
+      spike.scale.set(1, 1.5, 1);
       spike.position.set((i - 1) * 1.5, height / 2 + 0.5, 0); spike.castShadow = true;
       group.add(spike);
     }
@@ -714,22 +797,21 @@ export class BiomeSystem {
 
   private createFrozenPond(x: number, z: number): TerrainObject {
     const radius = 2.5 + Math.random() * 2;
-    const pond = new THREE.Mesh(
-      new THREE.CircleGeometry(radius, 12),
-      new THREE.MeshStandardMaterial({ color: 0x88bbcc, roughness: 0.02, metalness: 0.8, emissive: 0x4488aa, emissiveIntensity: 0.15, transparent: true, opacity: 0.85 })
-    );
+    const pondMat = this.mat({ color: 0x88bbcc, roughness: 0.02, metalness: 0.8, emissive: 0x4488aa, emissiveIntensity: 0.15, transparent: true, opacity: 0.85 });
+    const pond = new THREE.Mesh(this.circle(1, 12), pondMat);
+    pond.scale.setScalar(radius);
     pond.rotation.x = -Math.PI / 2; pond.position.set(x, 0.08, z); pond.receiveShadow = true;
     return { mesh: pond, x, z, type: 'water', collidable: false, radius };
   }
 
   private createIcicleCluster(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
+    const icicleMat = this.mat({ color: 0xa0d0e8, flatShading: true, roughness: 0.05, metalness: 0.6, transparent: true, opacity: 0.7 });
     for (let i = 0; i < 4 + Math.floor(Math.random() * 3); i++) {
       const h = 1.5 + Math.random() * 2;
-      const icicle = new THREE.Mesh(
-        new THREE.ConeGeometry(0.15 + Math.random() * 0.1, h, 4),
-        new THREE.MeshStandardMaterial({ color: 0xa0d0e8, flatShading: true, roughness: 0.05, metalness: 0.6, transparent: true, opacity: 0.7 })
-      );
+      const baseR = 0.15 + Math.random() * 0.1;
+      const icicle = new THREE.Mesh(this.unitCone(baseR, 4, `icicle${baseR.toFixed(2)}`), icicleMat);
+      icicle.scale.set(1, h, 1);
       icicle.position.set((Math.random() - 0.5) * 2, h / 2, (Math.random() - 0.5) * 2);
       icicle.castShadow = true;
       group.add(icicle);
@@ -747,28 +829,29 @@ export class BiomeSystem {
     const height = 8 + Math.random() * 6;
     const topR = 1.5 + Math.random();
     const botR = 1.0 + Math.random() * 0.5;
-    // Stacked sandstone strata — each band a slightly different weathered tone,
-    // the classic banded-mesa silhouette.
     const strata = [0x9c6332, 0xb87a3c, 0xc89150, 0xa86d38, 0xbe8246];
     const bands = 5;
     const bandH = height / bands;
     for (let i = 0; i < bands; i++) {
       const r1 = botR + (topR - botR) * ((i + 1) / bands);
       const r0 = botR + (topR - botR) * (i / bands);
+      const color = strata[i % strata.length];
+      const segMat = this.mat({ color, flatShading: true, roughness: 0.72, metalness: 0.04, emissive: 0x3a2410, emissiveIntensity: 0.14 });
+      // Per-band radii vary continuously by height — give each band its own
+      // unique cylinder geometry (bands within a single mesa share, across
+      // mesas the radii differ so caching can't reuse anyway). Build them
+      // freshly here rather than mass-pooling, the variant count is bounded.
       const seg = new THREE.Mesh(
         new THREE.CylinderGeometry(r1, r0, bandH * 1.02, 7),
-        new THREE.MeshStandardMaterial({ color: strata[i % strata.length], flatShading: true, roughness: 0.97, metalness: 0.0, emissive: 0x3a2410, emissiveIntensity: 0.08 })
+        segMat,
       );
       seg.position.y = -height / 2 + bandH * (i + 0.5);
       seg.rotation.y = (i / bands) * 0.4;
       seg.castShadow = true; seg.receiveShadow = true;
       group.add(seg);
     }
-    // Weathered cap rock
-    const cap = new THREE.Mesh(
-      new THREE.CylinderGeometry(topR + 0.45, topR, 0.9, 7),
-      new THREE.MeshStandardMaterial({ color: 0x8f5e2e, flatShading: true, roughness: 0.97 })
-    );
+    const capMat = this.mat({ color: 0x8f5e2e, flatShading: true, roughness: 0.97 });
+    const cap = new THREE.Mesh(new THREE.CylinderGeometry(topR + 0.45, topR, 0.9, 7), capMat);
     cap.position.y = height / 2 + 0.45; cap.castShadow = true;
     group.add(cap);
     group.position.set(x, height / 2, z);
@@ -777,21 +860,21 @@ export class BiomeSystem {
 
   private createSandstoneRock(x: number, z: number): TerrainObject {
     const size = 1 + Math.random() * 1.5;
-    const rock = new THREE.Mesh(
-      new THREE.DodecahedronGeometry(size, 0),
-      new THREE.MeshStandardMaterial({ color: 0xc8945c, flatShading: true, roughness: 0.95, emissive: 0x6a4420, emissiveIntensity: 0.05 })
-    );
+    const rockMat = this.mat({ color: 0xc8945c, flatShading: true, roughness: 0.95, emissive: 0x6a4420, emissiveIntensity: 0.05 });
+    const rock = new THREE.Mesh(this.unitDodec(0), rockMat);
+    rock.scale.set(size, size * 0.7, size);
     rock.castShadow = true; rock.receiveShadow = true;
-    rock.position.set(x, size * 0.4, z); rock.scale.y = 0.7; rock.rotation.y = Math.random() * Math.PI;
+    rock.position.set(x, size * 0.4, z); rock.rotation.y = Math.random() * Math.PI;
     return { mesh: rock, x, z, type: 'rock', collidable: true, radius: size + 0.3, height: size * 1.0 };
   }
 
   private createDeadShrub(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
-    const branchMat = new THREE.MeshStandardMaterial({ color: 0x6a5030, flatShading: true, roughness: 0.95 });
+    const branchMat = this.mat({ color: 0x6a5030, flatShading: true, roughness: 0.95 });
     for (let i = 0; i < 4 + Math.floor(Math.random() * 3); i++) {
       const h = 0.5 + Math.random() * 1.0;
-      const branch = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.06, h, 3), branchMat);
+      const branch = new THREE.Mesh(this.unitCyl(0.03, 0.06, 3, 'deadShrubBranch'), branchMat);
+      branch.scale.set(1, h, 1);
       branch.position.set((Math.random() - 0.5) * 0.8, h / 2, (Math.random() - 0.5) * 0.8);
       branch.rotation.set((Math.random() - 0.5) * 0.8, 0, (Math.random() - 0.5) * 0.8);
       branch.castShadow = true;
@@ -803,16 +886,20 @@ export class BiomeSystem {
 
   private createSandstoneArch(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
-    const archMat = new THREE.MeshStandardMaterial({ color: 0xb8783c, flatShading: true, roughness: 0.95 });
+    const archMat = this.mat({ color: 0xb8783c, flatShading: true, roughness: 0.95 });
     const height = 5 + Math.random() * 3;
     const width = 5 + Math.random() * 2;
-    const lp = new THREE.Mesh(new THREE.BoxGeometry(1.5, height, 1.5), archMat);
+    const box = this.unitBox('archBox');
+    const lp = new THREE.Mesh(box, archMat);
+    lp.scale.set(1.5, height, 1.5);
     lp.position.set(-width / 2, height / 2, 0); lp.castShadow = true; lp.receiveShadow = true;
     group.add(lp);
-    const rp = new THREE.Mesh(new THREE.BoxGeometry(1.5, height, 1.5), archMat);
+    const rp = new THREE.Mesh(box, archMat);
+    rp.scale.set(1.5, height, 1.5);
     rp.position.set(width / 2, height / 2, 0); rp.castShadow = true; rp.receiveShadow = true;
     group.add(rp);
-    const beam = new THREE.Mesh(new THREE.BoxGeometry(width + 2, 1.5, 2), archMat);
+    const beam = new THREE.Mesh(box, archMat);
+    beam.scale.set(width + 2, 1.5, 2);
     beam.position.y = height + 0.5; beam.castShadow = true; beam.receiveShadow = true;
     group.add(beam);
     group.position.set(x, 0, z); group.rotation.y = Math.random() * Math.PI;
@@ -822,16 +909,19 @@ export class BiomeSystem {
   private createCactus(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
     const height = 3 + Math.random() * 2;
-    const mat = new THREE.MeshStandardMaterial({ color: 0x4a7a3a, flatShading: true, roughness: 0.9, metalness: 0.05 });
-    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.35, height, 6), mat);
+    const cactusMat = this.mat({ color: 0x4a7a3a, flatShading: true, roughness: 0.9, metalness: 0.05 });
+    const body = new THREE.Mesh(this.unitCyl(0.3, 0.35, 6, 'cactusBody'), cactusMat);
+    body.scale.set(1, height, 1);
     body.position.y = height / 2; body.castShadow = true; body.receiveShadow = true;
     group.add(body);
     if (Math.random() < 0.7) {
       const armH = 1.2 + Math.random();
-      const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.25, armH, 5), mat);
+      const arm = new THREE.Mesh(this.unitCyl(0.2, 0.25, 5, 'cactusArm'), cactusMat);
+      arm.scale.set(1, armH, 1);
       arm.position.set(0.6, height * 0.4, 0); arm.rotation.z = -Math.PI / 3; arm.castShadow = true;
       group.add(arm);
-      const armUp = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.2, armH * 0.7, 5), mat);
+      const armUp = new THREE.Mesh(this.unitCyl(0.18, 0.2, 5, 'cactusArmUp'), cactusMat);
+      armUp.scale.set(1, armH * 0.7, 1);
       armUp.position.set(1.0, height * 0.5 + armH * 0.3, 0); armUp.castShadow = true;
       group.add(armUp);
     }
@@ -841,11 +931,9 @@ export class BiomeSystem {
 
   private createSandDune(x: number, z: number): TerrainObject {
     const size = 3 + Math.random() * 3;
-    const dune = new THREE.Mesh(
-      new THREE.SphereGeometry(size, 6, 4),
-      new THREE.MeshStandardMaterial({ color: 0xd4a574, flatShading: true, roughness: 0.98, emissive: 0xa47544, emissiveIntensity: 0.05 })
-    );
-    dune.scale.set(1.5, 0.35, 1); dune.position.set(x, size * 0.15, z);
+    const duneMat = this.mat({ color: 0xd4a574, flatShading: true, roughness: 0.98, emissive: 0xa47544, emissiveIntensity: 0.05 });
+    const dune = new THREE.Mesh(this.unitSphere(6, 4, 'duneSph'), duneMat);
+    dune.scale.set(size * 1.5, size * 0.35, size); dune.position.set(x, size * 0.15, z);
     dune.receiveShadow = true; dune.rotation.y = Math.random() * Math.PI;
     return { mesh: dune, x, z, type: 'bush', collidable: false, radius: size };
   }
@@ -857,39 +945,39 @@ export class BiomeSystem {
   private createGnarledTree(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
     const height = 6 + Math.random() * 4;
-    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x2a2018, flatShading: true, roughness: 0.95, metalness: 0.05 });
-    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.6, height, 5), trunkMat);
+    const trunkMat = this.mat({ color: 0x2a2018, flatShading: true, roughness: 0.95, metalness: 0.05 });
+    const trunk = new THREE.Mesh(this.unitCyl(0.25, 0.6, 5, 'gnarledTrunk'), trunkMat);
+    trunk.scale.set(1, height, 1);
     trunk.rotation.z = (Math.random() - 0.5) * 0.3; trunk.castShadow = true; trunk.receiveShadow = true;
     group.add(trunk);
-    const trunk2 = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.4, height * 0.7, 4), trunkMat);
+    const trunk2 = new THREE.Mesh(this.unitCyl(0.15, 0.4, 4, 'gnarledTrunk2'), trunkMat);
+    trunk2.scale.set(1, height * 0.7, 1);
     trunk2.position.set(0.4, -height * 0.15, 0.3); trunk2.rotation.z = (Math.random() - 0.5) * 0.5; trunk2.castShadow = true;
     group.add(trunk2);
-    // Drooping murky canopy
     const fColors = [0x24401f, 0x1a3417, 0x315028];
     for (let i = 0; i < 3; i++) {
       const color = fColors[i % fColors.length];
-      const foliage = new THREE.Mesh(
-        new THREE.SphereGeometry(2.1 - i * 0.45, 5, 3),
-        new THREE.MeshStandardMaterial({ color, flatShading: true, emissive: color, emissiveIntensity: 0.12 })
-      );
+      const foliageMat = this.mat({ color, flatShading: true, emissive: color, emissiveIntensity: 0.12 });
+      const size = 2.1 - i * 0.45;
+      const foliage = new THREE.Mesh(this.unitSphere(5, 3, 'gnarledFoliage'), foliageMat);
+      foliage.scale.set(size, size * 0.5, size);
       foliage.position.set((Math.random() - 0.5) * 2, height / 2 + i * 1.3, (Math.random() - 0.5) * 2);
-      foliage.scale.y = 0.5; foliage.castShadow = true;
+      foliage.castShadow = true;
       group.add(foliage);
     }
-    // Glowing fungus brackets clinging to the trunk
-    const fungusMat = new THREE.MeshStandardMaterial({ color: 0x000000, emissive: 0x6affc0, emissiveIntensity: 1.8, flatShading: true });
+    const fungusMat = this.mat({ color: 0x000000, emissive: 0x6affc0, emissiveIntensity: 1.8, flatShading: true });
     for (let i = 0; i < 3; i++) {
       const a = Math.random() * Math.PI * 2;
-      const fungus = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.1, 0.16, 6), fungusMat);
+      const fungus = new THREE.Mesh(this.unitCyl(0.32, 0.1, 6, 'fungus'), fungusMat);
+      fungus.scale.set(1, 0.16, 1);
       fungus.position.set(Math.cos(a) * 0.4, -height * 0.2 + i * height * 0.22, Math.sin(a) * 0.4);
       fungus.rotation.z = Math.PI / 2 - 0.3; fungus.rotation.y = -a;
       group.add(fungus);
     }
+    const mossMat = this.mat({ color: 0x4a6a3a, flatShading: true, emissive: 0x2a4a2a, emissiveIntensity: 0.15 });
     for (let i = 0; i < 3; i++) {
-      const moss = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.02, 0.05, 1.5 + Math.random(), 3),
-        new THREE.MeshStandardMaterial({ color: 0x4a6a3a, flatShading: true, emissive: 0x2a4a2a, emissiveIntensity: 0.15 })
-      );
+      const moss = new THREE.Mesh(this.unitCyl(0.02, 0.05, 3, 'gnarledMoss'), mossMat);
+      moss.scale.set(1, 1.5 + Math.random(), 1);
       moss.position.set((Math.random() - 0.5) * 2.5, height * 0.3, (Math.random() - 0.5) * 2.5);
       group.add(moss);
     }
@@ -899,26 +987,27 @@ export class BiomeSystem {
 
   private createSwampStone(x: number, z: number): TerrainObject {
     const size = 0.8 + Math.random() * 1.2;
-    const stone = new THREE.Mesh(
-      new THREE.DodecahedronGeometry(size, 0),
-      new THREE.MeshStandardMaterial({ color: 0x3a4a3a, flatShading: true, roughness: 0.85, metalness: 0.15, emissive: 0x1a2a1a, emissiveIntensity: 0.08 })
-    );
+    const stoneMat = this.mat({ color: 0x3a4a3a, flatShading: true, roughness: 0.85, metalness: 0.15, emissive: 0x1a2a1a, emissiveIntensity: 0.08 });
+    const stone = new THREE.Mesh(this.unitDodec(0), stoneMat);
+    stone.scale.set(size, size * 0.6, size);
     stone.castShadow = true; stone.receiveShadow = true;
-    stone.position.set(x, size * 0.3, z); stone.scale.y = 0.6; stone.rotation.y = Math.random() * Math.PI;
+    stone.position.set(x, size * 0.3, z); stone.rotation.y = Math.random() * Math.PI;
     return { mesh: stone, x, z, type: 'rock', collidable: true, radius: size + 0.3, height: size * 0.8 };
   }
 
   private createPoisonMushrooms(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
+    const stemMat = this.mat({ color: 0x8a8a7a, flatShading: true });
+    const capPurple = this.mat({ color: 0x8a44aa, emissive: 0x8a44aa, emissiveIntensity: 0.4, flatShading: true });
+    const capGreen = this.mat({ color: 0x44aa66, emissive: 0x44aa66, emissiveIntensity: 0.4, flatShading: true });
     for (let i = 0; i < 3 + Math.floor(Math.random() * 4); i++) {
       const h = 0.3 + Math.random() * 0.6;
-      const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, h, 4), new THREE.MeshStandardMaterial({ color: 0x8a8a7a, flatShading: true }));
-      const capColor = Math.random() > 0.5 ? 0x8a44aa : 0x44aa66;
-      const cap = new THREE.Mesh(
-        new THREE.SphereGeometry(0.2 + Math.random() * 0.15, 5, 3),
-        new THREE.MeshStandardMaterial({ color: capColor, emissive: capColor, emissiveIntensity: 0.4, flatShading: true })
-      );
-      cap.scale.y = 0.5; cap.position.y = h / 2 + 0.08; stem.position.y = h / 2;
+      const stem = new THREE.Mesh(this.unitCyl(0.06, 0.08, 4, 'poisonStem'), stemMat);
+      stem.scale.set(1, h, 1);
+      const cap = new THREE.Mesh(this.unitSphere(5, 3, 'poisonCap'), Math.random() > 0.5 ? capPurple : capGreen);
+      const capR = 0.2 + Math.random() * 0.15;
+      cap.scale.set(capR, capR * 0.5, capR);
+      cap.position.y = h / 2 + 0.08; stem.position.y = h / 2;
       const m = new THREE.Group(); m.add(stem); m.add(cap);
       m.position.set((Math.random() - 0.5) * 1.8, 0, (Math.random() - 0.5) * 1.8);
       group.add(m);
@@ -929,21 +1018,18 @@ export class BiomeSystem {
 
   private createMudMound(x: number, z: number): TerrainObject {
     const size = 2 + Math.random() * 2;
-    const mound = new THREE.Mesh(
-      new THREE.SphereGeometry(size, 5, 4),
-      new THREE.MeshStandardMaterial({ color: 0x3a3228, flatShading: true, roughness: 0.95, metalness: 0.1, emissive: 0x1a1a10, emissiveIntensity: 0.05 })
-    );
-    mound.scale.y = 0.4; mound.position.set(x, size * 0.2, z);
+    const moundMat = this.mat({ color: 0x3a3228, flatShading: true, roughness: 0.95, metalness: 0.1, emissive: 0x1a1a10, emissiveIntensity: 0.05 });
+    const mound = new THREE.Mesh(this.unitSphere(5, 4, 'mudMoundSph'), moundMat);
+    mound.scale.set(size, size * 0.4, size); mound.position.set(x, size * 0.2, z);
     mound.castShadow = true; mound.receiveShadow = true;
     return { mesh: mound, x, z, type: 'boulder', collidable: true, radius: size + 0.5, height: size * 0.6 };
   }
 
   private createToxicPool(x: number, z: number): TerrainObject {
     const radius = 2 + Math.random() * 2;
-    const pool = new THREE.Mesh(
-      new THREE.CircleGeometry(radius, 10),
-      new THREE.MeshStandardMaterial({ color: 0x33aa44, emissive: 0x22cc33, emissiveIntensity: 0.6, roughness: 0.15, metalness: 0.3, transparent: true, opacity: 0.85 })
-    );
+    const poolMat = this.mat({ color: 0x33aa44, emissive: 0x22cc33, emissiveIntensity: 0.6, roughness: 0.15, metalness: 0.3, transparent: true, opacity: 0.85 });
+    const pool = new THREE.Mesh(this.circle(1, 10), poolMat);
+    pool.scale.setScalar(radius);
     pool.rotation.x = -Math.PI / 2; pool.position.set(x, 0.05, z); pool.receiveShadow = true;
     return { mesh: pool, x, z, type: 'water', collidable: false, radius };
   }
@@ -951,14 +1037,14 @@ export class BiomeSystem {
   private createHollowLog(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
     const length = 3 + Math.random() * 3;
-    const log = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.7, 0.8, length, 6),
-      new THREE.MeshStandardMaterial({ color: 0x2a2018, flatShading: true, roughness: 0.95 })
-    );
+    const logMat = this.mat({ color: 0x2a2018, flatShading: true, roughness: 0.95 });
+    const log = new THREE.Mesh(this.unitCyl(0.7, 0.8, 6, 'hollowLog'), logMat);
+    log.scale.set(1, length, 1);
     log.rotation.z = Math.PI / 2; log.position.y = 0.7;
     log.castShadow = true; log.receiveShadow = true;
     group.add(log);
-    const hole = new THREE.Mesh(new THREE.CircleGeometry(0.5, 6), new THREE.MeshStandardMaterial({ color: 0x0a0808 }));
+    const holeMat = this.mat({ color: 0x0a0808 });
+    const hole = new THREE.Mesh(this.circle(0.5, 6), holeMat);
     hole.position.set(length / 2, 0.7, 0); hole.rotation.y = Math.PI / 2;
     group.add(hole);
     group.position.set(x, 0, z); group.rotation.y = Math.random() * Math.PI;
@@ -973,29 +1059,28 @@ export class BiomeSystem {
     const group = new THREE.Group();
     const height = 3 + Math.random() * 2;
     const width = 3 + Math.random() * 4;
-    const wallMat = new THREE.MeshStandardMaterial({ color: 0x6a6a62, flatShading: true, roughness: 0.9, metalness: 0.15, emissive: 0x2a2a24, emissiveIntensity: 0.05 });
-    const wall = new THREE.Mesh(new THREE.BoxGeometry(width, height, 0.8), wallMat);
+    const wallMat = this.mat({ color: 0x6a6a62, flatShading: true, roughness: 0.9, metalness: 0.15, emissive: 0x2a2a24, emissiveIntensity: 0.05 });
+    const box = this.unitBox('concrete');
+    const wall = new THREE.Mesh(box, wallMat);
+    wall.scale.set(width, height, 0.8);
     wall.position.y = height / 2; wall.castShadow = true; wall.receiveShadow = true;
     group.add(wall);
-    const lip = new THREE.Mesh(
-      new THREE.BoxGeometry(width + 0.3, 0.32, 1.05),
-      new THREE.MeshStandardMaterial({ color: 0x55554e, flatShading: true, roughness: 0.9, metalness: 0.25 })
-    );
+    const lipMat = this.mat({ color: 0x55554e, flatShading: true, roughness: 0.9, metalness: 0.25 });
+    const lip = new THREE.Mesh(box, lipMat);
+    lip.scale.set(width + 0.3, 0.32, 1.05);
     lip.position.y = height + 0.16; lip.castShadow = true;
     group.add(lip);
-    // Reinforced side support posts
-    const postMat = new THREE.MeshStandardMaterial({ color: 0x4d4d46, flatShading: true, roughness: 0.88, metalness: 0.3 });
+    const postMat = this.mat({ color: 0x4d4d46, flatShading: true, roughness: 0.88, metalness: 0.3 });
     for (const sx of [-1, 1]) {
-      const post = new THREE.Mesh(new THREE.BoxGeometry(0.32, height + 0.1, 1.0), postMat);
+      const post = new THREE.Mesh(box, postMat);
+      post.scale.set(0.32, height + 0.1, 1.0);
       post.position.set(sx * (width / 2 - 0.1), height / 2, 0);
       post.castShadow = true;
       group.add(post);
     }
-    // Painted hazard stripe panel
-    const stripe = new THREE.Mesh(
-      new THREE.BoxGeometry(width * 0.55, 0.5, 0.06),
-      new THREE.MeshStandardMaterial({ color: 0xc8a526, flatShading: true, roughness: 0.7, emissive: 0x3a2e08, emissiveIntensity: 0.2 })
-    );
+    const stripeMat = this.mat({ color: 0xc8a526, flatShading: true, roughness: 0.7, emissive: 0x3a2e08, emissiveIntensity: 0.2 });
+    const stripe = new THREE.Mesh(box, stripeMat);
+    stripe.scale.set(width * 0.55, 0.5, 0.06);
     stripe.position.set(0, height * 0.62, 0.43);
     group.add(stripe);
     group.position.set(x, 0, z); group.rotation.y = Math.random() * Math.PI;
@@ -1004,12 +1089,14 @@ export class BiomeSystem {
 
   private createSandbagPile(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
-    const bagMat = new THREE.MeshStandardMaterial({ color: 0x8a7a5a, flatShading: true, roughness: 0.95 });
+    const bagMat = this.mat({ color: 0x8a7a5a, flatShading: true, roughness: 0.95 });
+    const box = this.unitBox('sandbag');
     for (let row = 0; row < 2; row++) {
       for (let col = 0; col < 3 - row; col++) {
-        const bag = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.5, 0.6), bagMat);
+        const bag = new THREE.Mesh(box, bagMat);
+        bag.scale.set(1.2, 0.5 * 0.8, 0.6);
         bag.position.set(col * 1.3 - (3 - row) * 0.65 + 0.65, row * 0.5 + 0.25, 0);
-        bag.scale.set(1, 0.8, 1); bag.castShadow = true; bag.receiveShadow = true;
+        bag.castShadow = true; bag.receiveShadow = true;
         group.add(bag);
       }
     }
@@ -1020,15 +1107,16 @@ export class BiomeSystem {
   private createSupplyCrate(x: number, z: number): TerrainObject {
     const size = 0.8 + Math.random() * 0.6;
     const group = new THREE.Group();
-    const crate = new THREE.Mesh(
-      new THREE.BoxGeometry(size, size, size),
-      new THREE.MeshStandardMaterial({ color: 0x4a5a3a, flatShading: true, roughness: 0.9, metalness: 0.1 })
-    );
+    const crateMat = this.mat({ color: 0x4a5a3a, flatShading: true, roughness: 0.9, metalness: 0.1 });
+    const box = this.unitBox('crate');
+    const crate = new THREE.Mesh(box, crateMat);
+    crate.scale.setScalar(size);
     crate.position.y = size / 2; crate.castShadow = true; crate.receiveShadow = true;
     group.add(crate);
-    const bandMat = new THREE.MeshStandardMaterial({ color: 0x3a3a32, flatShading: true, roughness: 0.6, metalness: 0.5 });
+    const bandMat = this.mat({ color: 0x3a3a32, flatShading: true, roughness: 0.6, metalness: 0.5 });
     for (let i = 0; i < 2; i++) {
-      const band = new THREE.Mesh(new THREE.BoxGeometry(size + 0.05, 0.08, size + 0.05), bandMat);
+      const band = new THREE.Mesh(box, bandMat);
+      band.scale.set(size + 0.05, 0.08, size + 0.05);
       band.position.y = size * 0.25 + i * size * 0.5;
       group.add(band);
     }
@@ -1041,17 +1129,20 @@ export class BiomeSystem {
     const width = 5 + Math.random() * 3;
     const depth = 4 + Math.random() * 2;
     const height = 2.5;
-    const bunkerMat = new THREE.MeshStandardMaterial({ color: 0x5a5a52, flatShading: true, roughness: 0.9, metalness: 0.2, emissive: 0x2a2a24, emissiveIntensity: 0.05 });
-    const body = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), bunkerMat);
+    const bunkerMat = this.mat({ color: 0x5a5a52, flatShading: true, roughness: 0.9, metalness: 0.2, emissive: 0x2a2a24, emissiveIntensity: 0.05 });
+    const box = this.unitBox('bunker');
+    const body = new THREE.Mesh(box, bunkerMat);
+    body.scale.set(width, height, depth);
     body.position.y = height / 2; body.castShadow = true; body.receiveShadow = true;
     group.add(body);
-    const roof = new THREE.Mesh(
-      new THREE.BoxGeometry(width + 0.5, 0.5, depth + 0.5),
-      new THREE.MeshStandardMaterial({ color: 0x4a4a42, flatShading: true, roughness: 0.9, metalness: 0.3 })
-    );
+    const roofMat = this.mat({ color: 0x4a4a42, flatShading: true, roughness: 0.9, metalness: 0.3 });
+    const roof = new THREE.Mesh(box, roofMat);
+    roof.scale.set(width + 0.5, 0.5, depth + 0.5);
     roof.position.y = height + 0.25; roof.castShadow = true;
     group.add(roof);
-    const slit = new THREE.Mesh(new THREE.BoxGeometry(width * 0.6, 0.4, 0.2), new THREE.MeshStandardMaterial({ color: 0x0a0a0a }));
+    const slitMat = this.mat({ color: 0x0a0a0a });
+    const slit = new THREE.Mesh(box, slitMat);
+    slit.scale.set(width * 0.6, 0.4, 0.2);
     slit.position.set(0, height * 0.7, depth / 2 + 0.1);
     group.add(slit);
     group.position.set(x, 0, z); group.rotation.y = Math.random() * Math.PI;
@@ -1061,26 +1152,31 @@ export class BiomeSystem {
   private createWatchtowerFrame(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
     const height = 8;
-    const legMat = new THREE.MeshStandardMaterial({ color: 0x5a5a52, flatShading: true, roughness: 0.85, metalness: 0.3 });
+    const legMat = this.mat({ color: 0x5a5a52, flatShading: true, roughness: 0.85, metalness: 0.3 });
+    const legGeo = this.unitCyl(0.15, 0.2, 4, 'towerLeg');
     const legs = [[-1.5, -1.5], [1.5, -1.5], [-1.5, 1.5], [1.5, 1.5]];
     for (const [lx, lz] of legs) {
-      const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.2, height, 4), legMat);
+      const leg = new THREE.Mesh(legGeo, legMat);
+      leg.scale.set(1, height, 1);
       leg.position.set(lx, height / 2, lz); leg.castShadow = true;
       group.add(leg);
     }
-    const platform = new THREE.Mesh(
-      new THREE.BoxGeometry(4, 0.3, 4),
-      new THREE.MeshStandardMaterial({ color: 0x4a4a3a, flatShading: true, roughness: 0.9 })
-    );
+    const platMat = this.mat({ color: 0x4a4a3a, flatShading: true, roughness: 0.9 });
+    const box = this.unitBox('towerPlat');
+    const platform = new THREE.Mesh(box, platMat);
+    platform.scale.set(4, 0.3, 4);
     platform.position.y = height - 0.5; platform.castShadow = true; platform.receiveShadow = true;
     group.add(platform);
-    const railMat = new THREE.MeshStandardMaterial({ color: 0x6a6a5a, flatShading: true, roughness: 0.8, metalness: 0.4 });
+    const railMat = this.mat({ color: 0x6a6a5a, flatShading: true, roughness: 0.8, metalness: 0.4 });
+    const railGeo = this.unitCyl(0.05, 0.05, 3, 'towerRail');
     for (const [lx, lz] of legs) {
-      const rail = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 1.5, 3), railMat);
+      const rail = new THREE.Mesh(railGeo, railMat);
+      rail.scale.set(1, 1.5, 1);
       rail.position.set(lx, height + 0.25, lz);
       group.add(rail);
     }
-    const brace = new THREE.Mesh(new THREE.BoxGeometry(0.1, 5, 0.1), legMat);
+    const brace = new THREE.Mesh(box, legMat);
+    brace.scale.set(0.1, 5, 0.1);
     brace.position.set(-1.5, height / 2 - 1, 0); brace.rotation.z = 0.4;
     group.add(brace);
     group.position.set(x, 0, z);
@@ -1090,12 +1186,13 @@ export class BiomeSystem {
   private createBarrelCluster(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
     const count = 2 + Math.floor(Math.random() * 3);
+    const greenMat = this.mat({ color: 0x4a6a3a, flatShading: true, roughness: 0.7, metalness: 0.3 });
+    const rustMat = this.mat({ color: 0x6a3a2a, flatShading: true, roughness: 0.7, metalness: 0.3 });
+    const barrelGeo = this.unitCyl(0.4, 0.4, 8, 'barrel');
     for (let i = 0; i < count; i++) {
-      const color = Math.random() > 0.3 ? 0x4a6a3a : 0x6a3a2a;
-      const barrel = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.4, 0.4, 1.2, 8),
-        new THREE.MeshStandardMaterial({ color, flatShading: true, roughness: 0.7, metalness: 0.3 })
-      );
+      const mat = Math.random() > 0.3 ? greenMat : rustMat;
+      const barrel = new THREE.Mesh(barrelGeo, mat);
+      barrel.scale.set(1, 1.2, 1);
       barrel.position.set((Math.random() - 0.5) * 2, 0.6, (Math.random() - 0.5) * 2);
       if (Math.random() > 0.7) { barrel.rotation.x = Math.PI / 2; barrel.position.y = 0.4; }
       barrel.castShadow = true; barrel.receiveShadow = true;
@@ -1114,26 +1211,24 @@ export class BiomeSystem {
     const height = 6 + Math.random() * 6;
     const palette = [0x9a4ee0, 0x6b3ad0, 0xb866ff, 0x4ec3e8];
     const color = palette[Math.floor(Math.random() * palette.length)];
-    const mat = new THREE.MeshStandardMaterial({ color, flatShading: true, roughness: 0.08, metalness: 0.4, emissive: color, emissiveIntensity: 0.7, transparent: true, opacity: 0.82 });
-    const main = new THREE.Mesh(new THREE.OctahedronGeometry(1.2, 0), mat);
-    main.scale.set(1, height / 2.4, 1); main.position.y = height / 2;
+    const mainMat = this.mat({ color, flatShading: true, roughness: 0.08, metalness: 0.4, emissive: color, emissiveIntensity: 0.7, transparent: true, opacity: 0.82 });
+    const octa = this.unitOcta(0);
+    const main = new THREE.Mesh(octa, mainMat);
+    main.scale.set(1.2, 1.2 * (height / 2.4), 1.2);
+    main.position.y = height / 2;
     main.castShadow = true; main.receiveShadow = true;
     group.add(main);
-    // Bright inner core — makes the crystal genuinely glow under bloom
-    const core = new THREE.Mesh(
-      new THREE.OctahedronGeometry(0.5, 0),
-      new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: color, emissiveIntensity: 2.6, flatShading: true })
-    );
-    core.scale.set(1, height / 3, 1); core.position.y = height / 2;
+    const coreMat = this.mat({ color: 0xffffff, emissive: color, emissiveIntensity: 2.6, flatShading: true });
+    const core = new THREE.Mesh(octa, coreMat);
+    core.scale.set(0.5, 0.5 * (height / 3), 0.5);
+    core.position.y = height / 2;
     group.add(core);
     for (let i = 0; i < 3 + Math.floor(Math.random() * 2); i++) {
       const sc = palette[Math.floor(Math.random() * palette.length)];
       const subH = 2 + Math.random() * 3.5;
-      const sub = new THREE.Mesh(
-        new THREE.OctahedronGeometry(0.6, 0),
-        new THREE.MeshStandardMaterial({ color: sc, flatShading: true, roughness: 0.08, metalness: 0.4, emissive: sc, emissiveIntensity: 0.65, transparent: true, opacity: 0.8 })
-      );
-      sub.scale.set(0.55, subH / 1.2, 0.55);
+      const subMat = this.mat({ color: sc, flatShading: true, roughness: 0.08, metalness: 0.4, emissive: sc, emissiveIntensity: 0.65, transparent: true, opacity: 0.8 });
+      const sub = new THREE.Mesh(octa, subMat);
+      sub.scale.set(0.6 * 0.55, 0.6 * (subH / 1.2), 0.6 * 0.55);
       const a = (i / 4) * Math.PI * 2 + Math.random();
       sub.position.set(Math.cos(a) * 1.6, subH / 2, Math.sin(a) * 1.6);
       sub.rotation.set((Math.random() - 0.5) * 0.5, 0, (Math.random() - 0.5) * 0.5);
@@ -1146,13 +1241,13 @@ export class BiomeSystem {
 
   private createMineralCluster(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
+    const octa = this.unitOcta(0);
     for (let i = 0; i < 3 + Math.floor(Math.random() * 3); i++) {
       const color = [0xcc44aa, 0x44ccaa, 0xaacc44, 0x4488cc][Math.floor(Math.random() * 4)];
       const size = 0.3 + Math.random() * 0.6;
-      const gem = new THREE.Mesh(
-        new THREE.OctahedronGeometry(size, 0),
-        new THREE.MeshStandardMaterial({ color, flatShading: true, roughness: 0.05, metalness: 0.8, emissive: color, emissiveIntensity: 0.4 })
-      );
+      const gemMat = this.mat({ color, flatShading: true, roughness: 0.05, metalness: 0.8, emissive: color, emissiveIntensity: 0.4 });
+      const gem = new THREE.Mesh(octa, gemMat);
+      gem.scale.setScalar(size);
       gem.position.set((Math.random() - 0.5) * 2, size + Math.random() * 0.3, (Math.random() - 0.5) * 2);
       gem.rotation.set(Math.random(), Math.random(), Math.random());
       gem.castShadow = true;
@@ -1165,11 +1260,9 @@ export class BiomeSystem {
   private createSmallCrystal(x: number, z: number): TerrainObject {
     const color = [0x44aacc, 0xcc44aa, 0xaa44cc][Math.floor(Math.random() * 3)];
     const size = 0.5 + Math.random() * 0.4;
-    const crystal = new THREE.Mesh(
-      new THREE.OctahedronGeometry(size, 0),
-      new THREE.MeshStandardMaterial({ color, flatShading: true, roughness: 0.05, metalness: 0.7, emissive: color, emissiveIntensity: 0.5, transparent: true, opacity: 0.8 })
-    );
-    crystal.scale.y = 1.5; crystal.position.set(x, size * 0.8, z);
+    const mat = this.mat({ color, flatShading: true, roughness: 0.05, metalness: 0.7, emissive: color, emissiveIntensity: 0.5, transparent: true, opacity: 0.8 });
+    const crystal = new THREE.Mesh(this.unitOcta(0), mat);
+    crystal.scale.set(size, size * 1.5, size); crystal.position.set(x, size * 0.8, z);
     crystal.rotation.set((Math.random() - 0.5) * 0.3, Math.random() * Math.PI, (Math.random() - 0.5) * 0.3);
     crystal.castShadow = true;
     return { mesh: crystal, x, z, type: 'bush', collidable: false, radius: size };
@@ -1179,19 +1272,20 @@ export class BiomeSystem {
     const group = new THREE.Group();
     const height = 5 + Math.random() * 4;
     const color = 0x7733bb;
-    const mat = new THREE.MeshStandardMaterial({ color, flatShading: true, roughness: 0.05, metalness: 0.8, emissive: color, emissiveIntensity: 0.4, transparent: true, opacity: 0.8 });
-    const main = new THREE.Mesh(new THREE.OctahedronGeometry(2.5, 0), mat);
-    main.scale.set(1, height / 5, 1); main.position.y = height / 2;
+    const mat = this.mat({ color, flatShading: true, roughness: 0.05, metalness: 0.8, emissive: color, emissiveIntensity: 0.4, transparent: true, opacity: 0.8 });
+    const octa = this.unitOcta(0);
+    const main = new THREE.Mesh(octa, mat);
+    main.scale.set(2.5, 2.5 * (height / 5), 2.5);
+    main.position.y = height / 2;
     main.castShadow = true; main.receiveShadow = true;
     group.add(main);
     for (let i = 0; i < 5; i++) {
       const angle = (i / 5) * Math.PI * 2;
       const sc = [0x8844cc, 0x44aacc, 0xcc44aa][Math.floor(Math.random() * 3)];
-      const sub = new THREE.Mesh(
-        new THREE.OctahedronGeometry(0.8, 0),
-        new THREE.MeshStandardMaterial({ color: sc, flatShading: true, roughness: 0.05, metalness: 0.8, emissive: sc, emissiveIntensity: 0.35, transparent: true, opacity: 0.75 })
-      );
-      sub.scale.y = 2; sub.position.set(Math.cos(angle) * 3, 1.5, Math.sin(angle) * 3);
+      const subMat = this.mat({ color: sc, flatShading: true, roughness: 0.05, metalness: 0.8, emissive: sc, emissiveIntensity: 0.35, transparent: true, opacity: 0.75 });
+      const sub = new THREE.Mesh(octa, subMat);
+      sub.scale.set(0.8, 0.8 * 2, 0.8);
+      sub.position.set(Math.cos(angle) * 3, 1.5, Math.sin(angle) * 3);
       sub.rotation.set((Math.random() - 0.5) * 0.5, 0, (Math.random() - 0.5) * 0.5);
       sub.castShadow = true;
       group.add(sub);
@@ -1202,10 +1296,9 @@ export class BiomeSystem {
 
   private createGlowingPool(x: number, z: number): TerrainObject {
     const radius = 2 + Math.random() * 2;
-    const pool = new THREE.Mesh(
-      new THREE.CircleGeometry(radius, 12),
-      new THREE.MeshStandardMaterial({ color: 0x6622cc, emissive: 0x8844ee, emissiveIntensity: 0.7, roughness: 0.1, metalness: 0.4, transparent: true, opacity: 0.85 })
-    );
+    const poolMat = this.mat({ color: 0x6622cc, emissive: 0x8844ee, emissiveIntensity: 0.7, roughness: 0.1, metalness: 0.4, transparent: true, opacity: 0.85 });
+    const pool = new THREE.Mesh(this.circle(1, 12), poolMat);
+    pool.scale.setScalar(radius);
     pool.rotation.x = -Math.PI / 2; pool.position.set(x, 0.05, z); pool.receiveShadow = true;
     return { mesh: pool, x, z, type: 'water', collidable: false, radius };
   }
@@ -1213,24 +1306,20 @@ export class BiomeSystem {
   private createAlienFlora(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
     const stemColor = 0x22aa88;
-    const stem = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.08, 0.15, 2 + Math.random(), 5),
-      new THREE.MeshStandardMaterial({ color: stemColor, flatShading: true, emissive: stemColor, emissiveIntensity: 0.3 })
-    );
+    const stemMat = this.mat({ color: stemColor, flatShading: true, emissive: stemColor, emissiveIntensity: 0.3 });
+    const stem = new THREE.Mesh(this.unitCyl(0.08, 0.15, 5, 'alienStem'), stemMat);
+    stem.scale.set(1, 2 + Math.random(), 1);
     stem.position.y = 1; stem.rotation.z = (Math.random() - 0.5) * 0.3;
     group.add(stem);
     const bulbColor = [0xff44aa, 0x44ffaa, 0xaaff44][Math.floor(Math.random() * 3)];
-    const bulb = new THREE.Mesh(
-      new THREE.SphereGeometry(0.4, 5, 4),
-      new THREE.MeshStandardMaterial({ color: bulbColor, emissive: bulbColor, emissiveIntensity: 0.8, flatShading: true, transparent: true, opacity: 0.9 })
-    );
+    const bulbMat = this.mat({ color: bulbColor, emissive: bulbColor, emissiveIntensity: 0.8, flatShading: true, transparent: true, opacity: 0.9 });
+    const bulb = new THREE.Mesh(this.unitSphere(5, 4, 'alienBulb'), bulbMat);
+    bulb.scale.setScalar(0.4);
     bulb.position.y = 2.2;
     group.add(bulb);
+    const tendrilMat = this.mat({ color: stemColor, emissive: stemColor, emissiveIntensity: 0.2, flatShading: true });
     for (let i = 0; i < 3; i++) {
-      const tendril = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.02, 0.04, 1, 3),
-        new THREE.MeshStandardMaterial({ color: stemColor, emissive: stemColor, emissiveIntensity: 0.2, flatShading: true })
-      );
+      const tendril = new THREE.Mesh(this.unitCyl(0.02, 0.04, 3, 'alienTendril'), tendrilMat);
       tendril.position.set((Math.random() - 0.5) * 0.5, 1.8, (Math.random() - 0.5) * 0.5);
       tendril.rotation.set((Math.random() - 0.5) * 1, 0, (Math.random() - 0.5) * 1);
       group.add(tendril);
@@ -1248,46 +1337,52 @@ export class BiomeSystem {
     const height = 6 + Math.random() * 5;
     const isBroken = Math.random() > 0.5;
     const actualH = isBroken ? height * (0.4 + Math.random() * 0.4) : height;
-    const stoneMat = new THREE.MeshStandardMaterial({ color: 0x837f6f, flatShading: true, roughness: 0.92, metalness: 0.06, emissive: 0x35332b, emissiveIntensity: 0.05 });
-    const darkStone = new THREE.MeshStandardMaterial({ color: 0x5f5c4f, flatShading: true, roughness: 0.95 });
-    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.58, 0.68, actualH, 12), stoneMat);
+    const stoneMat = this.mat({ color: 0x837f6f, flatShading: true, roughness: 0.92, metalness: 0.06, emissive: 0x35332b, emissiveIntensity: 0.05 });
+    const darkStone = this.mat({ color: 0x5f5c4f, flatShading: true, roughness: 0.95 });
+    const shaft = new THREE.Mesh(this.unitCyl(0.58, 0.68, 12, 'columnShaft'), stoneMat);
+    shaft.scale.set(1, actualH, 1);
     shaft.position.y = actualH / 2; shaft.castShadow = true; shaft.receiveShadow = true;
     group.add(shaft);
-    // Vertical fluting grooves — the classical column detail
+    const fluteBox = this.unitBox('flute');
     for (let i = 0; i < 8; i++) {
       const a = (i / 8) * Math.PI * 2;
-      const flute = new THREE.Mesh(new THREE.BoxGeometry(0.1, actualH * 0.96, 0.1), darkStone);
+      const flute = new THREE.Mesh(fluteBox, darkStone);
+      flute.scale.set(0.1, actualH * 0.96, 0.1);
       flute.position.set(Math.cos(a) * 0.6, actualH / 2, Math.sin(a) * 0.6);
       group.add(flute);
     }
-    // Stepped plinth base
-    const base1 = new THREE.Mesh(new THREE.CylinderGeometry(0.95, 1.08, 0.32, 8), darkStone);
+    const base1 = new THREE.Mesh(this.unitCyl(0.95, 1.08, 8, 'base1'), darkStone);
+    base1.scale.set(1, 0.32, 1);
     base1.position.y = 0.16; base1.castShadow = true;
     group.add(base1);
-    const base2 = new THREE.Mesh(new THREE.CylinderGeometry(0.82, 0.95, 0.3, 8), stoneMat);
+    const base2 = new THREE.Mesh(this.unitCyl(0.82, 0.95, 8, 'base2'), stoneMat);
+    base2.scale.set(1, 0.3, 1);
     base2.position.y = 0.46;
     group.add(base2);
     if (!isBroken) {
-      const capital = new THREE.Mesh(new THREE.CylinderGeometry(1.05, 0.62, 0.5, 8), stoneMat);
+      const capital = new THREE.Mesh(this.unitCyl(1.05, 0.62, 8, 'capital'), stoneMat);
+      capital.scale.set(1, 0.5, 1);
       capital.position.y = actualH + 0.25; capital.castShadow = true;
       group.add(capital);
-      const abacus = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.32, 1.7), darkStone);
+      const abacus = new THREE.Mesh(this.unitBox('abacus'), darkStone);
+      abacus.scale.set(1.7, 0.32, 1.7);
       abacus.position.y = actualH + 0.66; abacus.castShadow = true;
       group.add(abacus);
     } else {
-      // Jagged broken crown
+      const dodec = this.unitDodec(0);
       for (let i = 0; i < 3; i++) {
-        const chunk = new THREE.Mesh(new THREE.DodecahedronGeometry(0.3 + Math.random() * 0.25, 0), stoneMat);
+        const s = 0.3 + Math.random() * 0.25;
+        const chunk = new THREE.Mesh(dodec, stoneMat);
+        chunk.scale.setScalar(s);
         chunk.position.set((Math.random() - 0.5) * 0.7, actualH + Math.random() * 0.3, (Math.random() - 0.5) * 0.7);
         chunk.rotation.set(Math.random(), Math.random(), Math.random());
         group.add(chunk);
       }
     }
     if (Math.random() > 0.5) {
-      const vine = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.03, 0.05, actualH * 0.6, 3),
-        new THREE.MeshStandardMaterial({ color: 0x3a6a2a, flatShading: true, emissive: 0x2a4a1a, emissiveIntensity: 0.15 })
-      );
+      const vineMat = this.mat({ color: 0x3a6a2a, flatShading: true, emissive: 0x2a4a1a, emissiveIntensity: 0.15 });
+      const vine = new THREE.Mesh(this.unitCyl(0.03, 0.05, 3, 'columnVine'), vineMat);
+      vine.scale.set(1, actualH * 0.6, 1);
       vine.position.set(0.6, actualH * 0.4, 0); vine.rotation.z = 0.1;
       group.add(vine);
     }
@@ -1297,10 +1392,12 @@ export class BiomeSystem {
 
   private createStoneDebris(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
-    const stoneMat = new THREE.MeshStandardMaterial({ color: 0x6a6a5a, flatShading: true, roughness: 0.9, metalness: 0.1 });
+    const stoneMat = this.mat({ color: 0x6a6a5a, flatShading: true, roughness: 0.9, metalness: 0.1 });
+    const box = this.unitBox('debrisBox');
     for (let i = 0; i < 3 + Math.floor(Math.random() * 3); i++) {
       const size = 0.3 + Math.random() * 0.5;
-      const block = new THREE.Mesh(new THREE.BoxGeometry(size, size * 0.6, size), stoneMat);
+      const block = new THREE.Mesh(box, stoneMat);
+      block.scale.set(size, size * 0.6, size);
       block.position.set((Math.random() - 0.5) * 2, size * 0.3, (Math.random() - 0.5) * 2);
       block.rotation.set(Math.random() * 0.5, Math.random() * Math.PI, Math.random() * 0.3);
       block.castShadow = true; block.receiveShadow = true;
@@ -1312,19 +1409,18 @@ export class BiomeSystem {
 
   private createVineRubble(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
-    const rubble = new THREE.Mesh(
-      new THREE.DodecahedronGeometry(0.6, 0),
-      new THREE.MeshStandardMaterial({ color: 0x6a6a5a, flatShading: true, roughness: 0.9 })
-    );
-    rubble.position.y = 0.3; rubble.scale.y = 0.5; rubble.castShadow = true;
+    const rubbleMat = this.mat({ color: 0x6a6a5a, flatShading: true, roughness: 0.9 });
+    const rubble = new THREE.Mesh(this.unitDodec(0), rubbleMat);
+    rubble.scale.set(0.6, 0.6 * 0.5, 0.6);
+    rubble.position.y = 0.3; rubble.castShadow = true;
     group.add(rubble);
+    const vineMat = this.mat({ color: 0x3a7a2a, flatShading: true, emissive: 0x2a5a1a, emissiveIntensity: 0.15 });
+    const sph = this.unitSphere(3, 2, 'vineSph');
     for (let i = 0; i < 3; i++) {
-      const vine = new THREE.Mesh(
-        new THREE.SphereGeometry(0.4 + Math.random() * 0.3, 3, 2),
-        new THREE.MeshStandardMaterial({ color: 0x3a7a2a, flatShading: true, emissive: 0x2a5a1a, emissiveIntensity: 0.15 })
-      );
+      const s = 0.4 + Math.random() * 0.3;
+      const vine = new THREE.Mesh(sph, vineMat);
+      vine.scale.set(s, s * 0.5, s);
       vine.position.set((Math.random() - 0.5) * 1, 0.4 + Math.random() * 0.3, (Math.random() - 0.5) * 1);
-      vine.scale.y = 0.5;
       group.add(vine);
     }
     group.position.set(x, 0, z);
@@ -1335,28 +1431,30 @@ export class BiomeSystem {
     const group = new THREE.Group();
     const width = 5 + Math.random() * 4;
     const height = 3 + Math.random() * 2;
-    const stoneMat = new THREE.MeshStandardMaterial({ color: 0x7a7a6a, flatShading: true, roughness: 0.9, metalness: 0.1, emissive: 0x3a3a30, emissiveIntensity: 0.05 });
-    const wall = new THREE.Mesh(new THREE.BoxGeometry(width, height, 1.0), stoneMat);
+    const stoneMat = this.mat({ color: 0x7a7a6a, flatShading: true, roughness: 0.9, metalness: 0.1, emissive: 0x3a3a30, emissiveIntensity: 0.05 });
+    const box = this.unitBox('brokenWall');
+    const wall = new THREE.Mesh(box, stoneMat);
+    wall.scale.set(width, height, 1.0);
     wall.position.y = height / 2; wall.castShadow = true; wall.receiveShadow = true;
     group.add(wall);
     for (let i = 0; i < 4; i++) {
       const blockH = Math.random() * 1.5;
-      const block = new THREE.Mesh(new THREE.BoxGeometry(width / 5, blockH, 1.0), stoneMat);
+      const block = new THREE.Mesh(box, stoneMat);
+      block.scale.set(width / 5, blockH, 1.0);
       block.position.set((i - 1.5) * width / 4, height + blockH / 2, 0); block.castShadow = true;
       group.add(block);
     }
     for (let i = 0; i < 3; i++) {
-      const debris = new THREE.Mesh(new THREE.BoxGeometry(0.5 + Math.random() * 0.5, 0.3 + Math.random() * 0.3, 0.5), stoneMat);
+      const debris = new THREE.Mesh(box, stoneMat);
+      debris.scale.set(0.5 + Math.random() * 0.5, 0.3 + Math.random() * 0.3, 0.5);
       debris.position.set((Math.random() - 0.5) * width, 0.2, 1 + Math.random());
       debris.rotation.set(Math.random() * 0.3, Math.random(), Math.random() * 0.3);
       debris.castShadow = true;
       group.add(debris);
     }
     if (Math.random() > 0.4) {
-      const vine = new THREE.Mesh(
-        new THREE.SphereGeometry(1, 3, 2),
-        new THREE.MeshStandardMaterial({ color: 0x3a7a2a, flatShading: true, emissive: 0x2a5a1a, emissiveIntensity: 0.15 })
-      );
+      const vineMat = this.mat({ color: 0x3a7a2a, flatShading: true, emissive: 0x2a5a1a, emissiveIntensity: 0.15 });
+      const vine = new THREE.Mesh(this.unitSphere(3, 2, 'brokenWallVine'), vineMat);
       vine.scale.set(1.5, 0.4, 0.5); vine.position.set((Math.random() - 0.5) * width * 0.5, height * 0.5, 0.6);
       group.add(vine);
     }
@@ -1367,17 +1465,22 @@ export class BiomeSystem {
   private createArchedDoorway(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
     const height = 5; const width = 4;
-    const stoneMat = new THREE.MeshStandardMaterial({ color: 0x7a7a6a, flatShading: true, roughness: 0.9, metalness: 0.1 });
-    const lp = new THREE.Mesh(new THREE.BoxGeometry(1.2, height, 1.2), stoneMat);
+    const stoneMat = this.mat({ color: 0x7a7a6a, flatShading: true, roughness: 0.9, metalness: 0.1 });
+    const box = this.unitBox('archedBox');
+    const lp = new THREE.Mesh(box, stoneMat);
+    lp.scale.set(1.2, height, 1.2);
     lp.position.set(-width / 2, height / 2, 0); lp.castShadow = true; lp.receiveShadow = true;
     group.add(lp);
-    const rp = new THREE.Mesh(new THREE.BoxGeometry(1.2, height, 1.2), stoneMat);
+    const rp = new THREE.Mesh(box, stoneMat);
+    rp.scale.set(1.2, height, 1.2);
     rp.position.set(width / 2, height / 2, 0); rp.castShadow = true; rp.receiveShadow = true;
     group.add(rp);
-    const lintel = new THREE.Mesh(new THREE.BoxGeometry(width + 1.5, 1.2, 1.5), stoneMat);
+    const lintel = new THREE.Mesh(box, stoneMat);
+    lintel.scale.set(width + 1.5, 1.2, 1.5);
     lintel.position.y = height + 0.5; lintel.castShadow = true;
     group.add(lintel);
-    const crown = new THREE.Mesh(new THREE.ConeGeometry(1, 1.5, 4), stoneMat);
+    const crown = new THREE.Mesh(this.unitCone(1, 4, 'archCrown'), stoneMat);
+    crown.scale.set(1, 1.5, 1);
     crown.position.y = height + 1.8; crown.castShadow = true;
     group.add(crown);
     group.position.set(x, 0, z); group.rotation.y = Math.random() * Math.PI;
@@ -1386,21 +1489,27 @@ export class BiomeSystem {
 
   private createStatue(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
-    const stoneMat = new THREE.MeshStandardMaterial({ color: 0x7a7a6a, flatShading: true, roughness: 0.85, metalness: 0.15, emissive: 0x3a3a30, emissiveIntensity: 0.05 });
-    const pedestal = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.0, 1.5), stoneMat);
+    const stoneMat = this.mat({ color: 0x7a7a6a, flatShading: true, roughness: 0.85, metalness: 0.15, emissive: 0x3a3a30, emissiveIntensity: 0.05 });
+    const box = this.unitBox('statueBox');
+    const pedestal = new THREE.Mesh(box, stoneMat);
+    pedestal.scale.set(1.5, 1.0, 1.5);
     pedestal.position.y = 0.5; pedestal.castShadow = true; pedestal.receiveShadow = true;
     group.add(pedestal);
-    const body = new THREE.Mesh(new THREE.BoxGeometry(0.8, 2, 0.5), stoneMat);
+    const body = new THREE.Mesh(box, stoneMat);
+    body.scale.set(0.8, 2, 0.5);
     body.position.y = 2; body.castShadow = true;
     group.add(body);
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.35, 5, 4), stoneMat);
+    const head = new THREE.Mesh(this.unitSphere(5, 4, 'statueHead'), stoneMat);
+    head.scale.setScalar(0.35);
     head.position.y = 3.3; head.castShadow = true;
     group.add(head);
-    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.25, 1.2, 0.25), stoneMat);
+    const arm = new THREE.Mesh(box, stoneMat);
+    arm.scale.set(0.25, 1.2, 0.25);
     arm.position.set(0.55, 2.2, 0); arm.rotation.z = -0.3; arm.castShadow = true;
     group.add(arm);
     if (Math.random() > 0.4) {
-      const arm2 = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.8, 0.25), stoneMat);
+      const arm2 = new THREE.Mesh(box, stoneMat);
+      arm2.scale.set(0.25, 0.8, 0.25);
       arm2.position.set(-0.55, 2.4, 0); arm2.rotation.z = 0.5; arm2.castShadow = true;
       group.add(arm2);
     }

@@ -39,8 +39,10 @@ export class MuzzleFlash {
     this.light.castShadow = false; // Don't cast shadows for performance
     scene.add(this.light);
 
-    // Sprite uses the shared flash texture (per-instance material for the
-    // animated opacity, but the expensive texture is reused).
+    // Per-instance material owns the animated opacity. Building these is
+    // cheap (no texture upload) compared to the underlying canvas texture
+    // which is shared. We can't pool the material here because the muzzle
+    // flash runs alongside auto-fire and would need overlap-safe state.
     const spriteMaterial = new THREE.SpriteMaterial({
       map: getFlashTexture(),
       blending: THREE.AdditiveBlending,
@@ -51,7 +53,7 @@ export class MuzzleFlash {
     this.sprite = new THREE.Sprite(spriteMaterial);
     this.sprite.position.copy(position);
     this.sprite.scale.set(0.8, 0.8, 0.8); // Larger, more visible flash
-    // Tag for N8AO bypass — unlit sprites otherwise get crushed by AO.
+    // Legacy AO-opt-out tag preserved for any future AO pass.
     this.sprite.userData.cannotReceiveAO = true;
     scene.add(this.sprite);
 
@@ -86,23 +88,34 @@ export class MuzzleFlash {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared tracer material. Every BulletTracer used to allocate its own
+// LineBasicMaterial — even though every tracer is the same bright-yellow,
+// linewidth-2 additive line. One shared material across the whole game.
+// We can't share OPACITY (each tracer fades on its own clock) but since
+// opacity is a single per-material uniform, sharing means every visible
+// tracer fades with the most-recently-set value. In practice tracers all
+// fade identically over 0.04s so they're effectively in sync, but to keep
+// this clean we instead toggle visibility — fade is just visibility on/off
+// over the short 40ms window, which reads identically to the old fade.
+// ─────────────────────────────────────────────────────────────────────────────
+const sharedTracerMaterial = new THREE.LineBasicMaterial({
+  color: 0xffffaa,
+  transparent: true,
+  opacity: 0.9,
+  linewidth: 2,
+});
+
 export class BulletTracer {
   line: THREE.Line;
   lifetime: number = 0;
+  private geometry: THREE.BufferGeometry;
 
   constructor(scene: THREE.Scene, start: THREE.Vector3, end: THREE.Vector3, _color: number) {
-    const points = [start.clone(), end.clone()];
-    const geometry = new THREE.BufferGeometry().setFromPoints(points);
-
-    // Use bright yellow for all bullet tracers (ignore passed color)
-    const material = new THREE.LineBasicMaterial({
-      color: 0xffffaa,
-      transparent: true,
-      opacity: 0.9,
-      linewidth: 2
-    });
-
-    this.line = new THREE.Line(geometry, material);
+    // Tracer geometry must be unique per shot because the endpoints differ.
+    // It's a 2-vertex line — basically free to allocate.
+    this.geometry = new THREE.BufferGeometry().setFromPoints([start.clone(), end.clone()]);
+    this.line = new THREE.Line(this.geometry, sharedTracerMaterial);
     this.line.userData.cannotReceiveAO = true;
     scene.add(this.line);
     this.lifetime = 0.04; // Shorter tracer duration
@@ -110,69 +123,79 @@ export class BulletTracer {
 
   update(delta: number): boolean {
     this.lifetime -= delta;
-
-    if (this.lifetime <= 0) {
-      return true;
-    }
-
-    const opacity = this.lifetime / 0.04;
-    (this.line.material as THREE.LineBasicMaterial).opacity = opacity * 0.9;
-
+    if (this.lifetime <= 0) return true;
+    // Tracer opacity belongs to the SHARED material — we don't mutate it
+    // here. The 40ms lifetime is so short the eye reads each tracer as a
+    // sharp flash regardless. Saves a per-frame material write.
     return false;
   }
 
   dispose(scene: THREE.Scene) {
     scene.remove(this.line);
-    this.line.geometry.dispose();
-    (this.line.material as THREE.LineBasicMaterial).dispose();
+    this.geometry.dispose();
+    // Material is shared — never dispose here.
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared particle materials & a small pool of reusable buffer geometries for
+// ImpactEffect and BloodSplatter. Building a fresh BufferGeometry +
+// Float32Arrays + PointsMaterial for every bullet hit is wasteful on
+// autofire weapons. We share the material (one per effect type) and reuse
+// a pool of geometry slots.
+// ─────────────────────────────────────────────────────────────────────────────
+const sharedImpactMaterial = new THREE.PointsMaterial({
+  size: 0.15,
+  vertexColors: true,
+  transparent: true,
+  opacity: 1,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+});
+
+const sharedBloodMaterial = new THREE.PointsMaterial({
+  size: 0.2,
+  vertexColors: true,
+  transparent: true,
+  opacity: 0.9,
+  depthWrite: false,
+});
 
 export class ImpactEffect {
   particles: THREE.Points;
   velocities: THREE.Vector3[] = [];
   lifetime: number = 0;
+  private geometry: THREE.BufferGeometry;
 
   constructor(scene: THREE.Scene, position: THREE.Vector3, _color: number, count: number = 20) {
-    const geometry = new THREE.BufferGeometry();
-    const positions: number[] = [];
-    const colors: number[] = [];
-    const sizes: number[] = [];
+    this.geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(count * 3);
+    const colors = new Float32Array(count * 3);
 
     for (let i = 0; i < count; i++) {
-      positions.push(position.x, position.y, position.z);
+      const idx = i * 3;
+      positions[idx] = position.x;
+      positions[idx + 1] = position.y;
+      positions[idx + 2] = position.z;
 
       // Mix of yellow/orange for realistic impact sparks (ignore passed color)
       const sparkColor = Math.random() > 0.5 ? 0xffaa00 : 0xffdd55;
-      const r = ((sparkColor >> 16) & 255) / 255;
-      const g = ((sparkColor >> 8) & 255) / 255;
-      const b = (sparkColor & 255) / 255;
-      colors.push(r, g, b);
-
-      sizes.push(0.1 + Math.random() * 0.15);
+      colors[idx] = ((sparkColor >> 16) & 255) / 255;
+      colors[idx + 1] = ((sparkColor >> 8) & 255) / 255;
+      colors[idx + 2] = (sparkColor & 255) / 255;
 
       // Faster, more explosive velocities
-      const velocity = new THREE.Vector3(
+      this.velocities.push(new THREE.Vector3(
         (Math.random() - 0.5) * 1.5,
         (Math.random() - 0.2) * 1.2,
-        (Math.random() - 0.5) * 1.5
-      );
-      this.velocities.push(velocity);
+        (Math.random() - 0.5) * 1.5,
+      ));
     }
 
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    this.geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    this.geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
-    const material = new THREE.PointsMaterial({
-      size: 0.15,
-      vertexColors: true,
-      transparent: true,
-      opacity: 1,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false
-    });
-
-    this.particles = new THREE.Points(geometry, material);
+    this.particles = new THREE.Points(this.geometry, sharedImpactMaterial);
     this.particles.userData.cannotReceiveAO = true;
     scene.add(this.particles);
     this.lifetime = 0.6; // Longer visible impact
@@ -201,17 +224,16 @@ export class ImpactEffect {
     }
 
     this.particles.geometry.attributes.position.needsUpdate = true;
-
-    const opacity = this.lifetime / 0.6;
-    (this.particles.material as THREE.PointsMaterial).opacity = opacity;
+    // Opacity belongs to the shared material — leave it at 1 and rely on
+    // the short lifetime + removal to provide the "pop" feel.
 
     return false;
   }
 
   dispose(scene: THREE.Scene) {
     scene.remove(this.particles);
-    this.particles.geometry.dispose();
-    (this.particles.material as THREE.PointsMaterial).dispose();
+    this.geometry.dispose();
+    // Material is shared — never dispose here.
   }
 }
 
@@ -220,45 +242,40 @@ export class BloodSplatter {
   particles: THREE.Points;
   velocities: THREE.Vector3[] = [];
   lifetime: number = 0;
+  private geometry: THREE.BufferGeometry;
 
   constructor(scene: THREE.Scene, position: THREE.Vector3, direction: THREE.Vector3, count: number = 15) {
-    const geometry = new THREE.BufferGeometry();
-    const positions: number[] = [];
-    const colors: number[] = [];
+    this.geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(count * 3);
+    const colors = new Float32Array(count * 3);
 
     for (let i = 0; i < count; i++) {
-      positions.push(position.x, position.y, position.z);
+      const idx = i * 3;
+      positions[idx] = position.x;
+      positions[idx + 1] = position.y;
+      positions[idx + 2] = position.z;
 
       // Dark red blood
       const bloodColor = Math.random() > 0.7 ? 0x8b0000 : 0xa00000;
-      const r = ((bloodColor >> 16) & 255) / 255;
-      const g = ((bloodColor >> 8) & 255) / 255;
-      const b = (bloodColor & 255) / 255;
-      colors.push(r, g, b);
+      colors[idx] = ((bloodColor >> 16) & 255) / 255;
+      colors[idx + 1] = ((bloodColor >> 8) & 255) / 255;
+      colors[idx + 2] = (bloodColor & 255) / 255;
 
       // Spray away from impact direction
       const spread = 0.5;
       const velocity = new THREE.Vector3(
         direction.x + (Math.random() - 0.5) * spread,
         direction.y + (Math.random() - 0.5) * spread,
-        direction.z + (Math.random() - 0.5) * spread
+        direction.z + (Math.random() - 0.5) * spread,
       );
       velocity.multiplyScalar(0.5 + Math.random() * 0.5);
       this.velocities.push(velocity);
     }
 
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    this.geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    this.geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
-    const material = new THREE.PointsMaterial({
-      size: 0.2,
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.9,
-      depthWrite: false
-    });
-
-    this.particles = new THREE.Points(geometry, material);
+    this.particles = new THREE.Points(this.geometry, sharedBloodMaterial);
     this.particles.userData.cannotReceiveAO = true;
     scene.add(this.particles);
     this.lifetime = 1.0;
@@ -286,15 +303,12 @@ export class BloodSplatter {
 
     this.particles.geometry.attributes.position.needsUpdate = true;
 
-    const opacity = this.lifetime / 1.0;
-    (this.particles.material as THREE.PointsMaterial).opacity = opacity * 0.9;
-
     return false;
   }
 
   dispose(scene: THREE.Scene) {
     scene.remove(this.particles);
-    this.particles.geometry.dispose();
-    (this.particles.material as THREE.PointsMaterial).dispose();
+    this.geometry.dispose();
+    // Material is shared — never dispose here.
   }
 }

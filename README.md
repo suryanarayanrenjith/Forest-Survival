@@ -76,7 +76,7 @@ Premium low-poly creatures with chest cores, shoulder plating, glowing visors an
 - Volumetric custom sky shader with day/night cycle, drifting clouds, stars and moon
 - Image-based lighting — environment reflections that make metals read as real metal
 - 8 distinct biomes with unique palettes, fog and atmosphere
-- Bloom, ACES tone mapping and cinematic colour grading
+- Ground Truth Ambient Occlusion (GTAO), Unreal-style mip-chain bloom, screen-space god rays, ACES filmic tone mapping and cinematic colour grading — all running on three.js's native postprocessing stack (no external FX libraries)
 - Blood splatter, muzzle flash and impact effects
 
 **Multiplayer**
@@ -163,7 +163,7 @@ npm run preview    # Preview production build
 | Framework | React 19 |
 | Language | TypeScript 5 (strict) |
 | 3D Engine | Three.js + @react-three/fiber + @react-three/drei |
-| Post-processing | pmndrs/postprocessing + n8ao + realism-effects |
+| Post-processing | three.js native (EffectComposer + GTAO + UnrealBloom + SMAA + custom ACES grade) |
 | Build Tool | Vite 7 |
 | Styling | Tailwind CSS |
 | Icons | lucide-react |

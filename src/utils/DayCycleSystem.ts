@@ -241,58 +241,59 @@ export class DayCycleSystem {
       }
     }
 
-    // Determine current and next time periods
-    const currentPeriod = this.getTimeOfDayFromHour(this.currentTime);
-    const currentHour = Math.floor(this.currentTime);
-    const minuteFraction = this.currentTime - currentHour;
+    // ── CONTINUOUS DAY/NIGHT INTERPOLATION ────────────────────────────
+    // Previous logic only blended during narrow 1-2 hour windows and
+    // snapped to a flat "stable period" outside those windows. That made
+    // dusk → night feel like an abrupt switch — the world stayed bright
+    // until exactly 18:00, then darkened over 2 minutes of real time.
+    //
+    // We now treat each period as ANCHORED at a centre time (peak of
+    // that period) and BLEND linearly between the two nearest anchors
+    // at all times. The whole 24-hour cycle is therefore a smooth ease
+    // between five fixed colour profiles — no sudden jumps anywhere.
+    //
+    // Anchor table — chosen so peak day is 12:00 and deepest night is
+    // 00:00. Sorted ASCENDING for the wraparound search below.
+    type Anchor = { time: number; key: 'night' | 'dawn' | 'day' | 'dusk' | 'twilight' };
+    const anchors: Anchor[] = [
+      { time: 0,  key: 'night' },
+      { time: 5,  key: 'dawn' },
+      { time: 12, key: 'day' },
+      { time: 17.5, key: 'dusk' },
+      { time: 19.5, key: 'twilight' },
+      { time: 22, key: 'night' },
+      { time: 24, key: 'night' }, // wraparound sentinel matching anchor[0]
+    ];
 
-    // Get transition points
-    let t = 0;
-    let settings1 = this.timeSettings[currentPeriod];
-    let settings2 = settings1;
-
-    // Smooth transitions between periods
-    if (currentHour === 4) {
-      // Night to Dawn (4-5 AM)
-      settings1 = this.timeSettings.night;
-      settings2 = this.timeSettings.dawn;
-      t = minuteFraction;
-    } else if (currentHour === 5) {
-      // Dawn to Day (5-6 AM)
-      settings1 = this.timeSettings.dawn;
-      settings2 = this.timeSettings.day;
-      t = minuteFraction;
-    } else if (currentHour === 17) {
-      // Day to Dusk (5-6 PM)
-      settings1 = this.timeSettings.day;
-      settings2 = this.timeSettings.dusk;
-      t = minuteFraction;
-    } else if (currentHour === 18) {
-      // Dusk to Twilight (6-7 PM)
-      settings1 = this.timeSettings.dusk;
-      settings2 = this.timeSettings.twilight;
-      t = minuteFraction;
-    } else if (currentHour >= 19 && currentHour < 21) {
-      // Twilight to Night (7-9 PM)
-      settings1 = this.timeSettings.twilight;
-      settings2 = this.timeSettings.night;
-      t = (this.currentTime - 19) / 2;
-    } else {
-      // Stable period
-      t = 0;
-      settings1 = this.timeSettings[currentPeriod];
-      settings2 = settings1;
+    // Find the two anchors bracketing currentTime and the lerp position.
+    let prev: Anchor = anchors[0];
+    let next: Anchor = anchors[anchors.length - 1];
+    for (let i = 0; i < anchors.length - 1; i++) {
+      if (this.currentTime >= anchors[i].time && this.currentTime < anchors[i + 1].time) {
+        prev = anchors[i];
+        next = anchors[i + 1];
+        break;
+      }
     }
+    const span = next.time - prev.time;
+    const t = span > 0 ? (this.currentTime - prev.time) / span : 0;
 
-    // Apply smooth easing
-    const easedT = this.smoothstep(t);
+    const settings1 = this.timeSettings[prev.key];
+    const settings2 = this.timeSettings[next.key];
+
+    // Quintic smoothstep for an extra-smooth transition — the standard
+    // cubic was noticeable at the endpoints; quintic eases in/out
+    // imperceptibly. Equivalent to GLSL's smootherstep.
+    const easedT = this.smootherstep(t);
     this.currentSettings = this.interpolateSettings(settings1, settings2, easedT);
 
     return this.currentSettings;
   }
 
-  private smoothstep(t: number): number {
-    return t * t * (3 - 2 * t);
+  /** Quintic smootherstep — C2-continuous, derivatives are 0 at both ends. */
+  private smootherstep(t: number): number {
+    const c = Math.max(0, Math.min(1, t));
+    return c * c * c * (c * (c * 6 - 15) + 10);
   }
 
   getSettings(timeOfDay: TimeOfDay): AtmosphericSettings {

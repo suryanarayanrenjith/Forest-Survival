@@ -1,6 +1,6 @@
 import {
   Sparkles, Heart, Code2, ExternalLink, X, ArrowLeft,
-  Cpu, Wand2, Palette, Boxes, Zap, ArrowUpRight, Layers3, Shield, Aperture,
+  Cpu, Wand2, Palette, Boxes, Zap, ArrowUpRight, Layers3,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -20,9 +20,7 @@ const TECH_STACK: TechItem[] = [
   { label: 'Three.js',          hint: 'r180 · WebGL2',           icon: Boxes,   accent: '#34d399' },
   { label: '@react-three/fiber', hint: 'Loader scene · Canvas',   icon: Layers3, accent: '#60a5fa' },
   { label: '@react-three/drei',  hint: 'Preload · helpers',       icon: Sparkles, accent: '#a78bfa' },
-  { label: 'pmndrs Postprocessing', hint: 'Bloom · ACES · SMAA', icon: Wand2,   accent: '#c084fc' },
-  { label: 'n8ao',              hint: 'Ultra-tier SSAO',          icon: Shield,  accent: '#22c55e' },
-  { label: 'realism-effects',   hint: 'TRAA · motion blur',       icon: Aperture, accent: '#f97316' },
+  { label: 'three.js Postprocessing', hint: 'Bloom · GTAO · ACES · SMAA', icon: Wand2,   accent: '#c084fc' },
   { label: 'Tailwind + Lucide', hint: 'Design system',           icon: Palette, accent: '#fbbf24' },
   { label: 'PeerJS',            hint: 'P2P multiplayer',         icon: Cpu,     accent: '#f87171' },
   { label: 'Vite',              hint: 'HMR · ESBuild',           icon: Zap,     accent: '#fb923c' },

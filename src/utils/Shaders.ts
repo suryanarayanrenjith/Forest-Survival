@@ -91,13 +91,15 @@ export const skyDomeFragmentShader = `
       float wideGlow = pow(max(sd, 0.0), 3.0);
       // hugeGlow removed — it was spreading bright across the entire sky
       // and washing out the upper gradient.
-      sky += sunColor * wideGlow * 0.10;
-      sky += sunColor * glow * 0.85;
+      // Halved across the board so the sun stays bright but doesn't consume
+      // the upper half of the screen under the new aggressive bloom pass.
+      sky += sunColor * wideGlow * 0.04;
+      sky += sunColor * glow * 0.45;
 
-      // Bright HDR sun disk — pushed past 1.0 so bloom + god rays both
-      // catch it. Tonemap rolls it off to a neutral white core.
-      float disk = smoothstep(0.99905, 0.99955, sd);
-      sky += sunColor * disk * 6.0;
+      // Compact HDR sun disk — bright enough to drive bloom + god rays
+      // but the disc itself stays a small, readable light source.
+      float disk = smoothstep(0.99930, 0.99965, sd);
+      sky += sunColor * disk * 2.6;
 
       // Atmospheric horizon haze for depth — thicker band so the horizon
       // dissolves into atmosphere instead of ending at a hard edge.

@@ -46,6 +46,13 @@ export interface MapConfig {
   // Gameplay modifiers
   visibilityMult: number;
   enemySpawnRadiusMult: number;
+  // ── Post-FX tuning ─────────────────────────────────────────────────
+  // Multipliers applied to the global bloom intensity for this map.
+  // 1.0 = baseline; >1 = more dramatic 2012-AAA-style bloom; <1 = subtle.
+  // `bloomTint` lightly biases the bloom hue toward the map's atmosphere
+  // (e.g. warm orange in scorched_wasteland, cyan in tundra).
+  bloomMultiplier?: number;
+  bloomThresholdBias?: number; // added to base threshold; negative = MORE blooms
 }
 
 export const MAP_CONFIGS: Record<MapType, MapConfig> = {
@@ -73,6 +80,8 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     hasSpecialWeather: false,
     visibilityMult: 0.9,
     enemySpawnRadiusMult: 1.0,
+    bloomMultiplier: 1.05,
+    bloomThresholdBias: -0.02,
   },
 
   // ── Charred volcanic hellscape ──
@@ -100,6 +109,9 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     weatherType: 'ash',
     visibilityMult: 0.8,
     enemySpawnRadiusMult: 1.1,
+    // Heavy warm bloom — embers glowing, lava-lit volcanic hellscape.
+    bloomMultiplier: 1.55,
+    bloomThresholdBias: -0.10,
   },
 
   // ── Icy tundra with frozen pines ──
@@ -127,6 +139,9 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     weatherType: 'snow',
     visibilityMult: 0.85,
     enemySpawnRadiusMult: 1.1,
+    // Subtle clean bloom — overcast tundra, mostly diffuse light.
+    bloomMultiplier: 0.85,
+    bloomThresholdBias: 0.04,
   },
 
   // ── Arid desert with mesa pillars ──
@@ -154,6 +169,9 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     weatherType: 'sandstorm',
     visibilityMult: 1.2,
     enemySpawnRadiusMult: 1.2,
+    // Restrained bloom — desert is already bright, more bloom = blowout.
+    bloomMultiplier: 0.80,
+    bloomThresholdBias: 0.06,
   },
 
   // ── Dark swamp with toxic pools ──
@@ -181,6 +199,10 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     weatherType: 'fog',
     visibilityMult: 0.55,
     enemySpawnRadiusMult: 0.8,
+    // Heavy green-tinted bloom — glowing mushrooms + toxic pools popping
+    // off the dark swamp backdrop. Strong 2012-AAA aesthetic.
+    bloomMultiplier: 1.40,
+    bloomThresholdBias: -0.08,
   },
 
   // ── Concrete walls and bunkers ──
@@ -207,6 +229,9 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     hasSpecialWeather: false,
     visibilityMult: 1.0,
     enemySpawnRadiusMult: 0.9,
+    // Industrial / mil-sim — minimal bloom for a grounded look.
+    bloomMultiplier: 0.75,
+    bloomThresholdBias: 0.04,
   },
 
   // ── Glowing crystal underground ──
@@ -233,6 +258,10 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     hasSpecialWeather: false,
     visibilityMult: 0.7,
     enemySpawnRadiusMult: 0.85,
+    // Heaviest bloom in the game — crystals glowing in the dark, every
+    // emissive surface haloed for that magical underground feel.
+    bloomMultiplier: 1.65,
+    bloomThresholdBias: -0.12,
   },
 
   // ── Crumbling stone ruins ──
@@ -260,6 +289,10 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     weatherType: 'rain',
     visibilityMult: 0.9,
     enemySpawnRadiusMult: 0.95,
+    // Wet-stone rainy ruins — moderate bloom catching the rain highlights
+    // and torchlight without the dramatic glow of the volcanic/crystal maps.
+    bloomMultiplier: 1.15,
+    bloomThresholdBias: -0.04,
   },
 };
 

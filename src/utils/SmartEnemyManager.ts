@@ -202,6 +202,7 @@ class SmartEnemyManager {
   private currentMaxEnemies: number = 40;
   private baseMaxEnemies: number = 40;
   private lastAdjustmentTime: number = 0;
+  private isNightMode: boolean = false;
 
   // Frustum culling
   private frustum: THREE.Frustum = new THREE.Frustum();
@@ -237,6 +238,18 @@ class SmartEnemyManager {
     this.warmupPool(initialPoolSize);
 
     console.log(`[SmartEnemyManager] Initialized with pool size ${initialPoolSize}, max enemies ${this.currentMaxEnemies}`);
+  }
+
+  /** Boost emissive strength for night scenes so enemies never crush to black. */
+  setNightMode(isNight: boolean): void {
+    if (this.isNightMode === isNight) return;
+    this.isNightMode = isNight;
+
+    this.sharedMaterials.forEach((material) => {
+      const base = (material.userData.baseEmissiveIntensity as number | undefined) ?? material.emissiveIntensity;
+      const nightMultiplier = (material.userData.nightMultiplier as number | undefined) ?? 1.0;
+      material.emissiveIntensity = isNight ? base * nightMultiplier : base;
+    });
   }
 
   /**
@@ -278,7 +291,19 @@ class SmartEnemyManager {
     // MeshBasicMaterial is unlit and appears at full brightness
     this.eyeMaterial = new THREE.MeshBasicMaterial({
       color: 0xffff00,
+      toneMapped: false,
+      fog: false,
     });
+
+    const registerMaterial = (
+      key: string,
+      material: THREE.MeshStandardMaterial,
+      nightMultiplier: number,
+    ) => {
+      material.userData.baseEmissiveIntensity = material.emissiveIntensity;
+      material.userData.nightMultiplier = nightMultiplier;
+      this.sharedMaterials.set(key, material);
+    };
 
     // Create materials for each enemy type.
     // PBR (MeshStandardMaterial) gives the "robot" enemies a proper metallic
@@ -297,68 +322,83 @@ class SmartEnemyManager {
     // their highlights for a proper "self-illuminated robot" look.
     for (const [type, config] of Object.entries(ENEMY_CONFIGS)) {
       // Body material — strongest emissive boost so the torso reads bright.
-      this.sharedMaterials.set(`${type}_body`, new THREE.MeshStandardMaterial({
+      registerMaterial(`${type}_body`, new THREE.MeshStandardMaterial({
         color: config.baseColor,
         emissive: config.baseColor,
-        emissiveIntensity: config.emissiveIntensity * 4.5,
+        emissiveIntensity: config.emissiveIntensity * 5.5,
         metalness: 0.0,
-        roughness: 0.6,
+        roughness: 0.52,
         flatShading: true,
-      }));
+      }), 1.12);
 
       // Accent material (arms/legs)
-      this.sharedMaterials.set(`${type}_accent`, new THREE.MeshStandardMaterial({
+      registerMaterial(`${type}_accent`, new THREE.MeshStandardMaterial({
         color: config.accentColor,
         emissive: config.accentColor,
-        emissiveIntensity: config.emissiveIntensity * 3.5,
-        metalness: 0.0,
-        roughness: 0.55,
-        flatShading: true,
-      }));
-
-      // Bright material (head)
-      this.sharedMaterials.set(`${type}_bright`, new THREE.MeshStandardMaterial({
-        color: config.brightColor,
-        emissive: config.brightColor,
-        emissiveIntensity: config.emissiveIntensity * 5.0,
+        emissiveIntensity: config.emissiveIntensity * 4.4,
         metalness: 0.0,
         roughness: 0.5,
         flatShading: true,
-      }));
+      }), 1.1);
+
+      // Bright material (head)
+      registerMaterial(`${type}_bright`, new THREE.MeshStandardMaterial({
+        color: config.brightColor,
+        emissive: config.brightColor,
+        emissiveIntensity: config.emissiveIntensity * 6.2,
+        metalness: 0.0,
+        roughness: 0.46,
+        flatShading: true,
+      }), 1.15);
 
       // Low LOD material (single color, simplified)
-      this.sharedMaterials.set(`${type}_low`, new THREE.MeshStandardMaterial({
+      registerMaterial(`${type}_low`, new THREE.MeshStandardMaterial({
         color: config.baseColor,
         emissive: config.baseColor,
-        emissiveIntensity: config.emissiveIntensity * 4.5,
+        emissiveIntensity: config.emissiveIntensity * 5.5,
         metalness: 0.0,
-        roughness: 0.6,
+        roughness: 0.52,
         flatShading: true,
-      }));
+      }), 1.1);
 
       // Dark recessed-detail material (visor frame, joints, hips).
       // Brighter darkColor + meaningful emissive so it reads as DARK
       // not BLACK in low-light conditions.
-      this.sharedMaterials.set(`${type}_dark`, new THREE.MeshStandardMaterial({
+      registerMaterial(`${type}_dark`, new THREE.MeshStandardMaterial({
         color: config.darkColor,
         emissive: config.darkColor,
-        emissiveIntensity: 1.2,
+        emissiveIntensity: 1.65,
         metalness: 0.0,
-        roughness: 0.75,
+        roughness: 0.68,
         flatShading: true,
-      }));
+      }), 1.3);
 
       // Glowing energy material (chest core, eye bar) — strong emissive so it
       // catches the bloom pass and reads as a light source.
-      this.sharedMaterials.set(`${type}_glow`, new THREE.MeshStandardMaterial({
-        color: 0x000000,
+      registerMaterial(`${type}_glow`, new THREE.MeshStandardMaterial({
+        color: config.glowColor,
         emissive: config.glowColor,
-        emissiveIntensity: 4.0,
+        emissiveIntensity: 4.8,
         metalness: 0,
-        roughness: 0.4,
+        roughness: 0.3,
         flatShading: true,
-      }));
+      }), 1.4);
     }
+  }
+
+  /**
+   * Enemies are small, high-contrast targets made from intersecting low-poly
+   * parts. Letting screen-space AO run across those seams produced black
+   * panels during dusk/night. They still cast shadows into the world; they
+   * simply opt out of receiving the full-screen AO composite.
+   */
+  private markEnemyAOSafe(root: THREE.Object3D): void {
+    root.traverse((object) => {
+      object.userData.cannotReceiveAO = true;
+      if (object instanceof THREE.Mesh) {
+        object.receiveShadow = false;
+      }
+    });
   }
 
   /**
@@ -559,6 +599,7 @@ class SmartEnemyManager {
 
     // Apply scale based on enemy type
     pooledEnemy.group.scale.setScalar(config.scale);
+    this.markEnemyAOSafe(pooledEnemy.group);
   }
 
   /**

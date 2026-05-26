@@ -30,31 +30,41 @@ export interface GraphicsPreset {
 // difficulty multiplier — keeping it low prevents the screen from ever
 // filling with robots even on Hard.
 export const GRAPHICS_PRESETS: Record<GraphicsQuality, GraphicsPreset> = {
-  // LOW — maximum performance: no shadows, no post-FX, reduced resolution.
+  // LOW — maximum performance for older / integrated GPUs.
+  //   • No real-time shadows (single biggest WebGL cost)
+  //   • No post-processing (composer + bloom is ~2-3ms per frame)
+  //   • 70% pixel ratio + nearest-neighbour scaling = ~half the fragment work
+  //   • Particle density 0.40 + terrain detail 0.55 — still readable
+  //     world, no "empty plain" feel
+  //   • viewDistance 100m — fog masks the cull boundary
   low: {
-    pixelRatio: 0.6,
+    pixelRatio: 0.70,
     shadowMapSize: 512,
     shadowsEnabled: false,
     antialias: false,
     postProcessing: false,
-    particleDensity: 0.35,
-    maxEnemies: 12,
-    viewDistance: 90,
-    terrainDetail: 0.5,
+    particleDensity: 0.40,
+    maxEnemies: 14,
+    viewDistance: 100,
+    terrainDetail: 0.55,
   },
-  // MEDIUM — balanced: soft shadows + bloom at a slightly reduced resolution.
+  // MEDIUM — soft shadows + lightweight bloom, ~85% pixel ratio.
+  //   • Soft 1024² shadow map (8MB) — visible directional shadows
+  //   • Post-FX on: bloom + cinematic grade (no SMAA)
+  //   • Particle density 0.70 + terrain detail 0.85
+  //   • 150m view distance — fog hides the boundary
   medium: {
-    pixelRatio: 0.8,
+    pixelRatio: 0.85,
     shadowMapSize: 1024,
     shadowsEnabled: true,
     antialias: false,
     postProcessing: true,
-    particleDensity: 0.65,
-    maxEnemies: 20,
-    viewDistance: 140,
-    terrainDetail: 0.8,
+    particleDensity: 0.70,
+    maxEnemies: 22,
+    viewDistance: 150,
+    terrainDetail: 0.85,
   },
-  // HIGH — full fidelity: native resolution, MSAA, high-res soft shadows.
+  // HIGH — native res, MSAA, crisp 2048² shadows + full post-FX stack.
   high: {
     pixelRatio: 1.0,
     shadowMapSize: 2048,
@@ -66,16 +76,20 @@ export const GRAPHICS_PRESETS: Record<GraphicsQuality, GraphicsPreset> = {
     viewDistance: 200,
     terrainDetail: 1.0,
   },
-  // ULTRA — cinematic: the browser's most aggressive visual tier.
+  // ULTRA — 1.15× super-sampled, 4096² shadows, every effect maxed.
+  //   • Pixel ratio 1.15 super-samples slightly (sharper edges)
+  //   • 4096² shadow map (64MB) — pin-sharp directional shadows
+  //   • viewDistance 260m
+  //   • All effects on (bloom, cinematic grade, SMAA, god rays)
   ultra: {
-    pixelRatio: 1.1,
+    pixelRatio: 1.15,
     shadowMapSize: 4096,
     shadowsEnabled: true,
     antialias: true,
     postProcessing: true,
     particleDensity: 1.0,
-    maxEnemies: 38,
-    viewDistance: 240,
+    maxEnemies: 40,
+    viewDistance: 260,
     terrainDetail: 1.0,
   },
 };

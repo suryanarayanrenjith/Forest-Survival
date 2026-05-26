@@ -1068,8 +1068,19 @@ export class GunModel {
       + runRotZ + abil * 0.22;
   }
 
-  triggerRecoil() {
-    this.recoilAnimation = Math.min(1.0, this.recoilAnimation + 0.8);
+  /**
+   * Triggers the per-shot recoil animation on the gun model.
+   *
+   * `strength` is a multiplier scaled by the weapon's weight so heavier
+   * weapons kick harder. Caller passes ~0.6 for a light pistol (1.0kg),
+   * ~1.0 for a rifle/SMG, ~1.6 for shotguns/snipers, ~2.4 for the rocket
+   * launcher / minigun. The recoilAnimation float is clamped to [0,1]
+   * so the visual still looks clean — the screen-space FOV kick (driven
+   * separately in App.tsx) carries the heavier-feeling impact.
+   */
+  triggerRecoil(strength: number = 1.0) {
+    const kick = THREE.MathUtils.clamp(0.55 * strength, 0.2, 1.0);
+    this.recoilAnimation = Math.min(1.0, this.recoilAnimation + kick);
   }
 
   triggerReload() {

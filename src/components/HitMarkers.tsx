@@ -53,6 +53,21 @@ export const addHitMarker = (isHeadshot: boolean = false) => {
   }
 };
 
+/**
+ * Clears all pending hit markers + damage numbers. Used by the shader
+ * pre-warm path: we call addHitMarker / addDamageNumber once at game
+ * start to force React to mount the marker DOM nodes (eliminating the
+ * first-shot reconciliation hitch), then immediately clear them so the
+ * player never sees the fake marks.
+ */
+export const clearHitMarkers = () => {
+  damageNumbers = [];
+  hitMarkers = [];
+  if (updateCallback) {
+    updateCallback();
+  }
+};
+
 const HitMarkers = () => {
   const [damages, setDamages] = useState<DamageNumber[]>([]);
   const [markers, setMarkers] = useState<HitMarker[]>([]);

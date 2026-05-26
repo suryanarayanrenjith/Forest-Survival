@@ -6,12 +6,14 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { BokehPass } from 'three/examples/jsm/postprocessing/BokehPass.js';
+import { SSAOPass } from 'three/examples/jsm/postprocessing/SSAOPass.js';
 
 type ForestSceneApi = {
   renderer: THREE.WebGLRenderer;
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
   bloomPass: UnrealBloomPass;
+  ssaoPass: SSAOPass;
   bokehPass: BokehPass;
   finalPass: ShaderPass;
   composer: EffectComposer;
@@ -27,7 +29,7 @@ type PulsingLight = THREE.PointLight & {
   speed: number;
 };
 
-type PulsingRay = THREE.Mesh & {
+type PulsingRay = THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial> & {
   baseOpacity: number;
   phase: number;
   speed: number;
@@ -72,6 +74,7 @@ type ForestSceneTheme = {
   clearLightIntensity: number;
   glowColors: number[];
   groundColor: number;
+  groundGlowColor: number;
   puddleColor: number;
   moonColor: number;
   haloColors: [number, number];
@@ -79,6 +82,9 @@ type ForestSceneTheme = {
   dustColor: number;
   leafColor: number;
   rayColor: number;
+  glowVeilColor: number;
+  shardColor: number;
+  shardEmissive: number;
   mistColor: number;
   mushroomGlowColor: number;
   mushroomCapColor: number;
@@ -111,6 +117,7 @@ const MAIN_FOREST_SCENE_THEME: ForestSceneTheme = {
   clearLightIntensity: 2.5,
   glowColors: [0x2dd4a0, 0x40d080, 0x20c0a0, 0x4a90ff],
   groundColor: 0x2a5a2a,
+  groundGlowColor: 0x2dd4a0,
   puddleColor: 0x0a2a1a,
   moonColor: 0xd0d8ff,
   haloColors: [0x6677bb, 0x4455aa],
@@ -118,6 +125,9 @@ const MAIN_FOREST_SCENE_THEME: ForestSceneTheme = {
   dustColor: 0x5aaa7a,
   leafColor: 0x3a6a2a,
   rayColor: 0x4466aa,
+  glowVeilColor: 0x3aa4d8,
+  shardColor: 0x0b1f14,
+  shardEmissive: 0x2ad8a0,
   mistColor: 0x0a3a18,
   mushroomGlowColor: 0x2dd4a0,
   mushroomCapColor: 0x1a6b4a,
@@ -150,6 +160,7 @@ const TUTORIAL_FOREST_SCENE_THEME: ForestSceneTheme = {
   clearLightIntensity: 2.5,
   glowColors: [0xffb347, 0xffd166, 0xf59e0b, 0xfb923c],
   groundColor: 0x324321,
+  groundGlowColor: 0xfbbf24,
   puddleColor: 0x1f160d,
   moonColor: 0xffe6b4,
   haloColors: [0xffc66b, 0xff9d3a],
@@ -157,6 +168,9 @@ const TUTORIAL_FOREST_SCENE_THEME: ForestSceneTheme = {
   dustColor: 0x8c6b2a,
   leafColor: 0xc9a34f,
   rayColor: 0xf0b04e,
+  glowVeilColor: 0xffc06b,
+  shardColor: 0x2a1a0e,
+  shardEmissive: 0xffbf63,
   mistColor: 0x5b3411,
   mushroomGlowColor: 0xfbbf24,
   mushroomCapColor: 0x8a5a1f,
@@ -171,19 +185,36 @@ const FOREST_SCENE_THEMES: Record<SceneVariant, ForestSceneTheme> = {
 };
 
 const FOREST_SCENE_DEFAULTS = {
-  bloomStrength: 1.5,
-  bloomThreshold: 0.2,
-  exposure: 1.8,
-  vignetteStrength: 0.4,
-  grainIntensity: 0.02,
-  contrast: 1.12,
-  dofFocus: 22,
-  dofAperture: 0.0008,
-  chromaticAberration: 0.003,
+  // Previous values (1.5 / 0.2) made the bloom mip-chain alias randomly
+  // on the high-emissive mushroom shapes when the camera moved — the
+  // user saw it as "random bright glowing squares". Threshold raised
+  // and strength reduced so only the truly bright highlights bloom and
+  // the per-frame bloom result stays stable across camera motion.
+  bloomStrength: 0.88,
+  bloomThreshold: 0.82,
+  exposure: 1.78,
+  glowStrength: 0.68,
+  glowThreshold: 0.6,
+  glowRadius: 1.8,
+  vignetteStrength: 0.46,
+  grainIntensity: 0.012,
+  contrast: 1.18,
+  dofFocus: 26,
+  dofAperture: 0.00085,
+  ssaoRadius: 16,
+  ssaoMinDistance: 0.004,
+  ssaoMaxDistance: 0.12,
+  chromaticAberration: 0.0022,
 } as const;
 
 function randomRange(minimum: number, maximum: number): number {
   return minimum + Math.random() * (maximum - minimum);
+}
+
+function isUiClearZone(x: number, z: number): boolean {
+  const normalizedX = x / 12;
+  const normalizedZ = (z - 8) / 22;
+  return normalizedX * normalizedX + normalizedZ * normalizedZ < 1;
 }
 
 function createPoissonDiskPoints(
@@ -268,6 +299,9 @@ function createPoissonDiskPoints(
     if (Math.abs(point.x) < 5 && point.z > 8 && point.z < 35) {
       return false;
     }
+    if (isUiClearZone(point.x, point.z)) {
+      return false;
+    }
     return true;
   });
 }
@@ -296,6 +330,62 @@ function disposeScene(root: THREE.Object3D): void {
   materials.forEach((material) => material.dispose());
 }
 
+function createAtmosphericPlaneMaterial(
+  primaryColor: THREE.ColorRepresentation,
+  accentColor: THREE.ColorRepresentation,
+  opacity: number,
+): THREE.ShaderMaterial {
+  const seed = Math.random() * 1000;
+
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uPrimaryColor: { value: new THREE.Color(primaryColor) },
+      uAccentColor: { value: new THREE.Color(accentColor) },
+      uOpacity: { value: opacity },
+      uSeed: { value: seed },
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform float uTime;
+      uniform vec3 uPrimaryColor;
+      uniform vec3 uAccentColor;
+      uniform float uOpacity;
+      uniform float uSeed;
+      varying vec2 vUv;
+
+      float hash(vec2 coords) {
+        return fract(sin(dot(coords + vec2(uSeed), vec2(127.1, 311.7))) * 43758.5453);
+      }
+
+      void main() {
+        vec2 uv = vUv - 0.5;
+        float stretchX = 1.0 + 0.18 * sin(uSeed * 0.7);
+        float stretchY = 1.55 + 0.22 * cos(uSeed * 0.4);
+        float radial = 1.0 - smoothstep(0.0, 0.72, length(vec2(uv.x * stretchX, uv.y * stretchY)));
+        radial = pow(max(radial, 0.0), 1.9);
+        float band = smoothstep(0.12, 0.78, 1.0 - abs(uv.x) * (1.6 + 0.2 * sin(uTime * 0.18 + uSeed)));
+        float haze = smoothstep(0.76, 0.05, length(vec2(uv.x * 0.92, uv.y * 1.35)));
+        float ripple = 0.88 + sin((vUv.y * (7.0 + uSeed * 0.05)) + uTime * 0.25 + uSeed) * 0.12;
+        float shimmer = 0.84 + hash(vUv * (32.0 + uSeed)) * 0.16;
+        vec3 color = mix(uPrimaryColor, uAccentColor, smoothstep(0.08, 0.92, vUv.y));
+        float alpha = (radial * 0.9 + band * 0.28 + haze * 0.38) * uOpacity * ripple * shimmer;
+        gl_FragColor = vec4(color, alpha);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+  });
+}
+
 export default function MainMenuForestScene({ variant = 'main', onReady }: MainMenuForestSceneProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -307,7 +397,7 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
 
     const scene = new THREE.Scene();
     scene.background = null;
-    scene.fog = new THREE.FogExp2(new THREE.Color(theme.fogColor), 0.018);
+    scene.fog = new THREE.FogExp2(new THREE.Color(theme.fogColor), variant === 'tutorial' ? 0.0166 : 0.0152);
 
     const renderer = new THREE.WebGLRenderer({
       canvas: canvasElement,
@@ -320,7 +410,7 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.8;
+    renderer.toneMappingExposure = FOREST_SCENE_DEFAULTS.exposure;
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -332,11 +422,13 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
 
     const mouseState = { x: 0, y: 0, targetX: 0, targetY: 0 };
 
-    const skyGeometry = new THREE.SphereGeometry(150, 20, 20);
+    const skyGeometry = new THREE.SphereGeometry(150, 48, 32);
     const skyMaterial = new THREE.ShaderMaterial({
       side: THREE.BackSide,
+      dithering: true,
+      depthWrite: false,
+      depthTest: false,
       uniforms: {
-        uTime: { value: 0 },
         uSkyDeep: { value: new THREE.Color(theme.skyDeepColor) },
         uSkyMid: { value: new THREE.Color(theme.skyMidColor) },
         uSkyTop: { value: new THREE.Color(theme.skyTopColor) },
@@ -352,13 +444,14 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
         }
       `,
       fragmentShader: `
-        uniform float uTime;
         uniform vec3 uSkyDeep;
         uniform vec3 uSkyMid;
         uniform vec3 uSkyTop;
         uniform vec3 uNebulaColor;
         uniform vec3 uStarColor;
         uniform vec3 uBrightStarColor;
+        uniform vec3 uAuroraColor;
+        uniform vec3 uHorizonColor;
         varying vec3 vWorldPos;
         float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
         float noise(vec2 p) {
@@ -376,28 +469,42 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
           }
           return value;
         }
+        const float PI = 3.14159265;
         void main() {
           vec3 direction = normalize(vWorldPos);
           float y = direction.y;
           vec3 color = mix(
-            mix(uSkyDeep, uSkyMid, smoothstep(-0.1, 0.2, y)),
-            uSkyTop, smoothstep(0.2, 0.8, y)
+            mix(uSkyDeep, uSkyMid, smoothstep(-0.15, 0.18, y)),
+            uSkyTop, smoothstep(0.2, 0.85, y)
           );
-          vec2 uv = direction.xz / (y + 0.5) * 2.0;
-          float nebula = fbm(uv * 1.5 + uTime * 0.02);
-          nebula = smoothstep(0.3, 0.7, nebula) * smoothstep(0.05, 0.4, y) * (1.0 - smoothstep(0.4, 0.9, y));
-          color += uNebulaColor * nebula * 0.8;
-          float starField = hash(floor(direction.xz * 300.0));
+          float safeY = max(0.18, y + 0.6);
+          vec2 cloudUv = direction.xz / safeY * 1.6;
+          float nebula = fbm(cloudUv * 1.4 + vec2(0.16, -0.08));
+          float aurora = fbm(cloudUv * 0.8 + vec2(0.42, 1.28));
+          float horizonGlow = smoothstep(-0.08, 0.28, y) * (0.8 - abs(direction.x) * 0.45);
+          float mistBand = smoothstep(0.0, 0.4, y) * (1.0 - smoothstep(0.55, 0.92, y));
+          color += uNebulaColor * nebula * 0.25;
+          color += uAuroraColor * smoothstep(0.5, 0.82, aurora) * horizonGlow * 0.7;
+          color += uHorizonColor * horizonGlow * 0.25;
+          vec2 starUv = vec2(
+            atan(direction.z, direction.x) / (2.0 * PI) + 0.5,
+            asin(clamp(direction.y, -1.0, 1.0)) / PI + 0.5
+          );
+          float starField = hash(floor(starUv * 800.0));
           color += uStarColor * smoothstep(0.997, 1.0, starField) * smoothstep(0.15, 0.5, y)
-            * (sin(uTime * (2.0 + starField * 5.0) + starField * 100.0) * 0.5 + 0.5) * 0.8;
-          float brightStar = hash(floor(direction.xz * 80.0));
-          color += uBrightStarColor * smoothstep(0.995, 1.0, brightStar) * smoothstep(0.2, 0.6, y)
-            * (sin(uTime * 1.5 + brightStar * 50.0) * 0.3 + 0.7);
+            * 0.7;
+          float brightStar = hash(floor(starUv * 220.0));
+          color += uBrightStarColor * smoothstep(0.995, 1.0, brightStar) * smoothstep(0.2, 0.65, y)
+            * 0.85;
+          color += uAuroraColor * mistBand * 0.035;
           gl_FragColor = vec4(color, 1.0);
         }
       `,
     });
-    scene.add(new THREE.Mesh(skyGeometry, skyMaterial));
+    const skyMesh = new THREE.Mesh(skyGeometry, skyMaterial);
+    skyMesh.renderOrder = -100;
+    skyMesh.frustumCulled = false;
+    scene.add(skyMesh);
 
     scene.add(new THREE.AmbientLight(theme.ambientColor, theme.ambientIntensity));
 
@@ -432,6 +539,93 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
     clearLight.position.set(0, 4, 8);
     scene.add(clearLight);
 
+    const heroGlowLight = new THREE.PointLight(theme.glowVeilColor, 3.2, 75, 1.35);
+    heroGlowLight.position.set(0, 16, -18);
+    scene.add(heroGlowLight);
+
+    const heroGlowLayers: Array<{
+      mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>;
+      material: THREE.ShaderMaterial;
+      baseX: number;
+      baseY: number;
+      baseZ: number;
+      baseRotationZ: number;
+      driftX: number;
+      driftY: number;
+      pulseSpeed: number;
+      pulsePhase: number;
+    }> = [];
+
+    const heroGlowConfigs = [
+      { width: 180, height: 96, x: 0, y: 18, z: -36, rx: -0.06, ry: 0, rz: 0.02, primary: theme.mistColor, accent: theme.glowVeilColor, opacity: 0.26, driftX: 0.26, driftY: 0.1, pulseSpeed: 0.12 },
+      { width: 132, height: 72, x: 0, y: 15, z: -20, rx: -0.03, ry: 0, rz: -0.02, primary: theme.glowVeilColor, accent: theme.moonLightColor, opacity: 0.38, driftX: 0.42, driftY: 0.16, pulseSpeed: 0.16 },
+      { width: 84, height: 48, x: 0, y: 12, z: -12, rx: 0.01, ry: 0, rz: 0.03, primary: theme.moonLightColor, accent: theme.fillLightColor, opacity: 0.24, driftX: 0.55, driftY: 0.2, pulseSpeed: 0.22 },
+    ];
+
+    for (const heroGlowConfig of heroGlowConfigs) {
+      const heroGlowMaterial = createAtmosphericPlaneMaterial(heroGlowConfig.primary, heroGlowConfig.accent, heroGlowConfig.opacity);
+      const heroGlowMesh = new THREE.Mesh(new THREE.PlaneGeometry(heroGlowConfig.width, heroGlowConfig.height), heroGlowMaterial);
+      heroGlowMesh.position.set(heroGlowConfig.x, heroGlowConfig.y, heroGlowConfig.z);
+      heroGlowMesh.rotation.set(heroGlowConfig.rx, heroGlowConfig.ry, heroGlowConfig.rz);
+      scene.add(heroGlowMesh);
+      heroGlowLayers.push({
+        mesh: heroGlowMesh,
+        material: heroGlowMaterial,
+        baseX: heroGlowConfig.x,
+        baseY: heroGlowConfig.y,
+        baseZ: heroGlowConfig.z,
+        baseRotationZ: heroGlowConfig.rz,
+        driftX: heroGlowConfig.driftX,
+        driftY: heroGlowConfig.driftY,
+        pulseSpeed: heroGlowConfig.pulseSpeed,
+        pulsePhase: Math.random() * Math.PI * 2,
+      });
+    }
+
+    const backdropMaterial = new THREE.MeshStandardMaterial({
+      color: 0x07130a,
+      roughness: 1,
+      metalness: 0,
+      emissive: new THREE.Color(theme.backLightColor),
+      emissiveIntensity: 0.03,
+    });
+    const backdropGroup = new THREE.Group();
+    const backdropAnchors = [
+      [-58, 10, -72, 17, 4.2],
+      [-40, 13, -82, 21, 5.0],
+      [-22, 14, -90, 25, 5.8],
+      [0, 16, -94, 28, 6.4],
+      [22, 14, -90, 25, 5.8],
+      [40, 13, -82, 21, 5.0],
+      [58, 10, -72, 17, 4.2],
+    ] as const;
+
+    // Unit cylinder + cones shared across all backdrop trees — each instance
+    // scales the unit geometry to its trunk height / canopy radius. Saves
+    // 21 unique geometries and 21 cloned materials vs. the per-tree approach.
+    const backdropTrunkGeo = new THREE.CylinderGeometry(0.5, 1.0, 1, 5);
+    const backdropCanopyGeo = new THREE.ConeGeometry(1, 1, 5);
+    for (const [anchorX, anchorY, anchorZ, trunkHeight, canopyRadius] of backdropAnchors) {
+      const backdropTree = new THREE.Group();
+      const trunk = new THREE.Mesh(backdropTrunkGeo, backdropMaterial);
+      trunk.scale.set(0.4, trunkHeight, 0.4);
+      trunk.position.y = trunkHeight / 2;
+      const canopy = new THREE.Mesh(backdropCanopyGeo, backdropMaterial);
+      canopy.scale.set(canopyRadius, trunkHeight * 0.92, canopyRadius);
+      canopy.position.y = trunkHeight * 0.75;
+      canopy.rotation.y = Math.random() * Math.PI * 2;
+      const crown = new THREE.Mesh(backdropCanopyGeo, backdropMaterial);
+      crown.scale.set(canopyRadius * 0.62, trunkHeight * 0.48, canopyRadius * 0.62);
+      crown.position.y = trunkHeight * 1.06;
+      crown.rotation.y = Math.random() * Math.PI * 2;
+      backdropTree.add(trunk, canopy, crown);
+      backdropTree.position.set(anchorX, heightAt(anchorX, anchorZ) * 0.5 + anchorY * 0.12, anchorZ);
+      backdropTree.rotation.y = Math.random() * Math.PI * 2;
+      backdropTree.scale.setScalar(0.9 + Math.random() * 0.35);
+      backdropGroup.add(backdropTree);
+    }
+    scene.add(backdropGroup);
+
     const glowLights: PulsingLight[] = [];
     const glowColors = theme.glowColors;
     for (let lightIndex = 0; lightIndex < 6; lightIndex++) {
@@ -456,7 +650,13 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
     }
     groundGeometry.computeVertexNormals();
 
-    const groundMaterial = new THREE.MeshStandardMaterial({ color: theme.groundColor, roughness: 0.92, metalness: 0 });
+    const groundMaterial = new THREE.MeshStandardMaterial({
+      color: theme.groundColor,
+      roughness: 0.92,
+      metalness: 0,
+      emissive: new THREE.Color(theme.groundGlowColor),
+      emissiveIntensity: 0.08,
+    });
     const groundMesh = new THREE.Mesh(groundGeometry, groundMaterial);
     groundMesh.receiveShadow = true;
     scene.add(groundMesh);
@@ -477,19 +677,142 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
     puddleMesh.receiveShadow = true;
     scene.add(puddleMesh);
 
+    // Shared unit circle for the small puddle patches — scale per puddle.
+    const puddlePatchGeo = new THREE.CircleGeometry(1, 16);
+    puddlePatchGeo.rotateX(-Math.PI / 2);
     for (let puddleIndex = 0; puddleIndex < 2; puddleIndex++) {
       const radius = 1 + Math.random() * 1.5;
-      const puddlePatchGeometry = new THREE.CircleGeometry(radius, 16);
-      puddlePatchGeometry.rotateX(-Math.PI / 2);
-      const puddlePatchMaterial = puddleMaterial.clone();
-      puddlePatchMaterial.opacity = 0.6 + Math.random() * 0.2;
-      const puddlePatch = new THREE.Mesh(puddlePatchGeometry, puddlePatchMaterial);
+      const puddlePatch = new THREE.Mesh(puddlePatchGeo, puddleMaterial);
+      puddlePatch.scale.setScalar(radius);
       const puddleX = -4 + Math.random() * 10;
       const puddleZ = 4 + Math.random() * 8;
       puddlePatch.position.set(puddleX, heightAt(puddleX, puddleZ) + 0.03, puddleZ);
       puddlePatch.receiveShadow = true;
       scene.add(puddlePatch);
     }
+
+    const glowPoolMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uColor: { value: new THREE.Color(theme.groundGlowColor) },
+        uIntensity: { value: 0.55 },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uTime;
+        uniform vec3 uColor;
+        uniform float uIntensity;
+        varying vec2 vUv;
+        void main() {
+          float dist = length(vUv - 0.5) * 2.0;
+          float glow = smoothstep(1.0, 0.0, dist);
+          glow = pow(glow, 2.4);
+          float pulse = 0.85 + sin(uTime * 0.4 + dist * 4.0) * 0.15;
+          float alpha = glow * uIntensity * pulse;
+          gl_FragColor = vec4(uColor, alpha);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const glowPoolGroup = new THREE.Group();
+    const glowPoolCount = 12;
+    for (let glowIndex = 0; glowIndex < glowPoolCount; glowIndex++) {
+      const angle = Math.random() * Math.PI * 2;
+      const distance = 8 + Math.random() * 32;
+      const glowX = Math.cos(angle) * distance;
+      const glowZ = Math.sin(angle) * distance + 2;
+      if (isUiClearZone(glowX, glowZ)) {
+        continue;
+      }
+      const glowRadius = 1.8 + Math.random() * 4.5;
+      const glowMesh = new THREE.Mesh(new THREE.PlaneGeometry(glowRadius * 2, glowRadius * 2), glowPoolMaterial);
+      glowMesh.rotation.x = -Math.PI / 2;
+      glowMesh.position.set(glowX, heightAt(glowX, glowZ) + 0.05, glowZ);
+      glowPoolGroup.add(glowMesh);
+    }
+    scene.add(glowPoolGroup);
+
+    const shardMaterial = new THREE.MeshStandardMaterial({
+      color: theme.shardColor,
+      roughness: 0.35,
+      metalness: 0.4,
+      emissive: new THREE.Color(theme.shardEmissive),
+      emissiveIntensity: 0.22,
+    });
+    const shardGeometry = new THREE.ConeGeometry(1, 1, 3, 1);
+    const shardGroup = new THREE.Group();
+    const shardCount = 40;
+    let shardIndex = 0;
+    let shardAttempts = 0;
+    while (shardIndex < shardCount && shardAttempts < shardCount * 6) {
+      shardAttempts += 1;
+      const angle = (shardIndex / shardCount) * Math.PI * 2 + Math.random() * 0.35;
+      const distance = 24 + Math.random() * 62;
+      const height = 6 + Math.random() * 20;
+      const radius = 1.2 + Math.random() * 4.2;
+      const shardX = Math.cos(angle) * distance;
+      const shardZ = Math.sin(angle) * distance - 8;
+      if (isUiClearZone(shardX, shardZ)) {
+        continue;
+      }
+      const shardMesh = new THREE.Mesh(shardGeometry, shardMaterial);
+      shardMesh.scale.set(radius, height, radius);
+      shardMesh.position.set(shardX, heightAt(shardX, shardZ) + height * 0.5, shardZ);
+      shardMesh.rotation.y = angle + Math.random() * 0.6;
+      shardMesh.rotation.x = (Math.random() - 0.5) * 0.08;
+      shardMesh.rotation.z = (Math.random() - 0.5) * 0.08;
+      shardMesh.castShadow = true;
+      shardMesh.receiveShadow = true;
+      shardGroup.add(shardMesh);
+      shardIndex += 1;
+    }
+    scene.add(shardGroup);
+
+    const glowCurtainMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uColor: { value: new THREE.Color(theme.glowVeilColor) },
+        uIntensity: { value: 0.24 },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uTime;
+        uniform vec3 uColor;
+        uniform float uIntensity;
+        varying vec2 vUv;
+        float rand(vec2 coords) { return fract(sin(dot(coords, vec2(12.9898, 78.233))) * 43758.5453); }
+        void main() {
+          float edge = smoothstep(0.0, 0.42, 1.0 - abs(vUv.x - 0.5) * 2.0);
+          float vertical = smoothstep(0.02, 0.62, vUv.y) * (1.0 - smoothstep(0.58, 1.0, vUv.y));
+          float ripple = 0.86 + sin(vUv.y * 7.0 + uTime * 0.18) * 0.14;
+          float shimmer = 0.82 + rand(vec2(vUv.y * 4.0, uTime * 0.12)) * 0.18;
+          float alpha = edge * vertical * ripple * shimmer * uIntensity;
+          gl_FragColor = vec4(uColor, alpha);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+    });
+    const glowCurtain = new THREE.Mesh(new THREE.PlaneGeometry(150, 80), glowCurtainMaterial);
+    glowCurtain.position.set(0, 20, -58);
+    glowCurtain.rotation.x = -0.05;
+    scene.add(glowCurtain);
 
     const treePositions = createPoissonDiskPoints(140, 140, 5, 30);
     const trunkMaterials = [
@@ -503,17 +826,26 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
       new THREE.MeshStandardMaterial({ color: 0x256a30, roughness: 0.65 }),
       new THREE.MeshStandardMaterial({ color: 0x1a4a25, roughness: 0.7 }),
     ];
+    // Pre-baked unit trunks (3 size bands). Each tree scales the unit
+    // cylinder to its target height — no per-tree geometry allocation.
     const trunkGeometries = [
-      new THREE.CylinderGeometry(0.3, 0.5, 8, 6),
-      new THREE.CylinderGeometry(0.4, 0.65, 10, 6),
-      new THREE.CylinderGeometry(0.5, 0.75, 12, 6),
+      new THREE.CylinderGeometry(0.3, 0.5, 1, 6),
+      new THREE.CylinderGeometry(0.4, 0.65, 1, 6),
+      new THREE.CylinderGeometry(0.5, 0.75, 1, 6),
     ];
+    // Single unit cone — every foliage tier scales this. Previously each
+    // tier got a fresh ConeGeometry, producing ~600 unique cones across
+    // the menu's ~150 trees.
+    const foliageUnitGeo = new THREE.ConeGeometry(1, 1, 6);
+    const deadTrunkGeo = new THREE.CylinderGeometry(0.06, 0.2, 1, 5);
+    const deadBranchGeo = new THREE.CylinderGeometry(0.02, 0.05, 1, 3);
 
     const createPineTree = (scale: number): THREE.Group => {
       const treeGroup = new THREE.Group();
       const sizeIndex = scale < 0.7 ? 0 : scale < 1.1 ? 1 : 2;
       const trunkHeight = [8, 10, 12][sizeIndex];
       const trunk = new THREE.Mesh(trunkGeometries[sizeIndex], trunkMaterials[sizeIndex > 1 ? 0 : 1]);
+      trunk.scale.set(1, trunkHeight, 1);
       trunk.castShadow = true;
       trunk.receiveShadow = true;
       treeGroup.add(trunk);
@@ -523,9 +855,10 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
         const tierRadius = (3.5 - tierIndex * 0.5) * randomRange(0.75, 1.25);
         const tierHeight = (7 - tierIndex * 1.1) * randomRange(0.8, 1.1);
         const foliage = new THREE.Mesh(
-          new THREE.ConeGeometry(tierRadius, tierHeight, 6),
+          foliageUnitGeo,
           foliageMaterials[Math.floor(Math.random() * foliageMaterials.length)],
         );
+        foliage.scale.set(tierRadius, tierHeight, tierRadius);
         foliage.position.y = trunkHeight * 0.5 + tierIndex * 3 + 1;
         foliage.castShadow = true;
         foliage.receiveShadow = true;
@@ -539,7 +872,8 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
     const createDeadTree = (): THREE.Group => {
       const treeGroup = new THREE.Group();
       const trunkHeight = 5 + Math.random() * 7;
-      const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.2, trunkHeight, 5), trunkMaterials[1]);
+      const trunk = new THREE.Mesh(deadTrunkGeo, trunkMaterials[1]);
+      trunk.scale.set(1, trunkHeight, 1);
       trunk.position.y = trunkHeight / 2;
       trunk.castShadow = true;
       treeGroup.add(trunk);
@@ -547,7 +881,8 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
       const branchCount = 2 + Math.floor(Math.random() * 2);
       for (let branchIndex = 0; branchIndex < branchCount; branchIndex++) {
         const branchLength = 1 + Math.random() * 2;
-        const branch = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.05, branchLength, 3), trunkMaterials[1]);
+        const branch = new THREE.Mesh(deadBranchGeo, trunkMaterials[1]);
+        branch.scale.set(1, branchLength, 1);
         branch.position.y = trunkHeight * (0.35 + Math.random() * 0.45);
         branch.rotation.z = 0.4 + Math.random() * 0.8;
         branch.rotation.y = Math.random() * Math.PI * 2;
@@ -562,7 +897,8 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
       const distanceFromCenter = Math.sqrt(treePosition.x * treePosition.x + treePosition.z * treePosition.z);
       const baseScale = 0.5 + Math.random() * 0.8;
       const distanceScale = distanceFromCenter > 45 ? 0.55 : distanceFromCenter > 28 ? 0.75 : 1.0;
-      const treeScale = baseScale * distanceScale;
+      const foregroundScale = treePosition.z > 18 ? 0.6 : treePosition.z > 10 ? 0.8 : 1.0;
+      const treeScale = baseScale * distanceScale * foregroundScale;
       const treeGroup = Math.random() < 0.1 ? createDeadTree() : createPineTree(treeScale);
       treeGroup.scale.set(treeScale, treeScale + Math.random() * 0.2, treeScale);
       treeGroup.position.set(treePosition.x, heightAt(treePosition.x, treePosition.z), treePosition.z);
@@ -582,62 +918,89 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
     const fernMaterial = new THREE.MeshStandardMaterial({ color: 0x3a7a30, roughness: 0.7, side: THREE.DoubleSide });
     const logMaterial = new THREE.MeshStandardMaterial({ color: 0x3a2515, roughness: 0.85 });
 
-    for (let rockIndex = 0; rockIndex < 30; rockIndex++) {
-      const angle = Math.random() * Math.PI * 2;
-      const distance = 4 + Math.random() * 50;
-      const rockX = Math.cos(angle) * distance;
-      const rockZ = Math.sin(angle) * distance;
-      const rockScale = 0.15 + Math.random() * 0.6;
-      const rockGeometry = new THREE.DodecahedronGeometry(rockScale, 0);
-      const rockPositions = rockGeometry.getAttribute('position');
-      for (let vertexIndex = 0; vertexIndex < rockPositions.count; vertexIndex++) {
-        rockPositions.setX(vertexIndex, rockPositions.getX(vertexIndex) * (0.6 + Math.random() * 0.8));
-        rockPositions.setY(vertexIndex, rockPositions.getY(vertexIndex) * (0.4 + Math.random() * 0.5));
-        rockPositions.setZ(vertexIndex, rockPositions.getZ(vertexIndex) * (0.6 + Math.random() * 0.8));
+    // === ROCKS — instanced (1 draw call instead of 30) ===
+    // Single unit dodecahedron, per-instance non-uniform scale gives each rock
+    // a different silhouette without the cost of a unique distorted geometry.
+    const rockUnitGeo = new THREE.DodecahedronGeometry(1, 0);
+    const rockInstanced = new THREE.InstancedMesh(rockUnitGeo, rockMaterial, 30);
+    rockInstanced.castShadow = true;
+    rockInstanced.receiveShadow = true;
+    {
+      const dummy = new THREE.Object3D();
+      for (let rockIndex = 0; rockIndex < 30; rockIndex++) {
+        const angle = Math.random() * Math.PI * 2;
+        const distance = 4 + Math.random() * 50;
+        const rockX = Math.cos(angle) * distance;
+        const rockZ = Math.sin(angle) * distance;
+        const rockScale = 0.15 + Math.random() * 0.6;
+        dummy.position.set(rockX, heightAt(rockX, rockZ) + rockScale * 0.15, rockZ);
+        dummy.rotation.set(Math.random() * 0.4, Math.random() * Math.PI, 0);
+        // Asymmetric scale mimics the per-vertex distortion of the old build
+        dummy.scale.set(
+          rockScale * (0.7 + Math.random() * 0.6),
+          rockScale * (0.5 + Math.random() * 0.5),
+          rockScale * (0.7 + Math.random() * 0.6),
+        );
+        dummy.updateMatrix();
+        rockInstanced.setMatrixAt(rockIndex, dummy.matrix);
       }
-      rockGeometry.computeVertexNormals();
-      const rockMesh = new THREE.Mesh(rockGeometry, rockMaterial);
-      rockMesh.position.set(rockX, heightAt(rockX, rockZ) + rockScale * 0.15, rockZ);
-      rockMesh.rotation.set(Math.random() * 0.4, Math.random() * Math.PI, 0);
-      rockMesh.castShadow = true;
-      rockMesh.receiveShadow = true;
-      scene.add(rockMesh);
+      rockInstanced.instanceMatrix.needsUpdate = true;
     }
+    scene.add(rockInstanced);
 
-    for (let fernIndex = 0; fernIndex < 35; fernIndex++) {
-      const angle = Math.random() * Math.PI * 2;
-      const distance = 3 + Math.random() * 40;
-      const fernX = Math.cos(angle) * distance;
-      const fernZ = Math.sin(angle) * distance;
-      const fernScale = 0.4 + Math.random() * 1.2;
-      const fernMesh = new THREE.Mesh(new THREE.PlaneGeometry(fernScale, fernScale * 0.5), fernMaterial);
-      fernMesh.position.set(fernX, heightAt(fernX, fernZ) + fernScale * 0.2, fernZ);
-      fernMesh.rotation.x = -0.5;
-      fernMesh.rotation.y = Math.random() * Math.PI * 2;
-      scene.add(fernMesh);
+    // === FERNS — instanced (1 draw call instead of 35) ===
+    const fernUnitGeo = new THREE.PlaneGeometry(1, 0.5);
+    const fernInstanced = new THREE.InstancedMesh(fernUnitGeo, fernMaterial, 35);
+    {
+      const dummy = new THREE.Object3D();
+      for (let fernIndex = 0; fernIndex < 35; fernIndex++) {
+        const angle = Math.random() * Math.PI * 2;
+        const distance = 3 + Math.random() * 40;
+        const fernX = Math.cos(angle) * distance;
+        const fernZ = Math.sin(angle) * distance;
+        const fernScale = 0.4 + Math.random() * 1.2;
+        dummy.position.set(fernX, heightAt(fernX, fernZ) + fernScale * 0.2, fernZ);
+        dummy.rotation.set(-0.5, Math.random() * Math.PI * 2, 0);
+        dummy.scale.setScalar(fernScale);
+        dummy.updateMatrix();
+        fernInstanced.setMatrixAt(fernIndex, dummy.matrix);
+      }
+      fernInstanced.instanceMatrix.needsUpdate = true;
     }
+    scene.add(fernInstanced);
 
-    for (let logIndex = 0; logIndex < 8; logIndex++) {
-      const angle = Math.random() * Math.PI * 2;
-      const distance = 6 + Math.random() * 35;
-      const logX = Math.cos(angle) * distance;
-      const logZ = Math.sin(angle) * distance;
-      const logLength = 3 + Math.random() * 4;
-      const logRadius = 0.12 + Math.random() * 0.2;
-      const logGeometry = new THREE.CylinderGeometry(logRadius * 0.7, logRadius, logLength, 5);
-      logGeometry.rotateZ(Math.PI / 2);
-      const logMesh = new THREE.Mesh(logGeometry, logMaterial);
-      logMesh.position.set(logX, heightAt(logX, logZ) + logRadius * 0.6, logZ);
-      logMesh.rotation.y = Math.random() * Math.PI;
-      logMesh.castShadow = true;
-      logMesh.receiveShadow = true;
-      scene.add(logMesh);
+    // === LOGS — instanced (1 draw call instead of 8) ===
+    // Unit cylinder rotated 90° around Z so it lies on its side.
+    const logUnitGeo = new THREE.CylinderGeometry(0.7, 1, 1, 5);
+    logUnitGeo.rotateZ(Math.PI / 2);
+    const logInstanced = new THREE.InstancedMesh(logUnitGeo, logMaterial, 8);
+    logInstanced.castShadow = true;
+    logInstanced.receiveShadow = true;
+    {
+      const dummy = new THREE.Object3D();
+      for (let logIndex = 0; logIndex < 8; logIndex++) {
+        const angle = Math.random() * Math.PI * 2;
+        const distance = 6 + Math.random() * 35;
+        const logX = Math.cos(angle) * distance;
+        const logZ = Math.sin(angle) * distance;
+        const logLength = 3 + Math.random() * 4;
+        const logRadius = 0.12 + Math.random() * 0.2;
+        dummy.position.set(logX, heightAt(logX, logZ) + logRadius * 0.6, logZ);
+        dummy.rotation.set(0, Math.random() * Math.PI, 0);
+        // Unit cylinder is 1 unit along Y → rotated to X. Scale: X=length, Y/Z=radius.
+        dummy.scale.set(logLength, logRadius, logRadius);
+        dummy.updateMatrix();
+        logInstanced.setMatrixAt(logIndex, dummy.matrix);
+      }
+      logInstanced.instanceMatrix.needsUpdate = true;
     }
+    scene.add(logInstanced);
 
     const mushroomGlowMaterial = new THREE.MeshPhysicalMaterial({
       color: theme.mushroomGlowColor,
       emissive: theme.mushroomGlowColor,
-      emissiveIntensity: 4,
+      // Kept below the HDR clipping range so bloom stays stable in motion.
+      emissiveIntensity: 1.6,
       roughness: 0.3,
       metalness: 0.1,
       clearcoat: 0.8,
@@ -646,7 +1009,7 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
     const mushroomCapMaterial = new THREE.MeshPhysicalMaterial({
       color: theme.mushroomCapColor,
       emissive: theme.mushroomCapEmissive,
-      emissiveIntensity: 2,
+      emissiveIntensity: 0.7,
       roughness: 0.4,
       clearcoat: 0.5,
       clearcoatRoughness: 0.3,
@@ -842,21 +1205,49 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
 
     const rayGroup = new THREE.Group();
     const rayMeshes: PulsingRay[] = [];
-    for (let rayIndex = 0; rayIndex < 5; rayIndex++) {
-      const rayWidth = 0.4 + Math.random() * 1.8;
-      const rayMaterial = new THREE.MeshBasicMaterial({
-        color: theme.rayColor,
+    const rayCount = 8;
+    for (let rayIndex = 0; rayIndex < rayCount; rayIndex++) {
+      const rayWidth = 0.6 + Math.random() * 1.8;
+      const rayHeight = 28 + Math.random() * 10;
+      const rayMaterial = new THREE.ShaderMaterial({
+        uniforms: {
+          uTime: { value: 0 },
+          uColor: { value: new THREE.Color(theme.rayColor) },
+          uOpacity: { value: 0.028 + Math.random() * 0.04 },
+        },
+        vertexShader: `
+          varying vec2 vUv;
+          void main() {
+            vUv = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `,
+        fragmentShader: `
+          uniform float uTime;
+          uniform vec3 uColor;
+          uniform float uOpacity;
+          varying vec2 vUv;
+          float rand(vec2 coords) { return fract(sin(dot(coords, vec2(12.9898, 78.233))) * 43758.5453); }
+          void main() {
+            float edge = smoothstep(0.0, 0.45, 1.0 - abs(vUv.x - 0.5) * 2.0);
+            float fade = smoothstep(0.0, 0.15, vUv.y) * (1.0 - smoothstep(0.55, 1.0, vUv.y));
+            float shimmer = 0.8 + rand(vec2(vUv.y * 6.0, uTime * 0.2)) * 0.2;
+            float wave = 0.92 + sin((vUv.y * 6.0 + uTime * 0.35)) * 0.08;
+            float alpha = uOpacity * edge * fade * shimmer * wave;
+            gl_FragColor = vec4(uColor, alpha);
+          }
+        `,
         transparent: true,
-        opacity: 0.02 + Math.random() * 0.03,
-        side: THREE.DoubleSide,
         depthWrite: false,
         blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide,
       });
-      const rayMesh = new THREE.Mesh(new THREE.PlaneGeometry(rayWidth, 30), rayMaterial) as unknown as PulsingRay;
-      rayMesh.position.set(-10 + rayIndex * 5 + Math.random() * 3, 13, -18 + Math.random() * 14);
-      rayMesh.rotation.x = -0.05;
-      rayMesh.rotation.z = (Math.random() - 0.5) * 0.12;
-      rayMesh.baseOpacity = rayMaterial.opacity;
+      const rayMesh = new THREE.Mesh(new THREE.PlaneGeometry(rayWidth, rayHeight), rayMaterial) as PulsingRay;
+      rayMesh.position.set(-12 + rayIndex * 4.5 + Math.random() * 3, 11 + Math.random() * 6, -22 + Math.random() * 18);
+      rayMesh.rotation.x = -0.18;
+      rayMesh.rotation.z = (Math.random() - 0.5) * 0.18;
+      rayMesh.rotation.y = (Math.random() - 0.5) * 0.5;
+      rayMesh.baseOpacity = rayMaterial.uniforms.uOpacity.value;
       rayMesh.phase = Math.random() * Math.PI * 2;
       rayMesh.speed = 0.12 + Math.random() * 0.25;
       rayGroup.add(rayMesh);
@@ -870,7 +1261,7 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
         new THREE.MeshBasicMaterial({
           color: theme.mistColor,
           transparent: true,
-          opacity: 0.025 + mistIndex * 0.012,
+          opacity: 0.038 + mistIndex * 0.015,
           side: THREE.DoubleSide,
           depthWrite: false,
         }),
@@ -885,6 +1276,12 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
     composer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     composer.addPass(new RenderPass(scene, camera));
 
+    const ssaoPass = new SSAOPass(scene, camera, window.innerWidth, window.innerHeight);
+    ssaoPass.kernelRadius = FOREST_SCENE_DEFAULTS.ssaoRadius;
+    ssaoPass.minDistance = FOREST_SCENE_DEFAULTS.ssaoMinDistance;
+    ssaoPass.maxDistance = FOREST_SCENE_DEFAULTS.ssaoMaxDistance;
+    composer.addPass(ssaoPass);
+
     const bloomPass = new UnrealBloomPass(
       new THREE.Vector2(window.innerWidth, window.innerHeight),
       FOREST_SCENE_DEFAULTS.bloomStrength,
@@ -896,7 +1293,7 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
     const bokehPass = new BokehPass(scene, camera, {
       focus: FOREST_SCENE_DEFAULTS.dofFocus,
       aperture: FOREST_SCENE_DEFAULTS.dofAperture,
-      maxblur: 0.005,
+      maxblur: 0.0032,
     });
     composer.addPass(bokehPass);
 
@@ -908,12 +1305,19 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
         uGrain: { value: FOREST_SCENE_DEFAULTS.grainIntensity },
         uContrast: { value: FOREST_SCENE_DEFAULTS.contrast },
         uChromatic: { value: FOREST_SCENE_DEFAULTS.chromaticAberration },
+        uGlowStrength: { value: FOREST_SCENE_DEFAULTS.glowStrength },
+        uGlowThreshold: { value: FOREST_SCENE_DEFAULTS.glowThreshold },
+        uGlowRadius: { value: FOREST_SCENE_DEFAULTS.glowRadius },
+        uGlowColor: { value: new THREE.Color(theme.glowVeilColor) },
         uResolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
       },
       vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
       fragmentShader: `
         uniform sampler2D tDiffuse;
         uniform float uTime, uVignette, uGrain, uContrast, uChromatic;
+        uniform float uGlowStrength, uGlowThreshold, uGlowRadius;
+        uniform vec3 uGlowColor;
+        uniform vec2 uResolution;
         varying vec2 vUv;
         float rand(vec2 coords) { return fract(sin(dot(coords, vec2(12.9898, 78.233))) * 43758.5453); }
         void main() {
@@ -929,6 +1333,18 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
           color.b += luminance * 0.015;
           color.g += (1.0 - luminance) * 0.015;
           color = (color - 0.5) * uContrast + 0.5 + 0.025;
+          vec2 texel = uGlowRadius / uResolution;
+          vec3 glowSample = texture2D(tDiffuse, uv).rgb * 0.24;
+          glowSample += texture2D(tDiffuse, uv + vec2(texel.x, 0.0)).rgb * 0.19;
+          glowSample += texture2D(tDiffuse, uv - vec2(texel.x, 0.0)).rgb * 0.19;
+          glowSample += texture2D(tDiffuse, uv + vec2(0.0, texel.y)).rgb * 0.19;
+          glowSample += texture2D(tDiffuse, uv - vec2(0.0, texel.y)).rgb * 0.19;
+          float glowLuma = dot(glowSample, vec3(0.299, 0.587, 0.114));
+          float glowMask = smoothstep(uGlowThreshold, 1.05, glowLuma);
+          vec3 glowColor = mix(glowSample, uGlowColor, 0.35);
+          float veil = smoothstep(0.95, 0.25, distanceFromCenter);
+          color += glowColor * glowMask * uGlowStrength;
+          color += uGlowColor * veil * (uGlowStrength * 0.08);
           color *= 1.0 - smoothstep(0.35, 1.15, distanceFromCenter * 1.2) * uVignette;
           color *= 1.0 - smoothstep(0.3, 0.95, distanceFromCenter) * 0.15;
           color += (rand(uv + fract(uTime * 0.7)) * 2.0 - 1.0) * uGrain;
@@ -940,7 +1356,7 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
     composer.addPass(finalPass);
     composer.addPass(new OutputPass());
 
-    const forestSceneApi: ForestSceneApi = { renderer, scene, camera, bloomPass, bokehPass, finalPass, composer };
+    const forestSceneApi: ForestSceneApi = { renderer, scene, camera, bloomPass, ssaoPass, bokehPass, finalPass, composer };
     (window as ForestWindow).__forestScene = forestSceneApi;
 
     const clock = new THREE.Clock();
@@ -963,6 +1379,7 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
       camera.updateProjectionMatrix();
       renderer.setSize(width, height);
       composer.setSize(width, height);
+      ssaoPass.setSize(width, height);
       bloomPass.setSize(width, height);
       finalPass.uniforms.uResolution.value.set(width, height);
       fireflyMaterial.uniforms.uPR.value = renderer.getPixelRatio();
@@ -981,7 +1398,16 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
       camera.position.y = 7 - mouseState.y * 0.8;
       camera.lookAt(mouseState.x * 0.8, 2 - mouseState.y * 0.3, -8);
 
-      skyMaterial.uniforms.uTime.value = elapsedTime;
+      heroGlowLight.intensity = 2.8 + Math.sin(elapsedTime * 0.2) * 0.22;
+      heroGlowLight.position.y = 16 + Math.sin(elapsedTime * 0.16) * 0.45;
+
+      for (const heroGlowLayer of heroGlowLayers) {
+        heroGlowLayer.material.uniforms.uTime.value = elapsedTime;
+        heroGlowLayer.mesh.position.x = heroGlowLayer.baseX + Math.sin(elapsedTime * heroGlowLayer.pulseSpeed + heroGlowLayer.pulsePhase) * heroGlowLayer.driftX;
+        heroGlowLayer.mesh.position.y = heroGlowLayer.baseY + Math.cos(elapsedTime * heroGlowLayer.pulseSpeed * 0.8 + heroGlowLayer.pulsePhase) * heroGlowLayer.driftY;
+        heroGlowLayer.mesh.position.z = heroGlowLayer.baseZ;
+        heroGlowLayer.mesh.rotation.z = heroGlowLayer.baseRotationZ + Math.sin(elapsedTime * 0.05 + heroGlowLayer.pulsePhase) * 0.003;
+      }
 
       for (const treeGroup of trees) {
         const treeData = treeGroup.userData as {
@@ -1043,9 +1469,14 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
       }
       leafPositionAttribute.needsUpdate = true;
 
+      glowPoolMaterial.uniforms.uTime.value = elapsedTime;
+      glowCurtainMaterial.uniforms.uTime.value = elapsedTime;
+
       for (const rayMesh of rayMeshes) {
-        const rayMaterial = rayMesh.material as THREE.MeshBasicMaterial;
-        rayMaterial.opacity = rayMesh.baseOpacity * (0.2 + (Math.sin(elapsedTime * rayMesh.speed + rayMesh.phase) * 0.5 + 0.5) * 0.8);
+        const rayMaterial = rayMesh.material as THREE.ShaderMaterial;
+        const pulse = Math.sin(elapsedTime * rayMesh.speed + rayMesh.phase) * 0.5 + 0.5;
+        rayMaterial.uniforms.uTime.value = elapsedTime;
+        rayMaterial.uniforms.uOpacity.value = rayMesh.baseOpacity * (0.35 + pulse * 0.9);
       }
 
       puddleMaterial.clearcoatRoughness = 0.02 + Math.sin(elapsedTime * 0.5) * 0.01;
@@ -1072,6 +1503,7 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
       disposeScene(scene);
       scene.clear();
       (bloomPass as unknown as { dispose?: () => void }).dispose?.();
+      (ssaoPass as unknown as { dispose?: () => void }).dispose?.();
       (bokehPass as unknown as { dispose?: () => void }).dispose?.();
       (composer as unknown as { dispose?: () => void }).dispose?.();
       renderer.dispose();

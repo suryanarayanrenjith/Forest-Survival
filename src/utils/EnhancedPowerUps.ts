@@ -191,14 +191,15 @@ export class EnhancedPowerUpSystem {
     // Power-up indicator
     const indicatorGeometry = new THREE.BoxGeometry(1.5, 1.5, 1.5);
     const indicatorMaterial = new THREE.MeshBasicMaterial({
-      color: config.color,
-      transparent: true,
-      opacity: 0.92,
+      color: new THREE.Color(config.color).multiplyScalar(2.4),
       toneMapped: false,
       fog: false,
+      depthWrite: false,
+      depthTest: true,
     });
     const indicator = new THREE.Mesh(indicatorGeometry, indicatorMaterial);
     indicator.position.y = 0.5;
+    indicator.userData.cannotReceiveAO = true;
     group.add(indicator);
 
     // Parachute
@@ -258,10 +259,12 @@ export class EnhancedPowerUpSystem {
       size: 0.5,
       transparent: true,
       opacity: 0.6,
-      blending: THREE.AdditiveBlending
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
     });
 
     const smoke = new THREE.Points(geometry, material);
+    smoke.userData.cannotReceiveAO = true;
     airdrop.smoke = smoke;
   }
 

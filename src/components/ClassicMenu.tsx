@@ -8,7 +8,7 @@ import MenuShell from './MenuShell';
 import { MAP_CONFIGS, getRandomMap, type MapType } from '../utils/MapSystem';
 
 interface ClassicMenuProps {
-  onStartGame: (difficulty: 'easy' | 'medium' | 'hard' | 'adaptive', timeOfDay: 'day' | 'night' | 'auto', map: MapType) => void;
+  onStartGame: (difficulty: 'easy' | 'medium' | 'hard' | 'adaptive', timeOfDay: 'day' | 'night' | 'auto', map: MapType, isRandom: boolean) => void;
   onBack: () => void;
   t: (key: string) => string;
 }
@@ -203,9 +203,9 @@ const ClassicMenu = ({ onStartGame, onBack }: ClassicMenuProps) => {
             onClick={() => {
               if (isRandomMode) {
                 const timeOptions: ('day' | 'night' | 'auto')[] = ['day', 'night', 'auto'];
-                onStartGame('adaptive', timeOptions[Math.floor(Math.random() * 3)], getRandomMap());
+                onStartGame('adaptive', timeOptions[Math.floor(Math.random() * 3)], getRandomMap(), true);
               } else {
-                onStartGame(selectedDifficulty, selectedTimeOfDay, selectedMap);
+                onStartGame(selectedDifficulty, selectedTimeOfDay, selectedMap, false);
               }
             }}
             className="group flex items-center justify-center gap-2.5 rounded-xl px-12 py-4 min-w-[260px]
