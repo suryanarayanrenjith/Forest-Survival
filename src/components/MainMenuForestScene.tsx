@@ -8,21 +8,6 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { BokehPass } from 'three/examples/jsm/postprocessing/BokehPass.js';
 import { SSAOPass } from 'three/examples/jsm/postprocessing/SSAOPass.js';
 
-type ForestSceneApi = {
-  renderer: THREE.WebGLRenderer;
-  scene: THREE.Scene;
-  camera: THREE.PerspectiveCamera;
-  bloomPass: UnrealBloomPass;
-  ssaoPass: SSAOPass;
-  bokehPass: BokehPass;
-  finalPass: ShaderPass;
-  composer: EffectComposer;
-};
-
-type ForestWindow = Window & {
-  __forestScene?: ForestSceneApi;
-};
-
 type PulsingLight = THREE.PointLight & {
   baseIntensity: number;
   phase: number;
@@ -185,26 +170,23 @@ const FOREST_SCENE_THEMES: Record<SceneVariant, ForestSceneTheme> = {
 };
 
 const FOREST_SCENE_DEFAULTS = {
-  // AAA "premium menu" pass — pushed bloom + glow + contrast a notch
-  // for the moody-cinematic feel without aliasing the mushroom highlights
-  // (kept threshold above 0.7 so mid-tones don't enter the bloom mip).
-  // Tuned so the menu reads at the same visual fidelity as the in-game
-  // PostProcessing pipeline.
-  bloomStrength: 1.08,
-  bloomThreshold: 0.76,
-  exposure: 1.82,
-  glowStrength: 0.85,
-  glowThreshold: 0.58,
-  glowRadius: 2.1,
-  vignetteStrength: 0.52,
-  grainIntensity: 0.014,
-  contrast: 1.22,
+  // Softer forest-grade pass — keeps the scene moody but avoids the
+  // hard-edged contrast of the crystal look.
+  bloomStrength: 0.98,
+  bloomThreshold: 0.74,
+  exposure: 1.68,
+  glowStrength: 0.72,
+  glowThreshold: 0.6,
+  glowRadius: 2.0,
+  vignetteStrength: 0.44,
+  grainIntensity: 0.012,
+  contrast: 1.08,
   dofFocus: 26,
-  dofAperture: 0.00088,
-  ssaoRadius: 16,
+  dofAperture: 0.00084,
+  ssaoRadius: 15,
   ssaoMinDistance: 0.004,
   ssaoMaxDistance: 0.12,
-  chromaticAberration: 0.0026,
+  chromaticAberration: 0.0021,
 } as const;
 
 function randomRange(minimum: number, maximum: number): number {
@@ -388,6 +370,11 @@ function createAtmosphericPlaneMaterial(
 
 export default function MainMenuForestScene({ variant = 'main', onReady }: MainMenuForestSceneProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const onReadyRef = useRef(onReady);
+
+  useEffect(() => {
+    onReadyRef.current = onReady;
+  }, [onReady]);
 
   useEffect(() => {
     const canvasElement = canvasRef.current;
@@ -429,10 +416,13 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
       depthWrite: false,
       depthTest: false,
       uniforms: {
+        uTime: { value: 0 },
         uSkyDeep: { value: new THREE.Color(theme.skyDeepColor) },
         uSkyMid: { value: new THREE.Color(theme.skyMidColor) },
         uSkyTop: { value: new THREE.Color(theme.skyTopColor) },
         uNebulaColor: { value: new THREE.Color(theme.nebulaColor) },
+        uAuroraColor: { value: new THREE.Color(theme.glowVeilColor) },
+        uHorizonColor: { value: new THREE.Color(theme.backLightColor) },
         uStarColor: { value: new THREE.Color(theme.starColor) },
         uBrightStarColor: { value: new THREE.Color(theme.brightStarColor) },
       },
@@ -444,14 +434,15 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
         }
       `,
       fragmentShader: `
+        uniform float uTime;
         uniform vec3 uSkyDeep;
         uniform vec3 uSkyMid;
         uniform vec3 uSkyTop;
         uniform vec3 uNebulaColor;
-        uniform vec3 uStarColor;
-        uniform vec3 uBrightStarColor;
         uniform vec3 uAuroraColor;
         uniform vec3 uHorizonColor;
+        uniform vec3 uStarColor;
+        uniform vec3 uBrightStarColor;
         varying vec3 vWorldPos;
         float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
         float noise(vec2 p) {
@@ -479,24 +470,30 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
           );
           float safeY = max(0.18, y + 0.6);
           vec2 cloudUv = direction.xz / safeY * 1.6;
-          float nebula = fbm(cloudUv * 1.4 + vec2(0.16, -0.08));
-          float aurora = fbm(cloudUv * 0.8 + vec2(0.42, 1.28));
-          float horizonGlow = smoothstep(-0.08, 0.28, y) * (0.8 - abs(direction.x) * 0.45);
-          float mistBand = smoothstep(0.0, 0.4, y) * (1.0 - smoothstep(0.55, 0.92, y));
+          float driftTime = uTime * 0.035;
+          float nebula = fbm(cloudUv * 1.35 + vec2(0.16 + driftTime, -0.08 - driftTime * 0.4));
+          float aurora = fbm(cloudUv * 0.82 + vec2(0.42 - driftTime * 0.6, 1.28 + driftTime * 1.2));
+          float auroraRibbon = smoothstep(0.42, 0.92, aurora);
+          auroraRibbon *= smoothstep(-0.1, 0.44, y);
+          auroraRibbon *= 0.72 + 0.28 * sin(uTime * 0.32 + cloudUv.x * 1.8 + cloudUv.y * 2.2);
+          float horizonGlow = smoothstep(-0.1, 0.3, y) * (0.85 - abs(direction.x) * 0.42);
+          float mistBand = smoothstep(0.02, 0.44, y) * (1.0 - smoothstep(0.58, 0.93, y));
           color += uNebulaColor * nebula * 0.25;
-          color += uAuroraColor * smoothstep(0.5, 0.82, aurora) * horizonGlow * 0.7;
-          color += uHorizonColor * horizonGlow * 0.25;
+          color += uAuroraColor * auroraRibbon * horizonGlow * 0.92;
+          color += uHorizonColor * horizonGlow * 0.33;
           vec2 starUv = vec2(
             atan(direction.z, direction.x) / (2.0 * PI) + 0.5,
             asin(clamp(direction.y, -1.0, 1.0)) / PI + 0.5
           );
           float starField = hash(floor(starUv * 800.0));
+          float starTwinkle = 0.82 + 0.18 * sin(uTime * 1.7 + starField * 18.0);
           color += uStarColor * smoothstep(0.997, 1.0, starField) * smoothstep(0.15, 0.5, y)
-            * 0.7;
+            * 0.7 * starTwinkle;
           float brightStar = hash(floor(starUv * 220.0));
           color += uBrightStarColor * smoothstep(0.995, 1.0, brightStar) * smoothstep(0.2, 0.65, y)
-            * 0.85;
-          color += uAuroraColor * mistBand * 0.035;
+            * (0.8 + 0.2 * sin(uTime * 2.2 + brightStar * 22.0));
+          color += uAuroraColor * mistBand * 0.065;
+          color += uHorizonColor * mistBand * 0.028;
           gl_FragColor = vec4(color, 1.0);
         }
       `,
@@ -560,6 +557,7 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
       { width: 180, height: 96, x: 0, y: 18, z: -36, rx: -0.06, ry: 0, rz: 0.02, primary: theme.mistColor, accent: theme.glowVeilColor, opacity: 0.26, driftX: 0.26, driftY: 0.1, pulseSpeed: 0.12 },
       { width: 132, height: 72, x: 0, y: 15, z: -20, rx: -0.03, ry: 0, rz: -0.02, primary: theme.glowVeilColor, accent: theme.moonLightColor, opacity: 0.38, driftX: 0.42, driftY: 0.16, pulseSpeed: 0.16 },
       { width: 84, height: 48, x: 0, y: 12, z: -12, rx: 0.01, ry: 0, rz: 0.03, primary: theme.moonLightColor, accent: theme.fillLightColor, opacity: 0.24, driftX: 0.55, driftY: 0.2, pulseSpeed: 0.22 },
+      { width: 180, height: 92, x: 10, y: 23, z: -44, rx: -0.07, ry: -0.03, rz: 0.05, primary: theme.glowVeilColor, accent: theme.moonLightColor, opacity: 0.12, driftX: 0.22, driftY: 0.07, pulseSpeed: 0.11 },
     ];
 
     for (const heroGlowConfig of heroGlowConfigs) {
@@ -625,6 +623,24 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
       backdropGroup.add(backdropTree);
     }
     scene.add(backdropGroup);
+
+    const leftFeatureTree = new THREE.Group();
+    const leftFeatureTrunk = new THREE.Mesh(backdropTrunkGeo, backdropMaterial);
+    leftFeatureTrunk.scale.set(0.75, 20, 0.75);
+    leftFeatureTrunk.position.y = 10;
+    const leftFeatureCanopy = new THREE.Mesh(backdropCanopyGeo, backdropMaterial);
+    leftFeatureCanopy.scale.set(6.2, 15.5, 6.2);
+    leftFeatureCanopy.position.y = 18.2;
+    leftFeatureCanopy.rotation.y = 0.5;
+    const leftFeatureCrown = new THREE.Mesh(backdropCanopyGeo, backdropMaterial);
+    leftFeatureCrown.scale.set(4.3, 8.4, 4.3);
+    leftFeatureCrown.position.y = 25.2;
+    leftFeatureCrown.rotation.y = 1.1;
+    leftFeatureTree.add(leftFeatureTrunk, leftFeatureCanopy, leftFeatureCrown);
+    leftFeatureTree.position.set(-61, heightAt(-61, -28) + 0.8, -28);
+    leftFeatureTree.rotation.y = 0.35;
+    leftFeatureTree.scale.setScalar(1.05);
+    scene.add(leftFeatureTree);
 
     const glowLights: PulsingLight[] = [];
     const glowColors = theme.glowColors;
@@ -1397,9 +1413,6 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
     composer.addPass(finalPass);
     composer.addPass(new OutputPass());
 
-    const forestSceneApi: ForestSceneApi = { renderer, scene, camera, bloomPass, ssaoPass, bokehPass, finalPass, composer };
-    (window as ForestWindow).__forestScene = forestSceneApi;
-
     const clock = new THREE.Clock();
     let animationFrameId = 0;
     let isVisible = !document.hidden;
@@ -1441,6 +1454,7 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
 
       heroGlowLight.intensity = 2.8 + Math.sin(elapsedTime * 0.2) * 0.22;
       heroGlowLight.position.y = 16 + Math.sin(elapsedTime * 0.16) * 0.45;
+      skyMaterial.uniforms.uTime.value = elapsedTime;
 
       for (const heroGlowLayer of heroGlowLayers) {
         heroGlowLayer.material.uniforms.uTime.value = elapsedTime;
@@ -1557,7 +1571,7 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
     animate();
 
     const readyFrame = window.requestAnimationFrame(() => {
-      onReady?.();
+      onReadyRef.current?.();
     });
 
     return () => {
@@ -1566,7 +1580,6 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.cancelAnimationFrame(animationFrameId);
       window.cancelAnimationFrame(readyFrame);
-      (window as ForestWindow).__forestScene = undefined;
       disposeScene(scene);
       scene.clear();
       (bloomPass as unknown as { dispose?: () => void }).dispose?.();
