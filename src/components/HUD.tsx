@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   Heart, Crosshair, Skull, Waves, Flame, Lock,
-  Zap, Shield as ShieldIcon, Wind, Ghost, Plus, type LucideIcon,
+  Zap, Shield as ShieldIcon, Wind, Ghost, Plus, Footprints, type LucideIcon,
 } from 'lucide-react';
 import { WEAPONS } from '../types/game';
 
@@ -37,6 +37,11 @@ interface HUDProps {
   hideWave?: boolean;
   /** Live ability cooldown state for the ability bar. */
   abilities?: AbilityHudItem[];
+  /** 0..1 — current stamina fill for the bottom-left sprint meter. */
+  staminaRatio?: number;
+  /** When true the player has emptied the meter and can't sprint until it
+   *  partially refills. The meter renders in a red "depleted" state. */
+  staminaExhausted?: boolean;
 }
 
 const ABILITY_ICONS: Record<string, LucideIcon> = {
@@ -51,6 +56,7 @@ const HUD = ({
   health, maxHealth = 100, ammo, maxAmmo, enemiesKilled, score, wave, weaponName, combo,
   unlockedWeapons, currentWeapon, hideStatsPanel = false, unlimitedHealth = false,
   hideWave = false, abilities = [],
+  staminaRatio = 1, staminaExhausted = false,
 }: HUDProps) => {
   const [scorePopup, setScorePopup] = useState(false);
   const [prevScore, setPrevScore] = useState(score);
@@ -170,6 +176,15 @@ const HUD = ({
         </div>
       )}
 
+      {/* ===== Bottom Left — Stamina Pie ===== */}
+      {/*
+        Sprint meter. The pie sweeps clockwise as stamina depletes —
+        emerald when healthy, amber when low, red when exhausted (locked).
+        Matches the dark/glassy HUD aesthetic used elsewhere (rounded
+        border, backdrop-blur, lucide icon).
+      */}
+      <StaminaPie ratio={staminaRatio} exhausted={staminaExhausted} />
+
       {/* ===== Bottom Right — Weapons ===== */}
       <div className="absolute bottom-4 right-4 select-none">
         <div className="rounded-2xl border border-white/10 bg-black/55 backdrop-blur-md p-3">
@@ -272,6 +287,73 @@ const AbilitySlot = ({ ability }: { ability: AbilityHudItem }) => {
       }`}>
         {locked ? `${ability.unlockScore ?? 0} pts` : ability.name}
       </span>
+    </div>
+  );
+};
+
+/**
+ * Bottom-left circular stamina meter. Uses a conic-gradient for the pie
+ * sweep (sweeps clockwise from 12 o'clock) layered behind a small
+ * Footprints icon. Matches the game-wide HUD style:
+ *   • rounded outer border + backdrop-blur
+ *   • neutral grey base, emerald accent for live state
+ *   • exhausted = red, low = amber, healthy = emerald
+ *
+ * Animation is pure CSS (transition on width / conic-gradient angle) so
+ * the React state can be throttled (~12Hz) without the bar looking choppy.
+ */
+const StaminaPie = ({ ratio, exhausted }: { ratio: number; exhausted: boolean }) => {
+  const clamped = Math.max(0, Math.min(1, ratio));
+  const deg = clamped * 360;
+  const low = clamped > 0 && clamped < 0.3;
+  const fillColor = exhausted
+    ? '#f87171'                            // red — locked
+    : low
+    ? '#fbbf24'                            // amber — almost out
+    : '#34d399';                           // emerald — healthy
+  const fillGlow = exhausted
+    ? 'rgba(248,113,113,0.45)'
+    : low
+    ? 'rgba(251,191,36,0.45)'
+    : 'rgba(52,211,153,0.45)';
+
+  return (
+    <div className="absolute bottom-4 left-4 select-none">
+      <div className="rounded-2xl border border-white/10 bg-black/55 backdrop-blur-md px-3 py-2.5 flex items-center gap-3">
+        {/* Pie ring */}
+        <div className="relative w-12 h-12">
+          {/* Outer ring (track) */}
+          <div
+            className="absolute inset-0 rounded-full"
+            style={{
+              background: `conic-gradient(${fillColor} 0deg, ${fillColor} ${deg}deg, rgba(255,255,255,0.08) ${deg}deg)`,
+              transition: 'background 180ms linear',
+              boxShadow: `0 0 14px ${fillGlow}`,
+            }}
+          />
+          {/* Inner cutout — makes it a ring, not a pie */}
+          <div className="absolute inset-[5px] rounded-full bg-black/85 flex items-center justify-center">
+            <Footprints
+              className="w-4 h-4"
+              strokeWidth={2.25}
+              style={{ color: fillColor, transition: 'color 180ms linear' }}
+            />
+          </div>
+        </div>
+
+        {/* Side text — small numeric + label */}
+        <div className="flex flex-col leading-tight pr-1">
+          <span className="text-[9px] font-semibold tracking-[0.18em] text-gray-400 uppercase">
+            {exhausted ? 'Exhausted' : 'Stamina'}
+          </span>
+          <span
+            className="text-base font-bold tabular-nums"
+            style={{ color: fillColor, transition: 'color 180ms linear' }}
+          >
+            {Math.round(clamped * 100)}%
+          </span>
+        </div>
+      </div>
     </div>
   );
 };

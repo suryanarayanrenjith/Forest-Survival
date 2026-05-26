@@ -59,7 +59,7 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode }: MainMenu
   };
 
   return (
-    <div className="relative w-full h-screen overflow-hidden bg-[#05080a]">
+    <div className="relative w-full h-screen overflow-hidden">
       <MenuShell variant="main" />
 
       {/* Cinematic vignette + readability overlay */}

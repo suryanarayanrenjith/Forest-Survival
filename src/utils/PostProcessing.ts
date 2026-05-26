@@ -174,15 +174,20 @@ const CinematicGradeShader = {
       // Approximates atmospheric Mie scattering: bright pixels that are
       // already sun-coloured get pushed slightly more toward the sun's
       // colour temperature, giving the "everything bathed in golden
-      // light" feel of the reference image without needing depth-buffer
-      // access. Cheap luminance-and-screen-position heuristic.
+      // light" feel without needing depth-buffer access.
+      //
+      // Strength dialled WAY back (0.45 → 0.18) because bright-fog maps
+      // like tundra (white fog) and desert (warm-tan fog) have a large
+      // fraction of the screen above the brightness gate — at the old
+      // strength this fully drowned those scenes in a warm haze. At
+      // 0.18 the effect reads as the intended subtle "lit by sun" warm
+      // bias on truly bright pixels (sky, sun-lit cloud edges) without
+      // pulling the whole scene to one colour.
       if (sunIntensity > 0.001) {
         float lumAerial = dot(hdr, vec3(0.2126, 0.7152, 0.0722));
-        float aerialMask = smoothstep(0.6, 2.4, lumAerial) * sunIntensity;
-        // Warm bias toward the sun colour — strongest in the upper half
-        // of the screen where sky / distant hills live.
+        float aerialMask = smoothstep(0.9, 2.4, lumAerial) * sunIntensity;
         float topBias = smoothstep(0.4, 1.0, vUv.y);
-        hdr = mix(hdr, hdr * sunColor * 1.08, aerialMask * topBias * 0.45);
+        hdr = mix(hdr, hdr * sunColor * 1.06, aerialMask * topBias * 0.18);
       }
 
       // ─── EXPOSURE × ATMOSPHERIC TINT (linear HDR) ──────────────────

@@ -24,20 +24,56 @@ function getFlashTexture(): THREE.CanvasTexture {
   return sharedFlashTexture;
 }
 
+/**
+ * Optional shared PointLight pool injected by the host scene. Adding /
+ * removing PointLights from a three.js scene triggers a full shader
+ * recompile of every material (the light count is baked into shader
+ * uniforms at compile time) — which produced a visible per-shot stutter
+ * on autofire weapons. The host pre-allocates a fixed pool and we
+ * acquire/release via intensity toggling (which never recompiles).
+ *
+ * Reference: https://discourse.threejs.org/t/scene-freezes-when-adding-dynamically-pointlight/28281
+ */
+type MuzzleLightAcquire = () => THREE.PointLight | null;
+type MuzzleLightRelease = (light: THREE.PointLight | null | undefined) => void;
+let _muzzleLightAcquire: MuzzleLightAcquire | null = null;
+let _muzzleLightRelease: MuzzleLightRelease | null = null;
+export function setMuzzleLightPool(acquire: MuzzleLightAcquire, release: MuzzleLightRelease) {
+  _muzzleLightAcquire = acquire;
+  _muzzleLightRelease = release;
+}
+
 export class MuzzleFlash {
-  light: THREE.PointLight;
+  light: THREE.PointLight | null;
   sprite: THREE.Sprite;
   lifetime: number = 0;
+  private _initialIntensity: number;
 
   constructor(scene: THREE.Scene, position: THREE.Vector3, _color: number) {
     // Force realistic gun fire colors - yellow/orange (ignore passed color)
     const fireColor = 0xffaa00; // Bright yellow-orange fire color
 
-    // Create intense point light for realistic muzzle flash
-    this.light = new THREE.PointLight(fireColor, 20, 15);
-    this.light.position.copy(position);
-    this.light.castShadow = false; // Don't cast shadows for performance
-    scene.add(this.light);
+    // Borrow a PointLight from the host's pool if one is available. Pool
+    // lights live in world space (scene-parented) and are toggled via
+    // intensity rather than scene.add/remove, eliminating the per-shot
+    // recompile stutter the user reported.
+    if (_muzzleLightAcquire) {
+      this.light = _muzzleLightAcquire();
+      if (this.light) {
+        this.light.color.setHex(fireColor);
+        this.light.intensity = 20;
+        this.light.distance = 15;
+        this.light.position.copy(position);
+      }
+    } else {
+      // Fallback path (e.g. tests that don't wire up the pool) —
+      // allocate a fresh light. Should never run in production.
+      this.light = new THREE.PointLight(fireColor, 20, 15);
+      this.light.castShadow = false;
+      this.light.position.copy(position);
+      scene.add(this.light);
+    }
+    this._initialIntensity = 20;
 
     // Per-instance material owns the animated opacity. Building these is
     // cheap (no texture upload) compared to the underlying canvas texture
@@ -69,7 +105,7 @@ export class MuzzleFlash {
 
     // Fast fade out for snappy feel
     const opacity = Math.pow(this.lifetime / 0.08, 0.5);
-    this.light.intensity = 20 * opacity;
+    if (this.light) this.light.intensity = this._initialIntensity * opacity;
     if (this.sprite.material instanceof THREE.SpriteMaterial) {
       this.sprite.material.opacity = opacity;
     }
@@ -78,7 +114,16 @@ export class MuzzleFlash {
   }
 
   dispose(scene: THREE.Scene) {
-    scene.remove(this.light);
+    // Return pool light to the pool (intensity → 0, kept in scene), or
+    // remove the fallback fresh light from the scene.
+    if (this.light) {
+      if (_muzzleLightRelease) {
+        _muzzleLightRelease(this.light);
+      } else {
+        scene.remove(this.light);
+      }
+      this.light = null;
+    }
     scene.remove(this.sprite);
     // Dispose only the per-instance material — the texture map is shared
     // across every flash and must NOT be disposed here.

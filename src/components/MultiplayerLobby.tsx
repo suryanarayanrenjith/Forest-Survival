@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import {
   Users, ArrowLeft, Server, LogIn, Copy, SlidersHorizontal, Clock,
   ChevronDown, Crown, Play, X, Loader2, Wifi, Check, Pencil, Dices,
-  Trees, Flame, Snowflake, Mountain, Droplet, Shield, Gem, Landmark,
+  Trees, Flame, Snowflake, Mountain, Droplet, Shield, Leaf, Landmark,
   Crosshair, Skull, Cpu, type LucideIcon,
 } from 'lucide-react';
 import MenuShell from './MenuShell';
@@ -36,7 +36,7 @@ const MAP_ICONS: Record<MapType, LucideIcon> = {
   desert_canyon: Mountain,
   toxic_swamp: Droplet,
   military_outpost: Shield,
-  crystal_caverns: Gem,
+  autumn_grove: Leaf,
   ancient_ruins: Landmark,
 };
 

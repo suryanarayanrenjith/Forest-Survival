@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
 import { GunModel } from './utils/GunModel';
-import { MuzzleFlash, BulletTracer, ImpactEffect, BloodSplatter } from './utils/Effects';
+import { MuzzleFlash, BulletTracer, ImpactEffect, BloodSplatter, setMuzzleLightPool } from './utils/Effects';
 import { soundManager } from './utils/SoundManager';
 import { gameSettingsManager, type UserSettings } from './utils/GameSettingsManager';
 import { PostProcessingPipeline } from './utils/PostProcessing';
@@ -55,7 +55,27 @@ import { TutorialOverlay, CoachTipsDisplay } from './components/TutorialOverlay'
 import { EnhancedSettings, type GameSettings } from './components/EnhancedSettings';
 import { StatsGallery } from './components/StatsGallery';
 import { ErrorBoundary } from './components/ErrorBoundary';
-import ShaderProcessingScreen from './components/ShaderProcessingScreen';
+import ShaderProcessingScreen, { type WarmupErrorInfo } from './components/ShaderProcessingScreen';
+import MenuBackdrop, { type MenuBackdropVariant } from './components/MenuBackdrop';
+
+/**
+ * Quick WebGL2 availability check. We do this BEFORE the scene useEffect
+ * runs (which would throw a deep three.js error if WebGL is unavailable)
+ * so we can surface a clean, user-friendly error message via the
+ * ShaderProcessingScreen instead of crashing into the ErrorBoundary.
+ */
+function detectWebGLAvailability(): { ok: boolean; reason?: string } {
+  try {
+    const canvas = document.createElement('canvas');
+    const gl2 = canvas.getContext('webgl2');
+    if (gl2) return { ok: true };
+    const gl1 = canvas.getContext('webgl') || (canvas.getContext('experimental-webgl') as WebGLRenderingContext | null);
+    if (!gl1) return { ok: false, reason: 'WebGL is not available in this browser. The game cannot run.' };
+    return { ok: false, reason: 'Only WebGL 1 is available; the game requires WebGL 2 for shader compatibility.' };
+  } catch (err) {
+    return { ok: false, reason: `WebGL detection failed: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
 
 interface Translations {
   [key: string]: {
@@ -167,6 +187,14 @@ const ForestSurvivalGame = () => {
   const [showTutorialMenu, setShowTutorialMenu] = useState(false);
   const [gameStarted, setGameStarted] = useState(false);
   const [showShaderProcessing, setShowShaderProcessing] = useState(false);
+  // Surfaces warmup / WebGL errors via the loader's error UI. When set,
+  // the loader shows a "Warmup Failed" card with Retry / Continue Anyway
+  // buttons instead of the normal progress UI.
+  const [warmupError, setWarmupError] = useState<WarmupErrorInfo | null>(null);
+  // Ref the scene useEffect closure reads to honour a user-clicked
+  // "Continue Anyway" — when true, the warmup chain falls through to
+  // start the game with whatever has been initialised so far.
+  const continueAnywayRef = useRef(false);
   const [classicDifficulty, setClassicDifficulty] = useState<'easy' | 'medium' | 'hard' | 'adaptive'>('medium');
   const [classicTimeOfDay, setClassicTimeOfDay] = useState<'day' | 'night' | 'auto'>('auto');
   const [selectedMap, setSelectedMap] = useState<MapType>(DEFAULT_MAP);
@@ -180,6 +208,10 @@ const ForestSurvivalGame = () => {
   const [abilityHud, setAbilityHud] = useState<AbilityHudItem[]>([]);
   const [userSettings, setUserSettings] = useState<UserSettings>(() => gameSettingsManager.getSettings());
   const [currentFPS, setCurrentFPS] = useState(0);
+  // Live stamina + exhaustion flags pushed from the per-frame game loop
+  // so the HUD can draw the bottom-left pie meter at the correct fill.
+  const [staminaRatio, setStaminaRatio] = useState(1);
+  const [staminaExhaustedUI, setStaminaExhaustedUI] = useState(false);
 
   // Multiplayer state
   const [showMultiplayerLobby, setShowMultiplayerLobby] = useState(false);
@@ -522,6 +554,26 @@ const ForestSurvivalGame = () => {
   useEffect(() => {
     if (!gameStarted) return;
 
+    // ── WebGL availability sentinel ───────────────────────────────────
+    // If the browser can't provide WebGL2, three.js's renderer will
+    // throw deep in its initialiser — surfaces as an opaque error in
+    // the ErrorBoundary. Catch it here first and present a friendly
+    // message via the loader's error UI instead.
+    const webgl = detectWebGLAvailability();
+    if (!webgl.ok) {
+      setWarmupError({
+        message: 'WebGL is required to run this game.',
+        stage: 'WebGL',
+        detail: webgl.reason,
+        recoverable: false,
+      });
+      return;
+    }
+
+    // Reset error state on a fresh scene useEffect run (restart, mode switch)
+    setWarmupError(null);
+    continueAnywayRef.current = false;
+
     // Read user settings from localStorage for game configuration
     const currentUserSettings = gameSettingsManager.getSettings();
     // `let` so the render loop can pick up live FOV changes from the
@@ -572,14 +624,20 @@ const ForestSurvivalGame = () => {
       invincible: 1500,
     };
 
-    // Initialize achievement system
+    // Initialize achievement system. Tutorial mode is a sandboxed
+    // learning space — unlocking real achievements there would be
+    // cheap (no danger, no wave progression) AND the unlock pop-ups
+    // visually clutter the tutorial overlay. Skip both the queue
+    // push AND any logging so tutorial sessions stay clean.
+    const _isTutorialModeForAch = gameMode === 'tutorial';
     const achievementSystem = new AchievementSystem();
-    achievementSystem.onUnlock((achievement: any) => {
-      console.log('[Achievement] Unlocked:', achievement.name);
-      // Add achievement to queue with unique ID
-      const achievementWithId = { ...achievement, queueId: Date.now() + Math.random() };
-      setAchievementQueue((prev) => [...prev, achievementWithId]);
-    });
+    if (!_isTutorialModeForAch) {
+      achievementSystem.onUnlock((achievement: any) => {
+        console.log('[Achievement] Unlocked:', achievement.name);
+        const achievementWithId = { ...achievement, queueId: Date.now() + Math.random() };
+        setAchievementQueue((prev) => [...prev, achievementWithId]);
+      });
+    }
 
     // Initialize enhanced power-up system
     const enhancedPowerUps = new EnhancedPowerUpSystem();
@@ -2104,256 +2162,308 @@ const ForestSurvivalGame = () => {
       };
     };
 
+    // ═══════════════════════════════════════════════════════════════════
+    //  PICKUP SHARED RESOURCES
+    // ═══════════════════════════════════════════════════════════════════
+    // Previously every pickup allocated fresh materials + a fresh PointLight
+    // on every spawn. Adding a PointLight to the scene triggers three.js
+    // to RECOMPILE every material in the world (the lighting state is
+    // baked into shaders at compile time) — that was the cause of the
+    // visible stutter the user reported when pickups dropped.
+    //
+    // Fix: pre-allocate a fixed pool of N PointLights at scene init so
+    // shader compile happens ONCE during warmup. Pickups acquire/release
+    // pool slots via intensity toggling, which never recompiles. Materials
+    // + geometries are also cached so per-pickup spawn is allocation-free.
+    //
+    // Reference: https://discourse.threejs.org/t/scene-freezes-when-adding-dynamically-pointlight/28281
+    // ═══════════════════════════════════════════════════════════════════
+
+    // ── PointLight pool (8 lights, eight is comfortably above peak
+    //    concurrent visible pickups in typical play) ────────────────────
+    const PICKUP_LIGHT_POOL_SIZE = 8;
+    const pickupLightPool: { light: THREE.PointLight; inUse: boolean }[] = [];
+    for (let _li = 0; _li < PICKUP_LIGHT_POOL_SIZE; _li++) {
+      const poolLight = new THREE.PointLight(0xffffff, 0, 9, 1.6);
+      poolLight.castShadow = false;
+      scene.add(poolLight);
+      pickupLightPool.push({ light: poolLight, inUse: false });
+    }
+    const acquirePickupLight = (color: number): THREE.PointLight | null => {
+      for (const slot of pickupLightPool) {
+        if (!slot.inUse) {
+          slot.inUse = true;
+          slot.light.color.setHex(color);
+          slot.light.intensity = 4.5;
+          return slot.light;
+        }
+      }
+      return null;
+    };
+    const releasePickupLight = (light: THREE.PointLight | null | undefined) => {
+      if (!light) return;
+      for (const slot of pickupLightPool) {
+        if (slot.light === light) {
+          slot.inUse = false;
+          slot.light.intensity = 0;
+          slot.light.position.set(0, 0, 0);
+          return;
+        }
+      }
+    };
+
+    // ── Muzzle-flash PointLight pool ─────────────────────────────────
+    // Each MuzzleFlash used to scene.add() its own PointLight on every
+    // shot (line 38 of Effects.ts before the fix), which triggered a
+    // shader recompile of every material — the cause of the per-shot
+    // stutter the user reported when firing for the first time. Pool
+    // of 3 is enough for overlapping flashes on autofire weapons.
+    const MUZZLE_LIGHT_POOL_SIZE = 3;
+    const muzzleLightPool: { light: THREE.PointLight; inUse: boolean }[] = [];
+    for (let _ml = 0; _ml < MUZZLE_LIGHT_POOL_SIZE; _ml++) {
+      const ml = new THREE.PointLight(0xffaa00, 0, 15);
+      ml.castShadow = false;
+      scene.add(ml);
+      muzzleLightPool.push({ light: ml, inUse: false });
+    }
+    setMuzzleLightPool(
+      () => {
+        for (const slot of muzzleLightPool) {
+          if (!slot.inUse) { slot.inUse = true; return slot.light; }
+        }
+        return null;
+      },
+      (light) => {
+        if (!light) return;
+        for (const slot of muzzleLightPool) {
+          if (slot.light === light) {
+            slot.inUse = false;
+            slot.light.intensity = 0;
+            return;
+          }
+        }
+      },
+    );
+
+    // ── Per-color material caches. 6 pickup types → 6 of each material ──
+    const pickupShellMatCache = new Map<number, THREE.MeshStandardMaterial>();
+    const pickupInnerMatCache = new Map<number, THREE.MeshBasicMaterial>();
+    const pickupGlowInnerMatCache = new Map<number, THREE.MeshBasicMaterial>();
+    const pickupGlowOuterMatCache = new Map<number, THREE.MeshBasicMaterial>();
+    const pickupRingMatCache = new Map<number, THREE.MeshBasicMaterial>();
+    const pickupHaloMatCache = new Map<number, THREE.ShaderMaterial>();
+
+    const getShellMat = (color: number, coreColor: number): THREE.MeshStandardMaterial => {
+      let m = pickupShellMatCache.get(coreColor);
+      if (!m) {
+        m = new THREE.MeshStandardMaterial({
+          color, roughness: 0.18, metalness: 0.55,
+          emissive: coreColor, emissiveIntensity: 0.85, flatShading: true,
+        });
+        pickupShellMatCache.set(coreColor, m);
+      }
+      return m;
+    };
+    const getInnerMat = (coreColor: number): THREE.MeshBasicMaterial => {
+      let m = pickupInnerMatCache.get(coreColor);
+      if (!m) {
+        m = new THREE.MeshBasicMaterial({
+          color: new THREE.Color(coreColor).multiplyScalar(1.8),
+          toneMapped: true, fog: false,
+        });
+        pickupInnerMatCache.set(coreColor, m);
+      }
+      return m;
+    };
+    const getGlowInnerMat = (coreColor: number): THREE.MeshBasicMaterial => {
+      let m = pickupGlowInnerMatCache.get(coreColor);
+      if (!m) {
+        m = new THREE.MeshBasicMaterial({
+          color: new THREE.Color(coreColor), transparent: true, opacity: 0.45,
+          blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: true,
+          fog: false, side: THREE.BackSide,
+        });
+        pickupGlowInnerMatCache.set(coreColor, m);
+      }
+      return m;
+    };
+    const getGlowOuterMat = (coreColor: number): THREE.MeshBasicMaterial => {
+      let m = pickupGlowOuterMatCache.get(coreColor);
+      if (!m) {
+        m = new THREE.MeshBasicMaterial({
+          color: new THREE.Color(coreColor), transparent: true, opacity: 0.22,
+          blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: true,
+          fog: false, side: THREE.BackSide,
+        });
+        pickupGlowOuterMatCache.set(coreColor, m);
+      }
+      return m;
+    };
+    const getRingMat = (coreColor: number): THREE.MeshBasicMaterial => {
+      let m = pickupRingMatCache.get(coreColor);
+      if (!m) {
+        m = new THREE.MeshBasicMaterial({
+          color: new THREE.Color(coreColor), transparent: true, opacity: 0.85,
+          blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+          fog: false, side: THREE.DoubleSide,
+        });
+        pickupRingMatCache.set(coreColor, m);
+      }
+      return m;
+    };
+    const getHaloMat = (coreColor: number): THREE.ShaderMaterial => {
+      let m = pickupHaloMatCache.get(coreColor);
+      if (!m) {
+        m = new THREE.ShaderMaterial({
+          uniforms: {
+            uColor: { value: new THREE.Color(coreColor) },
+            uOpacity: { value: 0.6 },
+            uTime: { value: 0 },
+          },
+          vertexShader: /* glsl */`
+            varying vec2 vUv;
+            void main() {
+              vUv = uv;
+              gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+          `,
+          fragmentShader: /* glsl */`
+            uniform vec3 uColor;
+            uniform float uOpacity;
+            uniform float uTime;
+            varying vec2 vUv;
+            void main() {
+              float d = length(vUv - 0.5) * 2.0;
+              float glow = 1.0 - smoothstep(0.0, 1.0, d);
+              glow = pow(glow, 1.5);
+              float pulse = 0.85 + sin(uTime * 2.0 - d * 4.0) * 0.15;
+              gl_FragColor = vec4(uColor, glow * uOpacity * pulse);
+            }
+          `,
+          transparent: true,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+        });
+        pickupHaloMatCache.set(coreColor, m);
+      }
+      return m;
+    };
+
+    // ── Shared geometries (also cached per shape) ────────────────────────
+    const pickupGeoCache = new Map<string, THREE.BufferGeometry>();
+    const _pgeo = <T extends THREE.BufferGeometry>(key: string, factory: () => T): T => {
+      let g = pickupGeoCache.get(key);
+      if (!g) { g = factory(); pickupGeoCache.set(key, g); }
+      return g as T;
+    };
+    // Halo / glow / ring shapes are the same for every pickup
+    const glowInnerGeoShared = _pgeo('pgGlowInner', () => new THREE.SphereGeometry(0.75, 16, 12));
+    const glowOuterGeoShared = _pgeo('pgGlowOuter', () => new THREE.SphereGeometry(1.4, 16, 12));
+    const ringGeoShared      = _pgeo('pgRing',      () => new THREE.TorusGeometry(1.0, 0.04, 6, 32));
+    const haloGeoShared      = _pgeo('pgHalo',      () => new THREE.CircleGeometry(2.2, 24));
+
     const createPowerUp = (x: number, z: number, type: PowerUp['type']): PowerUp => {
       // ── PICKUP GEOMETRY: layered, beacon-class loot drops ─────────────
-      // Each pickup is a Group containing:
-      //   • A PBR outer shell  (catches sun + gun-fill light)
-      //   • A bright unlit inner gem  (the colored core)
-      //   • Twin additive glow spheres  (the soft "aura")
-      //   • A vertical beacon pillar  (visible across the map)
-      //   • A ground halo disc  (light pool on the terrain)
-      //   • A rotating ring  (extra cinematic flair)
-      //   • A real PointLight  (actually illuminates nearby geometry,
-      //                          the single biggest "magical" win)
-      // Every animatable layer is stashed on userData so the per-frame
-      // pulse loop can drive intensity / scale / rotation.
+      // The geometry shape varies by type (box for health/ammo, cone for
+      // speed, octahedron for damage, icosahedron for shield, torus for
+      // infinite_ammo). Everything else (materials, shared shapes, light)
+      // is pooled — spawning a pickup is now allocation-light.
       let color = 0x00ff00;
       let coreColor = 0xffffff;
-      let shellGeo: THREE.BufferGeometry = new THREE.BoxGeometry(0.6, 0.6, 0.6);
-      let innerGeo: THREE.BufferGeometry = new THREE.BoxGeometry(0.32, 0.32, 0.32);
+      let shellGeo: THREE.BufferGeometry;
+      let innerGeo: THREE.BufferGeometry;
       switch (type) {
         case 'health':
-          color = 0xd11a1a;
-          coreColor = 0xff5a5a;
-          shellGeo = new THREE.BoxGeometry(0.7, 0.5, 0.5);
-          innerGeo = new THREE.BoxGeometry(0.55, 0.18, 0.18);
+          color = 0xd11a1a; coreColor = 0xff5a5a;
+          shellGeo = _pgeo('pgShellH', () => new THREE.BoxGeometry(0.7, 0.5, 0.5));
+          innerGeo = _pgeo('pgInnerH', () => new THREE.BoxGeometry(0.55, 0.18, 0.18));
           break;
         case 'ammo':
-          color = 0x8a5a18;
-          coreColor = 0xffd54a;
-          shellGeo = new THREE.BoxGeometry(0.78, 0.5, 0.5);
-          innerGeo = new THREE.BoxGeometry(0.55, 0.28, 0.28);
+          color = 0x8a5a18; coreColor = 0xffd54a;
+          shellGeo = _pgeo('pgShellA', () => new THREE.BoxGeometry(0.78, 0.5, 0.5));
+          innerGeo = _pgeo('pgInnerA', () => new THREE.BoxGeometry(0.55, 0.28, 0.28));
           break;
         case 'speed':
-          color = 0x08808a;
-          coreColor = 0x6ef0ff;
-          shellGeo = new THREE.ConeGeometry(0.45, 0.95, 5);
-          innerGeo = new THREE.ConeGeometry(0.18, 0.55, 4);
+          color = 0x08808a; coreColor = 0x6ef0ff;
+          shellGeo = _pgeo('pgShellSp', () => new THREE.ConeGeometry(0.45, 0.95, 5));
+          innerGeo = _pgeo('pgInnerSp', () => new THREE.ConeGeometry(0.18, 0.55, 4));
           break;
         case 'damage':
-          color = 0xa6320a;
-          coreColor = 0xff8a3a;
-          shellGeo = new THREE.OctahedronGeometry(0.55, 0);
-          innerGeo = new THREE.OctahedronGeometry(0.25, 0);
+          color = 0xa6320a; coreColor = 0xff8a3a;
+          shellGeo = _pgeo('pgShellD', () => new THREE.OctahedronGeometry(0.55, 0));
+          innerGeo = _pgeo('pgInnerD', () => new THREE.OctahedronGeometry(0.25, 0));
           break;
         case 'shield':
-          color = 0x0a4880;
-          coreColor = 0x55b0ff;
-          shellGeo = new THREE.IcosahedronGeometry(0.55, 0);
-          innerGeo = new THREE.IcosahedronGeometry(0.26, 0);
+          color = 0x0a4880; coreColor = 0x55b0ff;
+          shellGeo = _pgeo('pgShellSh', () => new THREE.IcosahedronGeometry(0.55, 0));
+          innerGeo = _pgeo('pgInnerSh', () => new THREE.IcosahedronGeometry(0.26, 0));
           break;
         case 'infinite_ammo':
-          color = 0x701a70;
-          coreColor = 0xff5aff;
-          shellGeo = new THREE.TorusGeometry(0.42, 0.13, 8, 18);
-          innerGeo = new THREE.TorusGeometry(0.42, 0.06, 6, 16);
+          color = 0x701a70; coreColor = 0xff5aff;
+          shellGeo = _pgeo('pgShellI', () => new THREE.TorusGeometry(0.42, 0.13, 8, 18));
+          innerGeo = _pgeo('pgInnerI', () => new THREE.TorusGeometry(0.42, 0.06, 6, 16));
           break;
+        default:
+          shellGeo = _pgeo('pgShellD0', () => new THREE.BoxGeometry(0.6, 0.6, 0.6));
+          innerGeo = _pgeo('pgInnerD0', () => new THREE.BoxGeometry(0.32, 0.32, 0.32));
       }
 
       const group = new THREE.Group();
       group.position.set(x, 2, z);
 
-      // OUTER SHELL — PBR material. Emissive bumped so the shell itself
-      // glows brightly under bloom (previously was dialled way down).
-      const shellMat = new THREE.MeshStandardMaterial({
-        color: color,
-        roughness: 0.18,
-        metalness: 0.55,
-        emissive: coreColor,
-        emissiveIntensity: 0.85,
-        flatShading: true,
-      });
-      const shell = new THREE.Mesh(shellGeo, shellMat);
+      // OUTER SHELL — PBR material (shared by color).
+      const shell = new THREE.Mesh(shellGeo, getShellMat(color, coreColor));
       shell.castShadow = false;
       shell.receiveShadow = true;
       shell.userData.cannotReceiveAO = true;
       group.add(shell);
 
-      // INNER GEM — bright unlit core. Multiplied 1.8× for true HDR
-      // brightness — pushes hard through the bloom threshold.
-      const innerMat = new THREE.MeshBasicMaterial({
-        color: new THREE.Color(coreColor).multiplyScalar(1.8),
-        toneMapped: true,
-        fog: false,
-      });
-      const inner = new THREE.Mesh(innerGeo, innerMat);
+      // INNER GEM — bright unlit core (shared by color).
+      const inner = new THREE.Mesh(innerGeo, getInnerMat(coreColor));
       inner.userData.cannotReceiveAO = true;
       group.add(inner);
 
-      // ─── TWIN ADDITIVE GLOW SPHERES (thicker than before) ──────────
-      const glowInnerGeo = new THREE.SphereGeometry(0.75, 16, 12);
-      const glowInnerMat = new THREE.MeshBasicMaterial({
-        color: new THREE.Color(coreColor),
-        transparent: true,
-        opacity: 0.45,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        toneMapped: true,
-        fog: false,
-        side: THREE.BackSide,
-      });
-      const glowInner = new THREE.Mesh(glowInnerGeo, glowInnerMat);
+      // TWIN ADDITIVE GLOW SPHERES (shared geometry + per-color material)
+      const glowInner = new THREE.Mesh(glowInnerGeoShared, getGlowInnerMat(coreColor));
       glowInner.userData.cannotReceiveAO = true;
       glowInner.renderOrder = 989;
       group.add(glowInner);
 
-      const glowOuterGeo = new THREE.SphereGeometry(1.4, 16, 12);
-      const glowOuterMat = new THREE.MeshBasicMaterial({
-        color: new THREE.Color(coreColor),
-        transparent: true,
-        opacity: 0.22,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        toneMapped: true,
-        fog: false,
-        side: THREE.BackSide,
-      });
-      const glowOuter = new THREE.Mesh(glowOuterGeo, glowOuterMat);
+      const glowOuter = new THREE.Mesh(glowOuterGeoShared, getGlowOuterMat(coreColor));
       glowOuter.userData.cannotReceiveAO = true;
       glowOuter.renderOrder = 988;
       group.add(glowOuter);
 
-      // ─── BEACON PILLAR ──────────────────────────────────────────────
-      // Vertical glowing shaft that rises into the sky — visible from
-      // across the map, draws the player's eye like loot beacons in
-      // Borderlands / Destiny. Tall thin cylinder with additive blending.
-      const beaconGeo = new THREE.CylinderGeometry(0.18, 0.32, 14, 8, 1, true);
-      const beaconMat = new THREE.ShaderMaterial({
-        uniforms: {
-          uColor: { value: new THREE.Color(coreColor) },
-          uTime: { value: 0 },
-          uOpacity: { value: 0.55 },
-        },
-        vertexShader: /* glsl */`
-          varying vec2 vUv;
-          varying float vY;
-          void main() {
-            vUv = uv;
-            vY = position.y;
-            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-          }
-        `,
-        fragmentShader: /* glsl */`
-          uniform vec3 uColor;
-          uniform float uTime;
-          uniform float uOpacity;
-          varying vec2 vUv;
-          varying float vY;
-          void main() {
-            // Fade out toward the top + soften horizontal edges so the
-            // cylinder reads as a beam of light, not a hard cylinder.
-            float topFade = 1.0 - smoothstep(0.0, 1.0, vUv.y);
-            float edge = 1.0 - abs(vUv.x - 0.5) * 2.0;
-            edge = smoothstep(0.0, 0.6, edge);
-            // Subtle vertical scroll for the "energy beam" feel
-            float scroll = 0.85 + sin(vUv.y * 18.0 - uTime * 2.0) * 0.15;
-            float alpha = topFade * edge * uOpacity * scroll;
-            gl_FragColor = vec4(uColor, alpha);
-          }
-        `,
-        transparent: true,
-        depthWrite: false,
-        blending: THREE.AdditiveBlending,
-        side: THREE.DoubleSide,
-      });
-      const beacon = new THREE.Mesh(beaconGeo, beaconMat);
-      beacon.position.y = 6.5; // beam centered above pickup
-      beacon.userData.cannotReceiveAO = true;
-      beacon.renderOrder = 987;
-      group.add(beacon);
-
-      // ─── ROTATING RING ──────────────────────────────────────────────
-      // Thin glowing torus halo around the pickup — pure additive eye
-      // candy that spins to draw attention.
-      const ringGeo = new THREE.TorusGeometry(1.0, 0.04, 6, 32);
-      const ringMat = new THREE.MeshBasicMaterial({
-        color: new THREE.Color(coreColor),
-        transparent: true,
-        opacity: 0.85,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        toneMapped: false,
-        fog: false,
-        side: THREE.DoubleSide,
-      });
-      const ring = new THREE.Mesh(ringGeo, ringMat);
+      // ROTATING RING (shared geometry + per-color material)
+      const ring = new THREE.Mesh(ringGeoShared, getRingMat(coreColor));
       ring.rotation.x = Math.PI / 2;
       ring.userData.cannotReceiveAO = true;
       ring.renderOrder = 988;
       group.add(ring);
 
-      // ─── GROUND HALO DISC ───────────────────────────────────────────
-      // Flat additive disc on the ground beneath the pickup — reads as
-      // a light pool spilling out of the floating loot.
-      const haloGeo = new THREE.CircleGeometry(2.2, 24);
-      const haloMat = new THREE.ShaderMaterial({
-        uniforms: {
-          uColor: { value: new THREE.Color(coreColor) },
-          uOpacity: { value: 0.6 },
-          uTime: { value: 0 },
-        },
-        vertexShader: /* glsl */`
-          varying vec2 vUv;
-          void main() {
-            vUv = uv;
-            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-          }
-        `,
-        fragmentShader: /* glsl */`
-          uniform vec3 uColor;
-          uniform float uOpacity;
-          uniform float uTime;
-          varying vec2 vUv;
-          void main() {
-            float d = length(vUv - 0.5) * 2.0;
-            float glow = 1.0 - smoothstep(0.0, 1.0, d);
-            glow = pow(glow, 1.5);
-            float pulse = 0.85 + sin(uTime * 2.0 - d * 4.0) * 0.15;
-            gl_FragColor = vec4(uColor, glow * uOpacity * pulse);
-          }
-        `,
-        transparent: true,
-        depthWrite: false,
-        blending: THREE.AdditiveBlending,
-      });
-      const halo = new THREE.Mesh(haloGeo, haloMat);
+      // GROUND HALO DISC (shared geometry + per-color shader material)
+      const halo = new THREE.Mesh(haloGeoShared, getHaloMat(coreColor));
       halo.rotation.x = -Math.PI / 2;
-      halo.position.y = -1.95; // ~ground level (group is at y=2)
+      halo.position.y = -1.95; // ~ground level (group bobs around y=2)
       halo.userData.cannotReceiveAO = true;
       halo.renderOrder = 986;
       group.add(halo);
 
-      // ─── REAL POINT LIGHT (the killer feature) ──────────────────────
-      // Actually illuminates grass / nearby trees / the player's gun
-      // when they walk near. This is what makes the pickup feel "alive"
-      // rather than just an emissive mesh. Cheap — small radius, no
-      // shadow casting.
-      const pickupLight = new THREE.PointLight(coreColor, 4.5, 9, 1.6);
-      pickupLight.castShadow = false;
-      pickupLight.position.set(0, 0, 0);
-      group.add(pickupLight);
+      // POINT LIGHT — borrowed from the pre-allocated scene-level pool.
+      // Lives in WORLD space (parent = scene) because we can't reparent
+      // a pool light without triggering the recompile we're trying to
+      // avoid. The per-frame loop syncs its position to the pickup.
+      const pickupLight = acquirePickupLight(coreColor);
 
       // Stash references so the per-frame loop can drive every layer.
       group.userData.shell = shell;
       group.userData.inner = inner;
       group.userData.glowInner = glowInner;
       group.userData.glowOuter = glowOuter;
-      group.userData.beacon = beacon;
-      group.userData.beaconMat = beaconMat;
       group.userData.ring = ring;
       group.userData.halo = halo;
-      group.userData.haloMat = haloMat;
-      group.userData.light = pickupLight;
+      group.userData.haloMat = halo.material as THREE.ShaderMaterial;
+      group.userData.light = pickupLight; // may be null when pool exhausted
       // Phase offset so neighbouring pickups don't pulse in sync
       group.userData.pulsePhase = Math.random() * Math.PI * 2;
       // `core` is the mesh exposed to gameplay code (pickup collision,
@@ -2446,19 +2556,19 @@ const ForestSurvivalGame = () => {
     };
 
     // Weighted power-up drop at the start of a wave.
+    // Slowed from 2 spawns every even wave → 1 spawn — powerups are
+    // genuine rewards now, not a constant stream the player auto-collects.
     const spawnWavePowerUps = () => {
-      for (let i = 0; i < 2; i++) {
-        const roll = Math.random();
-        let type: PowerUp['type'];
-        if (roll < 0.30) type = 'health';
-        else if (roll < 0.55) type = 'ammo';
-        else if (roll < 0.75) type = 'speed';
-        else if (roll < 0.88) type = 'damage';
-        else if (roll < 0.96) type = 'shield';
-        else type = 'infinite_ammo';
-        const spot = findPickupSpot(camera.position.x, camera.position.z, 20, 35);
-        powerUps.push(createPowerUp(spot.x, spot.z, type));
-      }
+      const roll = Math.random();
+      let type: PowerUp['type'];
+      if (roll < 0.30) type = 'health';
+      else if (roll < 0.55) type = 'ammo';
+      else if (roll < 0.75) type = 'speed';
+      else if (roll < 0.88) type = 'damage';
+      else if (roll < 0.96) type = 'shield';
+      else type = 'infinite_ammo';
+      const spot = findPickupSpot(camera.position.x, camera.position.z, 20, 35);
+      powerUps.push(createPowerUp(spot.x, spot.z, type));
     };
 
     const spawnWave = () => {
@@ -2475,7 +2585,11 @@ const ForestSurvivalGame = () => {
       waveEnemiesRemaining = Math.max(4, Math.floor((7 + wave * 3) * diffSettings.spawnMult));
       const opening = Math.min(5, waveEnemiesRemaining);
       waveEnemiesRemaining -= spawnEnemyBatch(opening);
-      if (wave % 2 === 0) spawnWavePowerUps();
+      // Slowed wave spawn frequency from every 2nd wave → every 3rd wave.
+      // Combined with the per-spawn count cut (2 → 1) and the reduced
+      // enemy-kill drop rate, powerups are now a real reward rather than
+      // a constant resupply.
+      if (wave % 3 === 0) spawnWavePowerUps();
     };
 
     // Continuous enemy spawning — paces how fast the wave budget drains in.
@@ -2526,6 +2640,26 @@ const ForestSurvivalGame = () => {
     const sprintMultiplier = 1.8;
     const baseJumpPower = 0.5; // Prominent jump — clears most rocks/obstacles
     const gravity = 0.02;
+
+    // ── STAMINA SYSTEM ─────────────────────────────────────────────────
+    // Sprinting is now bounded — the player has a stamina pool that
+    // depletes while sprinting and regenerates while not. Once empty,
+    // sprinting is locked out until a small minimum threshold of stamina
+    // has regenerated (prevents stutter-sprint exploit at 0 stamina).
+    // Wired to the HUD via setStaminaRatio so the bottom-left pie meter
+    // reflects live state.
+    const STAMINA_MAX = 100;
+    const STAMINA_DEPLETE_PER_SEC = 28;   // ~3.5s of full sprint from 100
+    const STAMINA_REGEN_PER_SEC = 18;     // ~5.5s to fully refill from 0
+    const STAMINA_REGEN_DELAY_S = 0.7;    // pause before regen kicks in after sprint
+    const STAMINA_REQUIRED_TO_SPRINT = 8; // re-engage threshold after exhaustion
+    let stamina = STAMINA_MAX;
+    let staminaExhausted = false;         // true after hitting 0 — locks sprint
+    let staminaIdleTimer = 0;             // seconds since last sprint frame
+    // Throttle state for pushing stamina into React (avoids 60fps reconciles).
+    let staminaPushAccum = 0;
+    let lastPushedStaminaRatio = 1;
+    let lastPushedExhausted = false;
 
     let velocityY = 0;
     let isJumping = false;
@@ -2591,6 +2725,13 @@ const ForestSurvivalGame = () => {
         const inMultiplayerGame = isMultiplayer || gameMode === 'multiplayer';
         if (inMultiplayerGame) {
           return; // Cannot pause in multiplayer
+        }
+
+        // Tutorial popup owns the ESC key — pressing it should NOT bring
+        // up the pause menu over the top of the tutorial card. The
+        // TutorialOverlay component handles ESC for dismiss/advance.
+        if (tutorialActiveRef.current) {
+          return;
         }
 
         paused = !paused;
@@ -2884,9 +3025,14 @@ const ForestSurvivalGame = () => {
           const direction = new THREE.Vector3();
           camera.getWorldDirection(direction);
 
-          // Reduce spread when aiming + Steady Hands skill tightens it further
-          const spreadMultiplier = ((isAiming && weapon.canAim) ? 0.2 : 1.0)
-            / (1 + skillBonus('accuracy'));
+          // Reduce spread when aiming + Steady Hands skill tightens it further.
+          // Sniper specifically is a precision weapon — when scoped, spread
+          // collapses to ZERO so the bullet lands exactly on the crosshair,
+          // not just "close to it". For other ADS weapons, spread shrinks to
+          // 20% (still tight enough for accurate hip-fire-corrected aim).
+          const isScopedSniper = isAiming && currentWeapon === 'sniper';
+          const aimingScale = (isAiming && weapon.canAim) ? (isScopedSniper ? 0 : 0.2) : 1.0;
+          const spreadMultiplier = aimingScale / (1 + skillBonus('accuracy'));
           direction.x += (Math.random() - 0.5) * weapon.spread * spreadMultiplier;
           direction.y += (Math.random() - 0.5) * weapon.spread * spreadMultiplier;
           direction.z += (Math.random() - 0.5) * weapon.spread * spreadMultiplier;
@@ -3222,7 +3368,9 @@ const ForestSurvivalGame = () => {
       // Scavenger skill boosts the chance enemies drop ammo on death.
       // Snap the drop to the nearest clear spot so the pickup isn't
       // spawned inside a tree when an enemy dies pressed against one.
-      if (Math.random() < 0.4 * (1 + skillBonus('powerupSpawnRate'))) {
+      // Drop rate slowed from 40% → 18% so ammo pickups feel earned;
+      // ammo management is now a real gameplay axis instead of trivial.
+      if (Math.random() < 0.18 * (1 + skillBonus('powerupSpawnRate'))) {
         const ex = enemy.mesh.position.x;
         const ez = enemy.mesh.position.z;
         const PICKUP_RADIUS = 1.0;
@@ -3821,7 +3969,46 @@ const ForestSurvivalGame = () => {
 
       // Player movement with weight-based speed and ability effects
       const isMoving = keys['KeyW'] || keys['KeyS'] || keys['KeyA'] || keys['KeyD'];
-      const isRunning = (keys['ShiftLeft'] || keys['ShiftRight']) && !isCrouching; // Can't sprint while crouching
+      const wantsToSprint = (keys['ShiftLeft'] || keys['ShiftRight']) && !isCrouching;
+      // Stamina gates sprinting. Once exhausted, the player must let
+      // stamina rebuild past STAMINA_REQUIRED_TO_SPRINT before they
+      // can sprint again — prevents 0-stamina stutter-sprint exploit.
+      if (staminaExhausted && stamina >= STAMINA_REQUIRED_TO_SPRINT) {
+        staminaExhausted = false;
+      }
+      const isRunning = wantsToSprint && isMoving && !staminaExhausted;
+
+      // Tick stamina. While sprinting it depletes; when not, after a
+      // short idle delay, it regenerates.
+      if (isRunning) {
+        stamina -= STAMINA_DEPLETE_PER_SEC * rawDelta;
+        staminaIdleTimer = 0;
+        if (stamina <= 0) {
+          stamina = 0;
+          staminaExhausted = true;
+        }
+      } else {
+        staminaIdleTimer += rawDelta;
+        if (staminaIdleTimer >= STAMINA_REGEN_DELAY_S && stamina < STAMINA_MAX) {
+          stamina = Math.min(STAMINA_MAX, stamina + STAMINA_REGEN_PER_SEC * rawDelta);
+        }
+      }
+      // Push stamina to React HUD at ~12Hz — enough to feel live without
+      // spamming reconciliations every frame. Only fires when the value
+      // actually changed by a noticeable amount (>1% of bar).
+      staminaPushAccum += rawDelta;
+      if (staminaPushAccum >= 0.08) {
+        staminaPushAccum = 0;
+        const ratio = stamina / STAMINA_MAX;
+        if (Math.abs(ratio - lastPushedStaminaRatio) > 0.01) {
+          lastPushedStaminaRatio = ratio;
+          setStaminaRatio(ratio);
+        }
+        if (staminaExhausted !== lastPushedExhausted) {
+          lastPushedExhausted = staminaExhausted;
+          setStaminaExhaustedUI(staminaExhausted);
+        }
+      }
 
       // Calculate speed based on weapon weight and ability effects
       const weaponWeight = WEAPONS[currentWeapon].weight;
@@ -4124,8 +4311,13 @@ const ForestSurvivalGame = () => {
             glowOuter.scale.setScalar(scale);
           }
 
-          const light = root.userData.light as THREE.PointLight | undefined;
-          if (light) light.intensity = 3.5 + pulse * 3.5;
+          const light = root.userData.light as THREE.PointLight | null | undefined;
+          if (light) {
+            light.intensity = 3.5 + pulse * 3.5;
+            // Pool lights live in world space (scene-parented), so sync
+            // their position to the pickup each frame as it bobs.
+            light.position.set(root.position.x, root.position.y, root.position.z);
+          }
 
           const inner = root.userData.inner as THREE.Mesh | undefined;
           if (inner) inner.scale.setScalar(1.0 + pulse * 0.10);
@@ -4136,10 +4328,6 @@ const ForestSurvivalGame = () => {
             ring.scale.setScalar(1.0 + pulse * 0.08);
           }
 
-          const beaconMat = root.userData.beaconMat as THREE.ShaderMaterial | undefined;
-          if (beaconMat && beaconMat.uniforms.uTime) {
-            beaconMat.uniforms.uTime.value = _puNow;
-          }
           const halo = root.userData.halo as THREE.Mesh | undefined;
           if (halo) {
             // Counter-bob so the halo disc stays glued to the terrain
@@ -4155,18 +4343,15 @@ const ForestSurvivalGame = () => {
 
           if (checkCollision(camera.position, powerUp.position, 2)) {
             powerUp.collected = true;
-            // Pickup is a Group; the bullet-style twin glow spheres are
-            // children, no extra halo/flare objects to clean up. Walk
-            // every Mesh leaf to dispose its geometry + material.
+            // All pickup materials + geometries are shared (cached per
+            // colour / per shape) so we do NOT dispose them — that would
+            // wipe out resources still in use by other live pickups.
+            // Just release the pool light and remove the group from the
+            // scene; GC reclaims the small per-instance Mesh wrappers.
             const root = powerUp.mesh as unknown as THREE.Object3D;
-            root.traverse((obj) => {
-              if (obj instanceof THREE.Mesh) {
-                obj.geometry?.dispose();
-                const mat = obj.material;
-                if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
-                else mat?.dispose();
-              }
-            });
+            const pooledLight = (root.userData.light as THREE.PointLight | null | undefined) ?? null;
+            releasePickupLight(pooledLight);
+            root.userData.light = null;
             root.parent?.remove(root);
             soundManager.play('powerUp', 0.8);
 
@@ -5045,111 +5230,243 @@ const ForestSurvivalGame = () => {
     // the first shot. Spawn one of every combat effect, render a full frame
     // (which compiles every shader program), then clean them up. After this
     // all gameplay shaders are hot and firing is hitch-free.
-    const warmUpShaders = () => {
+    // Yield control back to the browser so the React loader can paint
+    // between heavy synchronous warmup steps. Without these yields the
+    // loader appears for only 1 frame total before the synchronous chain
+    // completes, defeating its purpose.
+    const yieldFrame = () => new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+
+    // Set true inside a stage that fails AND is marked critical. The
+    // warmup completion handler reads this to decide whether to pause
+    // on the loader for user input (Continue Anyway / Reload).
+    const criticalErrorRef = { current: false };
+
+    /**
+     * Wraps a warmup stage so individual failures are logged + surfaced
+     * but don't abort the whole pipeline. Failing stages skip gracefully
+     * — the game still starts, just without that particular pre-warm.
+     * Critical failures (compile errors) escalate to the loader's error
+     * UI via setWarmupError.
+     */
+    const stage = async <T,>(
+      name: string,
+      critical: boolean,
+      fn: () => T | Promise<T>,
+    ): Promise<T | null> => {
+      // Honour an in-flight Continue-Anyway: skip remaining stages.
+      if (continueAnywayRef.current) return null;
+      try {
+        return await fn();
+      } catch (err) {
+        const detail = err instanceof Error ? `${err.message}\n${err.stack ?? ''}`.trim() : String(err);
+        console.warn(`[Warmup] stage "${name}" failed:`, err);
+        if (critical) {
+          criticalErrorRef.current = true;
+          setWarmupError({
+            message: `Failed during ${name.toLowerCase()}.`,
+            stage: name,
+            detail,
+            recoverable: true,
+          });
+        }
+        return null;
+      }
+    };
+
+    const warmUpShaders = async (): Promise<void> => {
+      const warmupStart = performance.now();
       const wp = camera.position.clone();
       wp.z -= 4; // just in front of the camera
       const warm: THREE.Object3D[] = [];
       const warmPowerUps: PowerUp[] = [];
+      // Effect references kept on an object so the async stage closures
+      // can assign and the teardown can read them. Plain `let` confuses
+      // TS's flow analysis across the async callback boundary.
+      const refs: {
+        rocket: THREE.Mesh | null;
+        flash: MuzzleFlash | null;
+        tracer: BulletTracer | null;
+        impact: ImpactEffect | null;
+        blood: BloodSplatter | null;
+      } = { rocket: null, flash: null, tracer: null, impact: null, blood: null };
 
-      const warmBulletColors = Array.from(new Set(Object.values(WEAPONS).map((weapon) => weapon.bulletColor)));
-      warmBulletColors.forEach((color, index) => {
-        const warmBullet = buildBullet(color);
-        warmBullet.position.copy(wp).add(new THREE.Vector3((index - warmBulletColors.length / 2) * 0.8, 0, 0));
-        scene.add(warmBullet);
-        warm.push(warmBullet);
+      // ── STAGE 1: spawn warmup bullets ──────────────────────────────
+      await stage('Bullets', false, () => {
+        const warmBulletColors = Array.from(new Set(Object.values(WEAPONS).map((weapon) => weapon.bulletColor)));
+        warmBulletColors.forEach((color, index) => {
+          const warmBullet = buildBullet(color);
+          warmBullet.position.copy(wp).add(new THREE.Vector3((index - warmBulletColors.length / 2) * 0.8, 0, 0));
+          scene.add(warmBullet);
+          warm.push(warmBullet);
+        });
       });
+      await yieldFrame();
 
-      const warmPowerUpTypes: PowerUp['type'][] = ['health', 'ammo', 'speed', 'damage', 'shield', 'infinite_ammo'];
-      warmPowerUpTypes.forEach((type, index) => {
-        const warmPowerUp = createPowerUp(
-          wp.x + (index - warmPowerUpTypes.length / 2) * 0.85,
-          wp.z,
-          type,
-        );
-        warmPowerUps.push(warmPowerUp);
+      // ── STAGE 2: spawn warmup pickups (every type) ─────────────────
+      await stage('Pickups', false, () => {
+        const warmPowerUpTypes: PowerUp['type'][] = ['health', 'ammo', 'speed', 'damage', 'shield', 'infinite_ammo'];
+        warmPowerUpTypes.forEach((type, index) => {
+          const warmPowerUp = createPowerUp(
+            wp.x + (index - warmPowerUpTypes.length / 2) * 0.85,
+            wp.z,
+            type,
+          );
+          warmPowerUps.push(warmPowerUp);
+        });
       });
+      await yieldFrame();
 
-      const warmRocket = createRocketProjectile();
-      warmRocket.position.copy(wp);
-      scene.add(warmRocket); warm.push(warmRocket);
+      // ── STAGE 3: combat effects ────────────────────────────────────
+      await stage('Effects', false, () => {
+        const rocket = createRocketProjectile();
+        rocket.position.copy(wp);
+        scene.add(rocket); warm.push(rocket);
+        refs.rocket = rocket;
+        refs.flash = new MuzzleFlash(scene, wp, 0xffaa00);
+        refs.tracer = new BulletTracer(scene, wp, wp.clone(), 0xffffaa);
+        refs.impact = new ImpactEffect(scene, wp, 0xffaa00, 2);
+        refs.blood = new BloodSplatter(scene, wp, new THREE.Vector3(0, 1, 0), 2);
+      });
+      await yieldFrame();
 
-      const warmFlash = new MuzzleFlash(scene, wp, 0xffaa00);
-      const warmTracer = new BulletTracer(scene, wp, wp.clone(), 0xffffaa);
-      const warmImpact = new ImpactEffect(scene, wp, 0xffaa00, 2);
-      const warmBlood = new BloodSplatter(scene, wp, new THREE.Vector3(0, 1, 0), 2);
+      // ── STAGE 4: gun materials (cycle every weapon) ────────────────
+      // Populates the GunModel material cache so subsequent in-game
+      // weapon switches reuse cached shader programs and never stutter.
+      const originalWeapon = currentWeapon;
+      const allWeapons: Array<'pistol' | 'rifle' | 'shotgun' | 'smg' | 'sniper' | 'minigun' | 'launcher'>
+        = ['pistol', 'rifle', 'shotgun', 'smg', 'sniper', 'minigun', 'launcher'];
+      for (const w of allWeapons) {
+        if (continueAnywayRef.current) break;
+        await stage(`Weapon: ${w}`, false, () => gunModel.switchWeapon(w));
+        await yieldFrame();
+      }
+      try { gunModel.switchWeapon(originalWeapon as any); } catch {}
+      await yieldFrame();
 
-      try {
-        // ── SHADER PRE-COMPILE ──────────────────────────────────────
-        // renderer.compile() walks every material in the scene and
-        // compiles its shader program up-front. Combined with the
-        // KHR_parallel_shader_compile extension (used automatically by
-        // three.js when available), this eliminates the first-shot
-        // shader-compile hitch.
-        renderer.compile(scene, camera);
+      // ── STAGE 5: async shader pre-compile ──────────────────────────
+      // Use compileAsync where available (KHR_parallel_shader_compile)
+      // so the GPU can compile in the background while the loader keeps
+      // animating. Falls back to synchronous compile on older browsers.
+      // This stage IS critical — if shader compile actually fails, we
+      // want the user to see a real error rather than launching into a
+      // broken scene.
+      await stage('Shader Compile', true, async () => {
+        const r = renderer as THREE.WebGLRenderer & {
+          compileAsync?: (scene: THREE.Scene, camera: THREE.Camera) => Promise<unknown>;
+        };
+        if (typeof r.compileAsync === 'function') {
+          await r.compileAsync(scene, camera);
+        } else {
+          renderer.compile(scene, camera);
+        }
+      });
+      await yieldFrame();
 
-        // ── REACT-SIDE HUD PRE-WARM ─────────────────────────────────
-        // The first-shot lag the user reported wasn't shader compile —
-        // it was the React reconciler mounting the HitMarker /
-        // DamageNumber DOM nodes for the first time on first hit.
-        // Calling these here forces React to mount the components,
-        // run their CSS animations once, and prime the path so the
-        // real first hit is hitch-free. We immediately clear the fake
-        // markers so the player never sees them.
+      // ── REACT-SIDE HUD PRE-WARM ──────────────────────────────────────
+      await stage('HUD Pre-warm', false, () => {
         addHitMarker(false);
         addDamageNumber(0, 50, 50, false, false);
         clearHitMarkers();
+      });
 
-        // Render two extra composed frames — the first commits the
-        // pre-warmed scene, the second triggers any second-pass-only
-        // ShaderPass programs in the postFX chain.
+      // ── STAGE 6: commit a couple of composed frames ────────────────
+      // Failure here usually means a post-FX pass blew up — recoverable
+      // by skipping post-FX (the game will still render via the renderer's
+      // direct path because postFX is null-checked in composePostFX).
+      await stage('Post-processing', true, () => {
         composePostFX(0.016);
+      });
+      await yieldFrame();
+      await stage('Post-processing 2nd pass', false, () => {
         composePostFX(0.016);
-      } catch (err) {
-        console.warn('[Warmup] pre-compile render failed:', err);
-      }
+      });
+      await yieldFrame();
 
-      // Tear the warmup objects back down — they were only here to compile.
-      // The pickup body is now a Group (shell + inner gem children) so the
-      // teardown traverses every Mesh in the subtree instead of touching
-      // `.geometry` / `.material` on the Group directly — that was throwing
-      // a TypeError mid-iteration and leaving warmup powerups visible at
-      // the player's spawn point.
-      warm.forEach(o => scene.remove(o));
-      warmPowerUps.forEach((powerUp) => {
-        const root = powerUp.mesh as unknown as THREE.Object3D;
-        // Walk the pickup root (Group with shell + inner Mesh children)
-        // and dispose every leaf mesh's geometry + material.
-        root.traverse((obj) => {
-          if (obj instanceof THREE.Mesh) {
-            obj.geometry?.dispose();
-            const mat = obj.material;
-            if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
-            else mat?.dispose();
+      // ── TEARDOWN: best-effort cleanup of every warmup artefact ─────
+      // Wrapped in a single guard because we want the loader to finish
+      // even if one resource fails to dispose cleanly.
+      try {
+        warm.forEach(o => scene.remove(o));
+        warmPowerUps.forEach((powerUp) => {
+          const root = powerUp.mesh as unknown as THREE.Object3D;
+          const pooledLight = (root.userData.light as THREE.PointLight | null | undefined) ?? null;
+          releasePickupLight(pooledLight);
+          root.userData.light = null;
+          root.parent?.remove(root);
+        });
+        refs.flash?.dispose(scene);
+        refs.tracer?.dispose(scene);
+        refs.impact?.dispose(scene);
+        refs.blood?.dispose(scene);
+        refs.rocket?.traverse((o: THREE.Object3D) => {
+          if (o instanceof THREE.Mesh) {
+            o.geometry.dispose();
+            const mat = o.material;
+            if (Array.isArray(mat)) mat.forEach((m: THREE.Material) => m.dispose());
+            else mat.dispose();
           }
         });
-        root.parent?.remove(root);
-      });
-      warmFlash.dispose(scene);
-      warmTracer.dispose(scene);
-      warmImpact.dispose(scene);
-      warmBlood.dispose(scene);
-      warmRocket.traverse(o => {
-        if (o instanceof THREE.Mesh) {
-          o.geometry.dispose();
-          const mat = o.material;
-          if (Array.isArray(mat)) mat.forEach(m => m.dispose());
-          else mat.dispose();
-        }
-      });
-      // sharedBulletGeo / cached bullet material are reused — not disposed
-    };
-    const warmupFrame = window.requestAnimationFrame(() => {
-      try {
-        warmUpShaders();
-      } finally {
-        setShowShaderProcessing(false);
-        animate();
+      } catch (err) {
+        console.warn('[Warmup] teardown failed (non-fatal):', err);
       }
+
+      // Minimum visible loader time so the user actually sees the
+      // ShaderProcessingScreen animation. Without this, fast machines
+      // would flash the loader for 1-2 frames (effectively invisible).
+      // Skipped when the user has hit Continue-Anyway (they want to get
+      // into the game NOW).
+      if (!continueAnywayRef.current) {
+        const MIN_LOADER_MS = 1200;
+        const elapsed = performance.now() - warmupStart;
+        if (elapsed < MIN_LOADER_MS) {
+          await new Promise<void>((resolve) => window.setTimeout(resolve, MIN_LOADER_MS - elapsed));
+        }
+      }
+    };
+    // Helper that blocks until the user clicks Continue Anyway (or the
+    // scene tears down). Used after a critical stage raised an error
+    // to keep the loader visible until the user makes a decision.
+    const waitForUserDecision = () => new Promise<void>((resolve) => {
+      const id = window.setInterval(() => {
+        if (isSceneDisposed || continueAnywayRef.current) {
+          window.clearInterval(id);
+          resolve();
+        }
+      }, 100);
+    });
+
+    const warmupFrame = window.requestAnimationFrame(() => {
+      // Run warmup as an async chain so individual stages can yield the
+      // main thread back to the React loader between heavy steps.
+      void (async () => {
+        try {
+          await warmUpShaders();
+
+          // Critical-stage failure → block on the loader's error UI
+          // until the user explicitly continues or reloads.
+          if (criticalErrorRef.current && !continueAnywayRef.current) {
+            await waitForUserDecision();
+          }
+        } catch (err) {
+          // Anything that escaped every stage wrapper. Should be rare.
+          console.error('[Warmup] uncaught failure:', err);
+          if (!isSceneDisposed) {
+            setWarmupError({
+              message: 'Game initialisation failed unexpectedly.',
+              stage: 'Warmup',
+              detail: err instanceof Error ? `${err.message}\n${err.stack ?? ''}`.trim() : String(err),
+              recoverable: true,
+            });
+            await waitForUserDecision();
+          }
+        } finally {
+          if (!isSceneDisposed) {
+            setWarmupError(null);
+            setShowShaderProcessing(false);
+            animate();
+          }
+        }
+      })();
     });
 
     const handleResize = () => {
@@ -5274,9 +5591,12 @@ const ForestSurvivalGame = () => {
 
   // Start the tutorial with the chosen map (all weapons + abilities unlocked,
   // unlimited health, no waves — handled by isTutorialMode in the game loop).
-  const handleTutorialStart = (map: MapType) => {
+  // Tutorial now honours the atmosphere selector (Auto / Day / Night) the
+  // same way Classic mode does, so new players can learn under whichever
+  // lighting they prefer.
+  const handleTutorialStart = (map: MapType, timeOfDay: 'day' | 'night' | 'auto') => {
     setClassicDifficulty('easy');
-    setClassicTimeOfDay('day');
+    setClassicTimeOfDay(timeOfDay);
     setSelectedMap(map);
     setShowTutorialMenu(false);
     soundManager.initialize();
@@ -5453,37 +5773,56 @@ const ForestSurvivalGame = () => {
     return <MobileWarning />;
   }
 
-  // Main Menu (Initial Screen)
-  if (gameMode === 'none') {
-    return <MainMenu onClassicMode={handleModeSelection} onMultiplayerMode={handleMultiplayerMode} onTutorialMode={handleTutorialMode} t={t} />;
-  }
+  // ─── MENU SHELL ─────────────────────────────────────────────────────
+  // All four menus (MainMenu, ClassicMenu, TutorialMenu, MultiplayerLobby)
+  // share ONE persistent MenuBackdrop — that's the WebGL forest scene
+  // hoisted up here so React's reconciler keeps it mounted across menu
+  // navigation. Without this hoist, every menu transition unmounted the
+  // entire 3D scene (150+ trees, fireflies, post-FX pipeline) and rebuilt
+  // it — the visible stutter the user reported when moving between
+  // Solo / Tutorial / Multiplayer.
+  //
+  // Per-menu visual identity is provided by the MenuShell overlay (each
+  // menu still renders its own MenuShell internally with its variant).
+  // The MenuBackdrop variant prop is informational only — the underlying
+  // scene stays the same to avoid the rebuild cost.
+  const inMenuMode = !gameStarted && !isSpectating && !multiplayerGameOver;
+  if (inMenuMode) {
+    const menuVariant: MenuBackdropVariant =
+      showMultiplayerLobby ? 'multiplayer'
+      : showClassicMenu    ? 'classic'
+      : showTutorialMenu   ? 'tutorial'
+      : 'main';
 
-  // Classic Mode Menu
-  if (showClassicMenu) {
-    return <ClassicMenu onStartGame={handleClassicGameStart} onBack={() => { setShowClassicMenu(false); setGameMode('none'); }} t={t} />;
-  }
-
-  // Tutorial Map Selector
-  if (showTutorialMenu) {
-    return <TutorialMenu onStartTutorial={handleTutorialStart} onBack={() => { setShowTutorialMenu(false); setGameMode('none'); }} t={t} />;
-  }
-
-  // Multiplayer Lobby — passes the existing manager so post-match "Play Again"
-  // lands everyone back in the same lobby without re-entering the lobby ID.
-  if (showMultiplayerLobby) {
     return (
-      <MultiplayerLobby
-        onStartGame={handleMultiplayerStartGame}
-        existingManager={multiplayerManager}
-        onBack={() => {
-          if (multiplayerManager) {
-            try { multiplayerManager.disconnect(); } catch { /* ignore */ }
-            setMultiplayerManager(null);
-          }
-          setShowMultiplayerLobby(false);
-          setGameMode('none');
-        }}
-      />
+      <>
+        {/* Persistent — same component instance across every menu render */}
+        <MenuBackdrop variant={menuVariant} />
+
+        {gameMode === 'none' && !showClassicMenu && !showTutorialMenu && !showMultiplayerLobby && (
+          <MainMenu onClassicMode={handleModeSelection} onMultiplayerMode={handleMultiplayerMode} onTutorialMode={handleTutorialMode} t={t} />
+        )}
+        {showClassicMenu && (
+          <ClassicMenu onStartGame={handleClassicGameStart} onBack={() => { setShowClassicMenu(false); setGameMode('none'); }} t={t} />
+        )}
+        {showTutorialMenu && (
+          <TutorialMenu onStartTutorial={handleTutorialStart} onBack={() => { setShowTutorialMenu(false); setGameMode('none'); }} t={t} />
+        )}
+        {showMultiplayerLobby && (
+          <MultiplayerLobby
+            onStartGame={handleMultiplayerStartGame}
+            existingManager={multiplayerManager}
+            onBack={() => {
+              if (multiplayerManager) {
+                try { multiplayerManager.disconnect(); } catch { /* ignore */ }
+                setMultiplayerManager(null);
+              }
+              setShowMultiplayerLobby(false);
+              setGameMode('none');
+            }}
+          />
+        )}
+      </>
     );
   }
 
@@ -5518,7 +5857,17 @@ const ForestSurvivalGame = () => {
     <div className="relative w-full h-screen overflow-hidden bg-black">
       <Analytics />
       <SpeedInsights />
-      <ShaderProcessingScreen visible={showShaderProcessing && gameStarted} />
+      <ShaderProcessingScreen
+        visible={(showShaderProcessing && gameStarted) || (warmupError !== null)}
+        error={warmupError}
+        onContinueAnyway={() => {
+          // User has decided to proceed despite a warmup failure. Flip
+          // the ref the warmup chain is polling on — its completion
+          // handler will then hide the loader and start animate().
+          continueAnywayRef.current = true;
+          setWarmupError(null);
+        }}
+      />
       <div ref={mountRef} className="absolute inset-0" style={{ zIndex: 0 }} />
 
       <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 10 }}>
@@ -5539,6 +5888,8 @@ const ForestSurvivalGame = () => {
           unlimitedHealth={gameMode === 'tutorial'}
           hideWave={gameMode === 'tutorial'}
           abilities={abilityHud}
+          staminaRatio={staminaRatio}
+          staminaExhausted={staminaExhaustedUI}
         />
       </div>
 

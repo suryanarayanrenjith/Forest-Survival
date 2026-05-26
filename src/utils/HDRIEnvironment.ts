@@ -39,8 +39,12 @@ const HDRI_ENVIRONMENTS: Record<MapType, HDRIEnvironmentProfile> = {
   frozen_tundra: {
     label: 'Snowy Park 01',
     slug: 'snowy_park_01',
-    dayIntensity: 0.98,
-    nightIntensity: 0.42,
+    // Reduced from 0.98 — the bright snow HDRI was stacking with the
+    // bright sky + bloom to produce the user-reported white wash. At
+    // 0.62 the IBL still gives realistic snow reflections without
+    // saturating the scene.
+    dayIntensity: 0.62,
+    nightIntensity: 0.32,
     rotationY: -0.9,
   },
   desert_canyon: {
@@ -64,12 +68,15 @@ const HDRI_ENVIRONMENTS: Record<MapType, HDRIEnvironmentProfile> = {
     nightIntensity: 0.45,
     rotationY: -1.1,
   },
-  crystal_caverns: {
-    label: 'Cave Wall',
-    slug: 'cave_wall',
-    dayIntensity: 0.62,
-    nightIntensity: 0.6,
-    rotationY: 0.0,
+  autumn_grove: {
+    // Twilight Vale — quiet dusk forest. Low IBL so the moody purple
+    // palette reads as twilight rather than washing toward neutral
+    // daylight.
+    label: 'Moonless Golf',
+    slug: 'moonless_golf',
+    dayIntensity: 0.55,
+    nightIntensity: 0.42,
+    rotationY: 0.4,
   },
   ancient_ruins: {
     label: 'Kiara 1 Dawn',

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { TerrainObject } from '../types/game';
 
-export type BiomeType = 'forest' | 'volcanic' | 'tundra' | 'desert' | 'swamp' | 'military' | 'crystal' | 'ruins';
+export type BiomeType = 'forest' | 'volcanic' | 'tundra' | 'desert' | 'swamp' | 'military' | 'ruins' | 'twilight';
 
 interface BiomeConfig {
   groundColor: number;
@@ -126,8 +126,9 @@ export class BiomeSystem {
     desert:   { color: 0xc2a866, density: 0.22 },
     swamp:    { color: 0x4c6a32, density: 0.95 },
     military: { color: 0x5e6e3e, density: 0.5 },
-    crystal:  { color: 0x46c8b6, density: 0.42 },
     ruins:    { color: 0x52823a, density: 0.66 },
+    // Twilight vale — sparse dusk grass with deep purple-blue tint.
+    twilight: { color: 0x3a2a55, density: 0.55 },
   };
   private grassGeo: THREE.BufferGeometry | null = null;
   private grassMaterials: Map<BiomeType, THREE.MeshStandardMaterial> = new Map();
@@ -319,17 +320,6 @@ export class BiomeSystem {
       vegetationColors: { tree: [0x5a5a52, 0x6a6a62, 0x4a4a42], bush: [0x4a5a3a, 0x3a4a2a, 0x5a6a4a] }
     });
 
-    this.biomeConfigs.set('crystal', {
-      groundColor: 0x1a102a,
-      groundEmissive: 0x2a1a4a,
-      groundRoughness: 0.3,
-      groundMetalness: 0.6,
-      treeDensity: 0.18,
-      rockDensity: 0.30,
-      bushDensity: 0.22,
-      vegetationColors: { tree: [0x8844cc, 0x6633aa, 0xaa55ee], bush: [0x44aacc, 0x33aadd, 0x55ccee] }
-    });
-
     this.biomeConfigs.set('ruins', {
       groundColor: 0x5a5548,
       groundEmissive: 0x3a3530,
@@ -339,6 +329,24 @@ export class BiomeSystem {
       rockDensity: 0.35,
       bushDensity: 0.20,
       vegetationColors: { tree: [0x6a6a5a, 0x7a7a6a, 0x5a5a4a], bush: [0x3a6a2a, 0x2a5a1a, 0x4a7a3a] }
+    });
+
+    this.biomeConfigs.set('twilight', {
+      // Dusk forest floor — deep violet earth with subtle warm undertone
+      // from the setting sun.
+      groundColor: 0x2a1a35,
+      groundEmissive: 0x180e22,
+      groundRoughness: 0.78,
+      groundMetalness: 0.18,
+      treeDensity: 0.32,
+      rockDensity: 0.18,
+      bushDensity: 0.28,
+      // Trees: charred-dark trunks tinted purple. Bushes: glowing
+      // bioluminescent fungi / wisp patches.
+      vegetationColors: {
+        tree: [0x1a0e22, 0x281530, 0x10081a, 0x32183f],
+        bush: [0x6a3aa8, 0x3a55c8, 0x7a44d0],
+      },
     });
   }
 
@@ -373,8 +381,8 @@ export class BiomeSystem {
       case 'desert': return this.createMesaPillar(x, z);
       case 'swamp': return this.createGnarledTree(x, z);
       case 'military': return this.createConcreteWall(x, z);
-      case 'crystal': return this.createCrystalSpire(x, z);
       case 'ruins': return this.createStoneColumn(x, z);
+      case 'twilight': return this.createTwilightTree(x, z);
       default: return this.createForestTree(x, z);
     }
   }
@@ -387,8 +395,8 @@ export class BiomeSystem {
       case 'desert': return this.createSandstoneRock(x, z);
       case 'swamp': return this.createSwampStone(x, z);
       case 'military': return this.createSandbagPile(x, z);
-      case 'crystal': return this.createMineralCluster(x, z);
       case 'ruins': return this.createStoneDebris(x, z);
+      case 'twilight': return this.createTwilightStone(x, z);
       default: return this.createForestRock(x, z);
     }
   }
@@ -401,8 +409,8 @@ export class BiomeSystem {
       case 'desert': return this.createDeadShrub(x, z);
       case 'swamp': return this.createPoisonMushrooms(x, z);
       case 'military': return this.createSupplyCrate(x, z);
-      case 'crystal': return this.createSmallCrystal(x, z);
       case 'ruins': return this.createVineRubble(x, z);
+      case 'twilight': return this.createTwilightWisp(x, z);
       default: return this.createForestBush(x, z);
     }
   }
@@ -415,8 +423,8 @@ export class BiomeSystem {
       case 'desert': return this.createSandstoneArch(x, z);
       case 'swamp': return this.createMudMound(x, z);
       case 'military': return this.createBunker(x, z);
-      case 'crystal': return this.createMassiveCrystal(x, z);
       case 'ruins': return this.createBrokenWall(x, z);
+      case 'twilight': return this.createTwilightMonolith(x, z);
       default: return this.createForestBoulder(x, z);
     }
   }
@@ -449,13 +457,13 @@ export class BiomeSystem {
         if (roll < 0.25) return this.createWatchtowerFrame(x, z);
         if (roll < 0.45) return this.createBarrelCluster(x, z);
         return null;
-      case 'crystal':
-        if (roll < 0.3) return this.createGlowingPool(x, z);
-        if (roll < 0.5) return this.createAlienFlora(x, z);
-        return null;
       case 'ruins':
         if (roll < 0.25) return this.createArchedDoorway(x, z);
         if (roll < 0.45) return this.createStatue(x, z);
+        return null;
+      case 'twilight':
+        if (roll < 0.32) return this.createTwilightShrine(x, z);
+        if (roll < 0.52) return this.createTwilightFallenLog(x, z);
         return null;
       default: return null;
     }
@@ -1203,132 +1211,6 @@ export class BiomeSystem {
   }
 
   // ══════════════════════════════════════
-  //  CRYSTAL
-  // ══════════════════════════════════════
-
-  private createCrystalSpire(x: number, z: number): TerrainObject {
-    const group = new THREE.Group();
-    const height = 6 + Math.random() * 6;
-    const palette = [0x9a4ee0, 0x6b3ad0, 0xb866ff, 0x4ec3e8];
-    const color = palette[Math.floor(Math.random() * palette.length)];
-    const mainMat = this.mat({ color, flatShading: true, roughness: 0.08, metalness: 0.4, emissive: color, emissiveIntensity: 0.7, transparent: true, opacity: 0.82 });
-    const octa = this.unitOcta(0);
-    const main = new THREE.Mesh(octa, mainMat);
-    main.scale.set(1.2, 1.2 * (height / 2.4), 1.2);
-    main.position.y = height / 2;
-    main.castShadow = true; main.receiveShadow = true;
-    group.add(main);
-    const coreMat = this.mat({ color: 0xffffff, emissive: color, emissiveIntensity: 2.6, flatShading: true });
-    const core = new THREE.Mesh(octa, coreMat);
-    core.scale.set(0.5, 0.5 * (height / 3), 0.5);
-    core.position.y = height / 2;
-    group.add(core);
-    for (let i = 0; i < 3 + Math.floor(Math.random() * 2); i++) {
-      const sc = palette[Math.floor(Math.random() * palette.length)];
-      const subH = 2 + Math.random() * 3.5;
-      const subMat = this.mat({ color: sc, flatShading: true, roughness: 0.08, metalness: 0.4, emissive: sc, emissiveIntensity: 0.65, transparent: true, opacity: 0.8 });
-      const sub = new THREE.Mesh(octa, subMat);
-      sub.scale.set(0.6 * 0.55, 0.6 * (subH / 1.2), 0.6 * 0.55);
-      const a = (i / 4) * Math.PI * 2 + Math.random();
-      sub.position.set(Math.cos(a) * 1.6, subH / 2, Math.sin(a) * 1.6);
-      sub.rotation.set((Math.random() - 0.5) * 0.5, 0, (Math.random() - 0.5) * 0.5);
-      sub.castShadow = true;
-      group.add(sub);
-    }
-    group.position.set(x, 0, z);
-    return { mesh: group, x, z, type: 'tree', collidable: true, radius: 2.5, height: 99 };
-  }
-
-  private createMineralCluster(x: number, z: number): TerrainObject {
-    const group = new THREE.Group();
-    const octa = this.unitOcta(0);
-    for (let i = 0; i < 3 + Math.floor(Math.random() * 3); i++) {
-      const color = [0xcc44aa, 0x44ccaa, 0xaacc44, 0x4488cc][Math.floor(Math.random() * 4)];
-      const size = 0.3 + Math.random() * 0.6;
-      const gemMat = this.mat({ color, flatShading: true, roughness: 0.05, metalness: 0.8, emissive: color, emissiveIntensity: 0.4 });
-      const gem = new THREE.Mesh(octa, gemMat);
-      gem.scale.setScalar(size);
-      gem.position.set((Math.random() - 0.5) * 2, size + Math.random() * 0.3, (Math.random() - 0.5) * 2);
-      gem.rotation.set(Math.random(), Math.random(), Math.random());
-      gem.castShadow = true;
-      group.add(gem);
-    }
-    group.position.set(x, 0, z);
-    return { mesh: group, x, z, type: 'rock', collidable: true, radius: 1.5, height: 2 };
-  }
-
-  private createSmallCrystal(x: number, z: number): TerrainObject {
-    const color = [0x44aacc, 0xcc44aa, 0xaa44cc][Math.floor(Math.random() * 3)];
-    const size = 0.5 + Math.random() * 0.4;
-    const mat = this.mat({ color, flatShading: true, roughness: 0.05, metalness: 0.7, emissive: color, emissiveIntensity: 0.5, transparent: true, opacity: 0.8 });
-    const crystal = new THREE.Mesh(this.unitOcta(0), mat);
-    crystal.scale.set(size, size * 1.5, size); crystal.position.set(x, size * 0.8, z);
-    crystal.rotation.set((Math.random() - 0.5) * 0.3, Math.random() * Math.PI, (Math.random() - 0.5) * 0.3);
-    crystal.castShadow = true;
-    return { mesh: crystal, x, z, type: 'bush', collidable: false, radius: size };
-  }
-
-  private createMassiveCrystal(x: number, z: number): TerrainObject {
-    const group = new THREE.Group();
-    const height = 5 + Math.random() * 4;
-    const color = 0x7733bb;
-    const mat = this.mat({ color, flatShading: true, roughness: 0.05, metalness: 0.8, emissive: color, emissiveIntensity: 0.4, transparent: true, opacity: 0.8 });
-    const octa = this.unitOcta(0);
-    const main = new THREE.Mesh(octa, mat);
-    main.scale.set(2.5, 2.5 * (height / 5), 2.5);
-    main.position.y = height / 2;
-    main.castShadow = true; main.receiveShadow = true;
-    group.add(main);
-    for (let i = 0; i < 5; i++) {
-      const angle = (i / 5) * Math.PI * 2;
-      const sc = [0x8844cc, 0x44aacc, 0xcc44aa][Math.floor(Math.random() * 3)];
-      const subMat = this.mat({ color: sc, flatShading: true, roughness: 0.05, metalness: 0.8, emissive: sc, emissiveIntensity: 0.35, transparent: true, opacity: 0.75 });
-      const sub = new THREE.Mesh(octa, subMat);
-      sub.scale.set(0.8, 0.8 * 2, 0.8);
-      sub.position.set(Math.cos(angle) * 3, 1.5, Math.sin(angle) * 3);
-      sub.rotation.set((Math.random() - 0.5) * 0.5, 0, (Math.random() - 0.5) * 0.5);
-      sub.castShadow = true;
-      group.add(sub);
-    }
-    group.position.set(x, 0, z);
-    return { mesh: group, x, z, type: 'boulder', collidable: true, radius: 4, height: height };
-  }
-
-  private createGlowingPool(x: number, z: number): TerrainObject {
-    const radius = 2 + Math.random() * 2;
-    const poolMat = this.mat({ color: 0x6622cc, emissive: 0x8844ee, emissiveIntensity: 0.7, roughness: 0.1, metalness: 0.4, transparent: true, opacity: 0.85 });
-    const pool = new THREE.Mesh(this.circle(1, 12), poolMat);
-    pool.scale.setScalar(radius);
-    pool.rotation.x = -Math.PI / 2; pool.position.set(x, 0.05, z); pool.receiveShadow = true;
-    return { mesh: pool, x, z, type: 'water', collidable: false, radius };
-  }
-
-  private createAlienFlora(x: number, z: number): TerrainObject {
-    const group = new THREE.Group();
-    const stemColor = 0x22aa88;
-    const stemMat = this.mat({ color: stemColor, flatShading: true, emissive: stemColor, emissiveIntensity: 0.3 });
-    const stem = new THREE.Mesh(this.unitCyl(0.08, 0.15, 5, 'alienStem'), stemMat);
-    stem.scale.set(1, 2 + Math.random(), 1);
-    stem.position.y = 1; stem.rotation.z = (Math.random() - 0.5) * 0.3;
-    group.add(stem);
-    const bulbColor = [0xff44aa, 0x44ffaa, 0xaaff44][Math.floor(Math.random() * 3)];
-    const bulbMat = this.mat({ color: bulbColor, emissive: bulbColor, emissiveIntensity: 0.8, flatShading: true, transparent: true, opacity: 0.9 });
-    const bulb = new THREE.Mesh(this.unitSphere(5, 4, 'alienBulb'), bulbMat);
-    bulb.scale.setScalar(0.4);
-    bulb.position.y = 2.2;
-    group.add(bulb);
-    const tendrilMat = this.mat({ color: stemColor, emissive: stemColor, emissiveIntensity: 0.2, flatShading: true });
-    for (let i = 0; i < 3; i++) {
-      const tendril = new THREE.Mesh(this.unitCyl(0.02, 0.04, 3, 'alienTendril'), tendrilMat);
-      tendril.position.set((Math.random() - 0.5) * 0.5, 1.8, (Math.random() - 0.5) * 0.5);
-      tendril.rotation.set((Math.random() - 0.5) * 1, 0, (Math.random() - 0.5) * 1);
-      group.add(tendril);
-    }
-    group.position.set(x, 0, z);
-    return { mesh: group, x, z, type: 'bush', collidable: false, radius: 1 };
-  }
-
-  // ══════════════════════════════════════
   //  RUINS
   // ══════════════════════════════════════
 
@@ -1515,5 +1397,259 @@ export class BiomeSystem {
     }
     group.position.set(x, 0, z); group.rotation.y = Math.random() * Math.PI;
     return { mesh: group, x, z, type: 'rock', collidable: true, radius: 1.5, height: 4 };
+  }
+
+  // ══════════════════════════════════════
+  //  TWILIGHT VALE — gnarled dead-leaning trees with bioluminescent
+  //  glowing wisps and dark monoliths. Designed to be VISUALLY distinct
+  //  from the lush green deep_forest pines — twisted silhouettes
+  //  against dusk sky, glowing magenta/cyan accents.
+  // ══════════════════════════════════════
+
+  private createTwilightTree(x: number, z: number): TerrainObject {
+    const group = new THREE.Group();
+    const height = 9 + Math.random() * 5;
+    const palette = [0x1a0e22, 0x281530, 0x10081a, 0x32183f];
+    const trunkColor = palette[Math.floor(Math.random() * palette.length)];
+    // Twisted bare trunk — dark and weathered, slight emissive tint so
+    // the silhouette catches the rim of the dusk sun without blending
+    // into the dark fog.
+    const trunkMat = this.mat({
+      color: trunkColor, flatShading: true, roughness: 0.94, metalness: 0.05,
+      emissive: 0x3a1858, emissiveIntensity: 0.18,
+    });
+    // Main trunk leans slightly — gives the "haunted tree" silhouette.
+    const trunk = new THREE.Mesh(this.unitCyl(0.18, 0.55, 7, 'twilightTrunk'), trunkMat);
+    trunk.scale.set(1, height, 1);
+    trunk.rotation.z = (Math.random() - 0.5) * 0.18;
+    trunk.castShadow = true; trunk.receiveShadow = true;
+    group.add(trunk);
+
+    // Bare branches reaching outward like fingers — NO canopy/foliage.
+    // This is THE signature visual that separates twilight trees from
+    // forest pines (which have full conical canopies).
+    const branchMat = trunkMat;
+    const branchCount = 5 + Math.floor(Math.random() * 4);
+    for (let i = 0; i < branchCount; i++) {
+      const a = (i / branchCount) * Math.PI * 2 + Math.random() * 0.6;
+      const branchLen = 1.8 + Math.random() * 2.6;
+      const branchTilt = 0.4 + Math.random() * 0.8;
+      const startY = height * (0.55 + Math.random() * 0.35);
+
+      const branch = new THREE.Mesh(this.unitCyl(0.04, 0.13, 5, 'twilightBranch'), branchMat);
+      branch.scale.set(1, branchLen, 1);
+      // Anchor branch BASE at trunk surface, midpoint extends outward
+      branch.position.set(
+        Math.cos(a) * (0.4 + branchLen * 0.5 * Math.sin(branchTilt)),
+        startY,
+        Math.sin(a) * (0.4 + branchLen * 0.5 * Math.sin(branchTilt)),
+      );
+      branch.rotation.z = -Math.cos(a) * branchTilt;
+      branch.rotation.x = Math.sin(a) * branchTilt;
+      branch.castShadow = true;
+      group.add(branch);
+
+      // Sub-twigs at the branch tip for a more organic finger silhouette.
+      if (Math.random() > 0.4) {
+        const twigCount = 1 + Math.floor(Math.random() * 2);
+        for (let t = 0; t < twigCount; t++) {
+          const twigLen = 0.8 + Math.random() * 1.2;
+          const twig = new THREE.Mesh(this.unitCyl(0.02, 0.05, 4, 'twilightTwig'), branchMat);
+          twig.scale.set(1, twigLen, 1);
+          const tipOffset = branchLen * 0.95;
+          const localDir = (Math.random() - 0.5) * 0.8;
+          twig.position.copy(branch.position).add(
+            new THREE.Vector3(
+              Math.cos(a) * tipOffset * 0.4,
+              tipOffset * 0.45,
+              Math.sin(a) * tipOffset * 0.4,
+            ),
+          );
+          twig.rotation.z = -Math.cos(a) * (branchTilt + localDir);
+          twig.rotation.x = Math.sin(a) * (branchTilt + localDir);
+          group.add(twig);
+        }
+      }
+    }
+
+    // A single small glowing wisp light attached at the top — signature
+    // "magical lantern in the dusk" element. Uses emissive only (no
+    // PointLight) to avoid the PointLight scene-recompile cost on
+    // chunk streaming.
+    const wispColor = [0x9466ff, 0x4ec3ff, 0xd066ff][Math.floor(Math.random() * 3)];
+    const wispMat = this.mat({
+      color: 0x000000, emissive: wispColor, emissiveIntensity: 2.2, flatShading: true,
+      transparent: true, opacity: 0.92,
+    });
+    const wisp = new THREE.Mesh(this.unitSphere(6, 4, 'twilightWisp'), wispMat);
+    wisp.scale.setScalar(0.18 + Math.random() * 0.08);
+    wisp.position.y = height * (0.7 + Math.random() * 0.2);
+    wisp.position.x = (Math.random() - 0.5) * 0.6;
+    wisp.position.z = (Math.random() - 0.5) * 0.6;
+    group.add(wisp);
+
+    group.position.set(x, 0, z);
+    group.rotation.y = Math.random() * Math.PI * 2;
+    return { mesh: group, x, z, type: 'tree', collidable: true, radius: 1.8, height: 99 };
+  }
+
+  private createTwilightStone(x: number, z: number): TerrainObject {
+    // Polished obsidian-like stone with subtle purple emissive — reads
+    // as ancient ritual stones rather than forest rocks.
+    const size = 0.9 + Math.random() * 1.4;
+    const stoneMat = this.mat({
+      color: 0x14101e, flatShading: true, roughness: 0.22, metalness: 0.55,
+      emissive: 0x2a1850, emissiveIntensity: 0.12,
+    });
+    const stone = new THREE.Mesh(this.unitDodec(0), stoneMat);
+    stone.scale.set(size, size * (0.7 + Math.random() * 0.5), size);
+    stone.castShadow = true; stone.receiveShadow = true;
+    stone.position.set(x, size * 0.4, z);
+    stone.rotation.set(Math.random() * 0.3, Math.random() * Math.PI, Math.random() * 0.3);
+    return { mesh: stone, x, z, type: 'rock', collidable: true, radius: size + 0.3, height: size * 0.9 };
+  }
+
+  private createTwilightWisp(x: number, z: number): TerrainObject {
+    // Cluster of bioluminescent wisps — floating glowing spheres around
+    // a thin stem. Reads as magical / haunted swamp-fire.
+    const group = new THREE.Group();
+    const stemMat = this.mat({
+      color: 0x281530, flatShading: true, emissive: 0x1a0e22, emissiveIntensity: 0.2,
+    });
+    const stem = new THREE.Mesh(this.unitCyl(0.04, 0.08, 5, 'twilightWispStem'), stemMat);
+    const stemH = 0.4 + Math.random() * 0.5;
+    stem.scale.set(1, stemH, 1);
+    stem.position.y = stemH / 2;
+    group.add(stem);
+
+    const wispCount = 3 + Math.floor(Math.random() * 3);
+    const wispColors = [0x9466ff, 0x4ec3ff, 0xd066ff, 0x66ffcf];
+    for (let i = 0; i < wispCount; i++) {
+      const c = wispColors[Math.floor(Math.random() * wispColors.length)];
+      const wispMat = this.mat({
+        color: 0x000000, emissive: c, emissiveIntensity: 1.8, flatShading: true,
+        transparent: true, opacity: 0.88,
+      });
+      const wispSize = 0.12 + Math.random() * 0.1;
+      const wisp = new THREE.Mesh(this.unitSphere(6, 4, 'twilightBushWisp'), wispMat);
+      wisp.scale.setScalar(wispSize);
+      const a = (i / wispCount) * Math.PI * 2 + Math.random() * 0.5;
+      const r = 0.18 + Math.random() * 0.25;
+      wisp.position.set(
+        Math.cos(a) * r,
+        stemH + 0.05 + Math.random() * 0.3,
+        Math.sin(a) * r,
+      );
+      group.add(wisp);
+    }
+    group.position.set(x, 0, z);
+    return { mesh: group, x, z, type: 'bush', collidable: false, radius: 0.8 };
+  }
+
+  private createTwilightMonolith(x: number, z: number): TerrainObject {
+    // Tall obsidian monolith — a vertical stone slab with glowing runes.
+    // Distinctive against the bare-branch trees.
+    const group = new THREE.Group();
+    const height = 4.5 + Math.random() * 2.5;
+    const width = 1.4 + Math.random() * 0.8;
+    const depth = 0.8 + Math.random() * 0.4;
+    const stoneMat = this.mat({
+      color: 0x0c0916, flatShading: true, roughness: 0.18, metalness: 0.65,
+      emissive: 0x180a30, emissiveIntensity: 0.10,
+    });
+    const slab = new THREE.Mesh(this.unitBox('twilightMono'), stoneMat);
+    slab.scale.set(width, height, depth);
+    slab.position.y = height / 2;
+    slab.rotation.y = Math.random() * 0.3;
+    slab.rotation.z = (Math.random() - 0.5) * 0.04;
+    slab.castShadow = true; slab.receiveShadow = true;
+    group.add(slab);
+
+    // Glowing rune line down the face — emissive thin box.
+    const runeColor = [0x9466ff, 0x4ec3ff, 0xd066ff][Math.floor(Math.random() * 3)];
+    const runeMat = this.mat({
+      color: 0x000000, emissive: runeColor, emissiveIntensity: 2.4, flatShading: true,
+    });
+    const rune = new THREE.Mesh(this.unitBox('twilightRune'), runeMat);
+    rune.scale.set(0.06, height * 0.55, 0.04);
+    rune.position.set(0, height * 0.5, depth * 0.5 + 0.01);
+    rune.rotation.copy(slab.rotation);
+    group.add(rune);
+
+    // Cap block
+    const capMat = this.mat({ color: 0x0a0612, flatShading: true, roughness: 0.4, metalness: 0.5 });
+    const cap = new THREE.Mesh(this.unitBox('twilightMonoCap'), capMat);
+    cap.scale.set(width + 0.2, 0.18, depth + 0.2);
+    cap.position.y = height + 0.09;
+    cap.rotation.y = slab.rotation.y;
+    group.add(cap);
+
+    group.position.set(x, 0, z);
+    group.rotation.y = Math.random() * Math.PI;
+    return { mesh: group, x, z, type: 'boulder', collidable: true, radius: width / 2 + 0.5, height: height + 0.5 };
+  }
+
+  private createTwilightShrine(x: number, z: number): TerrainObject {
+    // Small ritual altar — base + brazier-like glowing orb.
+    const group = new THREE.Group();
+    const baseMat = this.mat({
+      color: 0x0e0a18, flatShading: true, roughness: 0.4, metalness: 0.4,
+    });
+    const base = new THREE.Mesh(this.unitCyl(0.65, 0.78, 8, 'twilightShrineBase'), baseMat);
+    base.scale.set(1, 0.5, 1);
+    base.position.y = 0.25;
+    base.castShadow = true; base.receiveShadow = true;
+    group.add(base);
+
+    const orbColor = 0x9466ff;
+    const orbMat = this.mat({
+      color: 0x000000, emissive: orbColor, emissiveIntensity: 2.8, flatShading: true,
+      transparent: true, opacity: 0.92,
+    });
+    const orb = new THREE.Mesh(this.unitSphere(10, 8, 'twilightShrineOrb'), orbMat);
+    orb.scale.setScalar(0.35);
+    orb.position.y = 0.78;
+    group.add(orb);
+
+    group.position.set(x, 0, z);
+    group.rotation.y = Math.random() * Math.PI;
+    return { mesh: group, x, z, type: 'bush', collidable: true, radius: 0.85, height: 1.2 };
+  }
+
+  private createTwilightFallenLog(x: number, z: number): TerrainObject {
+    // Twisted dead log on the ground, covered in glowing fungus.
+    const group = new THREE.Group();
+    const length = 3.5 + Math.random() * 2.5;
+    const trunkMat = this.mat({
+      color: 0x1a0e22, flatShading: true, roughness: 0.92, metalness: 0.08,
+    });
+    const log = new THREE.Mesh(this.unitCyl(0.32, 0.4, 6, 'twilightLog'), trunkMat);
+    log.scale.set(1, length, 1);
+    log.rotation.z = Math.PI / 2;
+    log.position.y = 0.35;
+    log.castShadow = true; log.receiveShadow = true;
+    group.add(log);
+
+    // Glowing fungus patches along the log.
+    const fungusColor = [0x9466ff, 0x4ec3ff, 0x66ffcf][Math.floor(Math.random() * 3)];
+    const fungusMat = this.mat({
+      color: 0x000000, emissive: fungusColor, emissiveIntensity: 1.9, flatShading: true,
+    });
+    const patchCount = 3 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < patchCount; i++) {
+      const t = i / patchCount;
+      const patch = new THREE.Mesh(this.unitSphere(5, 3, 'twilightFungus'), fungusMat);
+      const s = 0.1 + Math.random() * 0.1;
+      patch.scale.set(s, s * 0.5, s);
+      patch.position.set(
+        (t - 0.5) * length * 0.9,
+        0.65,
+        (Math.random() - 0.5) * 0.2,
+      );
+      group.add(patch);
+    }
+    group.position.set(x, 0, z);
+    group.rotation.y = Math.random() * Math.PI;
+    return { mesh: group, x, z, type: 'tree', collidable: true, radius: 1.5, height: 0.9 };
   }
 }

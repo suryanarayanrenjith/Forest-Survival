@@ -2,7 +2,7 @@ import { useState } from 'react';
 import {
   ArrowLeft, Dices, Sparkles, ChevronDown, Play, Cpu,
   Shield, Crosshair, Skull, CloudSun, Sun, Moon,
-  Trees, Flame, Snowflake, Mountain, Droplet, Gem, Landmark, type LucideIcon,
+  Trees, Flame, Snowflake, Mountain, Droplet, Leaf, Landmark, type LucideIcon,
 } from 'lucide-react';
 import MenuShell from './MenuShell';
 import { MAP_CONFIGS, getRandomMap, type MapType } from '../utils/MapSystem';
@@ -20,7 +20,7 @@ const MAP_ICONS: Record<MapType, LucideIcon> = {
   desert_canyon: Mountain,
   toxic_swamp: Droplet,
   military_outpost: Shield,
-  crystal_caverns: Gem,
+  autumn_grove: Leaf,
   ancient_ruins: Landmark,
 };
 
@@ -47,7 +47,7 @@ const ClassicMenu = ({ onStartGame, onBack }: ClassicMenuProps) => {
   const SelectedMapIcon = MAP_ICONS[selectedMap];
 
   return (
-    <div className="relative w-full h-screen bg-[#05080a] overflow-hidden">
+    <div className="relative w-full h-screen overflow-hidden">
       <MenuShell variant="classic" />
       <div className="fixed inset-0 z-[1] pointer-events-none bg-gradient-to-b from-black/50 via-black/30 to-black/75" />
       <div

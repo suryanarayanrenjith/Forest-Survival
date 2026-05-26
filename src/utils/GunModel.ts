@@ -2,6 +2,42 @@ import * as THREE from 'three';
 
 type WeaponType = 'pistol' | 'rifle' | 'shotgun' | 'smg' | 'sniper' | 'minigun' | 'launcher';
 
+// ─────────────────────────────────────────────────────────────────────────────
+// SHARED MATERIAL CACHE
+//
+// Switching weapons used to allocate ~40-60 fresh THREE.MeshStandardMaterial
+// instances per weapon. Each unique material configuration (color, roughness,
+// metalness, emissive, transparent etc.) potentially triggers a fresh shader
+// program compilation the first time it's seen by the renderer — causing the
+// visible stutter the user reported on weapon switch.
+//
+// Solution: cache materials by a stable hash of their constructor parameters.
+// With 7 weapons and ~40 parts each, total UNIQUE materials across all
+// weapons drops from ~280 fresh allocations to ~30 cached ones. After the
+// first switch to each weapon, all subsequent switches reuse cached
+// materials and never recompile.
+//
+// Materials are tagged `userData.cached = true` so the switchWeapon dispose
+// loop knows to skip them (disposing a cached material would corrupt the
+// cache and break the next switch).
+// ─────────────────────────────────────────────────────────────────────────────
+const _gunMaterialCache = new Map<string, THREE.MeshStandardMaterial>();
+function _matKey(color: number, metalness: number, roughness: number, extra: Partial<THREE.MeshStandardMaterialParameters>): string {
+  return [
+    'std',
+    color,
+    metalness.toFixed(3),
+    roughness.toFixed(3),
+    (extra.envMapIntensity ?? 1.1).toFixed(2),
+    extra.emissive ?? '-',
+    (extra.emissiveIntensity ?? 0).toFixed(3),
+    extra.transparent ? 1 : 0,
+    extra.opacity ?? 1,
+    (extra as any).side ?? 0,
+    extra.depthWrite === false ? 0 : 1,
+  ].join(':');
+}
+
 /**
  * First-person weapon viewmodel. Every weapon is built from primitive
  * geometry with PBR materials so it reads as a detailed, premium low-poly
@@ -85,13 +121,19 @@ export class GunModel {
     roughness: number,
     extra: Partial<THREE.MeshStandardMaterialParameters> = {},
   ): THREE.MeshStandardMaterial {
-    return new THREE.MeshStandardMaterial({
+    const key = _matKey(color, metalness, roughness, extra);
+    const cached = _gunMaterialCache.get(key);
+    if (cached) return cached;
+    const fresh = new THREE.MeshStandardMaterial({
       color,
       metalness,
       roughness,
       envMapIntensity: 1.1,
       ...extra,
     });
+    fresh.userData.cached = true; // dispose loop will skip this
+    _gunMaterialCache.set(key, fresh);
+    return fresh;
   }
 
   /**
@@ -100,28 +142,40 @@ export class GunModel {
    * over the screen; the player can see the enemy through the lens.
    */
   private glassMat(tint: number): THREE.MeshStandardMaterial {
-    return new THREE.MeshStandardMaterial({
+    const key = `glass:${tint}`;
+    const cached = _gunMaterialCache.get(key);
+    if (cached) return cached;
+    const fresh = new THREE.MeshStandardMaterial({
       color: tint,
       metalness: 0.1,
       roughness: 0.05,
       transparent: true,
       opacity: 0.16,
       depthWrite: false,
-      side: THREE.DoubleSide, // visible as a faint layer from either side
+      side: THREE.DoubleSide,
       envMapIntensity: 1.4,
     });
+    fresh.userData.cached = true;
+    _gunMaterialCache.set(key, fresh);
+    return fresh;
   }
 
   private createGunModel(type: WeaponType) {
-    // Dispose the previous weapon's GPU resources before clearing.
+    // Dispose the previous weapon's GPU resources before clearing. Skip
+    // any material tagged `userData.cached` — those live in the shared
+    // material pool and disposing them would corrupt the cache and break
+    // every subsequent weapon switch.
+    //
+    // Geometries are still per-weapon (each part has a unique shape /
+    // dimensions) so they're disposed normally.
     this.group.traverse((obj) => {
       if (obj instanceof THREE.Mesh) {
         obj.geometry?.dispose();
         const mat = obj.material;
         if (Array.isArray(mat)) {
-          mat.forEach((m) => m?.dispose());
-        } else {
-          mat?.dispose();
+          mat.forEach((m) => { if (m && !m.userData.cached) m.dispose(); });
+        } else if (mat && !mat.userData.cached) {
+          mat.dispose();
         }
       }
     });

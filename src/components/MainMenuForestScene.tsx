@@ -185,26 +185,26 @@ const FOREST_SCENE_THEMES: Record<SceneVariant, ForestSceneTheme> = {
 };
 
 const FOREST_SCENE_DEFAULTS = {
-  // Previous values (1.5 / 0.2) made the bloom mip-chain alias randomly
-  // on the high-emissive mushroom shapes when the camera moved — the
-  // user saw it as "random bright glowing squares". Threshold raised
-  // and strength reduced so only the truly bright highlights bloom and
-  // the per-frame bloom result stays stable across camera motion.
-  bloomStrength: 0.88,
-  bloomThreshold: 0.82,
-  exposure: 1.78,
-  glowStrength: 0.68,
-  glowThreshold: 0.6,
-  glowRadius: 1.8,
-  vignetteStrength: 0.46,
-  grainIntensity: 0.012,
-  contrast: 1.18,
+  // AAA "premium menu" pass — pushed bloom + glow + contrast a notch
+  // for the moody-cinematic feel without aliasing the mushroom highlights
+  // (kept threshold above 0.7 so mid-tones don't enter the bloom mip).
+  // Tuned so the menu reads at the same visual fidelity as the in-game
+  // PostProcessing pipeline.
+  bloomStrength: 1.08,
+  bloomThreshold: 0.76,
+  exposure: 1.82,
+  glowStrength: 0.85,
+  glowThreshold: 0.58,
+  glowRadius: 2.1,
+  vignetteStrength: 0.52,
+  grainIntensity: 0.014,
+  contrast: 1.22,
   dofFocus: 26,
-  dofAperture: 0.00085,
+  dofAperture: 0.00088,
   ssaoRadius: 16,
   ssaoMinDistance: 0.004,
   ssaoMaxDistance: 0.12,
-  chromaticAberration: 0.0022,
+  chromaticAberration: 0.0026,
 } as const;
 
 function randomRange(minimum: number, maximum: number): number {
@@ -1081,7 +1081,9 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
       scene.add(haloMesh);
     }
 
-    const fireflyCount = 100;
+    // Bumped from 100 — denser firefly field for that magical "alive
+    // forest" feel. Still cheap (single Points draw call).
+    const fireflyCount = 160;
     const fireflyGeometry = new THREE.BufferGeometry();
     const fireflyPositions = new Float32Array(fireflyCount * 3);
     const fireflyBasePositions = new Float32Array(fireflyCount * 3);
@@ -1144,6 +1146,45 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
     });
     const fireflies = new THREE.Points(fireflyGeometry, fireflyMaterial);
     scene.add(fireflies);
+
+    // ── EMBERS: drifting warm upward sparks ────────────────────────────
+    // Cinematic "magical embers rising" particle layer. Warm orange points
+    // that drift up + sideways, fade as they rise. Adds the premium AAA
+    // touch to the menu vista without the cost of a full particle system.
+    const emberCount = 80;
+    const emberGeometry = new THREE.BufferGeometry();
+    const emberPositions = new Float32Array(emberCount * 3);
+    const emberVelocities = new Float32Array(emberCount * 3);
+    const emberLifes = new Float32Array(emberCount);
+    const emberMaxLifes = new Float32Array(emberCount);
+    for (let i = 0; i < emberCount; i++) {
+      // Spawn around the hero glow area in front of the camera
+      const a = Math.random() * Math.PI * 2;
+      const r = 6 + Math.random() * 26;
+      emberPositions[i * 3] = Math.cos(a) * r;
+      emberPositions[i * 3 + 1] = -1 + Math.random() * 18;
+      emberPositions[i * 3 + 2] = Math.sin(a) * r - 8;
+      emberVelocities[i * 3] = (Math.random() - 0.5) * 0.018;
+      emberVelocities[i * 3 + 1] = 0.018 + Math.random() * 0.024;
+      emberVelocities[i * 3 + 2] = (Math.random() - 0.5) * 0.018;
+      emberMaxLifes[i] = 4 + Math.random() * 6;
+      emberLifes[i] = Math.random() * emberMaxLifes[i];
+    }
+    emberGeometry.setAttribute('position', new THREE.BufferAttribute(emberPositions, 3));
+    const emberPoints = new THREE.Points(
+      emberGeometry,
+      new THREE.PointsMaterial({
+        size: 0.18,
+        color: variant === 'tutorial' ? 0xffb957 : 0xffd57a,
+        transparent: true,
+        opacity: 0.85,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        sizeAttenuation: true,
+        toneMapped: false,
+      }),
+    );
+    scene.add(emberPoints);
 
     const dustCount = 150;
     const dustGeometry = new THREE.BufferGeometry();
@@ -1453,6 +1494,32 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
         }
       }
       dustPositionAttribute.needsUpdate = true;
+
+      // Drift embers upward with subtle sway, respawn at base when life expires.
+      const emberPositionAttribute = emberGeometry.getAttribute('position') as THREE.BufferAttribute;
+      // Convert frame time (approx) — animate loop runs ~60fps so use 0.016s
+      // step. We're not picky about exact dt here since embers are decorative.
+      const emberDt = 1 / 60;
+      for (let i = 0; i < emberCount; i++) {
+        const base = i * 3;
+        emberLifes[i] -= emberDt;
+        if (emberLifes[i] <= 0) {
+          // Respawn at a random ground-level spot near the hero glow
+          const a = Math.random() * Math.PI * 2;
+          const r = 6 + Math.random() * 26;
+          emberPositions[base]     = Math.cos(a) * r;
+          emberPositions[base + 1] = -1 + Math.random() * 2;
+          emberPositions[base + 2] = Math.sin(a) * r - 8;
+          emberLifes[i] = emberMaxLifes[i];
+        } else {
+          emberPositions[base]     += emberVelocities[base]
+            + Math.sin(elapsedTime * 0.8 + i * 0.7) * 0.004;
+          emberPositions[base + 1] += emberVelocities[base + 1];
+          emberPositions[base + 2] += emberVelocities[base + 2]
+            + Math.cos(elapsedTime * 0.6 + i * 0.5) * 0.004;
+        }
+      }
+      emberPositionAttribute.needsUpdate = true;
 
       const leafPositionAttribute = leafGeometry.getAttribute('position') as THREE.BufferAttribute;
       for (let leafIndex = 0; leafIndex < leafCount; leafIndex++) {
