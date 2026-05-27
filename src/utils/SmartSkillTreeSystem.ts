@@ -301,7 +301,7 @@ export class SmartSkillTreeSystem {
     abilityUsage: number;
     averageCombatDuration: number;
   }): PlayStyle {
-    let scores: Record<PlayStyle, number> = {
+    const scores: Record<PlayStyle, number> = {
       aggressive: 0,
       defensive: 0,
       balanced: 0,

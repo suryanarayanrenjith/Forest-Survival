@@ -11,6 +11,21 @@ import * as THREE from 'three';
  * - Personal space management
  */
 
+/** Minimal shapes the avoidance system needs to inspect. Defined locally
+ *  to avoid a circular import with `types/game.ts`. */
+export interface ObstacleTerrain {
+  x: number;
+  z: number;
+  radius: number;
+  height?: number;
+  collidable?: boolean;
+}
+export interface NeighbouringEnemy {
+  mesh: { position: THREE.Vector3 };
+  dead: boolean;
+}
+export type EnemyKey = string | number | symbol | object;
+
 export interface ObstacleAvoidanceResult {
   canMoveDirectly: boolean;
   alternativePath: THREE.Vector3 | null;
@@ -35,9 +50,9 @@ export class ObstacleAvoidance {
   public calculatePath(
     currentPosition: THREE.Vector3,
     targetPosition: THREE.Vector3,
-    terrainObjects: any[],
-    otherEnemies: any[],
-    enemyId: any,
+    terrainObjects: ObstacleTerrain[],
+    otherEnemies: NeighbouringEnemy[],
+    enemyId: EnemyKey,
     deltaTime: number
   ): ObstacleAvoidanceResult {
     // Check if stuck
@@ -97,7 +112,7 @@ export class ObstacleAvoidance {
   private checkPathForObstacles(
     start: THREE.Vector3,
     end: THREE.Vector3,
-    terrainObjects: any[]
+    terrainObjects: ObstacleTerrain[]
   ): boolean {
     const direction = new THREE.Vector3().subVectors(end, start);
     const distance = direction.length();
@@ -135,7 +150,7 @@ export class ObstacleAvoidance {
   private findAlternativePath(
     currentPosition: THREE.Vector3,
     targetPosition: THREE.Vector3,
-    terrainObjects: any[],
+    terrainObjects: ObstacleTerrain[],
     forceRandom: boolean = false
   ): THREE.Vector3 | null {
     const baseDirection = new THREE.Vector3()
@@ -213,8 +228,8 @@ export class ObstacleAvoidance {
    */
   private calculatePersonalSpace(
     currentPosition: THREE.Vector3,
-    otherEnemies: any[],
-    currentEnemyId: any
+    otherEnemies: NeighbouringEnemy[],
+    currentEnemyId: EnemyKey
   ): THREE.Vector3 {
     const avoidanceVector = new THREE.Vector3(0, 0, 0);
     let nearbyCount = 0;

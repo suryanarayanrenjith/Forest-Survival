@@ -4,6 +4,11 @@ import Peer from 'peerjs';
 type DataConnection = ReturnType<Peer['connect']>;
 import * as THREE from 'three';
 
+/** 8 unique player-model classes the lobby allows picking from. */
+export type ModelClassId =
+  | 'ranger' | 'scout' | 'heavy' | 'operative'
+  | 'pyro'   | 'medic' | 'engineer' | 'phantom';
+
 export interface PlayerData {
   id: string;
   name: string;
@@ -17,6 +22,8 @@ export interface PlayerData {
   currentWeapon: string;
   isAlive: boolean;
   color: number;
+  /** Lobby-picked character class. Undefined → auto-assign at game start. */
+  modelClass?: ModelClassId;
   lastHeartbeat?: number; // For connection health monitoring
 }
 
@@ -30,14 +37,24 @@ export interface GameState {
   difficulty?: 'easy' | 'medium' | 'hard' | 'adaptive'; // Host-selected difficulty
 }
 
+/**
+ * Wire-format GameState — the same shape as `GameState` but with the
+ * players Map flattened to an array so it survives JSON round-trips
+ * across PeerJS. Sent inside game_start / game_restart / return_to_lobby
+ * messages and rehydrated to a Map on the receiving side.
+ */
+export interface SerializedGameState extends Omit<GameState, 'players'> {
+  players: PlayerData[];
+}
+
 export type NetworkMessage =
   | { type: 'player_update'; data: PlayerData }
   | { type: 'player_joined'; data: PlayerData }
   | { type: 'player_left'; playerId: string }
   | { type: 'player_rejected'; reason: string }
-  | { type: 'game_start'; gameState: Partial<GameState> }
-  | { type: 'game_restart'; gameState: Partial<GameState> }
-  | { type: 'return_to_lobby'; gameState: Partial<GameState> }
+  | { type: 'game_start'; gameState: Partial<SerializedGameState> }
+  | { type: 'game_restart'; gameState: Partial<SerializedGameState> }
+  | { type: 'return_to_lobby'; gameState: Partial<SerializedGameState> }
   | { type: 'game_over'; winnerId: string; finalStats: PlayerData[] }
   | { type: 'enemy_killed'; playerId: string }
   | { type: 'player_shot'; shooterId: string; targetId: string; damage: number }
@@ -327,7 +344,7 @@ export class MultiplayerManager {
                 timeLimit: this.gameState.timeLimit,
                 startTime: this.gameState.startTime,
                 hostId: this.gameState.hostId
-              } as any
+                      }
             });
           } else {
             console.log('[MultiplayerManager] Game not started yet, player added to lobby');
@@ -351,7 +368,7 @@ export class MultiplayerManager {
         }
         break;
 
-      case 'player_update':
+      case 'player_update': {
         // Track alive-state transitions before replacing snapshots
         const prevState = this.gameState?.players.get(message.data.id);
         const wasAlive = prevState ? prevState.isAlive : true;
@@ -385,6 +402,7 @@ export class MultiplayerManager {
           }
         }
         break;
+      }
 
       case 'player_left':
         this.remotePlayers.delete(message.playerId);
@@ -417,18 +435,12 @@ export class MultiplayerManager {
         console.log('[MultiplayerManager] isHost:', this.isHost);
 
         if (message.gameState) {
-          // Reconstruct players Map from array
+          // Reconstruct players Map from the wire-format array
           const playersMap = new Map<string, PlayerData>();
           if (Array.isArray(message.gameState.players)) {
             console.log(`Reconstructing players map from array (${message.gameState.players.length} players)`);
-            message.gameState.players.forEach((player: PlayerData) => {
+            message.gameState.players.forEach((player) => {
               playersMap.set(player.id, player);
-            });
-          } else if (message.gameState.players instanceof Map) {
-            // Handle case where it's already a Map (local messages)
-            console.log(`Players already in Map format (${message.gameState.players.size} players)`);
-            message.gameState.players.forEach((player, id) => {
-              playersMap.set(id, player);
             });
           }
 
@@ -465,12 +477,8 @@ export class MultiplayerManager {
         if (message.gameState) {
           const playersMap = new Map<string, PlayerData>();
           if (Array.isArray(message.gameState.players)) {
-            message.gameState.players.forEach((player: PlayerData) => {
+            message.gameState.players.forEach((player) => {
               playersMap.set(player.id, player);
-            });
-          } else if (message.gameState.players instanceof Map) {
-            message.gameState.players.forEach((player, id) => {
-              playersMap.set(id, player);
             });
           }
 
@@ -512,12 +520,8 @@ export class MultiplayerManager {
         if (message.gameState) {
           const playersMap = new Map<string, PlayerData>();
           if (Array.isArray(message.gameState.players)) {
-            message.gameState.players.forEach((player: PlayerData) => {
+            message.gameState.players.forEach((player) => {
               playersMap.set(player.id, player);
-            });
-          } else if (message.gameState.players instanceof Map) {
-            message.gameState.players.forEach((player, id) => {
-              playersMap.set(id, player);
             });
           }
 
@@ -852,7 +856,7 @@ export class MultiplayerManager {
         hostId: this.gameState.hostId,
         map: this.gameState.map,
         difficulty: this.gameState.difficulty,
-      } as any
+      }
     };
 
     this.broadcastMessage(restartMessage);
@@ -889,7 +893,7 @@ export class MultiplayerManager {
         hostId: this.gameState.hostId,
         map: this.gameState.map,
         difficulty: this.gameState.difficulty,
-      } as any
+      }
     };
 
     this.broadcastMessage(lobbyMessage);
@@ -961,7 +965,7 @@ export class MultiplayerManager {
         hostId: this.gameState.hostId,
         map: this.gameState.map,
         difficulty: this.gameState.difficulty,
-      } as any
+      }
     };
 
     console.log('[MultiplayerManager] Broadcasting game_start message...');

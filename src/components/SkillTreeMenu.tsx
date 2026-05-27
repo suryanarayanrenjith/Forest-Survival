@@ -3,6 +3,7 @@ import {
   Sparkles, Swords, Heart, Footprints, Package, Check, Lock, X,
   Sigma, Coins, ChevronRight, type LucideIcon,
 } from 'lucide-react';
+import MusicMuteButton from './MusicMuteButton';
 import { type Skill, type SkillCategory, type PlayStyle } from '../utils/SmartSkillTreeSystem';
 
 interface SkillTreeMenuProps {
@@ -94,6 +95,7 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
       style={{ background: 'rgba(5,8,10,0.94)', backdropFilter: 'blur(14px)' }}
     >
+      <MusicMuteButton />
       <div
         className="relative w-full max-w-6xl h-[90vh] flex flex-col rounded-2xl border border-white/10 bg-[#0b0f15] overflow-hidden shadow-2xl"
         style={{ animation: 'stFade 0.35s cubic-bezier(0.16,1,0.3,1) forwards' }}

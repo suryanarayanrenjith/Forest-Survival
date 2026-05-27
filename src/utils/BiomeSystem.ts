@@ -49,7 +49,7 @@ function hashStdMatOpts(o: StdMatOpts): string {
     o.flatShading ? 1 : 0,
     o.transparent ? 1 : 0,
     o.opacity ?? 1,
-    (o as any).side ?? 0,
+    o.side ?? 0,
   ].join(':');
 }
 

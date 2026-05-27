@@ -399,13 +399,14 @@ export class ProceduralMissionSystem {
         shortDesc = `${target} headshots`;
         icon = '🎯';
         break;
-      case 'weapon_mastery':
+      case 'weapon_mastery': {
         const weapon = context.availableWeapons[Math.floor(Math.random() * context.availableWeapons.length)] || 'Rifle';
         target = Math.ceil(12 * multiplier);
         description = `Get ${target} kills with ${weapon}`;
         shortDesc = `${target} ${weapon} kills`;
         icon = '🔫';
         break;
+      }
       case 'ability_challenge':
         target = Math.ceil(8 * multiplier);
         description = `Use abilities ${target} times`;
@@ -611,7 +612,7 @@ export class ProceduralMissionSystem {
   /**
    * Update mission progress
    */
-  public updateProgress(type: MissionType, amount: number = 1, metadata?: any): void {
+  public updateProgress(type: MissionType, amount: number = 1, metadata?: Record<string, unknown>): void {
     for (const mission of this.activeMissions) {
       if (mission.completed || mission.failed) continue;
 
@@ -621,7 +622,7 @@ export class ProceduralMissionSystem {
         // Check if this update applies to this objective
         if (objective.type === type) {
           // Special case for weapon mastery
-          if (type === 'weapon_mastery' && metadata?.weapon) {
+          if (type === 'weapon_mastery' && typeof metadata?.weapon === 'string') {
             if (!objective.description.includes(metadata.weapon)) {
               continue;
             }

@@ -9,6 +9,14 @@ import * as THREE from 'three';
  * - Threat assessment
  */
 
+export interface TerrainShape {
+  x: number;
+  z: number;
+  radius: number;
+  height?: number;
+  collidable?: boolean;
+}
+
 export interface PerceptionResult {
   canSeePlayer: boolean;
   canHearPlayer: boolean;
@@ -54,7 +62,7 @@ export class EnemyPerception {
     enemyRotation: number,
     playerPosition: THREE.Vector3,
     playerVelocity: THREE.Vector3,
-    terrainObjects: any[],
+    terrainObjects: TerrainShape[],
     isNight: boolean = false
   ): PerceptionResult {
     const currentTime = Date.now();
@@ -127,7 +135,7 @@ export class EnemyPerception {
     enemyRotation: number,
     playerPosition: THREE.Vector3,
     playerDistance: number,
-    terrainObjects: any[],
+    terrainObjects: TerrainShape[],
     isNight: boolean
   ): boolean {
     // Adjust vision range for night
@@ -167,7 +175,7 @@ export class EnemyPerception {
   private isLineBlocked(
     start: THREE.Vector3,
     end: THREE.Vector3,
-    terrainObjects: any[]
+    terrainObjects: TerrainShape[]
   ): boolean {
     const direction = new THREE.Vector3().subVectors(end, start);
     const distance = direction.length();

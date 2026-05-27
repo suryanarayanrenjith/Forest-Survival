@@ -22,8 +22,8 @@ export interface AIBehaviorContext {
   health: number;
   maxHealth: number;
   type: 'normal' | 'fast' | 'tank' | 'boss';
-  allEnemies: any[];
-  terrainObjects: any[];
+  allEnemies: Array<{ mesh: THREE.Object3D; dead: boolean }>;
+  terrainObjects: Array<{ x: number; z: number; radius: number; height?: number; collidable?: boolean }>;
   canSeePlayer: boolean;
   hearPlayerShooting: boolean;
   timeSinceLastSawPlayer: number;

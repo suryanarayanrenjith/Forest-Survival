@@ -472,7 +472,7 @@ export class PredictiveSpawnSystem {
         const candidate = scoredCandidates[index];
         spawnPoints.push({
           position: candidate.pos,
-          spawnType: comp.type as any,
+          spawnType: comp.type as 'normal' | 'fast' | 'tank' | 'boss',
           priority: candidate.score,
           reason: this.explainSpawnChoice(candidate.pos, playerPos, behavior),
           threatLevel: this.calculateThreatLevel(candidate.pos, playerPos, comp.type)
@@ -638,7 +638,7 @@ export class PredictiveSpawnSystem {
 
   private generateRationale(
     behavior: PlayerBehavior,
-    composition: any[],
+    composition: Array<{ type: string; count: number }>,
     timing: string
   ): string {
     const pattern = behavior.movementPattern;

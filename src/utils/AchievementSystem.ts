@@ -242,11 +242,12 @@ export class AchievementSystem {
       const saved = localStorage.getItem('achievements');
       if (saved) {
         const progress = JSON.parse(saved);
-        Object.entries(progress).forEach(([id, data]: [string, any]) => {
+        const entries = Object.entries(progress as Record<string, { unlocked?: boolean; progress?: number }>);
+        entries.forEach(([id, data]) => {
           const achievement = this.achievements.get(id);
           if (achievement) {
-            achievement.unlocked = data.unlocked;
-            achievement.progress = data.progress;
+            if (typeof data.unlocked === 'boolean') achievement.unlocked = data.unlocked;
+            if (typeof data.progress === 'number') achievement.progress = data.progress;
           }
         });
       }

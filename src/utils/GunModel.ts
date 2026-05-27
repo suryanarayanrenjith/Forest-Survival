@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-type WeaponType = 'pistol' | 'rifle' | 'shotgun' | 'smg' | 'sniper' | 'minigun' | 'launcher';
+export type WeaponType = 'pistol' | 'rifle' | 'shotgun' | 'smg' | 'sniper' | 'minigun' | 'launcher';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SHARED MATERIAL CACHE
@@ -33,7 +33,7 @@ function _matKey(color: number, metalness: number, roughness: number, extra: Par
     (extra.emissiveIntensity ?? 0).toFixed(3),
     extra.transparent ? 1 : 0,
     extra.opacity ?? 1,
-    (extra as any).side ?? 0,
+    extra.side ?? 0,
     extra.depthWrite === false ? 0 : 1,
   ].join(':');
 }

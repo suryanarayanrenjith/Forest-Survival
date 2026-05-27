@@ -3,12 +3,34 @@ import {
   Users, ArrowLeft, Server, LogIn, Copy, SlidersHorizontal, Clock,
   ChevronDown, Crown, Play, X, Loader2, Wifi, Check, Pencil, Dices,
   Trees, Flame, Snowflake, Mountain, Droplet, Shield, Leaf, Landmark,
-  Crosshair, Skull, Cpu, type LucideIcon,
+  Crosshair, Skull, Cpu, Bot, Footprints, ShieldCheck, EyeOff, Flame as FlameIcon,
+  HeartPulse, Wrench, Ghost, Lock, type LucideIcon,
 } from 'lucide-react';
 import MenuShell from './MenuShell';
-import { MultiplayerManager } from '../utils/MultiplayerManager';
+import { MultiplayerManager, type ModelClassId, type NetworkMessage } from '../utils/MultiplayerManager';
 import type { PlayerData } from '../utils/MultiplayerManager';
+
+type GameStartMsg = Extract<NetworkMessage, { type: 'game_start' }>;
+type PlayerRejectedMsg = Extract<NetworkMessage, { type: 'player_rejected' }>;
 import { MAP_CONFIGS, type MapType } from '../utils/MapSystem';
+
+interface CharacterDef {
+  id: ModelClassId;
+  name: string;
+  blurb: string;
+  Icon: LucideIcon;
+  color: string;
+}
+const CHARACTERS: CharacterDef[] = [
+  { id: 'ranger',    name: 'Ranger',    blurb: 'Hooded scout',         Icon: Bot,         color: '#3f7a2a' },
+  { id: 'scout',     name: 'Scout',     blurb: 'Cap + pack',           Icon: Footprints,  color: '#f6b53b' },
+  { id: 'heavy',     name: 'Heavy',     blurb: 'Plated visor',         Icon: ShieldCheck, color: '#b02b2b' },
+  { id: 'operative', name: 'Operative', blurb: 'Quad-tube NVGs',       Icon: EyeOff,      color: '#3a3f4a' },
+  { id: 'pyro',      name: 'Pyro',      blurb: 'Gas mask + tanks',     Icon: FlameIcon,   color: '#d96528' },
+  { id: 'medic',     name: 'Medic',     blurb: 'Coat + red cross',     Icon: HeartPulse,  color: '#c91a1a' },
+  { id: 'engineer',  name: 'Engineer',  blurb: 'Hard hat + exo',       Icon: Wrench,      color: '#c78a2a' },
+  { id: 'phantom',   name: 'Phantom',   blurb: 'Visor + cloak',        Icon: Ghost,       color: '#7c33ff' },
+];
 
 export type MpDifficulty = 'easy' | 'medium' | 'hard' | 'adaptive';
 
@@ -125,11 +147,83 @@ const PlayerRow = ({ player, index, manager }: { player: PlayerData; index: numb
         <div className="flex items-center gap-1.5 mt-0.5">
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
           <span className="text-[10px] font-semibold tracking-wide text-emerald-400/80 uppercase">Connected</span>
+          {player.modelClass && (() => {
+            const char = CHARACTERS.find((c) => c.id === player.modelClass);
+            if (!char) return null;
+            return (
+              <span
+                className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide"
+                style={{ background: `${char.color}26`, color: char.color }}
+              >
+                <char.Icon className="w-2.5 h-2.5" strokeWidth={2.5} /> {char.name}
+              </span>
+            );
+          })()}
         </div>
       </div>
     </div>
   );
 };
+
+// Character picker — 8 cards, one per class. Cards taken by other players
+// are dimmed + locked so a class can only be claimed once per lobby.
+const CharacterPicker = ({
+  selected,
+  takenBy,
+  onPick,
+}: {
+  selected: ModelClassId | undefined;
+  takenBy: Map<ModelClassId, string>;   // classId → player name (other players)
+  onPick: (id: ModelClassId) => void;
+}) => (
+  <div>
+    <label className="block text-[10px] font-semibold tracking-[0.15em] text-gray-500 uppercase mb-1.5">
+      Choose Character
+    </label>
+    <div className="grid grid-cols-4 gap-1.5">
+      {CHARACTERS.map((c) => {
+        const owner = takenBy.get(c.id);
+        const isMine = selected === c.id;
+        const locked = !!owner && !isMine;
+        return (
+          <button
+            key={c.id}
+            type="button"
+            onClick={() => { if (!locked) onPick(c.id); }}
+            disabled={locked}
+            title={locked ? `Taken by ${owner}` : c.blurb}
+            className="relative flex flex-col items-center justify-center gap-1 py-2 px-1 rounded-lg border transition-all duration-150"
+            style={{
+              borderColor: isMine ? `${c.color}cc` : locked ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.08)',
+              background: isMine ? `${c.color}26` : 'rgba(255,255,255,0.03)',
+              opacity: locked ? 0.34 : 1,
+              cursor: locked ? 'not-allowed' : 'pointer',
+            }}
+          >
+            <c.Icon
+              className="w-5 h-5"
+              style={{ color: isMine ? c.color : locked ? '#6b7280' : '#cbd5e1' }}
+              strokeWidth={1.8}
+            />
+            <span className={`text-[10px] font-bold leading-tight text-center truncate w-full ${isMine ? 'text-white' : 'text-gray-300'}`}>
+              {c.name}
+            </span>
+            {locked && (
+              <span className="absolute top-1 right-1 flex items-center justify-center w-3.5 h-3.5 rounded-full bg-black/55">
+                <Lock className="w-2 h-2 text-gray-400" strokeWidth={2.5} />
+              </span>
+            )}
+            {isMine && (
+              <span className="absolute top-1 right-1 flex items-center justify-center w-3.5 h-3.5 rounded-full" style={{ background: c.color }}>
+                <Check className="w-2 h-2 text-black" strokeWidth={3} />
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  </div>
+);
 
 const ErrorBox = ({ error }: { error: string }) =>
   error ? (
@@ -268,7 +362,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
       await newManager.joinLobby(lobbyIdToJoin);
       setManager(newManager);
       console.log('[MultiplayerLobby] Successfully rejoined lobby:', lobbyIdToJoin);
-    } catch (err: any) {
+    } catch (err) {
       console.error('[MultiplayerLobby] Failed to rejoin lobby:', err);
       setError('Session expired. The lobby may have closed. Please join again manually.');
       clearMultiplayerURL();
@@ -291,7 +385,8 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
   useEffect(() => {
     if (!manager) return;
 
-    manager.onMessage('game_start', (data: any) => {
+    manager.onMessage('game_start', (raw) => {
+      const data = raw as GameStartMsg;
       if (data.gameState) {
         const gameMode = data.gameState.gameMode || 'coop';
         const timeLimit = data.gameState.timeLimit;
@@ -301,7 +396,8 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
       }
     });
 
-    manager.onMessage('player_rejected', (data: any) => {
+    manager.onMessage('player_rejected', (raw) => {
+      const data = raw as PlayerRejectedMsg;
       console.log('[MultiplayerLobby] Player rejected:', data.reason);
       setError(data.reason);
       setManager(null);
@@ -329,7 +425,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
       setLobbyId(id);
       setManager(newManager);
       updateURL({ lobby: id, role: 'host', name });
-    } catch (err: any) {
+    } catch (err) {
       console.error('Failed to create lobby:', err);
       setError('Failed to create lobby. Please check your connection and try again.');
       lobbyCreatedRef.current = false;
@@ -355,13 +451,34 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
       await newManager.joinLobby(joinLobbyId);
       setManager(newManager);
       updateURL({ lobby: joinLobbyId, role: 'guest', name });
-    } catch (err: any) {
+    } catch (err) {
       console.error('Failed to join lobby:', err);
       setError('Failed to join lobby. Please check the ID and try again.');
       clearMultiplayerURL();
     } finally {
       setIsConnecting(false);
     }
+  };
+
+  // Lobby-pick the local player's character class. Broadcasts the choice
+  // so every other client greys it out and the in-game avatar matches.
+  const localPlayer = manager?.getLocalPlayer();
+  const localClass: ModelClassId | undefined = localPlayer?.modelClass;
+  const takenByOthers = new Map<ModelClassId, string>();
+  connectedPlayers.forEach((p) => {
+    if (!localPlayer || p.id === localPlayer.id) return;
+    if (p.modelClass) takenByOthers.set(p.modelClass, p.name);
+  });
+  const handlePickCharacter = (id: ModelClassId) => {
+    if (!manager) return;
+    // Defence in depth — the button is disabled when taken, but block
+    // here too in case of a race between two simultaneous picks.
+    if (takenByOthers.has(id)) {
+      setError(`That character is already taken by ${takenByOthers.get(id)}.`);
+      return;
+    }
+    manager.updateLocalPlayer({ modelClass: id });
+    setError('');
   };
 
   // Rename the local player while in a lobby.
@@ -573,6 +690,13 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
 
             {/* Player name editor */}
             <NameField name={playerName} onRename={handleRename} />
+
+            {/* Character picker — host gets it too so they can claim a class */}
+            <CharacterPicker
+              selected={localClass}
+              takenBy={takenByOthers}
+              onPick={handlePickCharacter}
+            />
 
             {/* Settings */}
             <div className="rounded-2xl border border-white/[0.08] bg-white/[0.03] p-4 space-y-3.5">
@@ -864,6 +988,13 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
           <div className="p-5 space-y-4">
             {/* Player name editor */}
             <NameField name={playerName} onRename={handleRename} />
+
+            {/* Character picker — guests pick their character here */}
+            <CharacterPicker
+              selected={localClass}
+              takenBy={takenByOthers}
+              onPick={handlePickCharacter}
+            />
 
             <div>
               <div className="flex items-center gap-2 mb-2">

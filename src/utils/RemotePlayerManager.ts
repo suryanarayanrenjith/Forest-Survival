@@ -1,0 +1,657 @@
+/**
+ * RemotePlayerManager
+ * ====================
+ * Renders the avatars for every remote player in the multiplayer match.
+ *
+ * Responsibilities
+ *  - Build & display 8 visually-distinct chamfered-block player models
+ *    (Ranger, Scout, Heavy, Operative, Pyro, Medic, Engineer, Phantom).
+ *  - Assign each remote player a unique class deterministically so all
+ *    clients see the same model for the same player.
+ *  - Smoothly interpolate position / rotation from the throttled network
+ *    snapshots so movement feels fluid even at ~15Hz updates.
+ *  - Drive a two-handed "weapon ready" pose with subtle arm sway and
+ *    full leg stride that scales with the derived velocity.
+ *  - Render a billboarded nameplate + health bar above each player —
+ *    hidden the moment that player dies.
+ *  - Collapse the body forward on death and hide it after the fade.
+ *  - Tag every mesh with `userData.friendlyPlayer = true` so any
+ *    raycast / collision check anywhere in the game can opt them out
+ *    of friendly-fire / collision.
+ *
+ * Friendly fire is also structurally impossible because the projectile
+ * system only checks against the enemy spatial grid — remote-player
+ * meshes are never added there. The tag is belt-and-suspenders.
+ */
+import * as THREE from 'three';
+import type { PlayerData } from './MultiplayerManager';
+import {
+  CLASS_IDS, type ClassId, type Palette,
+  derivePalette, RIG,
+  buildRanger, buildScout, buildHeavy, buildOperative,
+  buildPyro, buildMedic, buildEngineer, buildPhantom,
+  buildHeldWeapon, getWeaponPose, type WeaponType,
+} from './CharacterModels';
+
+const VALID_WEAPONS: WeaponType[] = ['pistol', 'rifle', 'shotgun', 'smg', 'sniper', 'minigun', 'launcher'];
+function asWeaponType(name: string | undefined): WeaponType {
+  return (VALID_WEAPONS.includes(name as WeaponType) ? name : 'pistol') as WeaponType;
+}
+
+// Camera/eye height in App.tsx is 5 units above feet. The chamfered
+// humanoid is 4.45 units tall; we scale it up so head top lands right
+// at camera height, then position the root so feet sit on the ground.
+const MODEL_NATIVE_HEIGHT = RIG.headTopY;          // 4.45
+const PLAYER_EYE_HEIGHT = 5;                       // matches standingHeight in App.tsx
+const MODEL_SCALE = PLAYER_EYE_HEIGHT / MODEL_NATIVE_HEIGHT;
+const NAMEPLATE_Y = PLAYER_EYE_HEIGHT + 0.95;      // world units above feet
+const HEALTHBAR_Y = PLAYER_EYE_HEIGHT + 0.55;
+const POSITION_LERP_SPEED = 16;                    // higher = snappier; lower = smoother
+const ROTATION_LERP_SPEED = 14;
+
+// Re-used vectors so the update loop is allocation-free.
+const _tmpVec3 = new THREE.Vector3();
+const _tmpEuler = new THREE.Euler();
+
+interface RemotePlayerRecord {
+  id: string;
+  data: PlayerData;
+  group: THREE.Group;                                  // outermost container (position lives here)
+  body: THREE.Group;                                   // scaled wrapper we rotate for yaw
+  joints: Joints;
+  nameplate: THREE.Sprite;
+  healthBar: THREE.Sprite;
+  modelClass: ClassId;
+  // Held weapon — rebuilt whenever the player swaps weapons in-game.
+  weaponGroup: THREE.Group | null;
+  weaponMaterials: THREE.Material[];
+  currentWeaponType: WeaponType;
+  // Interpolation
+  targetPosition: THREE.Vector3;
+  targetYaw: number;
+  currentYaw: number;
+  // Velocity derived from successive position updates (drives walk anim)
+  smoothedSpeed: number;
+  walkPhase: number;
+  bobPhase: number;
+  // Health bar canvas + texture
+  healthCanvas: HTMLCanvasElement;
+  healthCtx: CanvasRenderingContext2D;
+  healthTexture: THREE.CanvasTexture;
+  lastRenderedHealth: number;
+  // Nameplate cache
+  lastNameplateName: string;
+  // Lifecycle
+  isAlive: boolean;
+  deathT: number;
+  materials: THREE.Material[];
+}
+
+interface Joints {
+  leftShoulder: THREE.Group;
+  rightShoulder: THREE.Group;
+  leftHip: THREE.Group;
+  rightHip: THREE.Group;
+  headJoint: THREE.Group;
+  rightHand: THREE.Mesh;
+}
+
+/** Stable 32-bit FNV-1a hash. Used for deterministic class assignment. */
+function fnv1a(str: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+export class RemotePlayerManager {
+  private scene: THREE.Scene;
+  private root: THREE.Group;
+  private players: Map<string, RemotePlayerRecord> = new Map();
+  private shadowsEnabled: boolean;
+  private isNight: boolean = false;
+
+  // Tracks model assignments so each connected player gets a unique
+  // class deterministically (linear-probed by FNV hash on the sorted
+  // ID list — every client converges on the same mapping).
+  private classAssignments: Map<string, ClassId> = new Map();
+
+  constructor(scene: THREE.Scene, opts: { shadows?: boolean } = {}) {
+    this.scene = scene;
+    this.root = new THREE.Group();
+    this.root.name = 'RemotePlayers';
+    this.root.userData.friendlyPlayer = true;
+    this.scene.add(this.root);
+    this.shadowsEnabled = opts.shadows !== false;
+  }
+
+  setNightMode(isNight: boolean) {
+    this.isNight = isNight;
+  }
+
+  /**
+   * Decide which class an incoming player should use. Priority order:
+   *   1. The player's explicit lobby pick (`data.modelClass`).
+   *   2. A locked-in previous assignment for this id.
+   *   3. Deterministic FNV-hash + linear-probe over the sorted ID set
+   *      (every client converges on the same mapping).
+   */
+  private assignClass(playerId: string, otherIds: string[], explicit?: ClassId): ClassId {
+    if (explicit && CLASS_IDS.includes(explicit)) {
+      this.classAssignments.set(playerId, explicit);
+      return explicit;
+    }
+    const existing = this.classAssignments.get(playerId);
+    if (existing) return existing;
+
+    const used = new Set<ClassId>();
+    otherIds.forEach((id) => {
+      const cls = this.classAssignments.get(id);
+      if (cls) used.add(cls);
+    });
+
+    const start = fnv1a(playerId) % CLASS_IDS.length;
+    for (let attempt = 0; attempt < CLASS_IDS.length; attempt++) {
+      const candidate = CLASS_IDS[(start + attempt) % CLASS_IDS.length];
+      if (!used.has(candidate)) {
+        this.classAssignments.set(playerId, candidate);
+        return candidate;
+      }
+    }
+    // All 8 slots used (>8 players — beyond lobby cap) → fall back
+    const fallback = CLASS_IDS[start];
+    this.classAssignments.set(playerId, fallback);
+    return fallback;
+  }
+
+  /** Add (or refresh, if already present) a remote player. */
+  addOrUpdatePlayer(data: PlayerData, allKnownIds: string[]): void {
+    const existing = this.players.get(data.id);
+    if (existing) {
+      // If the player picked a different class in the lobby, rebuild the
+      // model in-place so the change reflects immediately.
+      const wanted = (data.modelClass && CLASS_IDS.includes(data.modelClass as ClassId))
+        ? (data.modelClass as ClassId)
+        : existing.modelClass;
+      if (wanted !== existing.modelClass) {
+        this.removePlayer(data.id);
+      } else {
+        this.updatePlayer(data);
+        return;
+      }
+    }
+
+    const explicit = data.modelClass && CLASS_IDS.includes(data.modelClass as ClassId)
+      ? (data.modelClass as ClassId)
+      : undefined;
+    const modelClass = this.assignClass(data.id, allKnownIds.filter((id) => id !== data.id), explicit);
+    const record = this.buildPlayer(data, modelClass);
+    this.players.set(data.id, record);
+    this.root.add(record.group);
+
+    // Seed interpolation to the spawn position so the avatar doesn't
+    // streak across the map on first appearance.
+    record.group.position.set(data.position.x, 0, data.position.z);
+    record.targetPosition.copy(record.group.position);
+    record.currentYaw = -data.rotation.y + Math.PI;
+    record.targetYaw = record.currentYaw;
+    record.body.rotation.y = record.currentYaw;
+  }
+
+  /** Apply a freshly-received network snapshot to an already-present player. */
+  updatePlayer(data: PlayerData): void {
+    const rec = this.players.get(data.id);
+    if (!rec) return;
+
+    rec.data = data;
+    rec.targetPosition.set(
+      data.position.x,
+      data.position.y - PLAYER_EYE_HEIGHT,    // remote camera y → world feet y
+      data.position.z,
+    );
+    // Camera yaw is the player's facing — avatar yaw is the same direction,
+    // but the camera/model use opposite sign conventions for "forward".
+    _tmpEuler.set(data.rotation.x, data.rotation.y, data.rotation.z, 'YXZ');
+    rec.targetYaw = -_tmpEuler.y + Math.PI;
+
+    // Weapon swap — rebuild the held mesh + reapply the pose so all 8
+    // models hold every weapon correctly.
+    const wantedWeapon = asWeaponType(data.currentWeapon);
+    if (wantedWeapon !== rec.currentWeaponType) {
+      this.swapWeapon(rec, wantedWeapon);
+    }
+
+    // Death state transitions
+    if (rec.isAlive && !data.isAlive) {
+      rec.isAlive = false;
+      rec.deathT = 0;
+    } else if (!rec.isAlive && data.isAlive) {
+      // Respawn — reset the death pose
+      rec.isAlive = true;
+      rec.deathT = 0;
+      rec.body.rotation.x = 0;
+      rec.body.position.y = 0;
+      rec.body.visible = true;
+      rec.nameplate.visible = true;
+      rec.healthBar.visible = true;
+    }
+
+    if (rec.isAlive) {
+      this.refreshNameplateIfNeeded(rec);
+      this.refreshHealthBarIfNeeded(rec);
+    }
+  }
+
+  /**
+   * Replace the player's held weapon mesh + adjust the arm pose to match.
+   * Disposes the old weapon's geometry/materials so weapon swaps don't leak.
+   */
+  private swapWeapon(rec: RemotePlayerRecord, type: WeaponType): void {
+    // Tear down the old weapon mesh + free its GPU resources.
+    if (rec.weaponGroup) {
+      rec.weaponGroup.removeFromParent();
+      rec.weaponGroup.traverse((obj) => {
+        if (obj instanceof THREE.Mesh) obj.geometry.dispose();
+      });
+      rec.weaponMaterials.forEach((m) => m.dispose());
+      rec.weaponMaterials = [];
+      rec.weaponGroup = null;
+    }
+
+    rec.currentWeaponType = type;
+    const matSink: THREE.Material[] = [];
+    const weapon = buildHeldWeapon(type, matSink);
+    const pose = getWeaponPose(type);
+    weapon.position.set(...pose.weaponPos);
+    weapon.rotation.set(...pose.weaponRot);
+    // Tag for friendly-fire safety and apply shadow flag.
+    weapon.traverse((obj) => {
+      obj.userData.friendlyPlayer = true;
+      obj.userData.playerId = rec.id;
+      if (obj instanceof THREE.Mesh) {
+        obj.castShadow = this.shadowsEnabled;
+        obj.receiveShadow = false;
+      }
+    });
+    rec.joints.rightHand.add(weapon);
+    rec.weaponGroup = weapon;
+    rec.weaponMaterials = matSink;
+  }
+
+  /** Sync the visible set against the authoritative player map. */
+  syncFromPlayerMap(allPlayers: Map<string, PlayerData>, localPlayerId: string): void {
+    const allIds = Array.from(allPlayers.keys());
+    allPlayers.forEach((p, id) => {
+      if (id === localPlayerId) return;
+      this.addOrUpdatePlayer(p, allIds);
+    });
+    const presentIds = new Set(allIds);
+    this.players.forEach((_rec, id) => {
+      if (id === localPlayerId) return;
+      if (!presentIds.has(id)) this.removePlayer(id);
+    });
+  }
+
+  removePlayer(playerId: string): void {
+    const rec = this.players.get(playerId);
+    if (!rec) return;
+    this.root.remove(rec.group);
+    this.disposeRecord(rec);
+    this.players.delete(playerId);
+    this.classAssignments.delete(playerId);
+  }
+
+  /** Per-frame update — interpolation, animation, nameplate billboarding. */
+  update(delta: number, camera: THREE.Camera): void {
+    if (delta <= 0) delta = 1 / 60;
+    const posLerp = 1 - Math.exp(-POSITION_LERP_SPEED * delta);
+    const rotLerp = 1 - Math.exp(-ROTATION_LERP_SPEED * delta);
+
+    this.players.forEach((rec) => {
+      // ── 1. Position interpolation ──────────────────────────────────────
+      const prevX = rec.group.position.x;
+      const prevZ = rec.group.position.z;
+      rec.group.position.x += (rec.targetPosition.x - rec.group.position.x) * posLerp;
+      rec.group.position.y += (rec.targetPosition.y - rec.group.position.y) * posLerp;
+      rec.group.position.z += (rec.targetPosition.z - rec.group.position.z) * posLerp;
+
+      // Derived horizontal speed → drives stride length
+      const dx = rec.group.position.x - prevX;
+      const dz = rec.group.position.z - prevZ;
+      const frameSpeed = Math.sqrt(dx * dx + dz * dz) / delta;
+      rec.smoothedSpeed += (frameSpeed - rec.smoothedSpeed) * Math.min(1, delta * 6);
+
+      // ── 2. Yaw interpolation (shortest arc) ────────────────────────────
+      let yawDelta = rec.targetYaw - rec.currentYaw;
+      yawDelta = ((yawDelta + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+      rec.currentYaw += yawDelta * rotLerp;
+      rec.body.rotation.y = rec.currentYaw;
+
+      // ── 3. Walk / idle animation ───────────────────────────────────────
+      if (rec.isAlive) {
+        const moveGate = Math.min(1, rec.smoothedSpeed / 7); // 7 u/s ≈ run
+        const walkFreq = 4.0 + moveGate * 4.0;
+        rec.walkPhase += delta * walkFreq;
+        rec.bobPhase += delta * (1.5 + moveGate * 0.5);
+
+        // Legs stride — full range when running, slight idle sway when still
+        const legSwing = 0.06 + moveGate * 0.85;
+        rec.joints.leftHip.rotation.x = Math.sin(rec.walkPhase) * legSwing;
+        rec.joints.rightHip.rotation.x = Math.sin(rec.walkPhase + Math.PI) * legSwing;
+
+        // Arms are held in a per-weapon "ready" pose. The right shoulder
+        // is the dominant grip; the left reaches forward to the foregrip
+        // for two-handed weapons or hangs at the side for the pistol.
+        // Sway is intentionally muted so the muzzle stays on-target.
+        const pose = getWeaponPose(rec.currentWeaponType);
+        const armSway = 0.06 + moveGate * 0.14;
+        rec.joints.rightShoulder.rotation.x = pose.rightShoulderX + Math.sin(rec.walkPhase + Math.PI) * armSway;
+        rec.joints.rightShoulder.rotation.z = pose.rightShoulderZ;
+        if (pose.twoHanded) {
+          rec.joints.leftShoulder.rotation.x = pose.leftShoulderX + Math.sin(rec.walkPhase) * armSway;
+          rec.joints.leftShoulder.rotation.z = pose.leftShoulderZ;
+        } else {
+          // Pistol: left arm hangs and only sways naturally with the stride.
+          rec.joints.leftShoulder.rotation.x = pose.leftShoulderX + Math.sin(rec.walkPhase) * (armSway + 0.25);
+          rec.joints.leftShoulder.rotation.z = pose.leftShoulderZ;
+        }
+
+        // Head bob with footfalls (and idle breath when still)
+        const bobAmp = 0.03 + moveGate * 0.12;
+        const breath = Math.sin(rec.bobPhase * 2) * 0.012;
+        rec.body.position.y = Math.abs(Math.sin(rec.walkPhase)) * bobAmp + breath;
+
+        // Subtle head bob (counter-rotation so it stays "level")
+        rec.joints.headJoint.rotation.x = Math.sin(rec.walkPhase * 2) * 0.025 * moveGate;
+      } else {
+        // ── 4. Death pose — fall forward, then hide nameplate/healthbar ─
+        rec.deathT = Math.min(1.4, rec.deathT + delta / 0.65);
+        const t = Math.min(1, rec.deathT);
+        // Fall forward with a slight roll
+        rec.body.rotation.x = -t * (Math.PI / 2 - 0.05);
+        rec.body.position.y = -t * 1.4;
+
+        // Hide nameplate + health bar AS SOON AS the player dies (fade
+        // over the first 250ms so it's quick but not jarring).
+        const uiFade = THREE.MathUtils.clamp(1 - rec.deathT * 4, 0, 1);
+        const npMat = rec.nameplate.material as THREE.SpriteMaterial;
+        const hbMat = rec.healthBar.material as THREE.SpriteMaterial;
+        npMat.opacity = uiFade;
+        hbMat.opacity = uiFade;
+        rec.nameplate.visible = uiFade > 0.01;
+        rec.healthBar.visible = uiFade > 0.01;
+        // Body fades out shortly after fully collapsing
+        if (rec.deathT > 1.2) rec.body.visible = false;
+      }
+
+      // ── 5. Nameplate / health bar billboarding ─────────────────────────
+      if (rec.isAlive) {
+        _tmpVec3.copy(rec.group.position);
+        const distSq = camera.position.distanceToSquared(_tmpVec3);
+        // Strong inside 4 m, full from 8 m, full fade beyond 90 m
+        const near = THREE.MathUtils.smoothstep(distSq, 16, 64);
+        const far = 1 - THREE.MathUtils.smoothstep(distSq, 70 * 70, 90 * 90);
+        const alpha = Math.max(0, Math.min(1, near * far));
+        (rec.nameplate.material as THREE.SpriteMaterial).opacity = alpha;
+        (rec.healthBar.material as THREE.SpriteMaterial).opacity = alpha * 0.95;
+
+        // Night-mode brighter nameplate so teammates remain readable
+        // when the map turns dark.
+        const nightBoost = this.isNight ? 1.08 : 1.0;
+        rec.nameplate.material.color.setScalar(nightBoost);
+      }
+    });
+  }
+
+  /** Iterate every visible player avatar (for debugging / external systems). */
+  getPlayerGroups(): THREE.Group[] {
+    return Array.from(this.players.values()).map((p) => p.group);
+  }
+
+  /** Returns true if any alive player avatar is within `radius` of `pos`. */
+  hasPlayerNear(pos: THREE.Vector3, radius: number): boolean {
+    const r2 = radius * radius;
+    for (const rec of this.players.values()) {
+      if (!rec.isAlive) continue;
+      if (rec.group.position.distanceToSquared(pos) <= r2) return true;
+    }
+    return false;
+  }
+
+  dispose(): void {
+    this.players.forEach((rec) => this.disposeRecord(rec));
+    this.players.clear();
+    this.classAssignments.clear();
+    this.scene.remove(this.root);
+    this.root.clear();
+  }
+
+  // ─── INTERNAL ─────────────────────────────────────────────────────────────
+
+  private disposeRecord(rec: RemotePlayerRecord): void {
+    rec.healthTexture.dispose();
+    const npMat = rec.nameplate.material as THREE.SpriteMaterial;
+    npMat.map?.dispose();
+    npMat.dispose();
+    (rec.healthBar.material as THREE.SpriteMaterial).dispose();
+    rec.materials.forEach((m) => m.dispose());
+    rec.weaponMaterials.forEach((m) => m.dispose());
+    rec.group.traverse((obj) => {
+      if (obj instanceof THREE.Mesh) obj.geometry.dispose();
+    });
+  }
+
+  private refreshNameplateIfNeeded(rec: RemotePlayerRecord): void {
+    if (rec.data.name === rec.lastNameplateName) return;
+    rec.lastNameplateName = rec.data.name;
+    const sprite = this.makeNameplateSprite(rec.data.name, rec.data.color);
+    const oldMat = rec.nameplate.material as THREE.SpriteMaterial;
+    rec.nameplate.material = sprite.material;
+    rec.nameplate.scale.copy(sprite.scale);
+    oldMat.map?.dispose();
+    oldMat.dispose();
+  }
+
+  private refreshHealthBarIfNeeded(rec: RemotePlayerRecord): void {
+    const pct = Math.max(0, Math.min(1, rec.data.health / Math.max(1, rec.data.maxHealth)));
+    const quantised = Math.round(pct * 40); // 2.5% buckets — avoid redraw spam
+    if (quantised === rec.lastRenderedHealth) return;
+    rec.lastRenderedHealth = quantised;
+
+    const ctx = rec.healthCtx;
+    const w = rec.healthCanvas.width;
+    const h = rec.healthCanvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(0, 0, w, h);
+
+    const fillW = w * pct;
+    let r = 32, g = 200, b = 96;
+    if (pct < 0.55) { r = 245; g = 175; b = 50; }
+    if (pct < 0.30) { r = 240; g = 70; b = 70; }
+    const grd = ctx.createLinearGradient(0, 0, 0, h);
+    grd.addColorStop(0, `rgba(${r + 30},${g + 30},${b + 30},1)`);
+    grd.addColorStop(1, `rgba(${r},${g},${b},1)`);
+    ctx.fillStyle = grd;
+    ctx.fillRect(2, 2, Math.max(0, fillW - 4), h - 4);
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.65)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(1, 1, w - 2, h - 2);
+
+    rec.healthTexture.needsUpdate = true;
+  }
+
+  // ─── MODEL BUILDER ───────────────────────────────────────────────────────
+
+  private buildPlayer(data: PlayerData, modelClass: ClassId): RemotePlayerRecord {
+    const group = new THREE.Group();
+    group.name = `RemotePlayer:${data.id}`;
+    group.userData.friendlyPlayer = true;
+    group.userData.playerId = data.id;
+
+    // The body wrapper carries the yaw rotation + uniform scale so the
+    // chamfered humanoid (~4.45u tall) reaches the 5u camera eye height.
+    const bodyWrap = new THREE.Group();
+    bodyWrap.name = 'PlayerBody';
+    bodyWrap.scale.setScalar(MODEL_SCALE);
+    bodyWrap.userData.friendlyPlayer = true;
+    group.add(bodyWrap);
+
+    const palette: Palette = derivePalette(data.color, modelClass);
+    const materials: THREE.Material[] = [];
+
+    let modelRoot: THREE.Group;
+    switch (modelClass) {
+      case 'ranger':    modelRoot = buildRanger(palette, materials); break;
+      case 'scout':     modelRoot = buildScout(palette, materials); break;
+      case 'heavy':     modelRoot = buildHeavy(palette, materials); break;
+      case 'operative': modelRoot = buildOperative(palette, materials); break;
+      case 'pyro':      modelRoot = buildPyro(palette, materials); break;
+      case 'medic':     modelRoot = buildMedic(palette, materials); break;
+      case 'engineer':  modelRoot = buildEngineer(palette, materials); break;
+      case 'phantom':   modelRoot = buildPhantom(palette, materials); break;
+    }
+    bodyWrap.add(modelRoot);
+
+    // Pull joint refs that CharacterModels stashed for us.
+    const joints = modelRoot.userData.joints as Joints;
+
+    // Apply shadow flags + friendly-fire tag to every mesh on the body.
+    // (Weapon meshes are tagged separately inside swapWeapon().)
+    modelRoot.traverse((obj) => {
+      obj.userData.friendlyPlayer = true;
+      obj.userData.playerId = data.id;
+      if (obj instanceof THREE.Mesh) {
+        obj.castShadow = this.shadowsEnabled;
+        obj.receiveShadow = false;
+      }
+    });
+
+    // ── Health bar sprite (canvas-backed, updated on health change) ─────
+    const healthCanvas = document.createElement('canvas');
+    healthCanvas.width = 128;
+    healthCanvas.height = 14;
+    const healthCtx = healthCanvas.getContext('2d')!;
+    const healthTexture = new THREE.CanvasTexture(healthCanvas);
+    healthTexture.minFilter = THREE.LinearFilter;
+    healthTexture.magFilter = THREE.LinearFilter;
+    const healthBar = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: healthTexture, depthTest: true, depthWrite: false, transparent: true,
+    }));
+    healthBar.scale.set(1.55, 0.17, 1);
+    healthBar.position.set(0, HEALTHBAR_Y, 0);
+    group.add(healthBar);
+
+    // ── Nameplate sprite ────────────────────────────────────────────────
+    const nameplate = this.makeNameplateSprite(data.name, data.color);
+    nameplate.position.set(0, NAMEPLATE_Y, 0);
+    group.add(nameplate);
+
+    // Pull the materials stashed on the model root so we can dispose
+    // them later (every chamfer/box mat the builders allocated).
+    const rootMats = (modelRoot.userData.joints as { materials?: THREE.Material[] }).materials;
+    if (Array.isArray(rootMats)) {
+      rootMats.forEach((m) => materials.push(m));
+    }
+
+    const rec: RemotePlayerRecord = {
+      id: data.id,
+      data,
+      group,
+      body: bodyWrap,
+      joints,
+      nameplate,
+      healthBar,
+      modelClass,
+      weaponGroup: null,
+      weaponMaterials: [],
+      currentWeaponType: 'pistol', // overwritten by swapWeapon() below
+      targetPosition: new THREE.Vector3(),
+      targetYaw: 0,
+      currentYaw: 0,
+      smoothedSpeed: 0,
+      walkPhase: Math.random() * Math.PI * 2,
+      bobPhase: Math.random() * Math.PI * 2,
+      healthCanvas,
+      healthCtx,
+      healthTexture,
+      lastRenderedHealth: -1,
+      lastNameplateName: data.name, // nameplate canvas is already drawn → skip first redraw
+      isAlive: data.isAlive,
+      deathT: 0,
+      materials,
+    };
+    // Build initial weapon (sets currentWeaponType + applies grip pose)
+    this.swapWeapon(rec, asWeaponType(data.currentWeapon));
+    // Prime the health bar so the first frame doesn't show a blank sprite.
+    this.refreshHealthBarIfNeeded(rec);
+    // If the player joined already dead (unlikely but possible), hide UI immediately.
+    if (!data.isAlive) {
+      rec.nameplate.visible = false;
+      rec.healthBar.visible = false;
+      rec.body.rotation.x = -(Math.PI / 2 - 0.05);
+      rec.body.position.y = -1.4;
+      rec.body.visible = false;
+      rec.deathT = 1.4;
+    }
+    return rec;
+  }
+
+  // ─── NAMEPLATE BUILDER ───────────────────────────────────────────────────
+
+  private makeNameplateSprite(name: string, color: number): THREE.Sprite {
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 64;
+    const ctx = canvas.getContext('2d')!;
+
+    ctx.fillStyle = 'rgba(8, 10, 14, 0.78)';
+    this.roundRect(ctx, 4, 8, canvas.width - 8, canvas.height - 16, 10);
+    ctx.fill();
+
+    ctx.fillStyle = `#${color.toString(16).padStart(6, '0')}`;
+    this.roundRect(ctx, 4, 8, 8, canvas.height - 16, 4);
+    ctx.fill();
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+    ctx.lineWidth = 2;
+    this.roundRect(ctx, 4, 8, canvas.width - 8, canvas.height - 16, 10);
+    ctx.stroke();
+
+    let text = name || 'Player';
+    if (text.length > 16) text = text.slice(0, 15) + '…';
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 26px "Inter", "Segoe UI", system-ui, sans-serif';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    ctx.shadowColor = 'rgba(0,0,0,0.7)';
+    ctx.shadowBlur = 4;
+    ctx.fillText(text, 24, 32);
+    ctx.shadowBlur = 0;
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.minFilter = THREE.LinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.anisotropy = 4;
+
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: tex, depthTest: true, depthWrite: false, transparent: true,
+    }));
+    sprite.scale.set(2.4, 0.6, 1);
+    return sprite;
+  }
+
+  private roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+}

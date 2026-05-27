@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { AlertTriangle, RefreshCw, ArrowRightCircle, Trees } from 'lucide-react';
+import { AlertTriangle, RefreshCw, ArrowRightCircle, Crosshair } from 'lucide-react';
 
 /**
  * Loader phases shown in the status line. They roughly map to the staged
@@ -29,53 +29,30 @@ interface ShaderProcessingScreenProps {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Forest-themed loader — pure CSS/SVG, zero WebGL, minimal animations.
+//  Map-agnostic loader — pure CSS/SVG, zero WebGL, minimal animations.
 //
-//  Previous version had 8 orbital particles + 2 spinning rings + a pulsing
-//  emissive core. That's 11 simultaneous transform/opacity animations
-//  plus a big radial gradient pulse. On low-end machines the compositor
-//  bogged down — what the user described as "laggy".
+//  Earlier iterations were either too heavy (R3F Canvas → competing
+//  WebGL context) or too map-specific (forest pines + "Entering the
+//  Forest" copy, despite the game shipping 8 different biomes from
+//  scorched_wasteland to frozen_tundra). This rewrite is fully neutral:
+//  abstract crosshair-themed centerpiece in the brand's emerald/cyan
+//  accent, generic "Preparing the battlefield" copy.
 //
-//  This rewrite reduces the visual to:
-//    • 3 static pine silhouettes at varying scales (depth feel — no anim)
-//    • A central feature pine with a gentle 4s scale breathing
-//    • 5 falling leaves with simple translate + opacity (slow, staggered)
-//    • Forest fog wash at the bottom (static gradient)
-//  Total live animations: 6 cheap transform/opacity loops. Vs 11 before.
-//  And the theme matches the game (Forest Survival).
+//  Live animations (intentionally kept small for low-end machines):
+//    • Crosshair pulse + slow rotation  (2 transforms on one element)
+//    • 3 concentric ring sweeps         (1 keyframe each, GPU composited)
+//    • 4 traveling dot accents          (CSS keyframes around the rings)
+//    • Centre glow breathe              (opacity loop)
+//  Total: 9 cheap transform/opacity loops. No fancy gradients or radial
+//  pulses to chew compositor time.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const FALLING_LEAVES = [
-  { x: 22,  size: 11, duration: 9.4,  delay: 0.0, hue: '#34d399', drift:  18 },
-  { x: 38,  size: 9,  duration: 11.2, delay: 1.7, hue: '#22c55e', drift: -22 },
-  { x: 58,  size: 12, duration: 8.6,  delay: 3.2, hue: '#86efac', drift:  14 },
-  { x: 72,  size: 8,  duration: 10.8, delay: 0.8, hue: '#34d399', drift: -10 },
-  { x: 82,  size: 10, duration: 12.4, delay: 2.4, hue: '#22c55e', drift:  20 },
+const TRAVELING_DOTS = [
+  { radius: 110, duration: 7.8,  delay: 0.0,  color: '#34d399' },
+  { radius: 110, duration: 7.8,  delay: 3.9,  color: '#22d3ee' },
+  { radius: 150, duration: 11.2, delay: 1.2,  color: '#67e8f9' },
+  { radius: 150, duration: 11.2, delay: 6.8,  color: '#34d399' },
 ];
-
-// SVG pine silhouette — a single path used for every tree (varies via scale
-// + opacity + horizontal position). One-time render, no per-frame work.
-const PineSilhouette = ({
-  fill = '#0a1a12',
-  opacity = 1,
-  className = '',
-  style,
-}: { fill?: string; opacity?: number; className?: string; style?: React.CSSProperties }) => (
-  <svg
-    viewBox="0 0 100 200"
-    className={className}
-    style={{ opacity, ...style }}
-    preserveAspectRatio="xMidYEnd meet"
-    aria-hidden="true"
-  >
-    {/* Trunk */}
-    <rect x="46" y="160" width="8" height="40" fill={fill} />
-    {/* Stacked canopy triangles — chunky low-poly silhouette */}
-    <polygon points="50,8  86,82  14,82"   fill={fill} />
-    <polygon points="50,52 90,124 10,124"  fill={fill} />
-    <polygon points="50,98 94,168 6,168"   fill={fill} />
-  </svg>
-);
 
 const ShaderProcessingScreen = ({ visible, error, onContinueAnyway }: ShaderProcessingScreenProps) => {
   const [phaseIndex, setPhaseIndex] = useState(0);
@@ -124,304 +101,300 @@ const ShaderProcessingScreen = ({ visible, error, onContinueAnyway }: ShaderProc
 
   const phase = PHASES[phaseIndex];
   const isError = !!error;
+  const accent = isError ? '#f87171' : '#34d399';
+  const accentSoft = isError ? 'rgba(248,113,113,0.32)' : 'rgba(52,211,153,0.34)';
+  const accentFaint = isError ? 'rgba(248,113,113,0.10)' : 'rgba(34,211,238,0.10)';
+  const progressValue = Math.min(99, Math.round(progress));
 
   return (
     <div className="fixed inset-0 z-[90] pointer-events-none overflow-hidden">
-      {/* Deep forest base background */}
-      <div className="absolute inset-0 bg-[#02070a]" />
+      <div className="absolute inset-0 bg-[#05080a]" />
 
-      {/* Top-down warm twilight wash → deep forest floor */}
       <div
         className="absolute inset-0"
         style={{
-          background: isError
-            ? 'linear-gradient(180deg, rgba(35,8,8,0.92) 0%, rgba(8,10,10,1) 60%, rgba(2,7,10,1) 100%)'
-            : 'linear-gradient(180deg, rgba(10,30,18,0.55) 0%, rgba(4,12,8,0.92) 55%, rgba(2,7,10,1) 100%)',
+          background: [
+            `radial-gradient(ellipse 68% 52% at center 20%, ${accentSoft} 0%, rgba(0,0,0,0) 58%)`,
+            'linear-gradient(180deg, rgba(255,255,255,0.02) 0%, rgba(0,0,0,0) 30%, rgba(0,0,0,0.56) 100%)',
+          ].join(', '),
         }}
       />
 
-      {/* Soft emerald center glow — single radial, no animation */}
       <div
-        className="absolute inset-0"
+        className="absolute inset-0 sps-centre-glow"
         style={{
-          background: isError
-            ? 'radial-gradient(ellipse 50% 40% at center 60%, rgba(239,68,68,0.18) 0%, transparent 65%)'
-            : 'radial-gradient(ellipse 50% 40% at center 60%, rgba(52,211,153,0.20) 0%, transparent 65%)',
+          background: `radial-gradient(ellipse 45% 38% at center, ${accentSoft} 0%, ${accentFaint} 35%, transparent 72%)`,
         }}
       />
 
-      {/* Top decorative tag */}
-      <div className="absolute top-6 left-1/2 -translate-x-1/2 flex items-center gap-2">
-        <span className={`block w-1.5 h-1.5 rounded-full animate-pulse ${isError ? 'bg-red-400' : 'bg-emerald-400'}`} />
-        <p className={`text-[10px] tracking-[0.5em] font-bold uppercase ${isError ? 'text-red-300/90' : 'text-emerald-300/90'}`}>
-          Forest Survival
-        </p>
-        <span
-          className={`block w-1.5 h-1.5 rounded-full animate-pulse ${isError ? 'bg-red-400' : 'bg-emerald-400'}`}
-          style={{ animationDelay: '0.3s' }}
-        />
-      </div>
-
-      {/*
-        Forest centerpiece — flat silhouette layers (background depth +
-        the breathing hero pine). Pure SVG layered with absolute
-        positioning, no JS animation. Sits in the center 60% region of
-        the viewport so the bottom status card has room.
-      */}
-      <div className="absolute inset-x-0 top-[16%] bottom-[34%] flex items-end justify-center pointer-events-none">
-        <div className="sps-forest-stage relative w-[680px] max-w-[92vw] h-full flex items-end justify-center">
-
-          {/* Distant background trees — faint, no animation */}
-          <PineSilhouette
-            fill="#0e1f17"
-            opacity={0.55}
-            className="absolute"
-            style={{ left: '6%',  bottom: 0, width: '110px', height: '180px' }}
-          />
-          <PineSilhouette
-            fill="#0f211a"
-            opacity={0.6}
-            className="absolute"
-            style={{ left: '22%', bottom: 0, width: '92px',  height: '160px' }}
-          />
-          <PineSilhouette
-            fill="#0c1c14"
-            opacity={0.5}
-            className="absolute"
-            style={{ right: '8%', bottom: 0, width: '120px', height: '200px' }}
-          />
-          <PineSilhouette
-            fill="#0e1f17"
-            opacity={0.55}
-            className="absolute"
-            style={{ right: '24%', bottom: 0, width: '88px', height: '155px' }}
-          />
-
-          {/* Hero centre pine — gently breathing (4s scale loop) */}
-          <div className="absolute left-1/2 -translate-x-1/2 bottom-0 sps-hero-pine"
-               style={{ width: 260, height: 360 }}>
-            {/* Glow halo behind the pine */}
-            <div
-              className="absolute inset-0 sps-hero-glow rounded-full"
-              style={{
-                background: isError
-                  ? 'radial-gradient(circle at 50% 60%, rgba(239,68,68,0.34) 0%, transparent 60%)'
-                  : 'radial-gradient(circle at 50% 60%, rgba(52,211,153,0.35) 0%, rgba(34,211,238,0.10) 40%, transparent 65%)',
-                filter: 'blur(2px)',
-              }}
-            />
-            <PineSilhouette
-              fill={isError ? '#1a0a0a' : '#0a1810'}
-              className="absolute inset-0"
-            />
-            {/* Magical glow points scattered on the canopy — pulsing
-                lucide twinkle. Pure CSS, 3 elements only. */}
-            {!isError && (
-              <>
-                <span className="absolute sps-twinkle" style={{ left: '36%', top: '22%', animationDelay: '0s' }} />
-                <span className="absolute sps-twinkle" style={{ left: '58%', top: '38%', animationDelay: '0.7s' }} />
-                <span className="absolute sps-twinkle" style={{ left: '46%', top: '54%', animationDelay: '1.4s' }} />
-              </>
-            )}
-          </div>
-
-          {/* Falling leaves — 5 tiny coloured squares drifting down with
-              slight horizontal sway. The animation is the same for all
-              leaves; per-leaf delay + duration randomises the rhythm. */}
-          {!isError && FALLING_LEAVES.map((leaf, i) => (
-            <span
-              key={i}
-              className="absolute rounded-[2px] sps-falling-leaf"
-              style={{
-                left: `${leaf.x}%`,
-                top: '-12%',
-                width: leaf.size,
-                height: leaf.size * 0.7,
-                background: leaf.hue,
-                opacity: 0.7,
-                boxShadow: `0 0 6px ${leaf.hue}55`,
-                animationDuration: `${leaf.duration}s`,
-                animationDelay: `${leaf.delay}s`,
-                ['--sps-drift' as string]: `${leaf.drift}px`,
-              } as React.CSSProperties}
-            />
-          ))}
+      <div className="absolute top-6 left-1/2 z-10 -translate-x-1/2">
+        <div className="flex items-center gap-2 rounded-full border border-white/10 bg-black/55 px-4 py-2 backdrop-blur-xl shadow-[0_10px_30px_rgba(0,0,0,0.3)]">
+          <span className={`block h-1.5 w-1.5 rounded-full ${isError ? 'bg-red-400' : 'bg-emerald-400'}`} />
+          <span className={`text-[10px] sm:text-[11px] font-bold tracking-[0.45em] uppercase ${isError ? 'text-red-300/90' : 'text-emerald-300/90'}`}>
+            {isError ? 'Warmup Failure' : 'Shader Warmup'}
+          </span>
+          <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold tracking-[0.2em] uppercase tabular-nums ${isError ? 'border-red-400/20 bg-red-500/10 text-red-200' : 'border-emerald-400/20 bg-emerald-500/10 text-emerald-200'}`}>
+            {progressValue}%
+          </span>
         </div>
       </div>
 
-      {/* Ground fog band — sits above the bottom status card */}
-      <div
-        className="absolute inset-x-0 bottom-[20%] h-32 pointer-events-none"
-        style={{
-          background: 'linear-gradient(180deg, transparent 0%, rgba(8,18,12,0.65) 60%, rgba(2,7,10,0.95) 100%)',
-        }}
-      />
+      <div className="absolute inset-0 opacity-[0.22]" style={{ backgroundImage: 'repeating-linear-gradient(to bottom, rgba(255,255,255,0.04) 0px, rgba(255,255,255,0.04) 1px, transparent 1px, transparent 4px)', mixBlendMode: 'overlay' }} />
 
-      {/* Bottom card — loading state OR error state */}
-      <div className="absolute inset-x-0 bottom-0 flex items-end justify-center pb-10 px-5 pointer-events-auto">
-        {!isError ? (
-          <div
-            className="w-full max-w-md rounded-[1.75rem] border border-white/10 bg-black/55 px-6 py-5 backdrop-blur-xl"
-            style={{ boxShadow: '0 24px 70px rgba(0,0,0,0.55), 0 0 56px rgba(34,197,94,0.08) inset' }}
-          >
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Trees className="w-3.5 h-3.5 text-emerald-300/90" strokeWidth={2.25} />
-                <p className="text-[10px] font-bold tracking-[0.45em] text-emerald-300/90 uppercase">
-                  Entering the Forest
-                </p>
-              </div>
-              <span className="text-[10px] font-bold tracking-[0.2em] text-emerald-200/85 uppercase tabular-nums">
-                {Math.min(99, Math.round(progress))}%
-              </span>
-            </div>
-
-            <h2 className="mt-2 text-2xl font-black tracking-tight text-white sm:text-3xl">
-              Preparing the battlefield
-            </h2>
-            <p className="mt-1.5 text-[13px] leading-relaxed text-gray-300/85">
-              Compiling forest shaders, lighting, and combat materials so the first frame lands cleanly.
-            </p>
-
-            {/* Determinate progress bar — pure emerald gradient */}
-            <div className="mt-4 h-1.5 overflow-hidden rounded-full bg-white/10">
-              <div
-                className="h-full rounded-full"
-                style={{
-                  width: `${Math.min(100, progress)}%`,
-                  background: 'linear-gradient(90deg, #15803d 0%, #34d399 60%, #86efac 100%)',
-                  boxShadow: '0 0 10px rgba(52,211,153,0.55)',
-                  transition: 'width 120ms linear',
-                }}
-              />
-            </div>
-
-            <div className="mt-3 flex items-center justify-between text-[10px] font-semibold tracking-[0.24em] text-gray-500 uppercase">
-              <span className="flex items-center gap-2 min-w-0">
-                <span className="block h-1 w-1 rounded-full bg-emerald-400 flex-shrink-0" />
-                <span className="text-gray-300 truncate">{phase.label}</span>
-                <span className="text-gray-500/80 normal-case tracking-normal text-[10px] hidden sm:inline truncate">
-                  · {phase.hint}
-                </span>
-              </span>
-              <span className="flex-shrink-0">CSS · GPU</span>
-            </div>
-          </div>
-        ) : (
-          // ── ERROR CARD ───────────────────────────────────────────────
-          <div
-            className="w-full max-w-md rounded-[1.75rem] border border-red-500/30 bg-black/55 px-6 py-5 backdrop-blur-xl"
-            style={{ boxShadow: '0 24px 70px rgba(0,0,0,0.6), 0 0 56px rgba(239,68,68,0.1) inset' }}
-          >
-            <div className="flex items-start gap-3">
-              <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-red-500/15 border border-red-500/30 shrink-0">
-                <AlertTriangle className="w-5 h-5 text-red-300" strokeWidth={2} />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-[10px] font-bold tracking-[0.45em] text-red-300/90 uppercase">
-                  Warmup Failed{error?.stage ? ` · ${error.stage}` : ''}
-                </p>
-                <h2 className="mt-1 text-xl font-black tracking-tight text-white">
-                  {error?.message ?? 'Could not finish preparing the game.'}
-                </h2>
-              </div>
-            </div>
-
-            {error?.detail && (
-              <pre className="mt-3 rounded-lg border border-white/5 bg-white/[0.025] p-3 text-[11px] leading-relaxed text-gray-400/90 font-mono whitespace-pre-wrap max-h-32 overflow-auto">
-                {error.detail}
-              </pre>
-            )}
-
-            <p className="mt-3 text-[12px] leading-relaxed text-gray-300/80">
-              {error?.recoverable
-                ? 'You can continue with reduced visual fidelity, or reload the page to retry the full warmup.'
-                : 'The game can\'t run on this device in its current state. Please reload — if the problem persists, try a different browser or update your GPU drivers.'}
-            </p>
-
-            <div className="mt-4 flex flex-col sm:flex-row gap-2.5">
-              {error?.recoverable && onContinueAnyway && (
-                <button
-                  onClick={onContinueAnyway}
-                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-[12px] font-bold tracking-[0.12em] uppercase
-                    bg-emerald-500/15 border border-emerald-400/40 text-emerald-200
-                    hover:bg-emerald-500/25 hover:border-emerald-400/60 transition-all duration-200"
-                >
-                  <ArrowRightCircle className="w-4 h-4" strokeWidth={2.25} />
-                  Continue Anyway
-                </button>
-              )}
-              <button
-                onClick={() => window.location.reload()}
-                className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-[12px] font-bold tracking-[0.12em] uppercase
-                  bg-white/[0.04] border border-white/10 text-gray-300
-                  hover:bg-white/[0.08] hover:border-white/20 hover:text-white transition-all duration-200"
+      <div className="absolute inset-0 flex items-center justify-center px-4 py-12 sm:py-14">
+        <div className="flex w-full max-w-3xl flex-col items-center gap-6 sm:gap-8">
+          <div className="relative flex items-center justify-center" style={{ width: 'clamp(240px, 24vw, 320px)', height: 'clamp(240px, 24vw, 320px)' }}>
+            <div className="absolute inset-0 rounded-full border border-white/8 bg-white/[0.015] shadow-[0_0_90px_rgba(52,211,153,0.05)]" />
+            <div className="absolute inset-[14%] rounded-full border border-white/6 bg-white/[0.02] backdrop-blur-sm" />
+            <div className="absolute inset-[28%] rounded-full border border-white/5 bg-black/15" />
+            <div className="absolute inset-0 sps-stage">
+              <svg
+                className="absolute inset-0 sps-ring-outer"
+                viewBox="-160 -160 320 320"
+                aria-hidden="true"
               >
-                <RefreshCw className="w-4 h-4" strokeWidth={2.25} />
-                Reload Page
-              </button>
+                <circle cx="0" cy="0" r="150" fill="none" stroke={accent} strokeWidth="1" opacity="0.32" strokeDasharray="2 8" />
+              </svg>
+
+              <svg
+                className="absolute inset-0 sps-ring-mid"
+                viewBox="-160 -160 320 320"
+                aria-hidden="true"
+              >
+                <circle cx="0" cy="0" r="120" fill="none" stroke={accent} strokeWidth="1.5" opacity="0.55" strokeDasharray="34 14" />
+              </svg>
+
+              <svg
+                className="absolute inset-0 sps-ring-inner"
+                viewBox="-160 -160 320 320"
+                aria-hidden="true"
+              >
+                <circle cx="0" cy="0" r="86" fill="none" stroke={accent} strokeWidth="1.8" opacity="0.75" />
+                {[0, 90, 180, 270].map((deg) => (
+                  <line
+                    key={deg}
+                    x1={Math.cos((deg * Math.PI) / 180) * 86}
+                    y1={Math.sin((deg * Math.PI) / 180) * 86}
+                    x2={Math.cos((deg * Math.PI) / 180) * 96}
+                    y2={Math.sin((deg * Math.PI) / 180) * 96}
+                    stroke={accent}
+                    strokeWidth="2"
+                    opacity="0.85"
+                  />
+                ))}
+              </svg>
+
+              <div className="absolute inset-0 flex items-center justify-center sps-crosshair">
+                <Crosshair
+                  className="w-16 h-16"
+                  style={{ color: accent, filter: `drop-shadow(0 0 16px ${accentSoft})` }}
+                  strokeWidth={1.6}
+                />
+              </div>
+
+              {!isError && TRAVELING_DOTS.map((dot, i) => (
+                <div
+                  key={i}
+                  className="absolute left-1/2 top-1/2"
+                  style={{
+                    width: 0,
+                    height: 0,
+                    animation: `sps-orbit-${dot.radius} ${dot.duration}s linear infinite`,
+                    animationDelay: `-${dot.delay}s`,
+                  }}
+                >
+                  <div
+                    className="absolute rounded-full"
+                    style={{
+                      width: 7,
+                      height: 7,
+                      left: -3.5,
+                      top: -3.5,
+                      background: dot.color,
+                      boxShadow: `0 0 10px ${dot.color}, 0 0 20px ${dot.color}55`,
+                    }}
+                  />
+                </div>
+              ))}
             </div>
           </div>
-        )}
+
+          <div
+            className={`pointer-events-auto w-full max-w-[34rem] overflow-hidden rounded-[1.75rem] border backdrop-blur-xl ${
+              isError
+                ? 'border-red-500/30 bg-black/60 shadow-[0_24px_70px_rgba(0,0,0,0.62),0_0_56px_rgba(239,68,68,0.10)_inset]'
+                : 'border-white/10 bg-black/58 shadow-[0_24px_70px_rgba(0,0,0,0.55),0_0_56px_rgba(34,197,94,0.08)_inset]'
+            }`}
+          >
+            <div className={`h-px w-full bg-gradient-to-r ${isError ? 'from-transparent via-red-400/70 to-transparent' : 'from-transparent via-emerald-400/70 to-transparent'}`} />
+            <div className="px-6 py-5 sm:px-7 sm:py-6">
+              {!isError ? (
+                <>
+                  <div className="flex items-center justify-between gap-4">
+                    <p className="text-[10px] font-bold tracking-[0.45em] text-emerald-300/90 uppercase">
+                      Shader Processing
+                    </p>
+                    <span className="text-[10px] font-semibold tracking-[0.2em] text-gray-500 uppercase tabular-nums">
+                      Step {phaseIndex + 1} / {PHASES.length}
+                    </span>
+                  </div>
+
+                  <h2 className="mt-3 text-2xl font-black tracking-tight text-white sm:text-4xl">
+                    Preparing the battlefield
+                  </h2>
+                  <p className="mt-2 max-w-xl text-[13px] leading-relaxed text-gray-300/85 sm:text-sm">
+                    Compiling shaders, lighting, and combat materials so the first frame lands cleanly.
+                  </p>
+
+                  <div className="mt-5 flex items-center gap-3">
+                    <div className="h-2 flex-1 overflow-hidden rounded-full border border-white/10 bg-white/[0.04] p-0.5">
+                      <div
+                        className="relative h-full rounded-full"
+                        style={{
+                          width: `${Math.min(100, progress)}%`,
+                          background: 'linear-gradient(90deg, #15803d 0%, #34d399 58%, #22d3ee 100%)',
+                          boxShadow: '0 0 14px rgba(52,211,153,0.55)',
+                          transition: 'width 120ms linear',
+                        }}
+                      >
+                        <span className="absolute inset-y-0 right-0 w-8 rounded-full bg-white/35 blur-[10px]" />
+                      </div>
+                    </div>
+                    <div className="rounded-full border border-emerald-400/20 bg-emerald-500/10 px-3 py-1.5 text-[10px] font-bold tracking-[0.2em] uppercase text-emerald-200 tabular-nums">
+                      {progressValue}%
+                    </div>
+                  </div>
+
+                  <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    {PHASES.map((item, index) => {
+                      const activePhase = index === phaseIndex;
+                      return (
+                        <div
+                          key={item.label}
+                          className={`rounded-xl border px-3 py-2.5 transition-all duration-200 ${
+                            activePhase
+                              ? 'border-emerald-400/45 bg-emerald-500/10 shadow-[0_0_0_1px_rgba(52,211,153,0.14)]'
+                              : 'border-white/10 bg-white/[0.03]'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between text-[9px] font-semibold tracking-[0.24em] uppercase">
+                            <span className={activePhase ? 'text-emerald-200' : 'text-gray-500'}>
+                              {String(index + 1).padStart(2, '0')}
+                            </span>
+                            <span className={activePhase ? 'text-emerald-300' : 'text-gray-600'}>
+                              {activePhase ? 'Live' : 'Queued'}
+                            </span>
+                          </div>
+                          <div className={`mt-2 text-[11px] font-bold tracking-wide ${activePhase ? 'text-white' : 'text-gray-300'}`}>
+                            {item.label}
+                          </div>
+                          <div className={`mt-1 text-[10px] leading-snug ${activePhase ? 'text-emerald-100/80' : 'text-gray-500'}`}>
+                            {item.hint}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div className="mt-4 flex items-center justify-between gap-3 text-[10px] font-semibold tracking-[0.24em] text-gray-500 uppercase">
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span className="block h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_12px_rgba(52,211,153,0.7)]" />
+                      <span className="truncate text-gray-300">{phase.label}</span>
+                      <span className="hidden truncate normal-case tracking-normal text-gray-500/80 sm:inline">
+                        · {phase.hint}
+                      </span>
+                    </span>
+                    <span className="flex-shrink-0 text-gray-400">CSS · GPU</span>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="flex items-start gap-3">
+                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-red-500/30 bg-red-500/15">
+                      <AlertTriangle className="w-5 h-5 text-red-300" strokeWidth={2} />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[10px] font-bold tracking-[0.45em] text-red-300/90 uppercase">
+                        Warmup Failed{error?.stage ? ` · ${error.stage}` : ''}
+                      </p>
+                      <h2 className="mt-1 text-2xl font-black tracking-tight text-white sm:text-3xl">
+                        {error?.message ?? 'Could not finish preparing the game.'}
+                      </h2>
+                    </div>
+                  </div>
+
+                  {error?.detail && (
+                    <pre className="mt-4 max-h-32 overflow-auto rounded-xl border border-white/5 bg-white/[0.025] p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-gray-400/90">
+                      {error.detail}
+                    </pre>
+                  )}
+
+                  <p className="mt-4 text-[12px] leading-relaxed text-gray-300/80 sm:text-[13px]">
+                    {error?.recoverable
+                      ? 'You can continue with reduced visual fidelity, or reload the page to retry the full warmup.'
+                      : 'The game can\'t run on this device in its current state. Please reload — if the problem persists, try a different browser or update your GPU drivers.'}
+                  </p>
+
+                  <div className="mt-5 flex flex-col gap-2.5 sm:flex-row">
+                    {error?.recoverable && onContinueAnyway && (
+                      <button
+                        onClick={onContinueAnyway}
+                        className="flex-1 flex items-center justify-center gap-2 rounded-xl border border-emerald-400/40 bg-emerald-500/15 px-4 py-2.5 text-[12px] font-bold tracking-[0.12em] uppercase text-emerald-200 transition-all duration-200 hover:border-emerald-400/60 hover:bg-emerald-500/25"
+                      >
+                        <ArrowRightCircle className="w-4 h-4" strokeWidth={2.25} />
+                        Continue Anyway
+                      </button>
+                    )}
+                    <button
+                      onClick={() => window.location.reload()}
+                      className="flex-1 flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2.5 text-[12px] font-bold tracking-[0.12em] uppercase text-gray-300 transition-all duration-200 hover:border-white/20 hover:bg-white/[0.08] hover:text-white"
+                    >
+                      <RefreshCw className="w-4 h-4" strokeWidth={2.25} />
+                      Reload Page
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
       </div>
 
       <style>{`
-        /* Hero pine — gentle vertical breathing. Pure transform, GPU-only. */
-        @keyframes sps-hero-breathe {
-          0%, 100% { transform: translateY(0) scaleY(1);     }
-          50%      { transform: translateY(-3px) scaleY(1.02); }
-        }
-        .sps-hero-pine {
-          animation: sps-hero-breathe 4.2s ease-in-out infinite;
-          will-change: transform;
-        }
-
-        /* Glow halo — fades in/out gently. */
-        @keyframes sps-glow-pulse {
-          0%, 100% { opacity: 0.75; }
+        /* Soft centre glow — slow opacity pulse only. */
+        @keyframes sps-centre-glow-pulse {
+          0%, 100% { opacity: 0.80; }
           50%      { opacity: 1; }
         }
-        .sps-hero-glow {
-          animation: sps-glow-pulse 3.6s ease-in-out infinite;
+        .sps-centre-glow {
+          animation: sps-centre-glow-pulse 3.6s ease-in-out infinite;
           will-change: opacity;
         }
 
-        /* Tiny twinkle stars on the canopy — small bright dots that pulse. */
-        .sps-twinkle {
-          width: 4px;
-          height: 4px;
-          border-radius: 9999px;
-          background: #d1fae5;
-          box-shadow: 0 0 8px #34d399, 0 0 16px rgba(52,211,153,0.6);
-          animation: sps-twinkle-pulse 1.9s ease-in-out infinite;
-        }
-        @keyframes sps-twinkle-pulse {
-          0%, 100% { opacity: 0.25; transform: scale(0.7); }
-          50%      { opacity: 1;    transform: scale(1.2); }
-        }
+        /* Three ring rotation rates — outer/mid/inner go different ways
+           at different speeds so the reticle reads as "actively scanning". */
+        @keyframes sps-rot-ccw { from { transform: rotate(360deg); } to { transform: rotate(0deg);   } }
+        @keyframes sps-rot-cw  { from { transform: rotate(0deg);   } to { transform: rotate(360deg); } }
+        .sps-ring-outer { animation: sps-rot-ccw 28s linear infinite; will-change: transform; }
+        .sps-ring-mid   { animation: sps-rot-cw  18s linear infinite; will-change: transform; }
+        .sps-ring-inner { animation: sps-rot-ccw 36s linear infinite; will-change: transform; }
 
-        /* Falling leaves — drift down + slight horizontal sway. */
-        @keyframes sps-leaf-fall {
-          0% {
-            transform: translate3d(0, 0, 0) rotate(0deg);
-            opacity: 0;
-          }
-          10% { opacity: 0.7; }
-          50% {
-            transform: translate3d(var(--sps-drift, 12px), 50vh, 0) rotate(180deg);
-            opacity: 0.7;
-          }
-          90% { opacity: 0.4; }
-          100% {
-            transform: translate3d(calc(var(--sps-drift, 12px) * -0.6), 100vh, 0) rotate(360deg);
-            opacity: 0;
-          }
+        /* Crosshair icon — tiny scale-pulse so the centre feels alive. */
+        @keyframes sps-crosshair-pulse {
+          0%, 100% { transform: scale(1);    opacity: 0.95; }
+          50%      { transform: scale(1.06); opacity: 1; }
         }
-        .sps-falling-leaf {
-          animation-name: sps-leaf-fall;
-          animation-timing-function: linear;
-          animation-iteration-count: infinite;
-          will-change: transform, opacity;
+        .sps-crosshair { animation: sps-crosshair-pulse 2.6s ease-in-out infinite; will-change: transform, opacity; }
+
+        /* Orbit keyframes — one per unique radius. translate(R, 0) places
+           the dot on the ring; the parent rotates with rotate(deg). */
+        @keyframes sps-orbit-110 {
+          0%   { transform: rotate(0deg)   translate(110px, 0); }
+          100% { transform: rotate(360deg) translate(110px, 0); }
+        }
+        @keyframes sps-orbit-150 {
+          0%   { transform: rotate(0deg)   translate(150px, 0); }
+          100% { transform: rotate(360deg) translate(150px, 0); }
         }
       `}</style>
     </div>

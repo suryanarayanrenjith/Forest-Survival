@@ -1,5 +1,17 @@
 import React, { useState } from 'react';
 
+/** Local card-friendly shape — the gallery only needs the fields it renders,
+ *  not the in-engine progress/target counters from AchievementSystem. */
+export interface AchievementCard {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  unlocked: boolean;
+  unlockedAt?: number;
+  rarity?: 'common' | 'rare' | 'epic' | 'legendary';
+}
+
 export interface PlayerStatistics {
   // Combat Stats
   totalKills: number;
@@ -49,15 +61,7 @@ export interface PlayerStatistics {
 
 interface StatsGalleryProps {
   stats: PlayerStatistics;
-  achievements: Array<{
-    id: string;
-    name: string;
-    description: string;
-    icon: string;
-    unlocked: boolean;
-    unlockedAt?: number;
-    rarity?: 'common' | 'rare' | 'epic' | 'legendary';
-  }>;
+  achievements: AchievementCard[];
   onClose: () => void;
 }
 
@@ -331,8 +335,9 @@ const ProgressionTab: React.FC<{ stats: PlayerStatistics }> = ({ stats }) => (
   </div>
 );
 
-const AchievementsTab: React.FC<{ achievements: any[] }> = ({ achievements }) => {
-  const [filter, setFilter] = useState<'all' | 'unlocked' | 'locked'>('all');
+type AchievementFilter = 'all' | 'unlocked' | 'locked';
+const AchievementsTab: React.FC<{ achievements: AchievementCard[] }> = ({ achievements }) => {
+  const [filter, setFilter] = useState<AchievementFilter>('all');
 
   const filteredAchievements = achievements.filter(a => {
     if (filter === 'all') return true;
@@ -352,10 +357,10 @@ const AchievementsTab: React.FC<{ achievements: any[] }> = ({ achievements }) =>
       <div className="flex items-center justify-between">
         <h3 className="text-2xl font-bold text-white">Achievements</h3>
         <div className="flex gap-2">
-          {['all', 'unlocked', 'locked'].map(f => (
+          {(['all', 'unlocked', 'locked'] as AchievementFilter[]).map(f => (
             <button
               key={f}
-              onClick={() => setFilter(f as any)}
+              onClick={() => setFilter(f)}
               className={`px-3 py-1 rounded text-sm ${
                 filter === f ? 'bg-cyan-500 text-white' : 'bg-gray-700 text-gray-300'
               }`}

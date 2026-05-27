@@ -224,15 +224,16 @@ export class AttackSystem {
     const progress = this.state.attackProgress;
 
     switch (this.state.attackPhase) {
-      case 'windup':
+      case 'windup': {
         // Pull arms back
         const windupAmount = progress / (this.config.attackWindup / this.config.attackDuration);
         return {
           left: -Math.PI / 3 * windupAmount,
           right: -Math.PI / 3 * windupAmount
         };
+      }
 
-      case 'strike':
+      case 'strike': {
         // Swing arms forward
         const strikeProgress = (progress - (this.config.attackWindup / this.config.attackDuration)) / 0.3;
         const swingAngle = -Math.PI / 2 + Math.sin(strikeProgress * Math.PI) * Math.PI / 3;
@@ -240,14 +241,16 @@ export class AttackSystem {
           left: swingAngle,
           right: swingAngle
         };
+      }
 
-      case 'recovery':
+      case 'recovery': {
         // Return to neutral
         const recoveryProgress = 1 - ((1 - progress) / 0.3);
         return {
           left: -Math.PI / 6 * (1 - recoveryProgress),
           right: -Math.PI / 6 * (1 - recoveryProgress)
         };
+      }
 
       default:
         return { left: 0, right: 0 };

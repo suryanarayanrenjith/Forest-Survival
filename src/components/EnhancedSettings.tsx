@@ -58,8 +58,8 @@ export const EnhancedSettings: React.FC<EnhancedSettingsProps> = ({
     { id: 'ui' as const, name: 'Interface', icon: '' }
   ];
 
-  const handleChange = (key: keyof GameSettings, value: any) => {
-    onSettingsChange({ [key]: value });
+  const handleChange = <K extends keyof GameSettings>(key: K, value: GameSettings[K]) => {
+    onSettingsChange({ [key]: value } as Partial<GameSettings>);
   };
 
   return (
@@ -156,7 +156,7 @@ export const EnhancedSettings: React.FC<EnhancedSettingsProps> = ({
 // Graphics Settings Panel
 const GraphicsSettings: React.FC<{
   settings: GameSettings;
-  onChange: (key: keyof GameSettings, value: any) => void;
+  onChange: <K extends keyof GameSettings>(key: K, value: GameSettings[K]) => void;
 }> = ({ settings, onChange }) => (
   <div className="space-y-4 sm:space-y-6">
     <h3 className="text-lg sm:text-xl font-bold text-white mb-3 sm:mb-4">Graphics Settings</h3>
@@ -170,7 +170,7 @@ const GraphicsSettings: React.FC<{
         { value: 'high', label: 'High' },
         { value: 'ultra', label: 'Ultra' }
       ]}
-      onChange={(v) => onChange('graphicsQuality', v)}
+      onChange={(v) => onChange('graphicsQuality', v as GameSettings['graphicsQuality'])}
     />
 
     <SelectSetting
@@ -182,7 +182,7 @@ const GraphicsSettings: React.FC<{
         { value: 'medium', label: 'Medium' },
         { value: 'high', label: 'High' }
       ]}
-      onChange={(v) => onChange('shadowQuality', v)}
+      onChange={(v) => onChange('shadowQuality', v as GameSettings['shadowQuality'])}
     />
 
     <ToggleSetting
@@ -220,7 +220,7 @@ const GraphicsSettings: React.FC<{
 // Audio Settings Panel
 const AudioSettings: React.FC<{
   settings: GameSettings;
-  onChange: (key: keyof GameSettings, value: any) => void;
+  onChange: <K extends keyof GameSettings>(key: K, value: GameSettings[K]) => void;
 }> = ({ settings, onChange }) => (
   <div className="space-y-4 sm:space-y-6">
     <h3 className="text-lg sm:text-xl font-bold text-white mb-3 sm:mb-4">Audio Settings</h3>
@@ -257,7 +257,7 @@ const AudioSettings: React.FC<{
 // Gameplay Settings Panel
 const GameplaySettings: React.FC<{
   settings: GameSettings;
-  onChange: (key: keyof GameSettings, value: any) => void;
+  onChange: <K extends keyof GameSettings>(key: K, value: GameSettings[K]) => void;
 }> = ({ settings, onChange }) => (
   <div className="space-y-4 sm:space-y-6">
     <h3 className="text-lg sm:text-xl font-bold text-white mb-3 sm:mb-4">Gameplay Settings</h3>
@@ -270,7 +270,7 @@ const GameplaySettings: React.FC<{
         { value: 'medium', label: 'Medium' },
         { value: 'hard', label: 'Hard' }
       ]}
-      onChange={(v) => onChange('difficulty', v)}
+      onChange={(v) => onChange('difficulty', v as GameSettings['difficulty'])}
     />
 
     <ToggleSetting
@@ -320,7 +320,7 @@ const GameplaySettings: React.FC<{
 // Controls Settings Panel
 const ControlsSettings: React.FC<{
   settings: GameSettings;
-  onChange: (key: keyof GameSettings, value: any) => void;
+  onChange: <K extends keyof GameSettings>(key: K, value: GameSettings[K]) => void;
 }> = ({ settings, onChange }) => (
   <div className="space-y-4 sm:space-y-6">
     <h3 className="text-lg sm:text-xl font-bold text-white mb-3 sm:mb-4">Controls Settings</h3>
@@ -367,7 +367,7 @@ const ControlsSettings: React.FC<{
 // UI Settings Panel
 const UISettings: React.FC<{
   settings: GameSettings;
-  onChange: (key: keyof GameSettings, value: any) => void;
+  onChange: <K extends keyof GameSettings>(key: K, value: GameSettings[K]) => void;
 }> = ({ settings, onChange }) => (
   <div className="space-y-4 sm:space-y-6">
     <h3 className="text-lg sm:text-xl font-bold text-white mb-3 sm:mb-4">Interface Settings</h3>
@@ -404,7 +404,7 @@ const UISettings: React.FC<{
         { value: 'deuteranopia', label: 'Deuteranopia (Green-blind)' },
         { value: 'tritanopia', label: 'Tritanopia (Blue-blind)' }
       ]}
-      onChange={(v) => onChange('colorblindMode', v)}
+      onChange={(v) => onChange('colorblindMode', v as GameSettings['colorblindMode'])}
     />
   </div>
 );

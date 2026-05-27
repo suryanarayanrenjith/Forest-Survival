@@ -18,7 +18,9 @@ class SoundManager {
     if (this.initialized) return;
 
     try {
-      this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const Ctor = window.AudioContext ?? (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!Ctor) throw new Error('AudioContext not supported');
+      this.audioContext = new Ctor();
       this.initialized = true;
       this.generateSounds();
     } catch (error) {

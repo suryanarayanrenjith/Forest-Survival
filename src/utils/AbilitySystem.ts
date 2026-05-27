@@ -225,7 +225,7 @@ export class AbilitySystem {
         }
         break;
 
-      case 'shield':
+      case 'shield': {
         // Shield sphere
         const shieldGeometry = new THREE.SphereGeometry(2, 16, 16);
         const shieldMaterial = new THREE.MeshBasicMaterial({
@@ -237,6 +237,7 @@ export class AbilitySystem {
         const shield = new THREE.Mesh(shieldGeometry, shieldMaterial);
         effect.add(shield);
         break;
+      }
 
       case 'heal':
         // Healing particles
@@ -257,7 +258,7 @@ export class AbilitySystem {
         }
         break;
 
-      case 'explosive':
+      case 'explosive': {
         // Fire ring
         const ringGeometry = new THREE.TorusGeometry(1.5, 0.1, 16, 32);
         const ringMaterial = new THREE.MeshBasicMaterial({
@@ -269,8 +270,9 @@ export class AbilitySystem {
         ring.rotation.x = Math.PI / 2;
         effect.add(ring);
         break;
+      }
 
-      case 'invincible':
+      case 'invincible': {
         // Ghost aura
         const auraGeometry = new THREE.SphereGeometry(1.5, 16, 16);
         const auraMaterial = new THREE.MeshBasicMaterial({
@@ -282,6 +284,7 @@ export class AbilitySystem {
         const aura = new THREE.Mesh(auraGeometry, auraMaterial);
         effect.add(aura);
         break;
+      }
     }
 
     effect.position.copy(position);

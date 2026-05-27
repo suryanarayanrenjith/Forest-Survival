@@ -27,6 +27,21 @@ export type TipCategory =
 
 export type TipPriority = 'low' | 'medium' | 'high' | 'critical';
 
+export interface CoachGameState {
+  playerHealth: number;
+  maxHealth: number;
+  currentWeapon: string;
+  ammo: number;
+  maxAmmo: number;
+  enemiesNearby: number;
+  enemyTypes: string[];
+  powerupsNearby: number;
+  position: { x: number; z: number };
+  abilitiesOnCooldown: boolean[];
+  recentShots: { hit: boolean; headshot: boolean }[];
+  timeInGame: number;
+}
+
 export interface Tip {
   id: string;
   category: TipCategory;
@@ -111,20 +126,7 @@ export class CombatCoachSystem {
   /**
    * Main analysis function - call periodically
    */
-  public analyzeAndCoach(gameState: {
-    playerHealth: number;
-    maxHealth: number;
-    currentWeapon: string;
-    ammo: number;
-    maxAmmo: number;
-    enemiesNearby: number;
-    enemyTypes: string[];
-    powerupsNearby: number;
-    position: {x: number, z: number};
-    abilitiesOnCooldown: boolean[];
-    recentShots: {hit: boolean, headshot: boolean}[];
-    timeInGame: number;
-  }): Tip | null {
+  public analyzeAndCoach(gameState: CoachGameState): Tip | null {
     const now = Date.now();
 
     // Don't spam tips
@@ -156,7 +158,7 @@ export class CombatCoachSystem {
   /**
    * Analyze player behavior patterns
    */
-  private analyzeBehavior(gameState: any): CombatAnalysis {
+  private analyzeBehavior(gameState: CoachGameState): CombatAnalysis {
     const patterns: BehaviorPattern = {
       lowAccuracy: this.checkLowAccuracy(gameState.recentShots),
       wastingAmmo: this.checkWastingAmmo(gameState.recentShots, gameState.ammo, gameState.maxAmmo),
@@ -388,7 +390,7 @@ export class CombatCoachSystem {
   /**
    * Generate a tip based on analysis
    */
-  private generateTip(analysis: CombatAnalysis, gameState: any): Tip | null {
+  private generateTip(analysis: CombatAnalysis, gameState: CoachGameState): Tip | null {
     const patterns = analysis.patterns;
 
     // Priority order: critical issues first

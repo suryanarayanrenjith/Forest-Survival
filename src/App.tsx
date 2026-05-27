@@ -2,7 +2,7 @@ import { useRef, useEffect, useState } from 'react';
 import * as THREE from 'three';
 import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
-import { GunModel } from './utils/GunModel';
+import { GunModel, type WeaponType as GunWeaponType } from './utils/GunModel';
 import { MuzzleFlash, BulletTracer, ImpactEffect, BloodSplatter, setMuzzleLightPool } from './utils/Effects';
 import { soundManager } from './utils/SoundManager';
 import { gameSettingsManager, type UserSettings } from './utils/GameSettingsManager';
@@ -18,9 +18,12 @@ import { BiomeSystem } from './utils/BiomeSystem';
 import { createAtmosphericHazeMaterial, createSkyDomeMaterial, updateShaderTime } from './utils/Shaders';
 import { getMapConfig, getRandomMap, DEFAULT_MAP, type MapType } from './utils/MapSystem';
 import { getHDRIEnvironmentIntensity, loadHDRIEnvironment, type HDRIEnvironmentProfile } from './utils/HDRIEnvironment';
-import { MultiplayerManager } from './utils/MultiplayerManager';
+import { MultiplayerManager, type PlayerData as MpPlayerData, type NetworkMessage } from './utils/MultiplayerManager';
+import { RemotePlayerManager } from './utils/RemotePlayerManager';
+import { LocalPlayerShadow } from './utils/LocalPlayerShadow';
+import type { ClassId } from './utils/CharacterModels';
 import { AbilitySystem } from './utils/AbilitySystem';
-import { AchievementSystem } from './utils/AchievementSystem';
+import { AchievementSystem, type Achievement } from './utils/AchievementSystem';
 import { EnhancedPowerUpSystem } from './utils/EnhancedPowerUps';
 import { DayCycleSystem } from './utils/DayCycleSystem';
 import HUD, { type AbilityHudItem } from './components/HUD';
@@ -43,11 +46,11 @@ import ScreenEffects, { triggerDamageFlash, triggerScreenShake, triggerKillFlash
 import ComboDisplay from './components/ComboDisplay';
 import { WEAPONS, type Enemy, type Bullet, type PowerUp, type Particle, type TerrainObject, type Keys, type GameState } from './types/game';
 import { AdaptiveDifficultySystem } from './utils/AdaptiveDifficultySystem';
-import { ProceduralMissionSystem } from './utils/ProceduralMissionSystem';
-import { CombatCoachSystem } from './utils/CombatCoachSystem';
+import { ProceduralMissionSystem, type Mission } from './utils/ProceduralMissionSystem';
+import { CombatCoachSystem, type Tip as CoachTip } from './utils/CombatCoachSystem';
 import { PredictiveSpawnSystem } from './utils/PredictiveSpawnSystem';
-import { SmartSkillTreeSystem } from './utils/SmartSkillTreeSystem';
-import { TutorialSystem } from './utils/TutorialSystem';
+import { SmartSkillTreeSystem, type Skill, type PlayStyle } from './utils/SmartSkillTreeSystem';
+import { TutorialSystem, type TutorialStep } from './utils/TutorialSystem';
 import { smartEnemyManager, type EnemyType as PooledEnemyType } from './utils/SmartEnemyManager';
 import { MissionDisplay } from './components/MissionDisplay';
 import { SkillTreeMenu } from './components/SkillTreeMenu';
@@ -57,6 +60,8 @@ import { StatsGallery } from './components/StatsGallery';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import ShaderProcessingScreen, { type WarmupErrorInfo } from './components/ShaderProcessingScreen';
 import MenuBackdrop, { type MenuBackdropVariant } from './components/MenuBackdrop';
+import MusicMuteButton from './components/MusicMuteButton';
+import { musicMute } from './utils/musicMute';
 
 /**
  * Quick WebGL2 availability check. We do this BEFORE the scene useEffect
@@ -226,15 +231,16 @@ const ForestSurvivalGame = () => {
   const [gameRestartKey, setGameRestartKey] = useState(0); // Bump to force game useEffect re-run on restart
   const multiplayerTimeLimitRef = useRef<number | undefined>(undefined);
 
-  // Achievement system state - using array to support multiple achievements
-  const [achievementQueue, setAchievementQueue] = useState<any[]>([]);
+  // Achievement system state — supports multiple in-flight notifications
+  type QueuedAchievement = Achievement & { queueId: number };
+  const [achievementQueue, setAchievementQueue] = useState<QueuedAchievement[]>([]);
 
   // Mobile detection
   const [isMobile, setIsMobile] = useState(false);
 
-  // 🤖 AI SYSTEMS STATE
-  const [activeMissions, setActiveMissions] = useState<any[]>([]);
-  const [coachTips, setCoachTips] = useState<any[]>([]);
+  // AI SYSTEMS STATE
+  const [activeMissions, setActiveMissions] = useState<Mission[]>([]);
+  const [coachTips, setCoachTips] = useState<CoachTip[]>([]);
   const [showSkillTree, setShowSkillTree] = useState(false);
   const [showTutorial, setShowTutorial] = useState(false);
   const [showEnhancedSettings, setShowEnhancedSettings] = useState(false);
@@ -243,15 +249,15 @@ const ForestSurvivalGame = () => {
   // Tutorial & Skill Tree refs + state (bridge useEffect closure → React render)
   const tutorialRef = useRef<TutorialSystem | null>(null);
   const tutorialActiveRef = useRef(false); // true while tutorial popup is showing — blocks pointer lock
-  const [tutorialStep, setTutorialStep] = useState<any>(null);
+  const [tutorialStep, setTutorialStep] = useState<TutorialStep | null>(null);
   const [tutorialProgress, setTutorialProgress] = useState(0);
   const skillTreeRef = useRef<SmartSkillTreeSystem | null>(null);
   const [skillTreeData, setSkillTreeData] = useState({
-    skills: [] as any[],
+    skills: [] as Skill[],
     availablePoints: 0,
     spentPoints: 0,
     totalPoints: 0,
-    detectedPlayStyle: 'balanced' as string,
+    detectedPlayStyle: 'balanced' as PlayStyle,
     recommendations: [] as string[],
   });
 
@@ -309,6 +315,11 @@ const ForestSurvivalGame = () => {
     };
   }, []);
 
+  // Track the global music-mute toggle (persisted via MusicMuteButton).
+  // When muted, the menu music is paused regardless of the volume slider.
+  const [musicMuted, setMusicMuted] = useState<boolean>(() => musicMute.get());
+  useEffect(() => musicMute.subscribe(setMusicMuted), []);
+
   useEffect(() => {
     const menuMusicVolume = Math.max(0, Math.min(1, (userSettings.masterVolume / 100) * (userSettings.musicVolume / 100)));
     menuMusicVolumeRef.current = menuMusicVolume;
@@ -337,6 +348,11 @@ const ForestSurvivalGame = () => {
       const resumeMusic = () => {
         const currentMusic = menuMusicRef.current;
         if (!currentMusic) return;
+        // Respect the global mute even if the user gesture arrives later.
+        if (musicMute.get()) {
+          clearUnlockListeners();
+          return;
+        }
 
         currentMusic.volume = menuMusicVolumeRef.current;
         const playResult = currentMusic.play();
@@ -360,7 +376,7 @@ const ForestSurvivalGame = () => {
       };
     };
 
-    const shouldPlayMenuMusic = !gameStarted && !isMobile;
+    const shouldPlayMenuMusic = !gameStarted && !isMobile && !musicMuted;
 
     if (shouldPlayMenuMusic) {
       if (music.paused || music.ended) {
@@ -380,9 +396,13 @@ const ForestSurvivalGame = () => {
     } else {
       clearUnlockListeners();
       music.pause();
-      music.currentTime = 0;
+      // Reset playhead only when leaving the menus, not when the user
+      // simply muted — so unmuting later resumes from the same spot.
+      if (gameStarted || isMobile) {
+        music.currentTime = 0;
+      }
     }
-  }, [gameStarted, isMobile, userSettings.masterVolume, userSettings.musicVolume]);
+  }, [gameStarted, isMobile, musicMuted, userSettings.masterVolume, userSettings.musicVolume]);
 
   useEffect(() => {
     return () => {
@@ -406,8 +426,15 @@ const ForestSurvivalGame = () => {
 
     console.log('[App] Setting up multiplayer listeners - isHost:', multiplayerManager.isGameHost());
 
+    // Helper: narrow the polymorphic network payload to the message
+    // variant we just subscribed to. The MultiplayerManager dispatches
+    // each handler by string type, so the cast is sound at runtime.
+    type MsgFor<T extends NetworkMessage['type']> = Extract<NetworkMessage, { type: T }>;
+    const asMsg = <T extends NetworkMessage['type']>(raw: unknown) => raw as MsgFor<T>;
+
     // Listen for game over
-    const unsubGameOver = multiplayerManager.onMessage('game_over', (data: any) => {
+    const unsubGameOver = multiplayerManager.onMessage('game_over', (raw) => {
+      const data = asMsg<'game_over'>(raw);
       console.log('[App] Received game_over message:', data);
       setMultiplayerWinner(data.winnerId);
       setMultiplayerGameOver(true);
@@ -416,7 +443,8 @@ const ForestSurvivalGame = () => {
     });
 
     // Listen for kill events - real-time killer/victim info
-    const unsubKilled = multiplayerManager.onMessage('player_killed', (data: any) => {
+    const unsubKilled = multiplayerManager.onMessage('player_killed', (raw) => {
+      const data = asMsg<'player_killed'>(raw);
       console.log('[App] Received player_killed:', data);
       const entry = {
         id: `kill-${data.timestamp}-${Math.random().toString(36).slice(2, 6)}`,
@@ -436,7 +464,8 @@ const ForestSurvivalGame = () => {
     });
 
     // Listen for game restart (guests receive this from host)
-    const unsubRestart = multiplayerManager.onMessage('game_restart', (data: any) => {
+    const unsubRestart = multiplayerManager.onMessage('game_restart', (raw) => {
+      const data = asMsg<'game_restart'>(raw);
       console.log('[App] Received game_restart - resetting local state');
       // Reset UI state
       setMultiplayerGameOver(false);
@@ -582,7 +611,7 @@ const ForestSurvivalGame = () => {
     const sensitivityMultiplier = gameSettingsManager.getSensitivityMultiplier();
 
     // Determine configuration based on difficulty and mode
-    const timeOfDay: 'day' | 'night' | 'dawn' | 'dusk' | 'bloodmoon' = classicTimeOfDay as any;
+    const timeOfDay: 'day' | 'night' | 'dawn' | 'dusk' | 'bloodmoon' = classicTimeOfDay as 'day' | 'night' | 'dawn' | 'dusk' | 'bloodmoon';
     // speedMult is the dominant control over how fast enemies close in.
     //   easy     — enemies amble in; the player can always out-walk them.
     //   medium   — enemies roughly match a walking player; sprint to escape.
@@ -632,9 +661,9 @@ const ForestSurvivalGame = () => {
     const _isTutorialModeForAch = gameMode === 'tutorial';
     const achievementSystem = new AchievementSystem();
     if (!_isTutorialModeForAch) {
-      achievementSystem.onUnlock((achievement: any) => {
+      achievementSystem.onUnlock((achievement) => {
         console.log('[Achievement] Unlocked:', achievement.name);
-        const achievementWithId = { ...achievement, queueId: Date.now() + Math.random() };
+        const achievementWithId: QueuedAchievement = { ...achievement, queueId: Date.now() + Math.random() };
         setAchievementQueue((prev) => [...prev, achievementWithId]);
       });
     }
@@ -684,7 +713,7 @@ const ForestSurvivalGame = () => {
       if (firstStep) {
         setTutorialStep({ ...firstStep });
         setTutorialProgress(tutorial.getProgress());
-        (tutorial as any)._lastStepId = firstStep.id;
+        (tutorial as TutorialSystem & { _lastStepId?: string })._lastStepId = firstStep.id;
       }
     }
 
@@ -760,6 +789,27 @@ const ForestSurvivalGame = () => {
     // Camera - use FOV from settings, far plane based on view distance
     const camera = new THREE.PerspectiveCamera(baseFOV, window.innerWidth / window.innerHeight, 0.1, graphicsPreset.viewDistance * 5);
     camera.position.set(0, 5, 10);
+
+    // Multiplayer: spawn each player at a different point on a small ring
+    // around the origin so 8 simultaneous players don't pile on top of
+    // each other at match start. Slot is derived from the FNV hash of the
+    // local player ID (deterministic, no host coordination needed).
+    if (isMultiplayer && multiplayerManager) {
+      const localId = multiplayerManager.getLocalPlayer().id || 'p0';
+      // Simple FNV-1a → 0..7 slot
+      let h = 0x811c9dc5;
+      for (let i = 0; i < localId.length; i++) {
+        h ^= localId.charCodeAt(i);
+        h = Math.imul(h, 0x01000193);
+      }
+      const slot = (h >>> 0) % 8;
+      const angle = (slot / 8) * Math.PI * 2;
+      const radius = 9;
+      camera.position.set(Math.cos(angle) * radius, 5, Math.sin(angle) * radius);
+      // Force the first position update so other clients see us at our
+      // spawn slot immediately (don't wait for the throttle window).
+      multiplayerManager.forcePositionUpdate(camera.position, new THREE.Euler(0, angle + Math.PI, 0));
+    }
 
     // Render resolution based on graphics quality
     const renderWidth = Math.floor(window.innerWidth * graphicsPreset.pixelRatio);
@@ -860,7 +910,7 @@ const ForestSurvivalGame = () => {
         window.addEventListener('touchstart', onFirstInput, true);
 
         // Store cleanup on the renderer element
-        (renderer.domElement as any)._mpPointerLockCleanup = () => {
+        (renderer.domElement as HTMLCanvasElement & { _mpPointerLockCleanup?: () => void })._mpPointerLockCleanup = () => {
           retryIds.forEach(id => clearTimeout(id));
           window.removeEventListener('click', onFirstInput, true);
           window.removeEventListener('mousedown', onFirstInput, true);
@@ -1695,122 +1745,12 @@ const ForestSurvivalGame = () => {
     gunLight.position.set(0.3, -0.3, -0.5);
     camera.add(gunLight);
 
-    // PLAYER BODY FOR SHADOW (uses shadow-only material technique)
-    // Only create player shadow if graphics preset enables it
-    let playerShadowBody: THREE.Group | null = null;
-    let shadowRightArm: THREE.Mesh | null = null;
-    let shadowGunGroup: THREE.Group | null = null;
-    let shadowLeftLeg: THREE.Mesh | null = null;
-    let shadowRightLeg: THREE.Mesh | null = null;
-    let shadowWalkTime = 0; // drives the walking-shadow leg animation
-
-    // Always give the player a ground shadow when shadows are enabled — the
-    // visible first-person arms can't cast a clean world shadow themselves,
-    // so this invisible silhouette body provides a proper grounded shadow.
-    if (graphicsPreset.shadowsEnabled) {
-      // Shadow-only material - renders as black for shadow map but doesn't appear in view
-      const shadowOnlyMaterial = new THREE.MeshBasicMaterial({
-        color: 0x000000,
-        side: THREE.DoubleSide,
-        colorWrite: false, // Doesn't write to color buffer
-        depthWrite: false, // Keep out of the main depth buffer (avoid AO/black cutouts)
-        depthTest: false,
-      });
-
-      playerShadowBody = new THREE.Group();
-      playerShadowBody.name = 'playerShadowBody';
-
-      // Player torso (shadow only)
-      const shadowTorsoGeo = new THREE.BoxGeometry(0.8, 1.2, 0.4);
-      const shadowTorso = new THREE.Mesh(shadowTorsoGeo, shadowOnlyMaterial);
-      shadowTorso.position.y = -0.6; // Position relative to camera
-      shadowTorso.castShadow = true;
-      playerShadowBody.add(shadowTorso);
-
-      // Player shoulders/arms
-      const shadowArmGeo = new THREE.BoxGeometry(0.25, 0.8, 0.25);
-      const shadowLeftArm = new THREE.Mesh(shadowArmGeo, shadowOnlyMaterial);
-      shadowLeftArm.position.set(-0.55, -0.5, 0);
-      shadowLeftArm.castShadow = true;
-      playerShadowBody.add(shadowLeftArm);
-
-      shadowRightArm = new THREE.Mesh(shadowArmGeo, shadowOnlyMaterial);
-      shadowRightArm.position.set(0.55, -0.5, -0.3);
-      shadowRightArm.rotation.x = -0.6; // Arm angled forward (holding gun)
-      shadowRightArm.rotation.z = -0.2;
-      shadowRightArm.castShadow = true;
-      playerShadowBody.add(shadowRightArm);
-
-      // === GUN SHADOW - Realistic weapon silhouette ===
-      shadowGunGroup = new THREE.Group();
-      shadowGunGroup.name = 'gunShadow';
-
-      // Gun body
-      const gunBodyGeo = new THREE.BoxGeometry(0.12, 0.15, 0.5);
-      const gunBody = new THREE.Mesh(gunBodyGeo, shadowOnlyMaterial);
-      gunBody.position.z = -0.35;
-      gunBody.castShadow = true;
-      shadowGunGroup.add(gunBody);
-
-      // Gun barrel
-      const gunBarrelGeo = new THREE.CylinderGeometry(0.03, 0.04, 0.4, 6);
-      const gunBarrel = new THREE.Mesh(gunBarrelGeo, shadowOnlyMaterial);
-      gunBarrel.rotation.x = Math.PI / 2;
-      gunBarrel.position.set(0, 0.02, -0.7);
-      gunBarrel.castShadow = true;
-      shadowGunGroup.add(gunBarrel);
-
-      // Gun grip
-      const gunGripGeo = new THREE.BoxGeometry(0.08, 0.2, 0.1);
-      const gunGrip = new THREE.Mesh(gunGripGeo, shadowOnlyMaterial);
-      gunGrip.position.set(0, -0.12, -0.2);
-      gunGrip.rotation.x = 0.2;
-      gunGrip.castShadow = true;
-      shadowGunGroup.add(gunGrip);
-
-      // Position gun at the END of the forward-rotated right arm (the
-      // hand). The arm origin is at the shoulder (0.55, -0.5, -0.3) and
-      // rotated rotation.x = -0.6 forward, so the hand lands ~0.35m
-      // below + ~0.25m further forward. Previously the gun was placed
-      // at (0.5, -0.3, -0.5) — that's 0.2m ABOVE the shoulder, so the
-      // shadow on the ground showed the gun stacked over the head
-      // silhouette instead of out in the hand.
-      shadowGunGroup.position.set(0.58, -0.88, -0.58);
-      shadowGunGroup.rotation.x = -0.4;
-      playerShadowBody.add(shadowGunGroup);
-
-      // Player legs — geometry shifted so its origin is at the hip, letting
-      // the legs pivot from the top for a natural walking-shadow stride.
-      const shadowLegGeo = new THREE.BoxGeometry(0.3, 1.0, 0.3);
-      shadowLegGeo.translate(0, -0.5, 0);
-      shadowLeftLeg = new THREE.Mesh(shadowLegGeo, shadowOnlyMaterial);
-      shadowLeftLeg.position.set(-0.2, -1.2, 0);
-      shadowLeftLeg.castShadow = true;
-      playerShadowBody.add(shadowLeftLeg);
-
-      shadowRightLeg = new THREE.Mesh(shadowLegGeo, shadowOnlyMaterial);
-      shadowRightLeg.position.set(0.2, -1.2, 0);
-      shadowRightLeg.castShadow = true;
-      playerShadowBody.add(shadowRightLeg);
-
-      // Player head (for shadow)
-      const shadowHeadGeo = new THREE.SphereGeometry(0.25, 8, 6);
-      const shadowHead = new THREE.Mesh(shadowHeadGeo, shadowOnlyMaterial);
-      shadowHead.position.y = 0.3;
-      shadowHead.castShadow = true;
-      playerShadowBody.add(shadowHead);
-
-      // Keep the invisible shadow body out of AO so it never creates a dark overlay.
-      playerShadowBody.traverse((obj) => {
-        obj.userData.cannotReceiveAO = true;
-      });
-
-      // Position the shadow body below the camera (at player's feet level)
-      playerShadowBody.position.set(0, -1.5, 0);
-      camera.add(playerShadowBody);
-
-      console.log('[Graphics] Player shadow with gun enabled');
-    }
+    // PLAYER GROUND SHADOW — driven by LocalPlayerShadow (utils/LocalPlayerShadow.ts)
+    // The previous in-line shadow body (a handful of boxes attached to
+    // the camera) projected a stiff, T-pose silhouette and didn't track
+    // the held weapon — replaced by the full character-model shadow
+    // caster which renders an invisible humanoid + per-weapon mesh and
+    // animates walk / aim every frame.
 
     // AMBIENT FLOATING PARTICLES (dust motes / fireflies)
     let ambientParticles: THREE.Points | null = null;
@@ -1835,8 +1775,9 @@ const ForestSurvivalGame = () => {
       }
 
       particleGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-      (particleGeo as any)._velocities = velocities;
-      (particleGeo as any)._phases = phases;
+      type ParticleGeoExt = THREE.BufferGeometry & { _velocities: Float32Array; _phases: Float32Array };
+      (particleGeo as ParticleGeoExt)._velocities = velocities;
+      (particleGeo as ParticleGeoExt)._phases = phases;
 
       const particleMat = new THREE.PointsMaterial({
         color: isNight ? 0x88ff88 : 0xffffff,
@@ -1884,12 +1825,12 @@ const ForestSurvivalGame = () => {
     let combo = 0;
     let killStreak = 0;
     let lastKillTime = 0;
-    let startTime = Date.now(); // Track game start time
+    const startTime = Date.now(); // Track game start time
     let currentWeapon = 'pistol';
     let canShoot = true;
     let isReloading = false;
     // Tutorial mode hands the player every weapon so they can try them all.
-    let unlockedWeapons = isTutorialMode ? Object.keys(WEAPONS) : ['pistol'];
+    const unlockedWeapons = isTutorialMode ? Object.keys(WEAPONS) : ['pistol'];
     let isAiming = false;
     let timeScale = 1.0; // For slow-mo effects (1.0 = normal speed)
     let fovPunch = 0; // FOV punch on shooting (additive degrees)
@@ -1897,8 +1838,8 @@ const ForestSurvivalGame = () => {
     let abilityHudAccum = 0; // throttles ability-bar HUD updates
 
     // Track player velocity for AI prediction
-    let playerVelocity = new THREE.Vector3(0, 0, 0);
-    let lastPlayerPosition = new THREE.Vector3(0, 5, 10);
+    const playerVelocity = new THREE.Vector3(0, 0, 0);
+    const lastPlayerPosition = new THREE.Vector3(0, 5, 10);
 
     // Check and unlock weapons based on score
     const checkWeaponUnlocks = () => {
@@ -1923,7 +1864,7 @@ const ForestSurvivalGame = () => {
 
     // Camera shake system
     let cameraShakeIntensity = 0;
-    let cameraShakeDecay = 0.9;
+    const cameraShakeDecay = 0.9;
 
     // Game objects
     const enemies: Enemy[] = [];
@@ -1934,6 +1875,96 @@ const ForestSurvivalGame = () => {
     // Temporary explosion craters left by the rocket launcher
     interface Crater { mesh: THREE.Object3D; life: number; maxLife: number; }
     const craters: Crater[] = [];
+
+    // ── REMOTE PLAYERS (multiplayer only) ─────────────────────────────────
+    // Renders every other connected player as a uniquely-modelled avatar
+    // with nameplate, health bar, and smoothly-interpolated movement.
+    // Friendly fire is structurally impossible: bullets only test the
+    // enemy spatial grid (remote-player meshes are never added to it).
+    let remotePlayerManager: RemotePlayerManager | null = null;
+    const remotePlayerUnsubs: Array<() => void> = [];
+    if (isMultiplayer && multiplayerManager) {
+      remotePlayerManager = new RemotePlayerManager(scene, {
+        shadows: graphicsPreset.shadowsEnabled,
+      });
+
+      // Seed with anyone already in the lobby (host-side & late-joiners).
+      const gs = multiplayerManager.getGameState();
+      if (gs) {
+        remotePlayerManager.syncFromPlayerMap(gs.players, multiplayerManager.getLocalPlayer().id);
+      } else {
+        multiplayerManager.getRemotePlayers().forEach((p) => {
+          remotePlayerManager!.addOrUpdatePlayer(
+            p,
+            Array.from(multiplayerManager.getRemotePlayers().keys()),
+          );
+        });
+      }
+
+      // Live updates — position/health/state changes from every other peer
+      remotePlayerUnsubs.push(
+        multiplayerManager.onMessage('player_update', (raw) => {
+          const msg = raw as { data: MpPlayerData };
+          if (!remotePlayerManager) return;
+          if (msg.data.id === multiplayerManager.getLocalPlayer().id) return;
+          const allIds = Array.from(multiplayerManager.getRemotePlayers().keys());
+          allIds.push(multiplayerManager.getLocalPlayer().id);
+          remotePlayerManager.addOrUpdatePlayer(msg.data, allIds);
+        }),
+      );
+
+      // New player joined mid-match → spawn an avatar for them
+      remotePlayerUnsubs.push(
+        multiplayerManager.onMessage('player_joined', (raw) => {
+          const msg = raw as { data: MpPlayerData };
+          if (!remotePlayerManager) return;
+          if (msg.data.id === multiplayerManager.getLocalPlayer().id) return;
+          const allIds = Array.from(multiplayerManager.getRemotePlayers().keys());
+          allIds.push(multiplayerManager.getLocalPlayer().id);
+          if (!allIds.includes(msg.data.id)) allIds.push(msg.data.id);
+          remotePlayerManager.addOrUpdatePlayer(msg.data, allIds);
+        }),
+      );
+
+      // Player left / timed out → tear down their avatar
+      remotePlayerUnsubs.push(
+        multiplayerManager.onMessage('player_left', (raw) => {
+          const msg = raw as { playerId: string };
+          remotePlayerManager?.removePlayer(msg.playerId);
+        }),
+      );
+    }
+
+    // ── LOCAL PLAYER SHADOW CASTER ────────────────────────────────────────
+    // Renders an invisible full-body humanoid attached to the local camera
+    // so the player's GROUND SHADOW shows a believable person holding a
+    // gun (instead of a floating gun shadow). Used in BOTH solo and
+    // multiplayer; the model class is the player's lobby pick in MP, a
+    // sensible default in solo.
+    const localClassPick = (isMultiplayer && multiplayerManager
+      ? multiplayerManager.getLocalPlayer().modelClass
+      : undefined) as ClassId | undefined;
+    const localColor = (isMultiplayer && multiplayerManager
+      ? multiplayerManager.getLocalPlayer().color
+      : 0x6a9b3f);
+    const localPlayerShadow = new LocalPlayerShadow(scene, {
+      modelClass: localClassPick ?? 'ranger',
+      color: localColor,
+      weapon: 'pistol',
+      shadows: graphicsPreset.shadowsEnabled,
+    });
+    // Watch for class changes mid-match (lobby pick can change in restart)
+    if (isMultiplayer && multiplayerManager) {
+      remotePlayerUnsubs.push(
+        multiplayerManager.onMessage('player_update', (raw) => {
+          const msg = raw as { data: MpPlayerData };
+          if (msg.data.id !== multiplayerManager.getLocalPlayer().id) return;
+          if (msg.data.modelClass) {
+            localPlayerShadow.setModelClass(msg.data.modelClass as ClassId, msg.data.color);
+          }
+        }),
+      );
+    }
 
     // ── GLOWING BULLET ───────────────────────────────────────────────────
     // Plain MeshBasicMaterial with an HDR-multiplied colour. Custom shader
@@ -2649,10 +2680,16 @@ const ForestSurvivalGame = () => {
     // Wired to the HUD via setStaminaRatio so the bottom-left pie meter
     // reflects live state.
     const STAMINA_MAX = 100;
-    const STAMINA_DEPLETE_PER_SEC = 28;   // ~3.5s of full sprint from 100
-    const STAMINA_REGEN_PER_SEC = 18;     // ~5.5s to fully refill from 0
-    const STAMINA_REGEN_DELAY_S = 0.7;    // pause before regen kicks in after sprint
-    const STAMINA_REQUIRED_TO_SPRINT = 8; // re-engage threshold after exhaustion
+    const STAMINA_DEPLETE_PER_SEC = 28;    // ~3.5s of full sprint from 100
+    // Regen slowed from 18/s → 7/s — a full refill now takes ~14s instead
+    // of ~5.5s. Pair with the longer regen delay (was 0.7s → 1.6s) so
+    // stamina actually feels like a budget the player has to manage
+    // rather than something that's effectively unlimited.
+    const STAMINA_REGEN_PER_SEC = 7;
+    const STAMINA_REGEN_DELAY_S = 1.6;     // pause before regen kicks in after sprint
+    // Re-engage threshold after exhaustion bumped 8 → 18 so the player
+    // can't tap-sprint at 0 — they have to wait for meaningful recovery.
+    const STAMINA_REQUIRED_TO_SPRINT = 18;
     let stamina = STAMINA_MAX;
     let staminaExhausted = false;         // true after hitting 0 — locks sprint
     let staminaIdleTimer = 0;             // seconds since last sprint frame
@@ -2701,7 +2738,7 @@ const ForestSurvivalGame = () => {
     const dashDuration = 0.15; // 150ms dash
     const dashSpeed = 2.5; // Dash speed multiplier
     let dashTimer = 0;
-    let dashDirection = new THREE.Vector3();
+    const dashDirection = new THREE.Vector3();
 
     const euler = new THREE.Euler(0, 0, 0, 'YXZ');   // base aim (mouse only)
     const PI_2 = Math.PI / 2;
@@ -2846,7 +2883,7 @@ const ForestSurvivalGame = () => {
         if (unlockedWeapons.includes(weaponName)) {
           currentWeapon = weaponName;
           ammo = WEAPONS[weaponName].maxAmmo;
-          gunModel.switchWeapon(weaponName as any);
+          gunModel.switchWeapon(weaponName as GunWeaponType);
           setGunFillForWeapon(weaponName);
           updateGameState();
         } else {
@@ -3835,8 +3872,9 @@ const ForestSurvivalGame = () => {
         const step = tutorial.getCurrentStep();
         const progress = tutorial.getProgress();
         // Only update React state when step actually changes
-        if (step && step.id !== (tutorialRef.current as any)?._lastStepId) {
-          (tutorialRef.current as any)._lastStepId = step.id;
+        const tutRef = tutorialRef.current as (TutorialSystem & { _lastStepId?: string }) | null;
+        if (step && tutRef && step.id !== tutRef._lastStepId) {
+          tutRef._lastStepId = step.id;
           setTutorialStep({ ...step });
           setTutorialProgress(progress);
           tutorialActiveRef.current = true;
@@ -3856,6 +3894,22 @@ const ForestSurvivalGame = () => {
       if (isMultiplayer && multiplayerManager) {
         multiplayerManager.updatePlayerPosition(camera.position, euler);
       }
+
+      // Drive remote-player avatar interpolation / animation / nameplates.
+      // Skip while the world is paused/frozen so death poses don't tween
+      // during the post-death freeze frame.
+      if (remotePlayerManager) {
+        remotePlayerManager.setNightMode(!atmosphericSettings.sunVisible);
+        remotePlayerManager.update(rawDelta, camera);
+      }
+
+      // Drive the local-player shadow caster (invisible body + held gun
+      // that produces the ground shadow). Re-sync weapon every frame —
+      // it's a string compare internally, so the swap only allocates
+      // when the player actually changes weapon.
+      localPlayerShadow.setWeapon(currentWeapon);
+      localPlayerShadow.setAlive(!playerEliminated && health > 0);
+      localPlayerShadow.update(rawDelta, camera, euler);
 
       // Update water bodies with enhanced shader
       for (const water of waterBodies) {
@@ -3915,8 +3969,9 @@ const ForestSurvivalGame = () => {
       // Update ambient particles — drift and re-center around player
       if (ambientParticles) {
         const posAttr = ambientParticles.geometry.getAttribute('position') as THREE.BufferAttribute;
-        const vels = (ambientParticles.geometry as any)._velocities as Float32Array;
-        const phs = (ambientParticles.geometry as any)._phases as Float32Array;
+        const geoExt = ambientParticles.geometry as THREE.BufferGeometry & { _velocities: Float32Array; _phases: Float32Array };
+        const vels = geoExt._velocities;
+        const phs = geoExt._phases;
         const elapsed = clock.getElapsedTime();
 
         for (let i = 0; i < AMBIENT_PARTICLE_COUNT; i++) {
@@ -4044,18 +4099,8 @@ const ForestSurvivalGame = () => {
       gunModel.updateActions(delta);
       gunModel.applyAnimations(); // Combine all animation offsets into final transform
 
-      // Animate the player's ground-shadow legs into a walking/running stride
-      if (shadowLeftLeg && shadowRightLeg) {
-        if (isMoving) {
-          shadowWalkTime += rawDelta * (isRunning ? 11 : 7);
-          const swing = Math.sin(shadowWalkTime) * (isRunning ? 0.8 : 0.5);
-          shadowLeftLeg.rotation.x = swing;
-          shadowRightLeg.rotation.x = -swing;
-        } else {
-          shadowLeftLeg.rotation.x *= 0.85;
-          shadowRightLeg.rotation.x *= 0.85;
-        }
-      }
+      // (Player ground shadow now lives in LocalPlayerShadow — driven below
+      // alongside the remote-player avatars.)
 
       // Reuse vectors instead of allocating new ones each frame
       camera.getWorldDirection(_moveDirection);
@@ -5340,7 +5385,7 @@ const ForestSurvivalGame = () => {
         await stage(`Weapon: ${w}`, false, () => gunModel.switchWeapon(w));
         await yieldFrame();
       }
-      try { gunModel.switchWeapon(originalWeapon as any); } catch {}
+      try { gunModel.switchWeapon(originalWeapon as GunWeaponType); } catch { /* ignore — restore is best-effort */ }
       await yieldFrame();
 
       // ── STAGE 5: async shader pre-compile ──────────────────────────
@@ -5495,10 +5540,10 @@ const ForestSurvivalGame = () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
 
       if (renderer.domElement) {
-        const pointerLockCleanup = (renderer.domElement as any)._mpPointerLockCleanup;
+        const pointerLockCleanup = (renderer.domElement as HTMLCanvasElement & { _mpPointerLockCleanup?: () => void })._mpPointerLockCleanup;
         if (typeof pointerLockCleanup === 'function') {
           pointerLockCleanup();
-          delete (renderer.domElement as any)._mpPointerLockCleanup;
+          delete (renderer.domElement as HTMLCanvasElement & { _mpPointerLockCleanup?: () => void })._mpPointerLockCleanup;
         }
 
         renderer.domElement.removeEventListener('click', onCanvasClick);
@@ -5554,6 +5599,15 @@ const ForestSurvivalGame = () => {
       hazeGeometry?.dispose();
       hazeMaterial?.dispose();
 
+      // Cleanup remote-player avatars + unsubscribe their network listeners
+      remotePlayerUnsubs.forEach((u) => { try { u(); } catch { /* ignore */ } });
+      remotePlayerUnsubs.length = 0;
+      remotePlayerManager?.dispose();
+      remotePlayerManager = null;
+
+      // Cleanup the local player shadow caster (invisible body)
+      localPlayerShadow.dispose();
+
       // Cleanup SmartEnemyManager (releases pooled resources)
       smartEnemyManager.dispose();
 
@@ -5574,6 +5628,11 @@ const ForestSurvivalGame = () => {
 
       renderer.dispose();
     };
+    // Settings (gameSettings.*, showTutorial) are intentionally read live
+    // from refs / live closures rather than re-running the entire scene
+    // when they change — re-mounting the scene on every settings tweak
+    // would dispose every enemy / particle mid-play.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gameStarted, gameMode, classicDifficulty, classicTimeOfDay, selectedMap, multiplayerManager, gameRestartKey]);
 
   // Handle mode selection
@@ -5822,6 +5881,8 @@ const ForestSurvivalGame = () => {
             }}
           />
         )}
+        {/* Global music mute — pinned bottom-right, visible across every menu */}
+        <MusicMuteButton />
       </>
     );
   }
@@ -5850,7 +5911,11 @@ const ForestSurvivalGame = () => {
   if (multiplayerGameOver && multiplayerManager) {
     const finalStats = multiplayerManager.getAllPlayers();
     const localPlayerId = multiplayerManager.getLocalPlayer().id;
-    return <MultiplayerGameOver winnerId={multiplayerWinner || ''} finalStats={finalStats} localPlayerId={localPlayerId} onRestart={restartGame} onMainMenu={returnToMenu} canRestart={multiplayerManager.isGameHost()} />;
+    return (
+      <>
+        <MultiplayerGameOver winnerId={multiplayerWinner || ''} finalStats={finalStats} localPlayerId={localPlayerId} onRestart={restartGame} onMainMenu={returnToMenu} canRestart={multiplayerManager.isGameHost()} />
+      </>
+    );
   }
 
   return (
@@ -6000,8 +6065,12 @@ const ForestSurvivalGame = () => {
         </div>
       )}
 
-      {/* Achievement Notifications - Stacked vertically */}
-      {achievementQueue.map((achievement, index) => (
+      {/* Achievement Notifications - Stacked vertically.
+       * Suppressed entirely in tutorial mode — tutorial is a no-stakes
+       * sandbox where achievements would be cheap/spammy AND visually
+       * compete with the tutorial overlay card. The onUnlock subscription
+       * is also skipped for tutorial sessions so the queue never grows. */}
+      {gameMode !== 'tutorial' && achievementQueue.map((achievement, index) => (
         <AchievementNotification
           key={achievement.queueId}
           achievement={achievement}
@@ -6097,7 +6166,7 @@ const ForestSurvivalGame = () => {
             if (tut) {
               const nextStep = tut.getCurrentStep();
               if (nextStep) {
-                (tut as any)._lastStepId = null;
+                (tut as TutorialSystem & { _lastStepId?: string | null })._lastStepId = null;
                 setTutorialStep({ ...nextStep });
                 setTutorialProgress(tut.getProgress());
               } else {
@@ -6116,7 +6185,7 @@ const ForestSurvivalGame = () => {
               tut.completeStep(tutorialStep.id);
               const nextStep = tut.getCurrentStep();
               if (nextStep) {
-                (tut as any)._lastStepId = null;
+                (tut as TutorialSystem & { _lastStepId?: string | null })._lastStepId = null;
                 setTutorialStep({ ...nextStep });
                 setTutorialProgress(tut.getProgress());
               } else {
@@ -6150,7 +6219,7 @@ const ForestSurvivalGame = () => {
           availablePoints={skillTreeData.availablePoints}
           spentPoints={skillTreeData.spentPoints}
           totalPoints={skillTreeData.totalPoints}
-          detectedPlayStyle={skillTreeData.detectedPlayStyle as any}
+          detectedPlayStyle={skillTreeData.detectedPlayStyle}
           recommendations={skillTreeData.recommendations}
           onUnlockSkill={(skillId) => {
             if (skillTreeRef.current) {

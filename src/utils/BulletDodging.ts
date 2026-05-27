@@ -11,11 +11,18 @@ import * as THREE from 'three';
  * - Cooldown management
  */
 
+/** Shape of every bullet the dodger inspects. Avoids importing Bullet
+ *  from `types/game.ts` (which would create a circular dependency). */
+export interface DodgeableBullet {
+  mesh: { position: THREE.Vector3 };
+  velocity: THREE.Vector3;
+}
+
 export interface DodgeResult {
   shouldDodge: boolean;
   dodgeDirection: THREE.Vector3;
   dodgeUrgency: number; // 0-1, how urgent the dodge is
-  detectedBullet: any | null;
+  detectedBullet: DodgeableBullet | null;
 }
 
 export class BulletDodging {
@@ -36,7 +43,7 @@ export class BulletDodging {
    */
   public calculateDodge(
     enemyPosition: THREE.Vector3,
-    bullets: any[],
+    bullets: DodgeableBullet[],
     currentTime: number
   ): DodgeResult {
     // Check cooldown
@@ -110,9 +117,9 @@ export class BulletDodging {
    */
   private detectThreateningBullets(
     enemyPosition: THREE.Vector3,
-    bullets: any[]
-  ): Array<{ bullet: any; distance: number; urgency: number }> {
-    const threats: Array<{ bullet: any; distance: number; urgency: number }> = [];
+    bullets: DodgeableBullet[]
+  ): Array<{ bullet: DodgeableBullet; distance: number; urgency: number }> {
+    const threats: Array<{ bullet: DodgeableBullet; distance: number; urgency: number }> = [];
 
     for (const bullet of bullets) {
       const bulletPosition = bullet.mesh.position;
@@ -181,7 +188,7 @@ export class BulletDodging {
    */
   private calculateDodgeDirection(
     _enemyPosition: THREE.Vector3,
-    bullet: any
+    bullet: DodgeableBullet
   ): THREE.Vector3 {
     const bulletDirection = bullet.velocity.clone().normalize();
 
