@@ -82,8 +82,8 @@ export class TutorialSystem {
       description: 'Learn the basics of survival',
       instructions: [
         'Welcome, survivor! You\'re stranded in a hostile forest.',
-        'Your goal is to survive waves of enemies and become stronger.',
-        'Let\'s start with the basics...'
+        'This is a safe training ground — you can\'t be hurt, sprinting never tires you, and every weapon is unlocked.',
+        'New enemy types will reveal themselves as you fight. Let\'s start with the basics...'
       ],
       icon: '👋',
       required: true,
@@ -100,10 +100,9 @@ export class TutorialSystem {
       description: 'Learn how to move around',
       instructions: [
         'Use WASD keys to move around',
-        'W: Move forward',
-        'A: Move left',
-        'S: Move backward',
-        'D: Move right',
+        'W / A / S / D to move in any direction',
+        'Hold SHIFT to sprint — in training your stamina is unlimited',
+        'Press SPACE to jump and CTRL to crouch',
         'Move in any direction to continue'
       ],
       icon: '🎮',
@@ -159,7 +158,8 @@ export class TutorialSystem {
       instructions: [
         'An enemy is approaching!',
         'Aim carefully and shoot to eliminate it',
-        'Each enemy type has different strengths',
+        'As you rack up kills, new foes appear — nimble Stalkers, armored Brutes, and the mighty Warden',
+        'Watch for the "New Threat" banner that introduces each one',
         'Kill your first enemy to continue'
       ],
       icon: '💀',
@@ -331,11 +331,12 @@ export class TutorialSystem {
       title: 'Survival Strategy',
       description: 'Tips for lasting longer',
       instructions: [
-        'Keep moving - stationary targets are easy to hit',
-        'Use cover and terrain to your advantage',
-        'Manage your resources (health, ammo, abilities)',
-        'Different weapons work better at different ranges',
-        'Stay alert and adapt to enemy types'
+        'Keep moving — stationary targets are easy to hit',
+        'Stalkers are fast but fragile — strafe and track them',
+        'Brutes are armored — aim for the head and keep your distance',
+        'The Warden is a deadly apex predator — dash to dodge and use power-ups',
+        'Different weapons shine at different ranges — experiment freely here',
+        'Practise as long as you like — the training ground never ends'
       ],
       icon: '🧠',
       required: false,

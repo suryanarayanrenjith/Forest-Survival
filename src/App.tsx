@@ -58,6 +58,7 @@ import { smartEnemyManager, type EnemyType as PooledEnemyType } from './utils/Sm
 import { MissionDisplay } from './components/MissionDisplay';
 import { SkillTreeMenu } from './components/SkillTreeMenu';
 import { TutorialOverlay, CoachTipsDisplay } from './components/TutorialOverlay';
+import EnemyIntroBanner from './components/EnemyIntroBanner';
 import { EnhancedSettings, type GameSettings } from './components/EnhancedSettings';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import ShaderProcessingScreen, { type WarmupErrorInfo } from './components/ShaderProcessingScreen';
@@ -139,6 +140,18 @@ const findMatchingLocale = (locale: string): string => {
 };
 const locale = findMatchingLocale(browserLocale);
 const t = (key: string): string => TRANSLATIONS[locale]?.[key as keyof typeof TRANSLATIONS['en-US']] || TRANSLATIONS['en-US'][key as keyof typeof TRANSLATIONS['en-US']] || key;
+
+// Tutorial-only enemy-introduction banner payload. Emitted by the Tutorial
+// Enemy Director each time it unlocks a new species so the player gets a quick,
+// readable "field guide" card naming the threat and how to handle it.
+interface EnemyIntro {
+  id: number;        // unique per emission so React re-triggers the entrance anim
+  name: string;
+  blurb: string;
+  tag: string;       // short threat descriptor, e.g. "FAST · FRAGILE"
+  accent: string;    // hex accent colour matching the enemy's vibe
+  icon: 'skull' | 'wind' | 'shield' | 'crown';
+}
 
 const createEnhancedSettingsDefaults = (userSettings: UserSettings): GameSettings => ({
   graphicsQuality: gameSettingsManager.getGraphicsQuality(),
@@ -258,6 +271,9 @@ const ForestSurvivalGame = () => {
   const [isPaused, setIsPaused] = useState(false);
   const [showWaveComplete, setShowWaveComplete] = useState(false);
   const [powerUpMessage, setPowerUpMessage] = useState<string>('');
+  // Tutorial-only "New Threat" banner — announces each enemy species the moment
+  // the Tutorial Enemy Director unlocks it, turning the tutorial into a bestiary.
+  const [enemyIntro, setEnemyIntro] = useState<EnemyIntro | null>(null);
   const [abilityHud, setAbilityHud] = useState<AbilityHudItem[]>([]);
   const [userSettings, setUserSettings] = useState<UserSettings>(() => gameSettingsManager.getSettings());
   const [currentFPS, setCurrentFPS] = useState(0);
@@ -3066,6 +3082,91 @@ const ForestSurvivalGame = () => {
       return { x: lastX, z: lastZ };
     };
 
+    // ── TUTORIAL ENEMY DIRECTOR ───────────────────────────────────────────
+    // Tutorial mode has no wave progression, so the wave-gated variety logic
+    // below never fires — every foe would be a plain 'normal'. The director
+    // fixes that by progressively unlocking the FULL enemy roster as the player
+    // racks up kills, announcing each new species with a "New Threat" banner so
+    // the tutorial doubles as a hands-on bestiary. Types are then drawn from the
+    // unlocked pool with weights tuned to stay varied without overwhelming a
+    // newcomer. The boss is the scripted finale.
+    type EnemyKind = 'normal' | 'fast' | 'tank' | 'boss';
+    interface TutorialTier {
+      type: EnemyKind;
+      killsToUnlock: number;
+      weight: number;       // relative spawn frequency once unlocked
+      intro: Omit<EnemyIntro, 'id'> | null; // null = starter, no banner
+    }
+    const TUTORIAL_TIERS: TutorialTier[] = [
+      {
+        type: 'normal', killsToUnlock: 0, weight: 5, intro: null,
+      },
+      {
+        type: 'fast', killsToUnlock: 3, weight: 4,
+        intro: {
+          name: 'Stalker', tag: 'FAST · FRAGILE',
+          blurb: 'Sprints straight at you but folds fast. Strafe, track it and tap once.',
+          accent: '#22d3ee', icon: 'wind',
+        },
+      },
+      {
+        type: 'tank', killsToUnlock: 7, weight: 2,
+        intro: {
+          name: 'Brute', tag: 'ARMORED · SLOW',
+          blurb: 'Soaks a lot of damage. Aim for the head, back up, and keep firing.',
+          accent: '#f59e0b', icon: 'shield',
+        },
+      },
+      {
+        type: 'boss', killsToUnlock: 12, weight: 1,
+        intro: {
+          name: 'Warden', tag: 'APEX · DEADLY',
+          blurb: 'A towering apex predator. Dash to dodge, grab a power-up and unload.',
+          accent: '#ef4444', icon: 'crown',
+        },
+      },
+    ];
+    let tutorialTiersUnlocked = 1;          // normal is available from the start
+    let queuedTutorialType: EnemyKind | null = null; // forces the next spawn's type
+    let nextIntroId = 1;
+
+    // Weighted pick from the currently-unlocked tutorial roster.
+    const pickTutorialEnemyType = (): EnemyKind => {
+      if (queuedTutorialType) {
+        const q = queuedTutorialType;
+        queuedTutorialType = null;
+        return q;
+      }
+      const pool = TUTORIAL_TIERS.slice(0, tutorialTiersUnlocked);
+      const total = pool.reduce((s, tier) => s + tier.weight, 0);
+      let r = Math.random() * total;
+      for (const tier of pool) {
+        r -= tier.weight;
+        if (r <= 0) return tier.type;
+      }
+      return 'normal';
+    };
+
+    // Called after every tutorial kill — unlocks any tiers the player has earned
+    // and fires the "New Threat" banner + a guaranteed spawn of the new species.
+    const updateTutorialRoster = (kills: number) => {
+      while (
+        tutorialTiersUnlocked < TUTORIAL_TIERS.length &&
+        kills >= TUTORIAL_TIERS[tutorialTiersUnlocked].killsToUnlock
+      ) {
+        const tier = TUTORIAL_TIERS[tutorialTiersUnlocked];
+        tutorialTiersUnlocked++;
+        queuedTutorialType = tier.type; // next spawn shows off the newcomer
+        if (tier.intro) {
+          setEnemyIntro({ ...tier.intro, id: nextIntroId++ });
+          soundManager.play('powerUp', 0.5, false, 0.85);
+          if (gameSettingsManager.getSetting('killFeed')) {
+            addKillFeedEntry(`New Threat — ${tier.intro.name}`, 'wave');
+          }
+        }
+      }
+    };
+
     const spawnEnemyBatch = (count: number): number => {
       const adaptiveMax = smartEnemyManager.getCurrentMaxEnemies();
       const hardish = classicDifficulty === 'hard' || classicDifficulty === 'adaptive';
@@ -3073,10 +3174,15 @@ const ForestSurvivalGame = () => {
       for (let i = 0; i < count; i++) {
         if (enemies.length >= adaptiveMax || !smartEnemyManager.canSpawnMore()) break;
         let type: 'normal' | 'fast' | 'tank' | 'boss' = 'normal';
-        const rand = Math.random();
-        if (wave >= 5 && rand < (hardish ? 0.12 : 0.08)) type = 'boss';
-        else if (wave >= 3 && rand < (hardish ? 0.32 : 0.24)) type = 'tank';
-        else if (wave >= 2 && rand < (hardish ? 0.5 : 0.42)) type = 'fast';
+        if (isTutorialMode) {
+          // Tutorial draws from the director's progressively-unlocked roster.
+          type = pickTutorialEnemyType();
+        } else {
+          const rand = Math.random();
+          if (wave >= 5 && rand < (hardish ? 0.12 : 0.08)) type = 'boss';
+          else if (wave >= 3 && rand < (hardish ? 0.32 : 0.24)) type = 'tank';
+          else if (wave >= 2 && rand < (hardish ? 0.5 : 0.42)) type = 'fast';
+        }
         // Bosses are bigger (scale 2.0) so they need a wider clearance.
         const enemyRadius = type === 'boss' ? 2.0 : type === 'tank' ? 1.6 : 1.2;
         const baseDist = (42 + Math.random() * 26) * mapSpawnReach;
@@ -3167,12 +3273,16 @@ const ForestSurvivalGame = () => {
       // Guests never spawn — their enemies are mirrored from the host.
       if (isMpGuest) return;
       const currentTime = Date.now();
-      if (currentTime - lastSpawnTime <= spawnSettings.interval) return;
+      // Tutorial keeps a brisker cadence than Easy so there's always a fresh
+      // target to practise on — learning is more fun when the arena stays lively.
+      const spawnInterval = isTutorialMode ? 2600 : spawnSettings.interval;
+      if (currentTime - lastSpawnTime <= spawnInterval) return;
       if (enemies.length >= smartEnemyManager.getCurrentMaxEnemies() || !smartEnemyManager.canSpawnMore()) return;
 
       if (isTutorialMode) {
-        // Tutorial — endless light trickle so there's always a target.
-        spawnEnemyBatch(Math.floor(spawnSettings.baseSpawn + Math.random() * 2));
+        // Tutorial — endless lively stream so there's always something to fight,
+        // with the enemy mix governed by the Tutorial Enemy Director.
+        spawnEnemyBatch(2 + Math.floor(Math.random() * 2));
         lastSpawnTime = currentTime;
         return;
       }
@@ -4098,6 +4208,9 @@ const ForestSurvivalGame = () => {
         if (killStreak >= 3) missionSystem.updateProgress('streak', 1);
         if (combo >= 3) { missionSystem.updateProgress('combo', 1); tutorial.recordAction('combo_3x', 1); }
         tutorial.recordAction('kill', 1);
+        // Tutorial — grow the enemy roster as the player proves themselves,
+        // announcing each new species the moment it's earned.
+        if (isTutorialMode) updateTutorialRoster(enemiesKilled);
         if (isCritical) triggerHeadshotFlash(); else triggerKillFlash();
         // Skill points are no longer earned per kill — they're awarded at the end
         // of a Solo run (server-side) so the tree is a real, competitive grind.
@@ -5145,7 +5258,14 @@ const ForestSurvivalGame = () => {
 
       // Tick stamina. While sprinting it depletes; when not, after a
       // short idle delay, it regenerates.
-      if (isRunning) {
+      // Tutorial mode grants UNLIMITED stamina — new players should be free to
+      // sprint, dash and reposition endlessly while learning, without a meter
+      // to babysit. The pool is pinned full and exhaustion can never trigger.
+      if (isTutorialMode) {
+        stamina = STAMINA_MAX;
+        staminaExhausted = false;
+        staminaIdleTimer = 0;
+      } else if (isRunning) {
         stamina -= STAMINA_DEPLETE_PER_SEC * rawDelta;
         staminaIdleTimer = 0;
         if (stamina <= 0) {
@@ -6904,6 +7024,7 @@ const ForestSurvivalGame = () => {
     setClassicTimeOfDay(timeOfDay);
     setSelectedMap(map);
     setShowTutorialMenu(false);
+    setEnemyIntro(null); // clear any leftover "New Threat" banner from a prior run
     soundManager.initialize();
     setShowShaderProcessing(true);
     setGameStarted(true);
@@ -7216,6 +7337,7 @@ const ForestSurvivalGame = () => {
           abilities={abilityHud}
           staminaRatio={staminaRatio}
           staminaExhausted={staminaExhaustedUI}
+          unlimitedStamina={gameMode === 'tutorial'}
         />
       </div>
       )}
@@ -7526,6 +7648,15 @@ const ForestSurvivalGame = () => {
             if (canvas) setTimeout(() => canvas.requestPointerLock(), 100);
           }}
         />
+      )}
+
+      {/* Tutorial "New Threat" banner — announces each enemy species the
+          Tutorial Enemy Director unlocks. Kills only happen during active play
+          (a blocking tutorial card freezes the sim), so this safely coexists
+          with the tutorial flow; we only hide it on pause / game-over / the
+          completion modal so it never stacks on those. */}
+      {gameMode === 'tutorial' && gameStarted && !gameState.isGameOver && !isPaused && !tutorialComplete && (
+        <EnemyIntroBanner intro={enemyIntro} onDone={() => setEnemyIntro(null)} />
       )}
 
       {/* Tutorial Complete — the player has finished every step and can now

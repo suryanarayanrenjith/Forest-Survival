@@ -59,13 +59,15 @@ interface HUDProps {
   /** When true the player has emptied the meter and can't sprint until it
    *  partially refills. The meter renders in a red "depleted" state. */
   staminaExhausted?: boolean;
+  /** Tutorial mode — sprinting is free, so the meter shows an "∞" full ring. */
+  unlimitedStamina?: boolean;
 }
 
 const HUD = ({
   health, maxHealth = 100, ammo, maxAmmo, enemiesKilled, score, wave, weaponName, combo,
   unlockedWeapons, currentWeapon, hideStatsPanel = false, unlimitedHealth = false,
   hideWave = false, abilities = [],
-  staminaRatio = 1, staminaExhausted = false,
+  staminaRatio = 1, staminaExhausted = false, unlimitedStamina = false,
 }: HUDProps) => {
   const [scorePopup, setScorePopup] = useState(false);
   const [prevScore, setPrevScore] = useState(score);
@@ -192,7 +194,7 @@ const HUD = ({
         Matches the dark/glassy HUD aesthetic used elsewhere (rounded
         border, backdrop-blur, lucide icon).
       */}
-      <StaminaPie ratio={staminaRatio} exhausted={staminaExhausted} />
+      <StaminaPie ratio={staminaRatio} exhausted={staminaExhausted} unlimited={unlimitedStamina} />
 
       {/* ===== Bottom Right — Weapons ===== */}
       <div className="absolute bottom-4 right-4 select-none">
@@ -354,16 +356,20 @@ const PowerSlot = ({ ability }: { ability: AbilityHudItem }) => {
  * Animation is pure CSS (transition on width / conic-gradient angle) so
  * the React state can be throttled (~12Hz) without the bar looking choppy.
  */
-const StaminaPie = ({ ratio, exhausted }: { ratio: number; exhausted: boolean }) => {
-  const clamped = Math.max(0, Math.min(1, ratio));
+const StaminaPie = ({ ratio, exhausted, unlimited = false }: { ratio: number; exhausted: boolean; unlimited?: boolean }) => {
+  const clamped = unlimited ? 1 : Math.max(0, Math.min(1, ratio));
   const deg = clamped * 360;
-  const low = clamped > 0 && clamped < 0.3;
-  const fillColor = exhausted
+  const low = !unlimited && clamped > 0 && clamped < 0.3;
+  const fillColor = unlimited
+    ? '#34d399'                            // emerald — endless
+    : exhausted
     ? '#f87171'                            // red — locked
     : low
     ? '#fbbf24'                            // amber — almost out
     : '#34d399';                           // emerald — healthy
-  const fillGlow = exhausted
+  const fillGlow = unlimited
+    ? 'rgba(52,211,153,0.5)'
+    : exhausted
     ? 'rgba(248,113,113,0.45)'
     : low
     ? 'rgba(251,191,36,0.45)'
@@ -396,13 +402,13 @@ const StaminaPie = ({ ratio, exhausted }: { ratio: number; exhausted: boolean })
         {/* Side text — small numeric + label */}
         <div className="flex flex-col leading-tight pr-1">
           <span className="text-[9px] font-semibold tracking-[0.18em] text-gray-400 uppercase">
-            {exhausted ? 'Exhausted' : 'Stamina'}
+            {unlimited ? 'Sprint' : exhausted ? 'Exhausted' : 'Stamina'}
           </span>
           <span
             className="text-base font-bold tabular-nums"
             style={{ color: fillColor, transition: 'color 180ms linear' }}
           >
-            {Math.round(clamped * 100)}%
+            {unlimited ? '∞' : `${Math.round(clamped * 100)}%`}
           </span>
         </div>
       </div>
