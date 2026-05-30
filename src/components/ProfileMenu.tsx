@@ -1,4 +1,5 @@
 import { type FormEvent, useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   KeyRound, LogOut, ShieldCheck, X, User, BarChart3, Trophy, Settings as SettingsIcon,
   Lock, Eye, EyeOff, Check, Calendar, Camera, Download, Trash2, ImageOff, Loader2, Maximize2,
@@ -453,6 +454,23 @@ const PhotosPanel = () => {
   const max = data?.max ?? 5;
   const previewPhoto = photos.find((p) => p.id === previewId) ?? null;
 
+  useEffect(() => {
+    if (!previewPhoto) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setPreviewId(null);
+    };
+    const previousOverflow = document.body.style.overflow;
+
+    document.body.style.overflow = 'hidden';
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [previewPhoto]);
+
   const handleDownload = async (url: string | null, id: string) => {
     if (!url) return;
     setBusyId(id);
@@ -601,14 +619,17 @@ const PhotosPanel = () => {
 
       {/* Full-size preview lightbox — a bounded framed card so the image never
           overflows and the action bar is always visible. */}
-      {previewPhoto && (
+      {previewPhoto && typeof document !== 'undefined' && createPortal(
         <div
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/90 p-4 sm:p-6 backdrop-blur-md"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Photo preview"
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-black/90 p-3 backdrop-blur-md sm:p-6"
           style={{ animation: 'pmPrevBack 0.18s ease forwards' }}
           onClick={() => setPreviewId(null)}
         >
           <div
-            className="relative flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#0b0f15] shadow-[0_40px_140px_rgba(0,0,0,0.7)]"
+            className="relative flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#0b0f15] shadow-[0_40px_140px_rgba(0,0,0,0.7)]"
             style={{ animation: 'pmPrevCard 0.26s cubic-bezier(0.16,1,0.3,1) forwards' }}
             onClick={(e) => e.stopPropagation()}
           >
@@ -634,14 +655,14 @@ const PhotosPanel = () => {
 
             {/* Image stage */}
             <div
-              className="flex min-h-0 flex-1 items-center justify-center p-3 sm:p-4"
+              className="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-3 sm:p-4"
               style={{ background: 'radial-gradient(120% 120% at 50% 0%, rgba(52,211,153,0.07), transparent 60%), #06090d' }}
             >
               {previewPhoto.url ? (
                 <img
                   src={previewPhoto.url}
                   alt="Photo preview"
-                  className="max-h-full max-w-full rounded-lg object-contain shadow-[0_12px_50px_rgba(0,0,0,0.55)]"
+                  className="max-h-[calc(92vh-9rem)] max-w-full rounded-lg object-contain shadow-[0_12px_50px_rgba(0,0,0,0.55)]"
                 />
               ) : (
                 <div className="flex h-56 w-full items-center justify-center text-gray-600">
@@ -679,7 +700,8 @@ const PhotosPanel = () => {
               to { opacity: 1; transform: scale(1) translateY(0); }
             }
           `}</style>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
