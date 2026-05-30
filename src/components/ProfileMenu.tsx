@@ -233,7 +233,7 @@ const ProfileMenu = ({ onClose }: ProfileMenuProps) => {
                   <p className="mb-3 text-[10px] tracking-[0.35em] font-semibold uppercase" style={{ color: rank.color }}>
                     Rank
                   </p>
-                  <RankBadge rank={rank} variant="featured" />
+                  <RankBadge rank={rank} />
                 </div>
               )}
 

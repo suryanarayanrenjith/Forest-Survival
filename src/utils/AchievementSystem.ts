@@ -45,16 +45,6 @@ export class AchievementSystem {
     }
   }
 
-  setEnabled(enabled: boolean) {
-    this.enabled = enabled;
-  }
-
-  /** Compute the bit for a single achievement id (0 if unknown). */
-  static bitFor(id: string): number {
-    const index = ACHIEVEMENT_ORDER.indexOf(id as (typeof ACHIEVEMENT_ORDER)[number]);
-    return index >= 0 ? (1 << index) : 0;
-  }
-
   /** Mark achievements unlocked from a persisted bitmask (DB hydration). */
   hydrateFromMask(mask: number) {
     ACHIEVEMENT_ORDER.forEach((id, index) => {
@@ -80,194 +70,199 @@ export class AchievementSystem {
   }
 
   private initializeAchievements() {
+    // Targets/descriptions MUST match the trigger logic that drives them:
+    //  - Career totals (persisted kills): slayer, massacre, legend
+    //  - Best wave reached (career): survivor, veteran, invincible
+    //  - Per-run feats: streaks, headshots, power-ups, weapons, flawless wave…
+    //  - Career multiplayer (evaluated server-side): team_player, champion
     const achievementData: Achievement[] = [
-      // Kill-based achievements
+      // ── Kills (career totals) ──
       {
         id: 'first_blood',
         name: 'First Blood',
-        description: 'Kill your first enemy',
+        description: 'Defeat your first enemy',
         icon: '🩸',
         unlocked: false,
         progress: 0,
         target: 1,
-        reward: '+100 Score',
-        rarity: 'common'
+        reward: 'Common Badge',
+        rarity: 'common',
       },
       {
         id: 'slayer',
         name: 'Slayer',
-        description: 'Kill 50 enemies',
+        description: 'Defeat 50 enemies in total',
         icon: '⚔️',
         unlocked: false,
         progress: 0,
         target: 50,
-        reward: '+500 Score',
-        rarity: 'rare'
+        reward: 'Rare Badge',
+        rarity: 'rare',
       },
       {
         id: 'massacre',
         name: 'Massacre',
-        description: 'Kill 100 enemies',
+        description: 'Defeat 250 enemies in total',
         icon: '💀',
         unlocked: false,
         progress: 0,
-        target: 100,
-        reward: '+1000 Score',
-        rarity: 'epic'
+        target: 250,
+        reward: 'Epic Badge',
+        rarity: 'epic',
       },
       {
         id: 'legend',
         name: 'Legend',
-        description: 'Kill 500 enemies',
+        description: 'Defeat 1,000 enemies in total',
         icon: '👑',
         unlocked: false,
         progress: 0,
-        target: 500,
+        target: 1000,
         reward: 'Legendary Title',
-        rarity: 'legendary'
+        rarity: 'legendary',
       },
 
-      // Streak-based
+      // ── Kill streaks (single run) ──
       {
         id: 'hot_streak',
         name: 'Hot Streak',
-        description: 'Get a 10 kill streak',
+        description: 'Reach a 10-kill streak in one run',
         icon: '🔥',
         unlocked: false,
         progress: 0,
         target: 10,
-        reward: '+200 Score',
-        rarity: 'rare'
+        reward: 'Rare Badge',
+        rarity: 'rare',
       },
       {
         id: 'unstoppable',
         name: 'Unstoppable',
-        description: 'Get a 25 kill streak',
+        description: 'Reach a 25-kill streak in one run',
         icon: '⚡',
         unlocked: false,
         progress: 0,
         target: 25,
-        reward: '+500 Score',
-        rarity: 'epic'
+        reward: 'Epic Badge',
+        rarity: 'epic',
       },
 
-      // Survival-based
+      // ── Survival (best wave reached) ──
       {
         id: 'survivor',
         name: 'Survivor',
-        description: 'Survive 5 waves',
+        description: 'Reach wave 5',
         icon: '🏆',
         unlocked: false,
         progress: 0,
         target: 5,
-        reward: '+300 Score',
-        rarity: 'common'
+        reward: 'Common Badge',
+        rarity: 'common',
       },
       {
         id: 'veteran',
         name: 'Veteran',
-        description: 'Survive 10 waves',
+        description: 'Reach wave 10',
         icon: '🎖️',
         unlocked: false,
         progress: 0,
         target: 10,
-        reward: '+600 Score',
-        rarity: 'rare'
+        reward: 'Rare Badge',
+        rarity: 'rare',
       },
       {
         id: 'invincible',
         name: 'Invincible',
-        description: 'Survive 20 waves',
-        icon: '👑',
+        description: 'Reach wave 20',
+        icon: '🛡️',
         unlocked: false,
         progress: 0,
         target: 20,
-        reward: 'Special Title',
-        rarity: 'legendary'
+        reward: 'Legendary Title',
+        rarity: 'legendary',
       },
 
-      // Accuracy-based
+      // ── Headshots (single run) ──
       {
         id: 'sharpshooter',
         name: 'Sharpshooter',
-        description: 'Get 10 headshots',
+        description: 'Land 10 headshots in one run',
         icon: '🎯',
         unlocked: false,
         progress: 0,
         target: 10,
-        reward: '+250 Score',
-        rarity: 'rare'
+        reward: 'Rare Badge',
+        rarity: 'rare',
       },
       {
         id: 'deadeye',
         name: 'Deadeye',
-        description: 'Get 50 headshots',
+        description: 'Land 50 headshots in one run',
         icon: '🎱',
         unlocked: false,
         progress: 0,
         target: 50,
-        reward: '+750 Score',
-        rarity: 'epic'
+        reward: 'Epic Badge',
+        rarity: 'epic',
       },
 
-      // Special achievements
+      // ── Single-run feats ──
       {
         id: 'close_call',
         name: 'Close Call',
-        description: 'Survive with less than 10 HP',
+        description: 'Survive a hit that drops you below 10 HP',
         icon: '💓',
         unlocked: false,
         progress: 0,
         target: 1,
-        reward: '+150 Score',
-        rarity: 'rare'
+        reward: 'Rare Badge',
+        rarity: 'rare',
       },
       {
         id: 'resourceful',
         name: 'Resourceful',
-        description: 'Pick up 20 power-ups',
+        description: 'Collect 20 power-ups in one run',
         icon: '🎁',
         unlocked: false,
         progress: 0,
         target: 20,
-        reward: '+200 Score',
-        rarity: 'common'
+        reward: 'Common Badge',
+        rarity: 'common',
       },
       {
         id: 'arsenal',
         name: 'Arsenal',
-        description: 'Unlock all weapons',
+        description: 'Unlock every weapon in one run',
         icon: '🔫',
         unlocked: false,
         progress: 0,
         target: 7,
-        reward: '+1000 Score',
-        rarity: 'epic'
+        reward: 'Epic Badge',
+        rarity: 'epic',
       },
       {
         id: 'speed_demon',
         name: 'Speed Demon',
-        description: 'Kill 5 enemies in 10 seconds',
+        description: 'Defeat 5 enemies within 10 seconds',
         icon: '💨',
         unlocked: false,
         progress: 0,
         target: 1,
-        reward: '+300 Score',
-        rarity: 'epic'
+        reward: 'Epic Badge',
+        rarity: 'epic',
       },
       {
         id: 'no_damage',
-        name: 'Flawless Victory',
-        description: 'Complete a wave without taking damage',
+        name: 'Flawless',
+        description: 'Clear a wave without taking damage',
         icon: '✨',
         unlocked: false,
         progress: 0,
         target: 1,
-        reward: '+400 Score',
-        rarity: 'epic'
+        reward: 'Epic Badge',
+        rarity: 'epic',
       },
 
-      // Multiplayer achievements
+      // ── Multiplayer (career, evaluated server-side) ──
       {
         id: 'team_player',
         name: 'Team Player',
@@ -276,8 +271,8 @@ export class AchievementSystem {
         unlocked: false,
         progress: 0,
         target: 10,
-        reward: '+500 Score',
-        rarity: 'rare'
+        reward: 'Rare Badge',
+        rarity: 'rare',
       },
       {
         id: 'champion',
@@ -287,12 +282,12 @@ export class AchievementSystem {
         unlocked: false,
         progress: 0,
         target: 5,
-        reward: '+1000 Score',
-        rarity: 'epic'
-      }
+        reward: 'Epic Badge',
+        rarity: 'epic',
+      },
     ];
 
-    achievementData.forEach(achievement => {
+    achievementData.forEach((achievement) => {
       this.achievements.set(achievement.id, achievement);
     });
   }
@@ -376,35 +371,7 @@ export class AchievementSystem {
     this.listeners.forEach(callback => callback(achievement));
   }
 
-  getAchievement(id: string): Achievement | undefined {
-    return this.achievements.get(id);
-  }
-
   getAllAchievements(): Achievement[] {
     return Array.from(this.achievements.values());
-  }
-
-  getUnlockedAchievements(): Achievement[] {
-    return Array.from(this.achievements.values()).filter(a => a.unlocked);
-  }
-
-  getUnlockedCount(): number {
-    return this.getUnlockedAchievements().length;
-  }
-
-  getTotalCount(): number {
-    return this.achievements.size;
-  }
-
-  getCompletionPercent(): number {
-    return (this.getUnlockedCount() / this.getTotalCount()) * 100;
-  }
-
-  resetAll() {
-    this.achievements.forEach(achievement => {
-      achievement.unlocked = false;
-      achievement.progress = 0;
-    });
-    this.saveProgress();
   }
 }

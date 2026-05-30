@@ -237,7 +237,6 @@ class SmartEnemyManager {
     const initialPoolSize = Math.ceil(this.baseMaxEnemies * 0.75);
     this.warmupPool(initialPoolSize);
 
-    console.log(`[SmartEnemyManager] Initialized with pool size ${initialPoolSize}, max enemies ${this.currentMaxEnemies}`);
   }
 
   /** Boost emissive strength for night scenes so enemies never crush to black. */
@@ -933,14 +932,12 @@ class SmartEnemyManager {
       const reduction = Math.max(5, Math.floor(this.currentMaxEnemies * 0.15));
       this.currentMaxEnemies = Math.max(10, this.currentMaxEnemies - reduction);
       this.lastAdjustmentTime = now;
-      console.log(`[SmartEnemyManager] Reduced max enemies to ${this.currentMaxEnemies} (FPS: ${this.metrics.avgFPS.toFixed(1)})`);
     }
     // Increase enemies if FPS is consistently high and below base limit
     else if (this.metrics.consecutiveHighFPSFrames >= 5 && this.currentMaxEnemies < this.baseMaxEnemies) {
       const increase = Math.min(3, this.baseMaxEnemies - this.currentMaxEnemies);
       this.currentMaxEnemies += increase;
       this.lastAdjustmentTime = now;
-      console.log(`[SmartEnemyManager] Increased max enemies to ${this.currentMaxEnemies} (FPS: ${this.metrics.avgFPS.toFixed(1)})`);
     }
   }
 

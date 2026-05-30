@@ -110,7 +110,6 @@ export class CombatCoachSystem {
   private readonly POWERUP_COLLECT_WARNING = 30000; // 30s
 
   constructor() {
-    console.log('[CombatCoach] System initialized');
     this.initializeBehaviorTracking();
   }
 
@@ -149,7 +148,6 @@ export class CombatCoachSystem {
         this.tipHistory.shift();
       }
 
-      console.log(`[CombatCoach] ${tip.category.toUpperCase()}: ${tip.message}`);
     }
 
     return tip;

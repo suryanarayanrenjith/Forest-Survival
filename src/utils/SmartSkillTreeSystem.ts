@@ -92,7 +92,6 @@ export class SmartSkillTreeSystem {
     };
 
     this.initializeSkillTree();
-    console.log('[SkillTree] System initialized with ' + this.skills.size + ' skills');
   }
 
   private initializeSkillTree(): void {
@@ -348,7 +347,6 @@ export class SmartSkillTreeSystem {
     }
 
     this.state.detectedPlayStyle = detectedStyle;
-    console.log(`[SkillTree] Detected playstyle: ${detectedStyle} (score: ${maxScore})`);
 
     return detectedStyle;
   }
@@ -434,7 +432,6 @@ export class SmartSkillTreeSystem {
     this.state.availablePoints -= skill.cost;
     this.state.spentPoints += skill.cost;
 
-    console.log(`[SkillTree] Unlocked ${skill.name} (Level ${skill.currentLevel})`);
 
     return {
       success: true,
@@ -468,7 +465,6 @@ export class SmartSkillTreeSystem {
   public awardPoints(amount: number): void {
     this.state.totalPoints += amount;
     this.state.availablePoints += amount;
-    console.log(`[SkillTree] Awarded ${amount} skill points`);
   }
 
   /**
@@ -477,7 +473,6 @@ export class SmartSkillTreeSystem {
   public levelUp(): void {
     this.state.playerLevel++;
     this.awardPoints(1); // 1 point per level
-    console.log(`[SkillTree] Player level up! Now level ${this.state.playerLevel}`);
   }
 
   /**
@@ -591,6 +586,5 @@ export class SmartSkillTreeSystem {
       skill.currentLevel = 0;
     }
 
-    console.log('[SkillTree] Skill tree reset');
   }
 }

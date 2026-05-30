@@ -451,7 +451,6 @@ export class AdaptiveDifficultySystem {
     // Update difficulty profile
     this.currentDifficulty = this.createDifficultyProfile(newLevel);
 
-    console.log(`[AdaptiveDifficulty] Updated to ${this.currentDifficulty.name} (${Math.round(newLevel)}) - Overall Skill: ${Math.round(skills.overallScore)}`);
 
     return this.currentDifficulty;
   }

@@ -5,26 +5,21 @@ const TIER_ICON: LucideIcon[] = [Shield, Medal, Award, Star, Gem, Crown];
 
 interface RankBadgeProps {
   rank: RankInfo;
-  /** featured = large hero emblem for the profile; compact = inline chip. */
-  variant?: 'featured' | 'compact';
 }
 
 /**
- * Premium rank emblem — a glowing hexagonal crest tinted by tier color with a
- * shimmer sweep, the tier icon, and a level chip. The featured variant adds the
- * tier name + an XP progress bar to the next tier.
+ * Premium rank emblem — a glowing hexagonal crest tinted by the tier color with
+ * a shimmer sweep and the tier icon, beside the tier name, an account-level chip
+ * and an XP progress bar toward the next tier.
  */
-const RankBadge = ({ rank, variant = 'featured' }: RankBadgeProps) => {
+const RankBadge = ({ rank }: RankBadgeProps) => {
   const Icon = TIER_ICON[rank.tierIndex] ?? Shield;
   const color = rank.color;
   const progress = rank.xpForNextTier ? Math.min(100, (rank.xpIntoTier / rank.xpForNextTier) * 100) : 100;
-  const emblemSize = variant === 'featured' ? 84 : 44;
-  const emblemFrameHeight = emblemSize + (variant === 'featured' ? 14 : 8);
-  const iconSize = variant === 'featured' ? 34 : 20;
 
-  const Emblem = (
-    <div className="relative flex-shrink-0" style={{ width: emblemSize, height: emblemFrameHeight }}>
-      <div className="absolute left-0 top-0" style={{ width: emblemSize, height: emblemSize }}>
+  return (
+    <div className="flex items-center gap-4 sm:gap-5">
+      <div className="relative flex-shrink-0" style={{ width: 84, height: 84 }}>
         {/* Outer glow */}
         <div
           className="absolute inset-0 rounded-[28%]"
@@ -40,37 +35,15 @@ const RankBadge = ({ rank, variant = 'featured' }: RankBadgeProps) => {
             boxShadow: `inset 0 2px 10px ${color}88, inset 0 -6px 14px rgba(0,0,0,0.55)`,
           }}
         >
-          {/* Shimmer sweep */}
           <div className="rb-shimmer absolute inset-0" />
         </div>
-        {/* Icon */}
+        {/* Tier icon */}
         <div className="absolute inset-0 flex items-center justify-center">
-          <Icon width={iconSize} height={iconSize} strokeWidth={2.1} className="text-white drop-shadow-[0_2px_4px_rgba(0,0,0,0.6)]" />
+          <Icon width={34} height={34} strokeWidth={2.1} className="text-white drop-shadow-[0_2px_4px_rgba(0,0,0,0.6)]" />
         </div>
       </div>
-      {/* Level chip */}
-      <div
-        className="absolute bottom-0 left-1/2 -translate-x-1/2 rounded-full px-2 py-0.5 text-[9px] font-black tabular-nums tracking-wide"
-        style={{ background: '#0b0f15', border: `1.5px solid ${color}`, color }}
-      >
-        LVL {rank.level}
-      </div>
-    </div>
-  );
 
-  if (variant === 'compact') {
-    return (
-      <div className="flex items-center gap-2">
-        {Emblem}
-        <style>{shimmerCss}</style>
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex items-center gap-4 sm:gap-5">
-      {Emblem}
-      <div className="flex min-w-0 flex-1 flex-col justify-center" style={{ minHeight: emblemFrameHeight }}>
+      <div className="flex min-w-0 flex-1 flex-col justify-center">
         <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
           <span className="text-lg sm:text-xl font-black uppercase leading-none tracking-wider" style={{ color }}>
             {rank.tierName}
@@ -94,21 +67,20 @@ const RankBadge = ({ rank, variant = 'featured' }: RankBadgeProps) => {
             : <>Top tier · <span className="font-semibold text-gray-300 tabular-nums">{rank.xp.toLocaleString()}</span> XP</>}
         </p>
       </div>
-      <style>{shimmerCss}</style>
+
+      <style>{`
+        .rb-shimmer {
+          background: linear-gradient(115deg, transparent 30%, rgba(255,255,255,0.55) 48%, transparent 62%);
+          transform: translateX(-130%);
+          animation: rbShimmer 3.4s ease-in-out infinite;
+        }
+        @keyframes rbShimmer {
+          0%, 60% { transform: translateX(-130%); }
+          100% { transform: translateX(130%); }
+        }
+      `}</style>
     </div>
   );
 };
-
-const shimmerCss = `
-  .rb-shimmer {
-    background: linear-gradient(115deg, transparent 30%, rgba(255,255,255,0.55) 48%, transparent 62%);
-    transform: translateX(-130%);
-    animation: rbShimmer 3.4s ease-in-out infinite;
-  }
-  @keyframes rbShimmer {
-    0%, 60% { transform: translateX(-130%); }
-    100% { transform: translateX(130%); }
-  }
-`;
 
 export default RankBadge;

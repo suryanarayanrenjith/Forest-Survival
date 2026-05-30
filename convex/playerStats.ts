@@ -12,6 +12,7 @@ import {
   sanitizeSoloRun,
   sanitizeMultiplayerResult,
   ACHIEVEMENT_MASK,
+  ACHIEVEMENT_BIT,
   AVATAR_COUNT,
   MAX_TOTAL_SKILL_POINTS,
 } from "./gameLimits";
@@ -200,7 +201,13 @@ export const submitMultiplayerResult = mutation({
       totalDeaths: stats.multiplayer.totalDeaths + safeDeaths,
     };
 
-    await ctx.db.patch(stats._id, { multiplayer, updatedAt: Date.now() });
+    // Award the career multiplayer achievements (idempotent bitwise OR). The
+    // client achievement system is solo-only, so these are evaluated here.
+    let achievements = stats.achievements;
+    if (multiplayer.gamesPlayed >= 10) achievements |= ACHIEVEMENT_BIT.teamPlayer;
+    if (multiplayer.wins >= 5) achievements |= ACHIEVEMENT_BIT.champion;
+
+    await ctx.db.patch(stats._id, { multiplayer, achievements, updatedAt: Date.now() });
     return null;
   },
 });

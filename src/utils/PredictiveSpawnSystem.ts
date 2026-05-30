@@ -68,10 +68,6 @@ export class PredictiveSpawnSystem {
   // Heatmap for spawn prevention
   private recentSpawnAreas: Map<string, number> = new Map();
 
-  constructor() {
-    console.log('[PredictiveSpawn] System initialized');
-  }
-
   /**
    * Main spawning function - returns intelligent spawn strategy
    */

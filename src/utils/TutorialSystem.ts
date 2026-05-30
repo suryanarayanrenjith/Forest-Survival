@@ -71,7 +71,6 @@ export class TutorialSystem {
     };
 
     this.initializeTutorial();
-    console.log('[Tutorial] System initialized with ' + this.steps.length + ' steps');
   }
 
   private initializeTutorial(): void {
@@ -405,7 +404,6 @@ export class TutorialSystem {
       this.steps[0].timeStarted = Date.now();
     }
 
-    console.log('[Tutorial] Started');
   }
 
   /**
@@ -413,7 +411,6 @@ export class TutorialSystem {
    */
   public stop(): void {
     this.state.active = false;
-    console.log('[Tutorial] Stopped');
   }
 
   /**
@@ -424,7 +421,6 @@ export class TutorialSystem {
     if (!step) return;
 
     if (step.required) {
-      console.log('[Tutorial] Cannot skip required step');
       return;
     }
 
@@ -432,7 +428,6 @@ export class TutorialSystem {
     this.state.skippedSteps.add(step.id);
     this.nextStep();
 
-    console.log(`[Tutorial] Skipped step: ${step.title}`);
   }
 
   /**
@@ -505,7 +500,6 @@ export class TutorialSystem {
     step.timeCompleted = Date.now();
     this.state.completedSteps.add(step.id);
 
-    console.log(`[Tutorial] Completed step: ${step.title}`);
 
     // Calculate progress
     this.updateProgress();
@@ -524,7 +518,6 @@ export class TutorialSystem {
 
       if (nextStep) {
         nextStep.timeStarted = Date.now();
-        console.log(`[Tutorial] Advanced to: ${nextStep.title}`);
       }
     } else {
       // Tutorial complete
@@ -539,7 +532,6 @@ export class TutorialSystem {
     this.state.active = false;
     this.state.totalProgress = 100;
 
-    console.log('[Tutorial] Tutorial completed!');
   }
 
   /**
@@ -645,7 +637,6 @@ export class TutorialSystem {
 
     if (hint) {
       this.lastHintTime = now;
-      console.log(`[Tutorial] Hint: ${hint}`);
     }
 
     return hint;
@@ -669,7 +660,6 @@ export class TutorialSystem {
       step.timeCompleted = undefined;
     }
 
-    console.log('[Tutorial] Progress reset');
   }
 
   private resetProgress(): void {

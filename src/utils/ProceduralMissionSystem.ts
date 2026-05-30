@@ -196,10 +196,6 @@ export class ProceduralMissionSystem {
     ]
   };
 
-  constructor() {
-    console.log('[ProceduralMissions] System initialized');
-  }
-
   /**
    * Generate a contextual mission based on current game state
    */
@@ -243,7 +239,6 @@ export class ProceduralMissionSystem {
     };
 
     this.activeMissions.push(mission);
-    console.log(`[ProceduralMissions] Generated: ${mission.title} (${difficulty})`);
 
     return mission;
   }
@@ -632,7 +627,6 @@ export class ProceduralMissionSystem {
 
           if (objective.current >= objective.target) {
             objective.completed = true;
-            console.log(`[ProceduralMissions] Objective completed: ${objective.description}`);
           }
         }
       }
@@ -669,7 +663,6 @@ export class ProceduralMissionSystem {
     this.completedMissions.push(mission);
     this.activeMissions = this.activeMissions.filter(m => m.id !== missionId);
 
-    console.log(`[ProceduralMissions] Mission completed: ${mission.title}`);
   }
 
   /**
@@ -684,7 +677,6 @@ export class ProceduralMissionSystem {
     this.completedMissions.push(mission);
     this.activeMissions = this.activeMissions.filter(m => m.id !== missionId);
 
-    console.log(`[ProceduralMissions] Mission failed: ${mission.title}`);
   }
 
   /**

@@ -39,6 +39,15 @@ export const ACHIEVEMENT_COUNT = 18;
 export const ACHIEVEMENT_MASK = (1 << ACHIEVEMENT_COUNT) - 1;
 export const AVATAR_COUNT = 12;
 
+// Bit positions within ACHIEVEMENT_ORDER (src/utils/AchievementSystem.ts) for
+// the two multiplayer achievements. These are awarded server-side from the
+// player's career totals because the client achievement system runs only in
+// solo play. KEEP IN SYNC with the order of those two IDs.
+export const ACHIEVEMENT_BIT = {
+  teamPlayer: 1 << 16, // 'team_player' — play 10 multiplayer matches
+  champion: 1 << 17, // 'champion' — win 5 multiplayer matches
+} as const;
+
 /**
  * Clamp a solo run to plausible bounds. Returns the sanitized values plus the
  * skill points that may be awarded (already capped).

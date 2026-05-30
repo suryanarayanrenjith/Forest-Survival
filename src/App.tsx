@@ -59,7 +59,6 @@ import { MissionDisplay } from './components/MissionDisplay';
 import { SkillTreeMenu } from './components/SkillTreeMenu';
 import { TutorialOverlay, CoachTipsDisplay } from './components/TutorialOverlay';
 import { EnhancedSettings, type GameSettings } from './components/EnhancedSettings';
-import { StatsGallery } from './components/StatsGallery';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import ShaderProcessingScreen, { type WarmupErrorInfo } from './components/ShaderProcessingScreen';
 import MenuBackdrop, { type MenuBackdropVariant } from './components/MenuBackdrop';
@@ -266,6 +265,9 @@ const ForestSurvivalGame = () => {
   // so the HUD can draw the bottom-left pie meter at the correct fill.
   const [staminaRatio, setStaminaRatio] = useState(1);
   const [staminaExhaustedUI, setStaminaExhaustedUI] = useState(false);
+  // Reload feedback: holds the in-progress reload's total duration (ms) so the
+  // crosshair indicator can time its CSS sweep, or null when not reloading.
+  const [reloadDurationUI, setReloadDurationUI] = useState<number | null>(null);
 
   // ─── Photo Mode (in-game photoshoot → Convex storage) ────────────────────
   const generatePhotoUploadUrl = useMutation(api.photos.generateUploadUrl);
@@ -361,7 +363,6 @@ const ForestSurvivalGame = () => {
   const [showSkillTree, setShowSkillTree] = useState(false);
   const [showTutorial, setShowTutorial] = useState(false);
   const [showEnhancedSettings, setShowEnhancedSettings] = useState(false);
-  const [showStatsGallery, setShowStatsGallery] = useState(false);
 
   // Tutorial & Skill Tree refs + state (bridge useEffect closure → React render)
   const tutorialRef = useRef<TutorialSystem | null>(null);
@@ -986,12 +987,24 @@ const ForestSurvivalGame = () => {
       achievementSystem.onUnlock((achievement) => {
         const achievementWithId: QueuedAchievement = { ...achievement, queueId: Date.now() + Math.random() };
         setAchievementQueue((prev) => [...prev, achievementWithId]);
-        const bit = AchievementSystem.bitFor(achievement.id);
-        if (bit) {
-          void mergeAchievementsRef.current({ mask: bit }).catch(() => {});
+        // Sync the FULL unlocked mask (an idempotent bitwise OR server-side)
+        // rather than a single bit, so if one sync is rate-limited the next
+        // successful one backfills every achievement earned so far.
+        const mask = achievementSystem.getUnlockedMask();
+        if (mask) {
+          void mergeAchievementsRef.current({ mask }).catch(() => {});
         }
       });
     }
+    // Career baselines for cumulative achievements (career total = baseline +
+    // this run's progress), captured once at run start from the persisted stats.
+    const baseSoloKills = playerStatsRef.current?.solo.totalKills ?? 0;
+    const baseBestWave = playerStatsRef.current?.solo.highestWave ?? 0;
+    // Per-run achievement trackers (reset every run since the effect re-runs).
+    let headshotsThisRun = 0;
+    let powerUpsThisRun = 0;
+    let tookDamageThisWave = false;
+    const recentKillTimes: number[] = [];
 
     // Initialize enhanced power-up system
     const enhancedPowerUps = new EnhancedPowerUpSystem();
@@ -1086,7 +1099,6 @@ const ForestSurvivalGame = () => {
 
     // Get map configuration for the selected map
     const mapConfig = getMapConfig(selectedMap);
-    console.log('[App] Loading map:', selectedMap, '-', mapConfig.name);
 
     // Get initial atmospheric settings from day cycle system
     let atmosphericSettings = dayCycleSystem.getSettings(actualTimeOfDay);
@@ -1114,7 +1126,6 @@ const ForestSurvivalGame = () => {
     // === GRAPHICS QUALITY SYSTEM ===
     const graphicsPreset = gameSettingsManager.getGraphicsPreset();
     const graphicsQuality = gameSettingsManager.getGraphicsQuality();
-    console.log(`[Graphics] Quality: ${graphicsQuality.toUpperCase()} - Pixel Ratio: ${graphicsPreset.pixelRatio}, Shadows: ${graphicsPreset.shadowsEnabled}, Post-Processing: ${graphicsPreset.postProcessing}`);
 
     // Camera - use FOV from settings, far plane based on view distance
     const camera = new THREE.PerspectiveCamera(baseFOV, window.innerWidth / window.innerHeight, 0.1, graphicsPreset.viewDistance * 5);
@@ -1340,7 +1351,6 @@ const ForestSurvivalGame = () => {
     };
     const onWebGLContextRestored = () => {
       // WebGL context restored
-      console.log('WebGL context restored!');
     };
     renderer.domElement.addEventListener('webglcontextlost', onWebGLContextLost);
     renderer.domElement.addEventListener('webglcontextrestored', onWebGLContextRestored);
@@ -1848,9 +1858,6 @@ const ForestSurvivalGame = () => {
           atmosphericSettings.sunVisible,
           atmosphericSettings.ambientIntensity,
         );
-        console.log(
-          `[Graphics] HDRI environment loaded: ${loadedEnvironment.profile.label} (${loadedEnvironment.resolution})`,
-        );
       })
       .catch((err) => {
         console.warn('[App] HDRI environment loading failed; using generated sky IBL fallback:', err);
@@ -2353,6 +2360,7 @@ const ForestSurvivalGame = () => {
           newUnlock = true;
         }
       });
+      if (newUnlock) achievementSystem.setProgress('arsenal', unlockedWeapons.length);
       return newUnlock;
     };
 
@@ -3031,6 +3039,17 @@ const ForestSurvivalGame = () => {
     // tree / rock / boulder. Tries up to 6 random angles per distance
     // attempt, widening the ring if every angle is blocked. Last-resort
     // returns the final candidate so we always spawn something.
+    // ── Map-specific spawn & engagement reach ────────────────────────────
+    // These two MapConfig fields were defined per-map but never wired into
+    // gameplay, so every map spawned and engaged identically. Now open maps
+    // (desert, tundra) push spawns and AI engagement out to their long
+    // sightlines, while dense/murky maps (swamp) pull the fight in close — so
+    // maps play differently, not just look different. enemySpawnRadiusMult is
+    // applied uniformly to BOTH spawn and recycle distance so the two never
+    // cross (a freshly spawned enemy is never instantly recycled).
+    const mapSpawnReach = mapConfig.enemySpawnRadiusMult || 1.0;
+    const mapVisibilityReach = mapConfig.visibilityMult || 1.0;
+
     const findEnemySpawnSpot = (baseDist: number, radius: number) => {
       const ENEMY_RADIUS = radius;
       let lastX = 0, lastZ = 0;
@@ -3060,7 +3079,7 @@ const ForestSurvivalGame = () => {
         else if (wave >= 2 && rand < (hardish ? 0.5 : 0.42)) type = 'fast';
         // Bosses are bigger (scale 2.0) so they need a wider clearance.
         const enemyRadius = type === 'boss' ? 2.0 : type === 'tank' ? 1.6 : 1.2;
-        const baseDist = 42 + Math.random() * 26;
+        const baseDist = (42 + Math.random() * 26) * mapSpawnReach;
         const spot = findEnemySpawnSpot(baseDist, enemyRadius);
         const enemy = createEnemy(spot.x, spot.z, type);
         if (enemy) {
@@ -3378,6 +3397,33 @@ const ForestSurvivalGame = () => {
     const PHOTO_FOV_MIN = 25;    // zoomed in
     const PHOTO_FOV_MAX = 115;   // zoomed out (wide)
 
+    // ── RELOAD ───────────────────────────────────────────────────────────
+    // Single entry point for reloads, shared by the R key and the auto-reload
+    // that fires when the trigger is pulled on an empty mag. Returns false when
+    // a reload can't start (already reloading, paused/over, or mag already full).
+    let reloadTimeoutId: number | null = null;
+    const startReload = (): boolean => {
+      if (isReloading || paused || isGameOver || tutorialActiveRef.current) return false;
+      const weapon = WEAPONS[currentWeapon];
+      if (ammo >= weapon.maxAmmo) return false;
+      isReloading = true;
+      soundManager.play('reload', 0.5);
+      gunModel.triggerReload();
+      tutorial.recordAction('reload', 1);
+      // Quickdraw skill speeds up the reload.
+      const reloadMs = weapon.reloadTime / (1 + skillBonus('reloadSpeed'));
+      setReloadDurationUI(reloadMs); // drives the crosshair reload indicator
+      if (reloadTimeoutId !== null) window.clearTimeout(reloadTimeoutId);
+      reloadTimeoutId = window.setTimeout(() => {
+        reloadTimeoutId = null;
+        ammo = weapon.maxAmmo;
+        isReloading = false;
+        setReloadDurationUI(null);
+        updateGameState();
+      }, reloadMs);
+      return true;
+    };
+
     const onKeyDown = (e: KeyboardEvent) => {
       // CRITICAL: Always set the key state first to ensure movement works
       // This ensures keys are registered even if later checks fail
@@ -3496,33 +3542,25 @@ const ForestSurvivalGame = () => {
 
       if (weaponKeys[e.code] && !isReloading) {
         const weaponName = weaponKeys[e.code];
-        if (unlockedWeapons.includes(weaponName)) {
+        if (unlockedWeapons.includes(weaponName) && weaponName !== currentWeapon) {
+          // Guard against re-selecting the current weapon — that path used to
+          // silently refill the mag (a free instant reload) on every keypress.
           currentWeapon = weaponName;
           ammo = WEAPONS[weaponName].maxAmmo;
           gunModel.switchWeapon(weaponName as GunWeaponType);
           setGunFillForWeapon(weaponName);
+          soundManager.play('weaponSwitch', 0.5);
           tutorial.recordAction('switch_weapon', 1);
           updateGameState();
-        } else {
+        } else if (!unlockedWeapons.includes(weaponName)) {
           const weapon = WEAPONS[weaponName];
           setPowerUpMessage(`${weapon.name} Locked — ${weapon.unlockScore} pts needed`);
           setTimeout(() => setPowerUpMessage(''), 2000);
         }
       }
 
-      if (e.code === 'KeyR' && !isReloading && !paused && ammo < WEAPONS[currentWeapon].maxAmmo) {
-        isReloading = true;
-        const weapon = WEAPONS[currentWeapon];
-        soundManager.play('reload', 0.5);
-        gunModel.triggerReload(); // Trigger reload animation
-        tutorial.recordAction('reload', 1);
-        // Quickdraw skill speeds up the reload
-        const reloadMs = weapon.reloadTime / (1 + skillBonus('reloadSpeed'));
-        setTimeout(() => {
-          ammo = weapon.maxAmmo;
-          isReloading = false;
-          updateGameState();
-        }, reloadMs);
+      if (e.code === 'KeyR') {
+        startReload();
       }
     };
 
@@ -3645,6 +3683,15 @@ const ForestSurvivalGame = () => {
 
     // Enhanced shooting
     const shoot = () => {
+      // Empty magazine — dry-fire click + auto-reload so pulling the trigger on
+      // an empty mag actually does something instead of a dead click. The
+      // !isReloading guard means only the first pull clicks; subsequent pulls
+      // of a held auto-fire burst are swallowed while the reload runs.
+      if (ammo <= 0 && !isReloading && !isGameOver && !paused && !tutorialActiveRef.current) {
+        soundManager.play('empty', 0.5);
+        startReload();
+        return;
+      }
       if (ammo > 0 && !isGameOver && !paused && canShoot && !isReloading && !tutorialActiveRef.current) {
         const weapon = WEAPONS[currentWeapon];
         canShoot = false;
@@ -3667,8 +3714,9 @@ const ForestSurvivalGame = () => {
         combatCoach.recordShot(false, false); // Updated when bullet hits
         tutorial.recordAction('shoot', 1);
 
-        // Play shoot sound
-        soundManager.play('shoot', 0.7);
+        // Play the weapon-specific report with a subtle random pitch so
+        // sustained auto-fire doesn't sound like one looped sample.
+        soundManager.play(`shoot_${currentWeapon}`, 0.7, false, 0.97 + Math.random() * 0.06);
 
         const bulletsToFire = currentWeapon === 'shotgun' ? 5 : 1;
 
@@ -3944,6 +3992,10 @@ const ForestSurvivalGame = () => {
     // Head bob time accumulator - prevents floating point precision issues from Date.now()
     let headBobTime = 0;
     const HEAD_BOB_TIME_RESET = 1000; // Reset every 1000 units to prevent float overflow
+    // Footstep cadence — accumulates ground distance travelled and emits a
+    // step sound each stride. One stride length means running (faster ground
+    // speed) naturally produces a quicker step cadence than walking.
+    let footstepAccum = 0;
     const updateFPS = () => {
       const now = performance.now();
       fpsFrameCount++;
@@ -4028,6 +4080,12 @@ const ForestSurvivalGame = () => {
           combo++;
           killStreak++;
           score += combo * 5;
+          // Rising combo chime at each 5x milestone — pitch climbs with the
+          // combo so a hot streak audibly escalates. Independent of the kill
+          // feed setting (it's reward feedback, not a log entry).
+          if (combo >= 5 && combo % 5 === 0) {
+            soundManager.play('powerUp', 0.45, false, 1.0 + Math.min(combo, 45) * 0.018);
+          }
         } else {
           combo = 1;
         }
@@ -4051,15 +4109,27 @@ const ForestSurvivalGame = () => {
           else if (killStreak === 20) addKillFeedEntry('20 Kill Streak!', 'combo');
           else if (killStreak === 30) addKillFeedEntry('30 Kill Streak! UNSTOPPABLE!', 'combo');
         }
-        achievementSystem.updateProgress('first_blood', 1);
-        if (enemiesKilled >= 10) achievementSystem.updateProgress('slayer', 1);
-        if (enemiesKilled >= 50) achievementSystem.updateProgress('assassin', 1);
-        if (enemiesKilled >= 100) achievementSystem.updateProgress('legend', 1);
+        // ── Achievements (solo only; every call no-ops when disabled) ──
+        // Career kill totals drive the cumulative tiers; the running streak and
+        // headshot tally drive the per-run feats.
+        const careerKills = baseSoloKills + enemiesKilled;
+        achievementSystem.setProgress('first_blood', careerKills);
+        achievementSystem.setProgress('slayer', careerKills);
+        achievementSystem.setProgress('massacre', careerKills);
+        achievementSystem.setProgress('legend', careerKills);
+        achievementSystem.setProgress('hot_streak', killStreak);
+        achievementSystem.setProgress('unstoppable', killStreak);
         if (isCritical) {
-          achievementSystem.updateProgress('marksman', 1);
-          achievementSystem.updateProgress('ace', 1);
+          headshotsThisRun += 1;
+          achievementSystem.setProgress('sharpshooter', headshotsThisRun);
+          achievementSystem.setProgress('deadeye', headshotsThisRun);
         }
-        if (combo >= 5) achievementSystem.updateProgress('perfectionist', 1);
+        // Speed Demon — 5 kills inside a rolling 10-second window.
+        recentKillTimes.push(currentTime);
+        while (recentKillTimes.length > 0 && currentTime - recentKillTimes[0] > 10000) {
+          recentKillTimes.shift();
+        }
+        if (recentKillTimes.length >= 5) achievementSystem.updateProgress('speed_demon', 1);
         if (isMultiplayer && multiplayerManager) multiplayerManager.incrementKills();
       } else if (mp && enemy.netId !== undefined) {
         // Killing blow came from a guest — hand them the credit.
@@ -4087,9 +4157,18 @@ const ForestSurvivalGame = () => {
       const livingEnemies = enemies.reduce((n, e) => n + (e.dead ? 0 : 1), 0);
       if (!isTutorialMode && waveEnemiesRemaining <= 0 && livingEnemies === 0 && !waveTransitioning) {
         waveTransitioning = true;
+        // Flawless — the wave just cleared took no damage. Evaluate before the
+        // tracker resets for the next wave.
+        if (!tookDamageThisWave) achievementSystem.updateProgress('no_damage', 1);
+        tookDamageThisWave = false;
         wave++;
         combo = 0;
         killStreak = 0;
+        // Survival tiers track the best wave reached across the player's career.
+        const reachedWave = Math.max(baseBestWave, wave);
+        achievementSystem.setProgress('survivor', reachedWave);
+        achievementSystem.setProgress('veteran', reachedWave);
+        achievementSystem.setProgress('invincible', reachedWave);
         setShowWaveComplete(true);
         soundManager.play('waveComplete', 1.0);
         if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry(`Wave ${wave - 1} Complete!`, 'wave');
@@ -4164,7 +4243,9 @@ const ForestSurvivalGame = () => {
         triggerDamageFlash();
         if (damage >= 15 && gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
         if (combo > 0) combo = Math.max(0, combo - 1);
-        achievementSystem.updateProgress('survivor', 1);
+        tookDamageThisWave = true;
+        // Close Call — took a hit but clung on below 10 HP.
+        if (health > 0 && health < 10) achievementSystem.updateProgress('close_call', 1);
         if (isMultiplayer && multiplayerManager) multiplayerManager.updatePlayerHealth(health);
       }
 
@@ -4745,11 +4826,10 @@ const ForestSurvivalGame = () => {
       // Update enhanced power-ups (airdrops)
       enhancedPowerUps.updateAirdrops(delta, scene);
 
-      // 🤖 === UPDATE AI SYSTEMS ===
+      // === UPDATE AI SYSTEMS ===
       // Update adaptive difficulty every 5 seconds
       if (frameCount % 300 === 0 && gameSettings.adaptiveDifficulty) {
-        const difficulty = adaptiveDifficulty.update(delta * 300);
-        console.log(`[AI] Difficulty: ${difficulty.name} (${Math.round(difficulty.level)})`);
+        adaptiveDifficulty.update(delta * 300);
       }
 
       // Generate missions periodically (every 30 seconds)
@@ -5218,6 +5298,9 @@ const ForestSurvivalGame = () => {
           landingImpact = 0.3; // Start landing dip effect
           jumpCooldown = JUMP_COOLDOWN_TIME; // Anti-bunny-hop cooldown
           wasJumping = false;
+          // Heavier, lower-pitched footstep for the touchdown thud.
+          soundManager.play('footstep', 0.34, false, 0.78);
+          footstepAccum = 0; // don't immediately emit a walking step on landing
         }
         isJumping = false;
       }
@@ -5259,6 +5342,22 @@ const ForestSurvivalGame = () => {
       // Track player velocity for AI prediction
       playerVelocity.subVectors(camera.position, lastPlayerPosition).divideScalar(delta > 0 ? delta : 0.016);
       lastPlayerPosition.copy(camera.position);
+
+      // ── FOOTSTEPS ────────────────────────────────────────────────────────
+      // Emit a step each stride of real ground travel — stops naturally at
+      // walls and while airborne, and speeds up when sprinting. Crouch steps
+      // are shorter-strided and quieter so sneaking stays quiet.
+      if (isMoving && !isJumping && camera.position.y <= currentCameraHeight + 0.35) {
+        footstepAccum += Math.hypot(playerVelocity.x, playerVelocity.z) * rawDelta;
+        const stride = isCrouching ? 6 : 9; // world units per step
+        if (footstepAccum >= stride) {
+          footstepAccum = 0;
+          const vol = isCrouching ? 0.1 : isRunning ? 0.26 : 0.18;
+          soundManager.play('footstep', vol, false, 0.9 + Math.random() * 0.16);
+        }
+      } else {
+        footstepAccum = 0;
+      }
 
       // Infinite world - update chunks and ground based on player position
       updateWorldGeneration(camera.position.x, camera.position.z);
@@ -5450,6 +5549,8 @@ const ForestSurvivalGame = () => {
               }
               createParticles(camera.position, 0xffffff, 10);
               tutorial.recordAction('collect_powerup', 1); // advances the loot tutorial step
+              powerUpsThisRun += 1;
+              achievementSystem.setProgress('resourceful', powerUpsThisRun);
               setTimeout(() => setPowerUpMessage(''), 2200);
               updateGameState();
             }
@@ -5629,7 +5730,7 @@ const ForestSurvivalGame = () => {
       // running outside the previous 100m cap.
       const MAX_AI_UPDATE_DISTANCE = Math.min(
         220,
-        graphicsPreset.viewDistance * 0.85 * diffSettings.chaseMult,
+        graphicsPreset.viewDistance * 0.85 * diffSettings.chaseMult * mapVisibilityReach,
       );
       // ── Per-frame Date.now() cache + throttle intervals (milliseconds) ──
       // Heavy systems run on a slow tick and cache their result; steering and
@@ -5815,13 +5916,13 @@ const ForestSurvivalGame = () => {
         // scales with difficulty: easy recycles tight (76m) so the player
         // is never sniping silhouettes; hard lets enemies persist out to
         // 130m so they can engage from far range.
-        const recycleDistance = 76 + (diffSettings.chaseMult - 0.8) * 90;
+        const recycleDistance = (76 + (diffSettings.chaseMult - 0.8) * 90) * mapSpawnReach;
         if (distance > recycleDistance) {
           // Spawn just outside the player's frustum behind them on hard,
           // closer (still visible) on easy. Use the tree-collision-aware
           // findEnemySpawnSpot so recycled enemies don't reappear inside
           // a tree trunk.
-          const baseRad = 38 + Math.random() * (22 * diffSettings.chaseMult);
+          const baseRad = (38 + Math.random() * (22 * diffSettings.chaseMult)) * mapSpawnReach;
           const enemyRadius = enemy.type === 'boss' ? 2.0 : enemy.type === 'tank' ? 1.6 : 1.2;
           const spot = findEnemySpawnSpot(baseRad, enemyRadius);
           enemy.mesh.position.x = spot.x;
@@ -6697,6 +6798,12 @@ const ForestSurvivalGame = () => {
         waveTimeoutId = null;
       }
 
+      if (reloadTimeoutId !== null) {
+        clearTimeout(reloadTimeoutId);
+        reloadTimeoutId = null;
+      }
+      setReloadDurationUI(null); // clear stale indicator for the next run
+
       // Photo Mode can't survive a scene teardown — clear it so a fresh run
       // never starts mid-photoshoot.
       photoModeRef.current = false;
@@ -6881,7 +6988,6 @@ const ForestSurvivalGame = () => {
     if (difficulty === 'adaptive') {
       setGameSettings(prev => ({ ...prev, adaptiveDifficulty: true }));
     }
-    console.log('[App] Starting classic game with map:', map, 'random:', isRandom);
     soundManager.initialize();
     setShowClassicMenu(false);
     setShowShaderProcessing(true);
@@ -6917,7 +7023,6 @@ const ForestSurvivalGame = () => {
       const timeOptions: ('day' | 'night' | 'auto')[] = ['day', 'night', 'auto'];
       const nextMap = getRandomMap();
       const nextTime = timeOptions[Math.floor(Math.random() * timeOptions.length)];
-      console.log('[App] Restarting random session → map:', nextMap, 'time:', nextTime);
       setSelectedMap(nextMap);
       setClassicTimeOfDay(nextTime);
     }
@@ -7193,6 +7298,37 @@ const ForestSurvivalGame = () => {
               // default: 'cross' — gapped 4-tick crosshair with centre dot
               return <>{(['up', 'down', 'left', 'right'] as const).map((d) => tick(d, 6, 3))}{dot(2)}</>;
             })()}
+          </div>
+        )}
+
+        {/* Reload indicator — a small amber ring under the crosshair whose
+            sweep fills over the exact reload duration, so the player always
+            knows when the weapon is ready to fire again. */}
+        {reloadDurationUI !== null && !gameState.isGameOver && !isPaused && (
+          <div
+            className="absolute left-1/2 top-1/2 select-none"
+            style={{ transform: 'translate(-50%, 26px)' }}
+          >
+            <div className="flex items-center gap-1.5 rounded-full border border-amber-400/30 bg-black/55 backdrop-blur-md px-2.5 py-1">
+              <div className="relative w-3.5 h-3.5">
+                <div
+                  key={reloadDurationUI}
+                  className="absolute inset-0 rounded-full"
+                  style={{
+                    background: 'conic-gradient(#fbbf24 var(--reload-deg, 0deg), rgba(251,191,36,0.18) 0deg)',
+                    animation: `reloadSweep ${reloadDurationUI}ms linear forwards`,
+                  }}
+                />
+                <div className="absolute inset-[3px] rounded-full bg-black/85" />
+              </div>
+              <span className="text-[10px] font-semibold tracking-[0.15em] text-amber-300 uppercase">
+                Reloading
+              </span>
+            </div>
+            <style>{`
+              @property --reload-deg { syntax: '<angle>'; initial-value: 0deg; inherits: false; }
+              @keyframes reloadSweep { from { --reload-deg: 0deg; } to { --reload-deg: 360deg; } }
+            `}</style>
           </div>
         )}
 
@@ -7482,47 +7618,6 @@ const ForestSurvivalGame = () => {
             gameSettingsManager.resetToDefaults();
             setGameSettings(createEnhancedSettingsDefaults(gameSettingsManager.getSettings()));
           }}
-        />
-      )}
-
-      {/* Statistics Gallery */}
-      {showStatsGallery && (
-        <StatsGallery
-          stats={{
-            totalKills: gameState.enemiesKilled,
-            totalDeaths: 0,
-            killDeathRatio: gameState.enemiesKilled,
-            totalDamageDealt: 0,
-            totalDamageTaken: 0,
-            headshots: 0,
-            headshotPercentage: 0,
-            accuracy: 0,
-            longestKillStreak: gameState.killStreak,
-            highestCombo: gameState.combo,
-            totalPlayTime: 0,
-            longestSurvival: 0,
-            totalWavesCompleted: gameState.wave - 1,
-            highestWave: gameState.wave,
-            totalRevives: 0,
-            favoriteWeapon: gameState.currentWeapon,
-            weaponKills: {},
-            level: 1,
-            experience: gameState.score,
-            experienceToNextLevel: 1000,
-            totalSkillPoints: 0,
-            skillsUnlocked: 0,
-            achievementsUnlocked: 0,
-            totalAchievements: 20,
-            achievementProgress: 0,
-            missionsCompleted: 0,
-            missionsFailed: 0,
-            missionSuccessRate: 0,
-            multiplayerGamesPlayed: 0,
-            multiplayerWins: 0,
-            multiplayerWinRate: 0
-          }}
-          achievements={[]}
-          onClose={() => setShowStatsGallery(false)}
         />
       )}
     </div>

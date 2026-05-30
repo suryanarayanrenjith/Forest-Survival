@@ -342,7 +342,6 @@ export function getRandomMap(): MapType {
   crypto.getRandomValues(array);
   const index = array[0] % maps.length;
   const chosen = maps[index];
-  console.log(`[MapSystem] Random map selected: ${chosen} (index ${index} of ${maps.length})`);
   return chosen;
 }
 
