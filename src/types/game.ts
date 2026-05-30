@@ -167,6 +167,14 @@ export interface Enemy {
   dodgeDirection?: THREE.Vector3; // Direction of current dodge
   // Object pooling support
   poolId?: number; // ID for returning mesh to pool when enemy dies
+  // ── Multiplayer shared-enemy sync ──
+  // netId is the stable id the host assigns and broadcasts; it lets every
+  // client agree on which enemy is which. On guests the enemy is a mirror of
+  // the host's authoritative copy, interpolated toward the last snapshot.
+  netId?: number;
+  netTargetX?: number;
+  netTargetZ?: number;
+  netYaw?: number;
   // ── Per-enemy throttle state (used by the round-robin scheduler) ──
   // Heavy AI/perception/dodge work is run on a slow tick (5-10 Hz) and the
   // last result is cached so steering and animation still update at 60 Hz.
@@ -191,7 +199,7 @@ export interface Bullet {
   isRocket?: boolean;
 }
 
-export type PowerUpType = 'health' | 'ammo' | 'speed' | 'damage' | 'shield' | 'infinite_ammo';
+export type PowerUpType = 'ammo' | 'speed' | 'damage' | 'shield' | 'infinite_ammo' | 'overcharge' | 'phantom';
 
 export interface PowerUp {
   mesh: THREE.Mesh;

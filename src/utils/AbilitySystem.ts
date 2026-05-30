@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-export type AbilityType = 'dash' | 'shield' | 'speed' | 'invincible' | 'explosive' | 'heal';
+export type AbilityType = 'dash' | 'shield' | 'speed' | 'phantom' | 'explosive' | 'overcharge';
 
 export interface Ability {
   type: AbilityType;
@@ -16,18 +16,21 @@ export interface Ability {
 
 export interface AbilityEffects {
   speedMultiplier: number;
-  isInvincible: boolean;
-  hasShield: boolean;
-  shieldHealth: number;
+  /** Phantom: enemies lose track of the player + the player is intangible. */
+  isPhantom: boolean;
+  /** Riot shield raised — blocks damage from the front arc (directional). */
+  shieldHeld: boolean;
+  /** Overcharge: temporary +fire-rate and +damage combat burst. */
+  overcharge: boolean;
 }
 
 export class AbilitySystem {
   private abilities: Map<AbilityType, Ability> = new Map();
   private effects: AbilityEffects = {
     speedMultiplier: 1.0,
-    isInvincible: false,
-    hasShield: false,
-    shieldHealth: 0
+    isPhantom: false,
+    shieldHeld: false,
+    overcharge: false,
   };
 
   constructor() {
@@ -46,11 +49,11 @@ export class AbilitySystem {
       },
       shield: {
         type: 'shield',
-        name: 'Energy Shield',
-        description: 'Temporary shield absorbing 50 damage',
+        name: 'Riot Shield',
+        description: 'Raise a shield that blocks damage from the front',
         icon: '🛡️',
         cooldown: 15000,
-        duration: 10000
+        duration: 8000
       },
       speed: {
         type: 'speed',
@@ -60,13 +63,13 @@ export class AbilitySystem {
         cooldown: 8000,
         duration: 5000
       },
-      invincible: {
-        type: 'invincible',
-        name: 'Ghost Mode',
-        description: 'Become invincible for 3 seconds',
+      phantom: {
+        type: 'phantom',
+        name: 'Phantom',
+        description: 'Enemies lose track of you and you phase through them',
         icon: '👻',
-        cooldown: 30000,
-        duration: 3000
+        cooldown: 25000,
+        duration: 5000
       },
       explosive: {
         type: 'explosive',
@@ -76,13 +79,13 @@ export class AbilitySystem {
         cooldown: 12000,
         duration: 10000
       },
-      heal: {
-        type: 'heal',
-        name: 'Quick Heal',
-        description: 'Instantly restore 30 HP',
-        icon: '❤️',
-        cooldown: 10000,
-        duration: 0
+      overcharge: {
+        type: 'overcharge',
+        name: 'Overcharge',
+        description: 'Faster fire rate and bigger damage for a few seconds',
+        icon: '⚡',
+        cooldown: 18000,
+        duration: 8000
       }
     };
 
@@ -115,14 +118,16 @@ export class AbilitySystem {
     // Apply effects
     switch (type) {
       case 'shield':
-        this.effects.hasShield = true;
-        this.effects.shieldHealth = 50;
+        this.effects.shieldHeld = true;
         break;
       case 'speed':
         this.effects.speedMultiplier = 2.0;
         break;
-      case 'invincible':
-        this.effects.isInvincible = true;
+      case 'phantom':
+        this.effects.isPhantom = true;
+        break;
+      case 'overcharge':
+        this.effects.overcharge = true;
         break;
     }
 
@@ -142,35 +147,20 @@ export class AbilitySystem {
           case 'speed':
             this.effects.speedMultiplier = 1.0;
             break;
-          case 'invincible':
-            this.effects.isInvincible = false;
+          case 'phantom':
+            this.effects.isPhantom = false;
             break;
           case 'shield':
-            if (this.effects.hasShield && this.effects.shieldHealth > 0) {
-              // Shield expired naturally
-              this.effects.hasShield = false;
-              this.effects.shieldHealth = 0;
-            }
+            this.effects.shieldHeld = false;
+            break;
+          case 'overcharge':
+            this.effects.overcharge = false;
             break;
         }
       }
     });
 
     return this.effects;
-  }
-
-  damageShield(damage: number): number {
-    if (!this.effects.hasShield) return damage;
-
-    if (this.effects.shieldHealth >= damage) {
-      this.effects.shieldHealth -= damage;
-      return 0; // All damage absorbed
-    } else {
-      const remaining = damage - this.effects.shieldHealth;
-      this.effects.shieldHealth = 0;
-      this.effects.hasShield = false;
-      return remaining; // Partial damage
-    }
   }
 
   getAbility(type: AbilityType): Ability | undefined {
@@ -226,27 +216,28 @@ export class AbilitySystem {
         break;
 
       case 'shield': {
-        // Shield sphere
-        const shieldGeometry = new THREE.SphereGeometry(2, 16, 16);
-        const shieldMaterial = new THREE.MeshBasicMaterial({
-          color: 0x00aaff,
+        // Quick activation flare only — the persistent shield is a held mesh
+        // on the player's arm (managed in the game loop), NOT a bubble here.
+        const ringGeometry = new THREE.TorusGeometry(1.1, 0.06, 8, 24);
+        const ringMaterial = new THREE.MeshBasicMaterial({
+          color: 0x55b0ff,
           transparent: true,
-          opacity: 0.3,
-          wireframe: true
+          opacity: 0.7,
         });
-        const shield = new THREE.Mesh(shieldGeometry, shieldMaterial);
-        effect.add(shield);
+        const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+        ring.rotation.x = Math.PI / 2;
+        effect.add(ring);
         break;
       }
 
-      case 'heal':
-        // Healing particles
-        for (let i = 0; i < 20; i++) {
-          const geometry = new THREE.SphereGeometry(0.1, 4, 4);
+      case 'overcharge':
+        // Electric spark motes that pop on activation.
+        for (let i = 0; i < 18; i++) {
+          const geometry = new THREE.SphereGeometry(0.08, 4, 4);
           const material = new THREE.MeshBasicMaterial({
-            color: 0x00ff00,
+            color: Math.random() > 0.5 ? 0xffd23f : 0xff8a1e,
             transparent: true,
-            opacity: 0.8
+            opacity: 0.9,
           });
           const particle = new THREE.Mesh(geometry, material);
           particle.position.set(
@@ -272,16 +263,18 @@ export class AbilitySystem {
         break;
       }
 
-      case 'invincible': {
-        // Ghost aura
-        const auraGeometry = new THREE.SphereGeometry(1.5, 16, 16);
+      case 'phantom': {
+        // Brief dematerialize pulse — the persistent translucency is applied
+        // to the player body in the game loop, not a bubble here.
+        const auraGeometry = new THREE.TorusGeometry(1.3, 0.08, 8, 24);
         const auraMaterial = new THREE.MeshBasicMaterial({
-          color: 0xaa00ff,
+          color: 0x9a6bff,
           transparent: true,
-          opacity: 0.4,
+          opacity: 0.5,
           side: THREE.DoubleSide
         });
         const aura = new THREE.Mesh(auraGeometry, auraMaterial);
+        aura.rotation.x = Math.PI / 2;
         effect.add(aura);
         break;
       }

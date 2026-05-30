@@ -1,5 +1,8 @@
+import { useState } from 'react';
 import { Crown, Skull, Crosshair, Star, Medal, RotateCcw, Home, Hourglass } from 'lucide-react';
 import type { PlayerData } from '../utils/MultiplayerManager';
+import { RANK_TIERS } from '../utils/rankSystem';
+import PlayerStatsModal from './PlayerStatsModal';
 
 interface MultiplayerGameOverProps {
   winnerId: string;
@@ -26,6 +29,7 @@ const rankColor = (rank: number) => (rank === 0 ? '#fbbf24' : rank === 1 ? '#cbd
 const MultiplayerGameOver = ({
   winnerId, finalStats, localPlayerId, onRestart, onMainMenu, canRestart = true,
 }: MultiplayerGameOverProps) => {
+  const [viewStatsUser, setViewStatsUser] = useState<string | null>(null);
   const sortedPlayers = [...finalStats].sort((a, b) => {
     if (b.kills !== a.kills) return b.kills - a.kills;
     return b.score - a.score;
@@ -89,10 +93,13 @@ const MultiplayerGameOver = ({
           <div className="max-h-[34vh] overflow-y-auto">
             {sortedPlayers.map((player, index) => {
               const isLocal = player.id === localPlayerId;
+              const tier = player.rankTier !== undefined ? RANK_TIERS[player.rankTier] : null;
               return (
-                <div
+                <button
+                  type="button"
                   key={player.id}
-                  className={`flex items-center gap-3 px-4 py-2.5 border-b border-white/[0.05] last:border-0 ${
+                  onClick={() => setViewStatsUser(player.name)}
+                  className={`flex w-full items-center gap-3 px-4 py-2.5 border-b border-white/[0.05] last:border-0 text-left transition-colors hover:bg-white/[0.05] ${
                     isLocal ? 'bg-emerald-500/[0.06]' : ''
                   } ${!player.isAlive ? 'opacity-55' : ''}`}
                 >
@@ -108,6 +115,14 @@ const MultiplayerGameOver = ({
                   <span className="flex-1 min-w-0 text-sm font-semibold text-white truncate">
                     {player.name}
                     {isLocal && <span className="text-emerald-400 ml-1.5 text-xs">· you</span>}
+                    {tier && (
+                      <span
+                        className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide"
+                        style={{ color: tier.color, background: `${tier.color}22` }}
+                      >
+                        {tier.name}
+                      </span>
+                    )}
                   </span>
                   <span className="flex items-center gap-1 text-orange-300 text-sm font-semibold tabular-nums w-11 justify-end">
                     <Crosshair className="w-3 h-3" strokeWidth={2.5} />{player.kills}
@@ -118,7 +133,7 @@ const MultiplayerGameOver = ({
                   <span className="text-violet-300 text-xs font-semibold tabular-nums w-9 text-right hidden sm:block">
                     {calculateKD(player.kills, player.deaths)}
                   </span>
-                </div>
+                </button>
               );
             })}
           </div>
@@ -160,6 +175,8 @@ const MultiplayerGameOver = ({
           </button>
         </div>
       </div>
+
+      {viewStatsUser && <PlayerStatsModal username={viewStatsUser} onClose={() => setViewStatsUser(null)} />}
 
       <style>{`
         @keyframes mgoFade {

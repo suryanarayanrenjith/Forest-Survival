@@ -184,7 +184,7 @@ export class BulletTracer {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared particle materials & a small pool of reusable buffer geometries for
-// ImpactEffect and BloodSplatter. Building a fresh BufferGeometry +
+// ImpactEffect and RobotHitSparks. Building a fresh BufferGeometry +
 // Float32Arrays + PointsMaterial for every bullet hit is wasteful on
 // autofire weapons. We share the material (one per effect type) and reuse
 // a pool of geometry slots.
@@ -198,11 +198,13 @@ const sharedImpactMaterial = new THREE.PointsMaterial({
   depthWrite: false,
 });
 
-const sharedBloodMaterial = new THREE.PointsMaterial({
-  size: 0.2,
+// Robot hit sparks — additive so the hot sparks glow against the scene.
+const sharedSparkMaterial = new THREE.PointsMaterial({
+  size: 0.16,
   vertexColors: true,
   transparent: true,
-  opacity: 0.9,
+  opacity: 1,
+  blending: THREE.AdditiveBlending,
   depthWrite: false,
 });
 
@@ -282,8 +284,10 @@ export class ImpactEffect {
   }
 }
 
-// New: Blood splatter effect for enemy hits
-export class BloodSplatter {
+// Robot hit effect — the enemies are robots, so hits throw off hot sparks and
+// bits of metal (electric yellow/orange/white with the occasional cyan arc),
+// not blood. Sparks fly out from the impact, then arc down under gravity.
+export class RobotHitSparks {
   particles: THREE.Points;
   velocities: THREE.Vector3[] = [];
   lifetime: number = 0;
@@ -294,36 +298,39 @@ export class BloodSplatter {
     const positions = new Float32Array(count * 3);
     const colors = new Float32Array(count * 3);
 
+    // Hot spark palette + a couple of cooler tones for shrapnel/electric arcs.
+    const SPARK_COLORS = [0xffd23f, 0xff8a1e, 0xfff3c0, 0x66e0ff, 0xb8bdc4];
+
     for (let i = 0; i < count; i++) {
       const idx = i * 3;
       positions[idx] = position.x;
       positions[idx + 1] = position.y;
       positions[idx + 2] = position.z;
 
-      // Dark red blood
-      const bloodColor = Math.random() > 0.7 ? 0x8b0000 : 0xa00000;
-      colors[idx] = ((bloodColor >> 16) & 255) / 255;
-      colors[idx + 1] = ((bloodColor >> 8) & 255) / 255;
-      colors[idx + 2] = (bloodColor & 255) / 255;
+      const sparkColor = SPARK_COLORS[(Math.random() * SPARK_COLORS.length) | 0];
+      colors[idx] = ((sparkColor >> 16) & 255) / 255;
+      colors[idx + 1] = ((sparkColor >> 8) & 255) / 255;
+      colors[idx + 2] = (sparkColor & 255) / 255;
 
-      // Spray away from impact direction
-      const spread = 0.5;
+      // Spray away from impact direction, with a wider, faster cone than blood
+      // so it reads as a spark burst.
+      const spread = 0.8;
       const velocity = new THREE.Vector3(
         direction.x + (Math.random() - 0.5) * spread,
-        direction.y + (Math.random() - 0.5) * spread,
+        direction.y + (Math.random() - 0.5) * spread + 0.3, // bias slightly up
         direction.z + (Math.random() - 0.5) * spread,
       );
-      velocity.multiplyScalar(0.5 + Math.random() * 0.5);
+      velocity.multiplyScalar(0.7 + Math.random() * 0.8);
       this.velocities.push(velocity);
     }
 
     this.geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     this.geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
-    this.particles = new THREE.Points(this.geometry, sharedBloodMaterial);
+    this.particles = new THREE.Points(this.geometry, sharedSparkMaterial);
     this.particles.userData.cannotReceiveAO = true;
     scene.add(this.particles);
-    this.lifetime = 1.0;
+    this.lifetime = 0.55; // Sparks die quickly
   }
 
   update(delta: number): boolean {
@@ -337,13 +344,13 @@ export class BloodSplatter {
 
     for (let i = 0; i < this.velocities.length; i++) {
       const idx = i * 3;
-      positions[idx] += this.velocities[i].x * delta * 10;
-      positions[idx + 1] += this.velocities[i].y * delta * 10;
-      positions[idx + 2] += this.velocities[i].z * delta * 10;
+      positions[idx] += this.velocities[i].x * delta * 14;
+      positions[idx + 1] += this.velocities[i].y * delta * 14;
+      positions[idx + 2] += this.velocities[i].z * delta * 14;
 
-      // Gravity
-      this.velocities[i].y -= delta * 5;
-      this.velocities[i].multiplyScalar(0.95); // Drag
+      // Strong gravity so sparks arc down fast, plus heavy drag (they burn out).
+      this.velocities[i].y -= delta * 9;
+      this.velocities[i].multiplyScalar(0.9);
     }
 
     this.particles.geometry.attributes.position.needsUpdate = true;

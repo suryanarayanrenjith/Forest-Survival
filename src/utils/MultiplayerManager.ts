@@ -3,6 +3,7 @@ import Peer from 'peerjs';
 // Infer DataConnection type from Peer.connect() return type
 type DataConnection = ReturnType<Peer['connect']>;
 import * as THREE from 'three';
+import { clamp, MAX_MP_KILLS, MAX_MP_DEATHS, MAX_MP_SCORE, AVATAR_COUNT } from '../../convex/gameLimits';
 
 /** 8 unique player-model classes the lobby allows picking from. */
 export type ModelClassId =
@@ -25,6 +26,31 @@ export interface PlayerData {
   /** Lobby-picked character class. Undefined → auto-assign at game start. */
   modelClass?: ModelClassId;
   lastHeartbeat?: number; // For connection health monitoring
+  /** Account rank tier index (0=Bronze…5=Master), broadcast so peers show a badge. */
+  rankTier?: number;
+  /** Account level, broadcast for display. */
+  level?: number;
+  /** Predefined avatar index, broadcast so peers render the right avatar. */
+  avatarIndex?: number;
+}
+
+/**
+ * Compact wire format for one shared enemy in a host→guest `enemy_sync`
+ * snapshot. Field names are short to keep the per-frame payload small:
+ *   id = stable network id   ty = type code (0 normal,1 fast,2 tank,3 boss)
+ *   x/y/z = world position    ry = body yaw
+ *   hp = current health       mx = max health        d = dead flag (0|1)
+ */
+export interface EnemyWire {
+  id: number;
+  ty: number;
+  x: number;
+  y: number;
+  z: number;
+  ry: number;
+  hp: number;
+  mx: number;
+  d: 0 | 1;
 }
 
 export interface GameState {
@@ -57,6 +83,18 @@ export type NetworkMessage =
   | { type: 'return_to_lobby'; gameState: Partial<SerializedGameState> }
   | { type: 'game_over'; winnerId: string; finalStats: PlayerData[] }
   | { type: 'enemy_killed'; playerId: string }
+  // ── Shared-enemy (host-authoritative) sync ──
+  // Host broadcasts the full living-enemy set to all guests several times a
+  // second; guests render/interpolate from it instead of spawning their own.
+  | { type: 'enemy_sync'; enemies: EnemyWire[]; wave: number }
+  // Guest → host: "my bullet hit shared enemy N for D damage". Host (the only
+  // authority on enemy health) applies it and may award the kill.
+  | { type: 'enemy_hit'; netId: number; damage: number; isCritical: boolean; shooterId: string }
+  // Host → all: a shared enemy died and the kill belongs to `killerId`. The
+  // credited player's client scores it locally.
+  | { type: 'enemy_kill_credit'; netId: number; killerId: string; scoreValue: number; isCritical: boolean }
+  // Host → target guest: a shared enemy struck you for `damage`.
+  | { type: 'player_damaged'; targetId: string; damage: number; enemyType: string }
   | { type: 'player_shot'; shooterId: string; targetId: string; damage: number }
   | { type: 'player_killed'; victimId: string; victimName: string; victimColor: number; killerId: string; killerName: string; weapon: string; timestamp: number }
   | { type: 'chat_message'; playerId: string; playerName: string; playerColor: number; message: string; messageType: 'chat' | 'emote'; timestamp: number }
@@ -66,6 +104,28 @@ export type NetworkMessage =
 const POSITION_UPDATE_INTERVAL = 66; // ~15 updates per second (down from 60)
 const HEARTBEAT_INTERVAL = 2000; // Send heartbeat every 2 seconds
 const CONNECTION_TIMEOUT = 10000; // Consider connection dead after 10 seconds without heartbeat
+
+/**
+ * Best-effort clamp of a peer-reported PlayerData snapshot. Multiplayer is P2P
+ * (no authoritative server), so peers are untrusted — this rejects clearly
+ * impossible values (negative/NaN, health above max, scores/kills above match
+ * caps) so trivial packet tampering can't corrupt scoreboards. It does NOT make
+ * P2P cheat-proof; that needs an authoritative server.
+ */
+function sanitizeRemotePlayer(data: PlayerData): PlayerData {
+  const maxHealth = clamp(data.maxHealth ?? 100, 1, 1000);
+  return {
+    ...data,
+    maxHealth,
+    health: clamp(data.health ?? 0, 0, maxHealth),
+    kills: clamp(data.kills ?? 0, 0, MAX_MP_KILLS),
+    deaths: clamp(data.deaths ?? 0, 0, MAX_MP_DEATHS),
+    score: clamp(data.score ?? 0, 0, MAX_MP_SCORE),
+    rankTier: data.rankTier === undefined ? undefined : clamp(data.rankTier, 0, 5),
+    level: data.level === undefined ? undefined : clamp(data.level, 1, 100000),
+    avatarIndex: data.avatarIndex === undefined ? undefined : clamp(data.avatarIndex, 0, AVATAR_COUNT - 1),
+  };
+}
 
 export class MultiplayerManager {
   private peer: Peer | null = null;
@@ -104,6 +164,16 @@ export class MultiplayerManager {
       color: this.getRandomPlayerColor(),
       lastHeartbeat: Date.now()
     };
+  }
+
+  /**
+   * Attach the local player's account identity (rank/level/avatar) so it
+   * broadcasts to peers. Call before createLobby/joinLobby.
+   */
+  setProfileMeta(meta: { rankTier?: number; level?: number; avatarIndex?: number }): void {
+    if (meta.rankTier !== undefined) this.localPlayer.rankTier = meta.rankTier;
+    if (meta.level !== undefined) this.localPlayer.level = meta.level;
+    if (meta.avatarIndex !== undefined) this.localPlayer.avatarIndex = meta.avatarIndex;
   }
 
   private getRandomPlayerColor(): number {
@@ -303,6 +373,8 @@ export class MultiplayerManager {
       }
 
       case 'player_joined':
+        // Clamp untrusted peer-reported fields before storing/relaying.
+        message.data = sanitizeRemotePlayer(message.data);
         console.log('[MultiplayerManager] Player join request:', message.data.name);
 
         if (this.isHost && this.gameState) {
@@ -369,6 +441,9 @@ export class MultiplayerManager {
         break;
 
       case 'player_update': {
+        // Clamp untrusted peer-reported fields before storing/relaying.
+        message.data = sanitizeRemotePlayer(message.data);
+
         // Track alive-state transitions before replacing snapshots
         const prevState = this.gameState?.players.get(message.data.id);
         const wasAlive = prevState ? prevState.isAlive : true;
@@ -579,6 +654,20 @@ export class MultiplayerManager {
         }
         break;
       }
+
+      // Shared-enemy traffic. Star topology means host↔guest is a direct link,
+      // so these are never relayed — they go straight to the registered
+      // handlers (enemy_hit lands on the host; the rest land on guests).
+      case 'enemy_sync':
+      case 'enemy_hit':
+      case 'enemy_kill_credit':
+      case 'player_damaged': {
+        const handlers = this.messageHandlers.get(message.type);
+        if (handlers) {
+          handlers.forEach(handler => handler(message));
+        }
+        break;
+      }
     }
   }
 
@@ -721,6 +810,32 @@ export class MultiplayerManager {
       type: 'enemy_killed',
       playerId: this.localPlayer.id
     });
+  }
+
+  // ─── SHARED-ENEMY HELPERS ─────────────────────────────────────────────────
+  // Thin wrappers over broadcastMessage so App.tsx stays declarative about the
+  // host-authoritative enemy protocol.
+
+  /** Host → all guests: the full living-enemy snapshot for this tick. */
+  broadcastEnemySync(enemies: EnemyWire[], wave: number): void {
+    this.broadcastMessage({ type: 'enemy_sync', enemies, wave });
+  }
+
+  /** Guest → host: report a bullet hit on a shared enemy. */
+  sendEnemyHit(netId: number, damage: number, isCritical: boolean): void {
+    this.broadcastMessage({
+      type: 'enemy_hit', netId, damage, isCritical, shooterId: this.localPlayer.id,
+    });
+  }
+
+  /** Host → all: award a shared-enemy kill to `killerId`. */
+  broadcastEnemyKillCredit(killerId: string, netId: number, scoreValue: number, isCritical: boolean): void {
+    this.broadcastMessage({ type: 'enemy_kill_credit', killerId, netId, scoreValue, isCritical });
+  }
+
+  /** Host → target guest: a shared enemy struck them for `damage`. */
+  sendPlayerDamage(targetId: string, damage: number, enemyType: string): void {
+    this.broadcastMessage({ type: 'player_damaged', targetId, damage, enemyType });
   }
 
   private checkGameOver() {

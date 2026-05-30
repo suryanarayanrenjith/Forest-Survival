@@ -20,7 +20,7 @@ Survive endless, escalating waves of enemies across **eight distinct biome maps*
 Endless survival — every cleared wave spawns a harder one. Climb the waves, build your score, and stay alive as long as you can.
 
 ### Maps
-Eight hand-crafted, premium low-poly environments — each with its own biome, palette, atmosphere and props: **Deep Forest**, **Scorched Wasteland**, **Frozen Tundra**, **Desert Canyon**, **Toxic Swamp**, **Military Outpost**, **Crystal Caverns** and **Ancient Ruins**.
+Eight hand-crafted, premium low-poly environments — each with its own biome, palette, atmosphere and props: **Deep Forest**, **Scorched Wasteland**, **Frozen Tundra**, **Desert Canyon**, **Toxic Swamp**, **Military Outpost**, **Twilight Vale** and **Ancient Ruins**.
 
 ---
 
@@ -80,11 +80,18 @@ Premium low-poly creatures with chest cores, shoulder plating, glowing visors an
 - Blood splatter, muzzle flash and impact effects
 
 **Multiplayer**
-- Peer-to-peer multiplayer via PeerJS
-- In-game chat with quick emotes
-- Spectator mode
-- Live scoreboard HUD and game over screens
-- Lobby system with co-op and last-man-standing modes
+- Peer-to-peer multiplayer via PeerJS (no dedicated game server)
+- Host-authoritative **shared enemy world** — every player fights the same enemies in the same positions; an enemy attacking one player is reflected for everyone
+- Up to 8 players, 8 selectable character classes, co-op and last-man-standing modes
+- Floating name tags + health bars above every player
+- In-game chat with quick emotes, live scoreboard HUD, spectator mode and game-over screens
+
+**Accounts & Progression** (powered by Convex)
+- Username / password accounts via Convex Auth — no email required
+- Persistent progression stored as a single compact Convex document per player (stats, skill points, achievements bitmask, avatar)
+- Account rank (Bronze → Master) and level driven by kills and wins, not games played
+- Smart skill tree unlocked with points earned from Solo runs
+- Achievements are Solo-only; cross-device settings sync; privacy-aware public profiles
 
 **UI & Polish**
 - Cohesive, professional dark UI built with hand-crafted Tailwind styling
@@ -102,12 +109,15 @@ Premium low-poly creatures with chest cores, shoulder plating, glowing visors an
 
 Spawn between waves, with a chance to drop from fallen enemies:
 
-- **Health Pack** — Restore 30 HP
-- **Ammo Crate** — Refill current magazine
-- **Speed Boost** — Temporary movement speed increase (10s)
+- **Ammo Crate** — Refill your current magazine
+- **Speed Boost** — Faster movement (10s)
 - **Damage Boost** — Double weapon damage (15s)
-- **Shield** — Absorbs up to 50 incoming damage
-- **Infinite Ammo** — Unlimited ammo for a short burst (20s)
+- **Shield** — Deployable riot shield that absorbs front-arc damage (12s)
+- **Infinite Ammo** — Unlimited ammo burst, no reloads
+- **Overcharge** — Fire-rate + damage surge
+- **Phantom** — Cloak: enemies can't see or hear you, and you pass through them
+
+> By design there is **no healing** power-up — your only damage mitigation is the shield and not getting hit.
 
 ---
 
@@ -154,6 +164,13 @@ npm run lint       # Lint check
 npm run preview    # Preview production build
 ```
 
+Accounts, multiplayer ranks and progression are backed by **Convex**. For these to work locally, provision a dev backend once and leave it running in a second terminal — it writes `VITE_CONVEX_URL` into `.env.local` for you (see `.env.example`):
+
+```bash
+npx convex dev          # provisions the dev DB, pushes functions, syncs .env.local
+npx @convex-dev/auth     # one-time: generate the auth keys on the dev deployment
+```
+
 ---
 
 ## 🛠️ Tech Stack
@@ -167,7 +184,10 @@ npm run preview    # Preview production build
 | Build Tool | Vite 7 |
 | Styling | Tailwind CSS |
 | Icons | lucide-react |
-| Multiplayer | PeerJS |
+| Multiplayer | PeerJS (peer-to-peer) |
+| Backend & Database | Convex (reactive DB + serverless functions) |
+| Authentication | Convex Auth (username / password) |
+| Hosting | Vercel |
 
 ---
 

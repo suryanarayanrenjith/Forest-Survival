@@ -1,14 +1,25 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Users, ArrowLeft, Server, LogIn, Copy, SlidersHorizontal, Clock,
-  ChevronDown, Crown, Play, X, Loader2, Wifi, Check, Pencil, Dices,
+  ChevronDown, Crown, Play, X, Loader2, Wifi, Check, UserRound,
   Trees, Flame, Snowflake, Mountain, Droplet, Shield, Leaf, Landmark,
   Crosshair, Skull, Cpu, Bot, Footprints, ShieldCheck, EyeOff, Flame as FlameIcon,
   HeartPulse, Wrench, Ghost, Lock, type LucideIcon,
 } from 'lucide-react';
+import { usePlayerData } from '../hooks/usePlayerData';
 import MenuShell from './MenuShell';
+import UserAvatar from './UserAvatar';
+import PlayerStatsModal from './PlayerStatsModal';
+import { computeRank, RANK_TIERS } from '../utils/rankSystem';
 import { MultiplayerManager, type ModelClassId, type NetworkMessage } from '../utils/MultiplayerManager';
 import type { PlayerData } from '../utils/MultiplayerManager';
+
+function popcount(value: number): number {
+  let count = 0;
+  let bits = value >>> 0;
+  while (bits) { bits &= bits - 1; count += 1; }
+  return count;
+}
 
 type GameStartMsg = Extract<NetworkMessage, { type: 'game_start' }>;
 type PlayerRejectedMsg = Extract<NetworkMessage, { type: 'player_rejected' }>;
@@ -62,25 +73,6 @@ const MAP_ICONS: Record<MapType, LucideIcon> = {
   ancient_ruins: Landmark,
 };
 
-// Randomised, unique-feeling default player name (adjective + noun + number).
-const NAME_ADJECTIVES = [
-  'Swift', 'Silent', 'Crimson', 'Shadow', 'Iron', 'Lone', 'Savage', 'Frost',
-  'Ember', 'Rapid', 'Grim', 'Wild', 'Storm', 'Night', 'Blaze', 'Steel',
-  'Rogue', 'Brave', 'Vivid', 'Feral', 'Lunar', 'Solar', 'Toxic', 'Arctic',
-  'Hollow', 'Rugged', 'Fierce', 'Hidden',
-];
-const NAME_NOUNS = [
-  'Fox', 'Wolf', 'Raven', 'Viper', 'Hawk', 'Wraith', 'Hunter', 'Ranger',
-  'Drifter', 'Specter', 'Falcon', 'Reaper', 'Lynx', 'Cobra', 'Jackal',
-  'Warden', 'Nomad', 'Striker', 'Tiger', 'Panther', 'Shark', 'Hornet', 'Comet',
-];
-const generatePlayerName = (): string => {
-  const a = NAME_ADJECTIVES[Math.floor(Math.random() * NAME_ADJECTIVES.length)];
-  const n = NAME_NOUNS[Math.floor(Math.random() * NAME_NOUNS.length)];
-  const num = Math.floor(Math.random() * 90) + 10; // 10-99
-  return `${a}${n}${num}`;
-};
-
 // Helper to update URL without page reload
 const updateURL = (params: Record<string, string>) => {
   const url = new URL(window.location.href);
@@ -114,25 +106,36 @@ const getURLParams = () => {
 // ── Module-level sub-components (defined OUTSIDE the lobby so the 100ms
 //    player-list poll doesn't remount them — that remount was what made the
 //    rows constantly flash). ───────────────────────────────────────────────
-const PlayerRow = ({ player, index, manager }: { player: PlayerData; index: number; manager: MultiplayerManager }) => {
+const PlayerRow = ({ player, index, manager, onViewStats }: {
+  player: PlayerData;
+  index: number;
+  manager: MultiplayerManager;
+  onViewStats?: (username: string) => void;
+}) => {
   const isLocal = player.id === manager.getLocalPlayer().id;
   const isHost = manager.isPlayerHost(player.id);
+  const tier = player.rankTier !== undefined ? RANK_TIERS[player.rankTier] : null;
   return (
-    <div
-      className={`flex items-center gap-3 rounded-xl border px-3 py-2.5 ${
+    <button
+      type="button"
+      onClick={() => onViewStats?.(player.name)}
+      className={`flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-colors hover:bg-white/[0.05] ${
         isLocal ? 'border-emerald-400/30 bg-emerald-500/[0.07]' : 'border-white/[0.07] bg-white/[0.02]'
       }`}
       style={{ animation: `mlRow 0.3s ease-out ${index * 0.06}s both` }}
     >
-      <div
-        className="flex items-center justify-center w-9 h-9 rounded-lg font-bold text-sm text-white/95 flex-shrink-0"
-        style={{ backgroundColor: `#${player.color.toString(16).padStart(6, '0')}` }}
-      >
-        {player.name.charAt(0).toUpperCase()}
-      </div>
+      <UserAvatar username={player.name} avatarIndex={player.avatarIndex} size="sm" className="w-9 h-9 rounded-lg" />
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5">
           <span className="text-sm font-semibold text-white truncate">{player.name}</span>
+          {tier && (
+            <span
+              className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide"
+              style={{ color: tier.color, background: `${tier.color}22` }}
+            >
+              {tier.name}{player.level ? ` ${player.level}` : ''}
+            </span>
+          )}
           {isHost && (
             <span className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide bg-amber-500/15 text-amber-300">
               <Crown className="w-3 h-3" strokeWidth={2.5} /> Host
@@ -161,7 +164,7 @@ const PlayerRow = ({ player, index, manager }: { player: PlayerData; index: numb
           })()}
         </div>
       </div>
-    </div>
+    </button>
   );
 };
 
@@ -233,41 +236,19 @@ const ErrorBox = ({ error }: { error: string }) =>
   ) : null;
 
 // In-lobby name editor.
-const NameField = ({ name, onRename }: { name: string; onRename: (n: string) => void }) => {
-  const [draft, setDraft] = useState(name);
-  useEffect(() => { setDraft(name); }, [name]);
-  const trimmed = draft.trim();
-  const changed = trimmed.length > 0 && trimmed !== name;
-  const commit = () => { if (changed) onRename(trimmed); };
-  return (
-    <div>
-      <label className="block text-[10px] font-semibold tracking-[0.15em] text-gray-500 uppercase mb-1.5">
-        Your Name
-      </label>
-      <div className="flex gap-2">
-        <input
-          type="text"
-          value={draft}
-          maxLength={20}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') commit(); }}
-          className="flex-1 min-w-0 rounded-xl border border-white/10 bg-white/[0.03] px-3.5 py-2.5 text-sm text-white
-            placeholder-gray-600 focus:outline-none focus:border-emerald-400/50 transition-colors"
-        />
-        <button
-          onClick={commit}
-          disabled={!changed}
-          className="flex items-center gap-1.5 rounded-xl px-3.5 py-2.5 text-xs font-bold transition-all
-            enabled:hover:-translate-y-0.5 disabled:opacity-30 disabled:cursor-not-allowed"
-          style={{ background: changed ? 'linear-gradient(135deg, #34d399, #22c55e)' : 'rgba(255,255,255,0.05)', color: changed ? '#04130a' : '#6b7280' }}
-        >
-          {changed ? <Check className="w-3.5 h-3.5" strokeWidth={3} /> : <Pencil className="w-3.5 h-3.5" strokeWidth={2.5} />}
-          Save
-        </button>
-      </div>
+// Read-only identity — multiplayer always uses the signed-in account username
+// (no random names, no renaming).
+const IdentityField = ({ username }: { username: string }) => (
+  <div>
+    <label className="block text-[10px] font-semibold tracking-[0.15em] text-gray-500 uppercase mb-1.5">
+      Playing As
+    </label>
+    <div className="flex items-center gap-2.5 rounded-xl border border-emerald-400/20 bg-emerald-500/[0.06] px-3.5 py-2.5">
+      <UserRound className="w-4 h-4 text-emerald-300 flex-shrink-0" strokeWidth={2.1} />
+      <span className="text-sm font-semibold text-white truncate">{username}</span>
     </div>
-  );
-};
+  </div>
+);
 
 const Styles = () => (
   <style>{`
@@ -283,8 +264,27 @@ const Styles = () => (
 );
 
 const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: MultiplayerLobbyProps) => {
+  const { currentUser, playerStats } = usePlayerData();
+  const username = currentUser?.username ?? '';
+  const [viewStatsUser, setViewStatsUser] = useState<string | null>(null);
+
+  // Local account identity broadcast to peers (rank/level/avatar).
+  const localProfileMeta = useMemo(() => {
+    if (!playerStats) return { avatarIndex: 0 } as { rankTier?: number; level?: number; avatarIndex: number };
+    const r = computeRank({
+      solo: playerStats.solo,
+      multiplayer: {
+        wins: playerStats.multiplayer.wins,
+        gamesPlayed: playerStats.multiplayer.gamesPlayed,
+        totalKills: playerStats.multiplayer.totalKills,
+      },
+      achievementsCount: popcount(playerStats.achievements),
+      skillsCount: Object.keys(playerStats.skills).length,
+    });
+    return { rankTier: r.tierIndex, level: r.level, avatarIndex: playerStats.avatarIndex ?? 0 };
+  }, [playerStats]);
+
   const [view, setView] = useState<'menu' | 'host' | 'join'>('menu');
-  const [playerName, setPlayerName] = useState(() => generatePlayerName());
   const [lobbyId, setLobbyId] = useState('');
   const [joinLobbyId, setJoinLobbyId] = useState('');
   const [manager, setManager] = useState<MultiplayerManager | null>(null);
@@ -309,7 +309,6 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
     autoJoinAttemptedRef.current = true; // prevent any URL-based auto-rejoin
     lobbyCreatedRef.current = true;      // prevent the host auto-create effect
 
-    setPlayerName(localPlayer.name);
     setManager(existingManager);
     // Seed the player list immediately so the lobby doesn't flash empty
     // while the 200ms poll catches up.
@@ -324,20 +323,18 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
     }
   }, [existingManager]);
 
-  // Check URL params on mount for session persistence
+  // Check URL params for session persistence. Waits for the signed-in
+  // identity to load (multiplayer always plays as the account username).
   useEffect(() => {
     if (existingManager) return; // already-connected manager is in charge
     if (autoJoinAttemptedRef.current) return;
+    if (!currentUser) return; // not signed in / still loading — handled by the auth gate
 
-    const { lobby, role, name } = getURLParams();
+    const { lobby, role } = getURLParams();
 
     if (lobby && role) {
       autoJoinAttemptedRef.current = true;
       console.log('[MultiplayerLobby] Found session in URL - lobby:', lobby, 'role:', role);
-
-      if (name) {
-        setPlayerName(name);
-      }
 
       if (role === 'host') {
         setView('host');
@@ -345,25 +342,39 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
         setJoinLobbyId(lobby);
         setView('join');
         setTimeout(() => {
-          handleAutoJoin(lobby, name || generatePlayerName());
+          handleAutoJoin(lobby);
         }, 100);
       }
     }
-  }, []);
+  }, [currentUser]);
 
-  const handleAutoJoin = async (lobbyIdToJoin: string, name: string) => {
-    if (!lobbyIdToJoin) return;
+  const handleAutoJoin = async (lobbyIdToJoin: string) => {
+    if (!lobbyIdToJoin || !username) return;
 
     setIsConnecting(true);
     setError('');
 
+    const newManager = new MultiplayerManager(username);
+    newManager.setProfileMeta(localProfileMeta);
+    let rejected = false;
+    newManager.onMessage('player_rejected', (raw) => {
+      rejected = true;
+      const data = raw as PlayerRejectedMsg;
+      setError(data.reason || 'You are already in this game in another window.');
+      newManager.disconnect();
+      setManager(null);
+      setView('menu');
+      setIsConnecting(false);
+      clearMultiplayerURL();
+    });
     try {
-      const newManager = new MultiplayerManager(name);
       await newManager.joinLobby(lobbyIdToJoin);
+      if (rejected) { newManager.disconnect(); return; }
       setManager(newManager);
       console.log('[MultiplayerLobby] Successfully rejoined lobby:', lobbyIdToJoin);
     } catch (err) {
       console.error('[MultiplayerLobby] Failed to rejoin lobby:', err);
+      newManager.disconnect();
       setError('Session expired. The lobby may have closed. Please join again manually.');
       clearMultiplayerURL();
     } finally {
@@ -419,12 +430,12 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
     setError('');
 
     try {
-      const name = playerName.trim() || generatePlayerName();
-      const newManager = new MultiplayerManager(name);
+      const newManager = new MultiplayerManager(username);
+      newManager.setProfileMeta(localProfileMeta);
       const id = await newManager.createLobby();
       setLobbyId(id);
       setManager(newManager);
-      updateURL({ lobby: id, role: 'host', name });
+      updateURL({ lobby: id, role: 'host' });
     } catch (err) {
       console.error('Failed to create lobby:', err);
       setError('Failed to create lobby. Please check your connection and try again.');
@@ -445,14 +456,33 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
     setIsConnecting(true);
     setError('');
 
+    const newManager = new MultiplayerManager(username);
+    newManager.setProfileMeta(localProfileMeta);
+    // Register the rejection handler BEFORE joining so a fast (same-machine)
+    // rejection is never missed. The host rejects any join whose username is
+    // already present — which is exactly how the SAME account is stopped from
+    // joining its own hosted game from another window. Landing back on the
+    // join form (not a dead "connecting" state) also lets the player retry.
+    let rejected = false;
+    newManager.onMessage('player_rejected', (raw) => {
+      rejected = true;
+      const data = raw as PlayerRejectedMsg;
+      setError(data.reason || 'You are already in this game in another window.');
+      newManager.disconnect();
+      setManager(null);
+      setView('menu');
+      setIsConnecting(false);
+      clearMultiplayerURL();
+    });
+
     try {
-      const name = playerName.trim() || generatePlayerName();
-      const newManager = new MultiplayerManager(name);
       await newManager.joinLobby(joinLobbyId);
+      if (rejected) { newManager.disconnect(); return; }
       setManager(newManager);
-      updateURL({ lobby: joinLobbyId, role: 'guest', name });
+      updateURL({ lobby: joinLobbyId, role: 'guest' });
     } catch (err) {
       console.error('Failed to join lobby:', err);
+      newManager.disconnect(); // release the peer so the next attempt is clean
       setError('Failed to join lobby. Please check the ID and try again.');
       clearMultiplayerURL();
     } finally {
@@ -481,31 +511,21 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
     setError('');
   };
 
-  // Rename the local player while in a lobby.
-  const handleRename = (newName: string) => {
-    if (!manager) return;
-    const localId = manager.getLocalPlayer().id;
-    const taken = connectedPlayers.some(
-      (p) => p.id !== localId && p.name.toLowerCase() === newName.toLowerCase()
-    );
-    if (taken) {
-      setError(`The name "${newName}" is already taken in this lobby.`);
-      return;
-    }
-    manager.updateLocalPlayer({ name: newName });
-    setPlayerName(newName);
-    setError('');
-    updateURL({
-      lobby: view === 'host' ? lobbyId : joinLobbyId,
-      role: view === 'host' ? 'host' : 'guest',
-      name: newName,
-    });
-  };
+  // Every player (host included) must have locked in a character class before
+  // the match can begin — otherwise their in-game avatar would be auto-assigned
+  // and the lobby pick would feel meaningless.
+  const playersMissingCharacter = connectedPlayers.filter((p) => !p.modelClass);
+  const everyoneHasCharacter = connectedPlayers.length > 0 && playersMissingCharacter.length === 0;
+  const canStartGame = connectedPlayers.length >= 2 && everyoneHasCharacter;
 
   const handleStartGame = () => {
-    if (manager && connectedPlayers.length >= 2) {
-      onStartGame(manager, gameMode, hasTimeLimit ? timeLimit : undefined, selectedMap, difficulty);
+    if (!manager || connectedPlayers.length < 2) return;
+    if (!everyoneHasCharacter) {
+      const names = playersMissingCharacter.map((p) => p.name).join(', ');
+      setError(`Waiting on a character pick from: ${names}. Everyone must choose a character before the game can start.`);
+      return;
     }
+    onStartGame(manager, gameMode, hasTimeLimit ? timeLimit : undefined, selectedMap, difficulty);
   };
 
   const handleBack = () => {
@@ -537,6 +557,46 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
   const panelClass = 'w-full max-w-sm rounded-3xl border border-white/10 bg-white/[0.04] backdrop-blur-2xl shadow-[0_24px_80px_-24px_rgba(0,0,0,0.6)]';
   const panelInnerClass = 'w-full max-w-xl rounded-3xl border border-white/10 bg-white/[0.035] backdrop-blur-2xl shadow-[0_24px_80px_-24px_rgba(0,0,0,0.6)] overflow-hidden flex flex-col max-h-[94vh]';
 
+  // ── AUTH GATE ───────────────────────────────────────────────────────────
+  // Multiplayer always plays as the signed-in account username. Guests who
+  // reach the lobby via a shared link are asked to sign in from the main menu.
+  if (currentUser === undefined) {
+    return (
+      <div className={backdrop} style={backdropStyle}>
+        <MenuShell variant="multiplayer" />
+        <div className="flex flex-col items-center gap-4 rounded-3xl border border-white/10 bg-white/[0.04] px-6 py-5 backdrop-blur-2xl shadow-[0_24px_80px_-24px_rgba(0,0,0,0.6)]">
+          <Loader2 className="w-10 h-10 text-sky-400 animate-spin" strokeWidth={2} />
+          <div className="text-sm font-semibold tracking-wide text-gray-300">Checking your session…</div>
+        </div>
+      </div>
+    );
+  }
+  if (currentUser === null) {
+    return (
+      <div className={backdrop} style={backdropStyle}>
+        <MenuShell variant="multiplayer" />
+        <div className={panelClass + ' p-6 text-center'}
+          style={{ animation: 'mlFade 0.35s cubic-bezier(0.16,1,0.3,1) forwards' }}>
+          <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-sky-500/12 mb-3">
+            <Lock className="w-6 h-6 text-sky-400" strokeWidth={2} />
+          </div>
+          <h2 className="text-2xl font-bold text-white tracking-tight">Sign in to play</h2>
+          <p className="mt-2 text-sm text-gray-400">
+            Multiplayer uses your account username. Please sign in from the main menu to host or join a game.
+          </p>
+          <button
+            onClick={handleBack}
+            className="mt-5 flex items-center justify-center gap-2 w-full rounded-xl px-4 py-2.5 border border-white/10
+              text-sm font-semibold text-gray-300 transition-colors hover:text-white hover:bg-white/[0.05]"
+          >
+            <ArrowLeft className="w-4 h-4" strokeWidth={2.25} /> Back to Menu
+          </button>
+        </div>
+        <Styles />
+      </div>
+    );
+  }
+
   // ── MENU VIEW ───────────────────────────────────────────────────────────
   if (view === 'menu') {
     return (
@@ -553,30 +613,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
           </div>
 
           <div className="space-y-3">
-            <div>
-              <label className="block text-[10px] font-semibold tracking-[0.15em] text-gray-500 uppercase mb-1.5">
-                Player Name
-              </label>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={playerName}
-                  onChange={(e) => setPlayerName(e.target.value)}
-                  placeholder="Enter your name"
-                  maxLength={20}
-                  className="flex-1 min-w-0 rounded-xl border border-white/10 bg-white/[0.03] px-3.5 py-2.5 text-sm text-white
-                    placeholder-gray-600 focus:outline-none focus:border-sky-400/50 transition-colors"
-                />
-                <button
-                  onClick={() => setPlayerName(generatePlayerName())}
-                  title="Generate a random name"
-                  className="flex items-center justify-center w-11 rounded-xl border border-white/10 bg-white/[0.03]
-                    text-gray-400 transition-colors hover:text-white hover:bg-white/[0.07]"
-                >
-                  <Dices className="w-4 h-4" strokeWidth={2.25} />
-                </button>
-              </div>
-            </div>
+            <IdentityField username={username} />
 
             <button
               onClick={() => handleChangeView('host')}
@@ -688,8 +725,8 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
               </div>
             </div>
 
-            {/* Player name editor */}
-            <NameField name={playerName} onRename={handleRename} />
+            {/* Identity — fixed to the signed-in account username */}
+            <IdentityField username={username} />
 
             {/* Character picker — host gets it too so they can claim a class */}
             <CharacterPicker
@@ -833,7 +870,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
               </div>
               <div className="space-y-1.5">
                 {connectedPlayers.map((player, index) => (
-                  <PlayerRow key={player.id} player={player} index={index} manager={manager} />
+                  <PlayerRow key={player.id} player={player} index={index} manager={manager} onViewStats={setViewStatsUser} />
                 ))}
                 {connectedPlayers.length < 8 && (
                   <div className="flex items-center gap-3 rounded-xl border border-dashed border-white/10 px-3 py-2.5">
@@ -856,10 +893,20 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
                 Need at least 2 players to start ({connectedPlayers.length} connected)
               </p>
             )}
+            {connectedPlayers.length >= 2 && !everyoneHasCharacter && (
+              <p className="text-center text-[11px] text-amber-400/90">
+                Waiting on a character pick from {playersMissingCharacter.map((p) => p.name).join(', ')}
+              </p>
+            )}
             <div className="flex gap-2.5">
               <button
                 onClick={handleStartGame}
-                disabled={connectedPlayers.length < 2}
+                disabled={!canStartGame}
+                title={!canStartGame
+                  ? (connectedPlayers.length < 2
+                      ? 'Need at least 2 players'
+                      : 'Every player must choose a character first')
+                  : undefined}
                 className="flex-1 flex items-center justify-center gap-2 rounded-xl px-4 py-3 font-bold tracking-wide text-[#04130a]
                   transition-all duration-200 enabled:hover:-translate-y-0.5 disabled:opacity-40 disabled:cursor-not-allowed"
                 style={{ background: 'linear-gradient(135deg, #34d399, #22c55e)' }}
@@ -877,6 +924,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
             </div>
           </div>
         </div>
+        {viewStatsUser && <PlayerStatsModal username={viewStatsUser} onClose={() => setViewStatsUser(null)} />}
         <Styles />
       </div>
     );
@@ -897,29 +945,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
           </div>
 
           <div className="space-y-3">
-            <div>
-              <label className="block text-[10px] font-semibold tracking-[0.15em] text-gray-500 uppercase mb-1.5">
-                Your Name
-              </label>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={playerName}
-                  onChange={(e) => setPlayerName(e.target.value)}
-                  maxLength={20}
-                  className="flex-1 min-w-0 rounded-xl border border-white/10 bg-white/[0.03] px-3.5 py-2.5 text-sm text-white
-                    placeholder-gray-600 focus:outline-none focus:border-sky-400/50 transition-colors"
-                />
-                <button
-                  onClick={() => setPlayerName(generatePlayerName())}
-                  title="Generate a random name"
-                  className="flex items-center justify-center w-11 rounded-xl border border-white/10 bg-white/[0.03]
-                    text-gray-400 transition-colors hover:text-white hover:bg-white/[0.07]"
-                >
-                  <Dices className="w-4 h-4" strokeWidth={2.25} />
-                </button>
-              </div>
-            </div>
+            <IdentityField username={username} />
 
             <div>
               <label className="block text-[10px] font-semibold tracking-[0.15em] text-gray-500 uppercase mb-1.5">
@@ -986,8 +1012,8 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
           </div>
 
           <div className="p-5 space-y-4">
-            {/* Player name editor */}
-            <NameField name={playerName} onRename={handleRename} />
+            {/* Identity — fixed to the signed-in account username */}
+            <IdentityField username={username} />
 
             {/* Character picker — guests pick their character here */}
             <CharacterPicker
@@ -1004,7 +1030,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
               </div>
               <div className="space-y-1.5">
                 {connectedPlayers.map((player, index) => (
-                  <PlayerRow key={player.id} player={player} index={index} manager={manager} />
+                  <PlayerRow key={player.id} player={player} index={index} manager={manager} onViewStats={setViewStatsUser} />
                 ))}
               </div>
             </div>
@@ -1027,6 +1053,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
             </button>
           </div>
         </div>
+        {viewStatsUser && <PlayerStatsModal username={viewStatsUser} onClose={() => setViewStatsUser(null)} />}
         <Styles />
       </div>
     );

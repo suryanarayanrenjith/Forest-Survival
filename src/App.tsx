@@ -1,9 +1,10 @@
 import { useRef, useEffect, useState } from 'react';
 import * as THREE from 'three';
+import { GraduationCap, Play, Home } from 'lucide-react';
 import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
 import { GunModel, type WeaponType as GunWeaponType } from './utils/GunModel';
-import { MuzzleFlash, BulletTracer, ImpactEffect, BloodSplatter, setMuzzleLightPool } from './utils/Effects';
+import { MuzzleFlash, BulletTracer, ImpactEffect, RobotHitSparks, setMuzzleLightPool } from './utils/Effects';
 import { soundManager } from './utils/SoundManager';
 import { gameSettingsManager, type UserSettings } from './utils/GameSettingsManager';
 import { PostProcessingPipeline } from './utils/PostProcessing';
@@ -18,9 +19,10 @@ import { BiomeSystem } from './utils/BiomeSystem';
 import { createAtmosphericHazeMaterial, createSkyDomeMaterial, updateShaderTime } from './utils/Shaders';
 import { getMapConfig, getRandomMap, DEFAULT_MAP, type MapType } from './utils/MapSystem';
 import { getHDRIEnvironmentIntensity, loadHDRIEnvironment, type HDRIEnvironmentProfile } from './utils/HDRIEnvironment';
-import { MultiplayerManager, type PlayerData as MpPlayerData, type NetworkMessage } from './utils/MultiplayerManager';
+import { MultiplayerManager, type PlayerData as MpPlayerData, type NetworkMessage, type EnemyWire } from './utils/MultiplayerManager';
 import { RemotePlayerManager } from './utils/RemotePlayerManager';
 import { LocalPlayerShadow } from './utils/LocalPlayerShadow';
+import { EffectIndicators, type EffectKey } from './utils/EffectIndicators';
 import type { ClassId } from './utils/CharacterModels';
 import { AbilitySystem } from './utils/AbilitySystem';
 import { AchievementSystem, type Achievement } from './utils/AchievementSystem';
@@ -62,6 +64,10 @@ import ShaderProcessingScreen, { type WarmupErrorInfo } from './components/Shade
 import MenuBackdrop, { type MenuBackdropVariant } from './components/MenuBackdrop';
 import MusicMuteButton from './components/MusicMuteButton';
 import { musicMute } from './utils/musicMute';
+import { useMutation } from 'convex/react';
+import { useConvexAuth } from '@convex-dev/auth/react';
+import { api } from '../convex/_generated/api';
+import { usePlayerData } from './hooks/usePlayerData';
 
 /**
  * Quick WebGL2 availability check. We do this BEFORE the scene useEffect
@@ -185,8 +191,50 @@ const enhancedSettingsToUserSettings = (settings: GameSettings): Partial<UserSet
 
 const MENU_MUSIC_URL = '/audio/Before_The_Breach.mp3';
 
+// Fixed key order so the serialized settings blob is stable for equality checks
+// (avoids spurious DB writes when the object identity changes but values don't).
+const SYNCED_SETTING_KEYS: (keyof UserSettings)[] = [
+  'masterVolume', 'sfxVolume', 'musicVolume', 'sensitivity', 'fov',
+  'showFPS', 'screenShake', 'hitMarkers', 'killFeed', 'damageNumbers',
+  'crosshairStyle', 'crosshairColor', 'graphicsQuality',
+];
+
+function serializeSettings(s: UserSettings): string {
+  const ordered: Record<string, unknown> = {};
+  for (const key of SYNCED_SETTING_KEYS) ordered[key] = s[key];
+  return JSON.stringify(ordered);
+}
+
 const ForestSurvivalGame = () => {
   const mountRef = useRef<HTMLDivElement>(null);
+
+  // ─── Auth + persistent progression (Convex) ──────────────────────────────
+  // Solo & Tutorial are free; achievements, the skill tree and Multiplayer
+  // require sign-in. These feed gating + DB sync. Refs let the long-lived game
+  // useEffect read the latest values without re-running on every auth change.
+  const { isAuthenticated } = useConvexAuth();
+  // Player account + progression come from the shared root subscription so
+  // bouncing between menus and the game never re-fetches from Convex.
+  const { playerStats } = usePlayerData();
+  const submitSoloRun = useMutation(api.playerStats.submitSoloRun);
+  const submitMultiplayerResult = useMutation(api.playerStats.submitMultiplayerResult);
+  const unlockSkillMutation = useMutation(api.playerStats.unlockSkill);
+  const mergeAchievementsMutation = useMutation(api.playerStats.mergeAchievements);
+  const setSettingsDb = useMutation(api.playerStats.setSettings);
+  // Full settings cross-device sync: the account is source of truth at sign-in,
+  // then local changes (from either settings panel) are pushed back to the DB,
+  // debounced so slider drags don't spam mutations.
+  const settingsRestoredRef = useRef(false);
+  const syncedSettingsRef = useRef<string | null>(null);
+  const settingsPushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const isAuthenticatedRef = useRef(isAuthenticated);
+  const playerStatsRef = useRef(playerStats);
+  const mergeAchievementsRef = useRef(mergeAchievementsMutation);
+  useEffect(() => { isAuthenticatedRef.current = isAuthenticated; }, [isAuthenticated]);
+  useEffect(() => { playerStatsRef.current = playerStats; }, [playerStats]);
+  useEffect(() => { mergeAchievementsRef.current = mergeAchievementsMutation; }, [mergeAchievementsMutation]);
+
   const [gameMode, setGameMode] = useState<'none' | 'classic' | 'multiplayer' | 'tutorial'>('none');
   const [showClassicMenu, setShowClassicMenu] = useState(false);
   const [showTutorialMenu, setShowTutorialMenu] = useState(false);
@@ -251,6 +299,8 @@ const ForestSurvivalGame = () => {
   const tutorialActiveRef = useRef(false); // true while tutorial popup is showing — blocks pointer lock
   const [tutorialStep, setTutorialStep] = useState<TutorialStep | null>(null);
   const [tutorialProgress, setTutorialProgress] = useState(0);
+  // Shows the "Tutorial Complete" card once the player finishes every step.
+  const [tutorialComplete, setTutorialComplete] = useState(false);
   const skillTreeRef = useRef<SmartSkillTreeSystem | null>(null);
   const [skillTreeData, setSkillTreeData] = useState({
     skills: [] as Skill[],
@@ -260,6 +310,27 @@ const ForestSurvivalGame = () => {
     detectedPlayStyle: 'balanced' as PlayStyle,
     recommendations: [] as string[],
   });
+
+  // Keep the skill tree synced to the account whenever progression loads or
+  // changes OUTSIDE an active game — so unlocked skills + available points are
+  // always correct after logging back in (they're persisted in the DB via
+  // submitSoloRun / unlockSkill). During a run the in-game tree is the source
+  // of truth, so we skip then to avoid clobbering live spends.
+  useEffect(() => {
+    if (gameStarted) return;
+    if (!isAuthenticated || !playerStats) return;
+    const tree = skillTreeRef.current ?? new SmartSkillTreeSystem();
+    tree.hydrate(playerStats.skills, playerStats.skillPoints);
+    skillTreeRef.current = tree;
+    const s = tree.getState();
+    setSkillTreeData((prev) => ({
+      ...prev,
+      skills: tree.getAllSkills(),
+      availablePoints: s.availablePoints,
+      spentPoints: s.spentPoints,
+      totalPoints: s.totalPoints,
+    }));
+  }, [gameStarted, isAuthenticated, playerStats]);
 
   // Game settings
   const [gameSettings, setGameSettings] = useState<GameSettings>(() => createEnhancedSettingsDefaults(gameSettingsManager.getSettings()));
@@ -314,6 +385,57 @@ const ForestSurvivalGame = () => {
       clearInterval(interval);
     };
   }, []);
+
+  // Restore saved settings from the account on sign-in (applies to the game).
+  useEffect(() => {
+    if (!isAuthenticated) {
+      settingsRestoredRef.current = false;
+      syncedSettingsRef.current = null;
+      return;
+    }
+    if (settingsRestoredRef.current) return;
+    // CRITICAL: wait for THIS user's stats to load. `getPlayerStats` returns
+    // `undefined` while loading and `null` only when unauthenticated. Right
+    // after sign-in the query can still hold the stale guest value (`null`) for
+    // a tick before it refetches with the new identity — applying it then would
+    // wrongly seed the baseline from local guest settings and permanently skip
+    // restoring the account's saved settings (e.g. graphics never switches to
+    // Ultra). Defer until a real stats object for the signed-in user arrives.
+    if (playerStats === undefined || playerStats === null) return;
+    settingsRestoredRef.current = true;
+
+    const blob = playerStats.settings ?? null;
+    if (blob) {
+      try {
+        const parsed = JSON.parse(blob) as Partial<UserSettings>;
+        gameSettingsManager.updateSettings(parsed);
+        syncedSettingsRef.current = serializeSettings(gameSettingsManager.getSettings());
+        return;
+      } catch {
+        // Corrupt blob — fall through to seed from current local settings.
+      }
+    }
+    // No saved settings on the account yet: adopt the device's current settings
+    // as the baseline AND persist them, so a brand-new account remembers them
+    // on the next device/sign-in instead of falling back to defaults.
+    const local = serializeSettings(gameSettingsManager.getSettings());
+    syncedSettingsRef.current = local;
+    void setSettingsDb({ settings: local }).catch(() => {});
+  }, [isAuthenticated, playerStats, setSettingsDb]);
+
+  // Persist local settings changes back to the account (covers both settings
+  // panels), debounced so dragging sliders doesn't spam the DB.
+  useEffect(() => {
+    if (!isAuthenticated || !settingsRestoredRef.current) return;
+    const serialized = serializeSettings(userSettings);
+    if (serialized === syncedSettingsRef.current) return;
+    syncedSettingsRef.current = serialized;
+
+    if (settingsPushTimerRef.current) clearTimeout(settingsPushTimerRef.current);
+    settingsPushTimerRef.current = setTimeout(() => {
+      void setSettingsDb({ settings: serialized }).catch(() => {});
+    }, 1200);
+  }, [isAuthenticated, userSettings, setSettingsDb]);
 
   // Track the global music-mute toggle (persisted via MusicMuteButton).
   // When muted, the menu music is paused regardless of the volume slider.
@@ -580,6 +702,45 @@ const ForestSurvivalGame = () => {
     unlockedWeapons: ['pistol']
   });
 
+  // Persist a finished Solo run for signed-in players (best score/wave + totals,
+  // and award persistent skill points). Guarded to fire once per run.
+  const soloRunSubmittedRef = useRef(false);
+  useEffect(() => {
+    if (gameState.isGameOver && gameMode === 'classic') {
+      if (soloRunSubmittedRef.current) return;
+      soloRunSubmittedRef.current = true;
+      if (isAuthenticated) {
+        void submitSoloRun({
+          score: gameState.score,
+          wave: gameState.wave,
+          kills: gameState.enemiesKilled,
+        }).catch(() => {});
+      }
+    } else if (!gameState.isGameOver) {
+      soloRunSubmittedRef.current = false;
+    }
+  }, [gameState.isGameOver, gameState.score, gameState.wave, gameState.enemiesKilled, gameMode, isAuthenticated, submitSoloRun]);
+
+  // Persist a finished Multiplayer match for signed-in players. Fires once.
+  const mpResultSubmittedRef = useRef(false);
+  useEffect(() => {
+    if (multiplayerGameOver && multiplayerManager) {
+      if (mpResultSubmittedRef.current) return;
+      mpResultSubmittedRef.current = true;
+      if (isAuthenticated) {
+        const local = multiplayerManager.getLocalPlayer();
+        void submitMultiplayerResult({
+          score: local.score,
+          kills: local.kills,
+          deaths: local.deaths,
+          won: multiplayerWinner === local.id,
+        }).catch(() => {});
+      }
+    } else if (!multiplayerGameOver) {
+      mpResultSubmittedRef.current = false;
+    }
+  }, [multiplayerGameOver, multiplayerManager, multiplayerWinner, isAuthenticated, submitMultiplayerResult]);
+
   useEffect(() => {
     if (!gameStarted) return;
 
@@ -640,31 +801,61 @@ const ForestSurvivalGame = () => {
     // === MULTIPLAYER & ENHANCED SYSTEMS ===
     const isMultiplayer = gameMode === 'multiplayer' && multiplayerManager !== null;
 
+    // ── SHARED-ENEMY ROLES (host-authoritative) ───────────────────────────
+    // In multiplayer the HOST owns the one true enemy world: it spawns, runs
+    // AI and resolves damage, then broadcasts snapshots. GUESTS don't spawn or
+    // think — they mirror the host's enemies and report their bullet hits back.
+    // In solo, both flags are false and every code path below behaves exactly
+    // as it always has.
+    const mp = isMultiplayer ? multiplayerManager : null;
+    const isMpHost = !!mp && mp.isGameHost();
+    const isMpGuest = !!mp && !isMpHost;
+    // Enemy type ⇄ compact wire code.
+    const ENEMY_TYPE_CODE: Record<'normal' | 'fast' | 'tank' | 'boss', number> = {
+      normal: 0, fast: 1, tank: 2, boss: 3,
+    };
+    const ENEMY_TYPE_FROM_CODE: Array<'normal' | 'fast' | 'tank' | 'boss'> = ['normal', 'fast', 'tank', 'boss'];
+    // Guest-side lookup from netId → mirrored enemy. Host fills netId on spawn.
+    const enemyByNetId = new Map<number, Enemy>();
+    let nextEnemyNetId = 1;
+    let lastEnemySyncMs = 0;
+    const ENEMY_SYNC_INTERVAL_MS = 80;   // ~12.5 snapshots/sec
+    const _zeroVel = new THREE.Vector3(0, 0, 0);
+    // Reused per-frame list of alive remote players the host's enemies can target.
+    const _mpFocusTargets: Array<{ id: string; pos: THREE.Vector3 }> = [];
+
     // Initialize ability system (for all modes)
     const abilitySystem = new AbilitySystem();
-
-    // Score needed to unlock each ability — Dash is free, the rest unlock
-    // progressively (just like weapons). Tutorial mode unlocks everything.
-    const abilityUnlockScore: Record<string, number> = {
-      dash: 0,
-      shield: 200,
-      speed: 500,
-      heal: 900,
-      invincible: 1500,
-    };
 
     // Initialize achievement system. Tutorial mode is a sandboxed
     // learning space — unlocking real achievements there would be
     // cheap (no danger, no wave progression) AND the unlock pop-ups
     // visually clutter the tutorial overlay. Skip both the queue
     // push AND any logging so tutorial sessions stay clean.
+    // Achievements are locked for guests and disabled in Tutorial. Authenticated
+    // players hydrate from their DB bitmask and sync new unlocks back to Convex.
     const _isTutorialModeForAch = gameMode === 'tutorial';
-    const achievementSystem = new AchievementSystem();
-    if (!_isTutorialModeForAch) {
+    // Achievements are a SOLO-only progression. They are disabled in
+    // multiplayer (and tutorial) so co-op / versus matches can't unlock or
+    // farm the solo achievement set. With `enabled: false` every
+    // updateProgress()/setProgress() call short-circuits to a no-op.
+    const _achievementsEnabled =
+      isAuthenticatedRef.current && !_isTutorialModeForAch && !isMultiplayer;
+    const achievementSystem = new AchievementSystem({
+      enabled: _achievementsEnabled,
+      persistLocal: false,
+    });
+    if (_achievementsEnabled && playerStatsRef.current) {
+      achievementSystem.hydrateFromMask(playerStatsRef.current.achievements);
+    }
+    if (_achievementsEnabled) {
       achievementSystem.onUnlock((achievement) => {
-        console.log('[Achievement] Unlocked:', achievement.name);
         const achievementWithId: QueuedAchievement = { ...achievement, queueId: Date.now() + Math.random() };
         setAchievementQueue((prev) => [...prev, achievementWithId]);
+        const bit = AchievementSystem.bitFor(achievement.id);
+        if (bit) {
+          void mergeAchievementsRef.current({ mask: bit }).catch(() => {});
+        }
       });
     }
 
@@ -687,8 +878,13 @@ const ForestSurvivalGame = () => {
     // 4. Predictive Spawn System - Smart enemy spawning
     const spawnSystem = new PredictiveSpawnSystem();
 
-    // 5. Smart Skill Tree - Personalized progression
+    // 5. Smart Skill Tree - Personalized progression.
+    // Authenticated players hydrate persisted skills + points so unlocked
+    // skills apply from the first frame (bonuses are computed below at init).
     const skillTree = new SmartSkillTreeSystem();
+    if (isAuthenticatedRef.current && playerStatsRef.current) {
+      skillTree.hydrate(playerStatsRef.current.skills, playerStatsRef.current.skillPoints);
+    }
 
     // 6. Tutorial System - Contextual learning
     const tutorial = new TutorialSystem();
@@ -1745,6 +1941,148 @@ const ForestSurvivalGame = () => {
     gunLight.position.set(0.3, -0.3, -0.5);
     camera.add(gunLight);
 
+    // ── HELD RIOT SHIELD ─────────────────────────────────────────────────
+    // A realistic tactical ballistic shield braced on the player's left arm,
+    // parented to the camera (view-space). It's a clear polycarbonate panel in
+    // a gunmetal frame with reinforcement bands, a grip, and a status core that
+    // shifts green→amber→red as the absorb pool drains. Material refs are kept
+    // so the game loop can animate raise/lower, hit flashes and shatter.
+    const shieldMesh = new THREE.Group();
+    // Definite-assignment: all four are set synchronously in the block below.
+    let shieldGlassMat!: THREE.MeshPhysicalMaterial;
+    let shieldCoreMat!: THREE.MeshStandardMaterial;
+    let shieldRimMat!: THREE.MeshBasicMaterial;
+    let shieldEnergyMat!: THREE.MeshBasicMaterial;
+    {
+      // Rounded-rectangle path centred on the origin.
+      const roundedRect = (w: number, h: number, r: number): THREE.Shape => {
+        const s = new THREE.Shape();
+        const x = -w / 2, y = -h / 2;
+        s.moveTo(x + r, y);
+        s.lineTo(x + w - r, y);
+        s.quadraticCurveTo(x + w, y, x + w, y + r);
+        s.lineTo(x + w, y + h - r);
+        s.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+        s.lineTo(x + r, y + h);
+        s.quadraticCurveTo(x, y + h, x, y + h - r);
+        s.lineTo(x, y + r);
+        s.quadraticCurveTo(x, y, x + r, y);
+        return s;
+      };
+
+      const W = 0.62, H = 0.9;
+
+      // Gunmetal frame (extruded rounded border with bevelled edges).
+      const frameShape = roundedRect(W + 0.06, H + 0.06, 0.12);
+      frameShape.holes.push(roundedRect(W - 0.02, H - 0.02, 0.09));
+      const frameGeo = new THREE.ExtrudeGeometry(frameShape, {
+        depth: 0.06, bevelEnabled: true, bevelThickness: 0.014, bevelSize: 0.014, bevelSegments: 2,
+      });
+      frameGeo.translate(0, 0, -0.03);
+      const frame = new THREE.Mesh(frameGeo, new THREE.MeshStandardMaterial({
+        color: 0x232c38, metalness: 0.9, roughness: 0.38,
+        emissive: 0x0a1622, emissiveIntensity: 0.3,
+      }));
+      shieldMesh.add(frame);
+
+      // Clear ballistic panel — glossy, see-through polycarbonate.
+      shieldGlassMat = new THREE.MeshPhysicalMaterial({
+        color: 0xbfe0ff, transparent: true, opacity: 0.16,
+        roughness: 0.06, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.04,
+        emissive: 0x3aa0ff, emissiveIntensity: 0.15,
+        side: THREE.DoubleSide, depthWrite: false, fog: false,
+      });
+      const glass = new THREE.Mesh(new THREE.ShapeGeometry(roundedRect(W, H, 0.09)), shieldGlassMat);
+      shieldMesh.add(glass);
+
+      // Faint inner energy shimmer (additive) that brightens on impact.
+      shieldEnergyMat = new THREE.MeshBasicMaterial({
+        color: 0x8fd0ff, transparent: true, opacity: 0.1,
+        blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+        toneMapped: false, fog: false,
+      });
+      const energy = new THREE.Mesh(new THREE.ShapeGeometry(roundedRect(W - 0.06, H - 0.06, 0.07)), shieldEnergyMat);
+      energy.position.z = 0.012;
+      shieldMesh.add(energy);
+
+      // Outer rim glow (additive) — pulses softly, flares white on a blocked hit.
+      shieldRimMat = new THREE.MeshBasicMaterial({
+        color: 0x66c2ff, transparent: true, opacity: 0.25,
+        blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+        toneMapped: false, fog: false,
+      });
+      const rimShape = roundedRect(W + 0.1, H + 0.1, 0.13);
+      rimShape.holes.push(roundedRect(W + 0.02, H + 0.02, 0.1));
+      const rim = new THREE.Mesh(new THREE.ShapeGeometry(rimShape), shieldRimMat);
+      rim.position.z = -0.045;
+      shieldMesh.add(rim);
+
+      // Two horizontal reinforcement bands across the viewport.
+      const bandMat = new THREE.MeshStandardMaterial({ color: 0x1a222c, metalness: 0.8, roughness: 0.5 });
+      for (const by of [0.2, -0.2]) {
+        const band = new THREE.Mesh(new THREE.BoxGeometry(W - 0.04, 0.04, 0.02), bandMat);
+        band.position.set(0, by, 0.012);
+        shieldMesh.add(band);
+      }
+
+      // Reinforced central boss + status core (colour = shield integrity).
+      const boss = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.085, 0.1, 0.05, 16),
+        new THREE.MeshStandardMaterial({ color: 0x2b3645, metalness: 0.9, roughness: 0.35 }),
+      );
+      boss.rotation.x = Math.PI / 2;
+      boss.position.z = 0.02;
+      shieldMesh.add(boss);
+      shieldCoreMat = new THREE.MeshStandardMaterial({
+        color: 0x0a1a12, emissive: 0x33ff88, emissiveIntensity: 0.8, metalness: 0.5, roughness: 0.3,
+        toneMapped: false,
+      });
+      const core = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.055, 16), shieldCoreMat);
+      core.rotation.x = Math.PI / 2;
+      core.position.z = 0.03;
+      shieldMesh.add(core);
+
+      // Grip on the player side (mostly hidden behind the panel).
+      const grip = new THREE.Mesh(
+        new THREE.BoxGeometry(0.05, 0.34, 0.05),
+        new THREE.MeshStandardMaterial({ color: 0x12181f, metalness: 0.6, roughness: 0.6 }),
+      );
+      grip.position.set(0.12, 0, 0.12);
+      shieldMesh.add(grip);
+
+      // Braced forward-lower-left in view space; the loop eases it in/out.
+      shieldMesh.position.set(-0.46, -0.34, -0.78);
+      shieldMesh.rotation.set(0.06, 0.36, 0.05);
+      shieldMesh.visible = false;
+      shieldMesh.renderOrder = 5;
+      shieldMesh.traverse((o) => { o.userData.cannotReceiveAO = true; });
+      camera.add(shieldMesh);
+    }
+
+    // Floating effect indicators above the player (one icon per active effect).
+    const effectIndicators = new EffectIndicators(scene);
+    const _effectAnchor = new THREE.Vector3();
+
+    // Phantom translucency — fade the visible weapon while cloaked so the
+    // local player gets clear feedback. Only re-applied on state change.
+    let _phantomVisualOn = false;
+    const applyPhantomVisual = (active: boolean) => {
+      if (active === _phantomVisualOn) return;
+      _phantomVisualOn = active;
+      gunModel.group.traverse((o) => {
+        const mesh = o as THREE.Mesh;
+        const mat = mesh.material as THREE.Material | THREE.Material[] | undefined;
+        if (!mat) return;
+        const mats = Array.isArray(mat) ? mat : [mat];
+        for (const m of mats) {
+          const mm = m as THREE.Material & { opacity: number; transparent: boolean };
+          mm.transparent = true;
+          mm.opacity = active ? 0.4 : 1.0;
+          mm.needsUpdate = true;
+        }
+      });
+    };
+
     // PLAYER GROUND SHADOW — driven by LocalPlayerShadow (utils/LocalPlayerShadow.ts)
     // The previous in-line shadow body (a handful of boxes attached to
     // the camera) projected a stiff, T-pose silhouette and didn't track
@@ -1860,7 +2198,7 @@ const ForestSurvivalGame = () => {
     const muzzleFlashes: MuzzleFlash[] = [];
     const bulletTracers: BulletTracer[] = [];
     const impactEffects: ImpactEffect[] = [];
-    const bloodSplatters: BloodSplatter[] = [];
+    const robotSparks: RobotHitSparks[] = [];
 
     // Camera shake system
     let cameraShakeIntensity = 0;
@@ -2404,10 +2742,10 @@ const ForestSurvivalGame = () => {
       let shellGeo: THREE.BufferGeometry;
       let innerGeo: THREE.BufferGeometry;
       switch (type) {
-        case 'health':
-          color = 0xd11a1a; coreColor = 0xff5a5a;
-          shellGeo = _pgeo('pgShellH', () => new THREE.BoxGeometry(0.7, 0.5, 0.5));
-          innerGeo = _pgeo('pgInnerH', () => new THREE.BoxGeometry(0.55, 0.18, 0.18));
+        case 'overcharge':
+          color = 0xb86a08; coreColor = 0xffcc33;
+          shellGeo = _pgeo('pgShellOc', () => new THREE.DodecahedronGeometry(0.55, 0));
+          innerGeo = _pgeo('pgInnerOc', () => new THREE.DodecahedronGeometry(0.26, 0));
           break;
         case 'ammo':
           color = 0x8a5a18; coreColor = 0xffd54a;
@@ -2433,6 +2771,11 @@ const ForestSurvivalGame = () => {
           color = 0x701a70; coreColor = 0xff5aff;
           shellGeo = _pgeo('pgShellI', () => new THREE.TorusGeometry(0.42, 0.13, 8, 18));
           innerGeo = _pgeo('pgInnerI', () => new THREE.TorusGeometry(0.42, 0.06, 6, 16));
+          break;
+        case 'phantom':
+          color = 0x4a1d7a; coreColor = 0xb388ff;
+          shellGeo = _pgeo('pgShellPh', () => new THREE.TorusKnotGeometry(0.32, 0.12, 64, 8));
+          innerGeo = _pgeo('pgInnerPh', () => new THREE.IcosahedronGeometry(0.24, 0));
           break;
         default:
           shellGeo = _pgeo('pgShellD0', () => new THREE.BoxGeometry(0.6, 0.6, 0.6));
@@ -2558,7 +2901,15 @@ const ForestSurvivalGame = () => {
         const baseDist = 42 + Math.random() * 26;
         const spot = findEnemySpawnSpot(baseDist, enemyRadius);
         const enemy = createEnemy(spot.x, spot.z, type);
-        if (enemy) { enemies.push(enemy); spawned++; }
+        if (enemy) {
+          // Host stamps a stable network id so guests can track this enemy.
+          if (isMpHost) {
+            enemy.netId = nextEnemyNetId++;
+            enemyByNetId.set(enemy.netId, enemy);
+          }
+          enemies.push(enemy);
+          spawned++;
+        }
       }
       return spawned;
     };
@@ -2586,20 +2937,11 @@ const ForestSurvivalGame = () => {
       };
     };
 
-    // Weighted power-up drop at the start of a wave.
-    // Slowed from 2 spawns every even wave → 1 spawn — powerups are
-    // genuine rewards now, not a constant stream the player auto-collects.
+    // Wave-start loot drop — a single, truly-random power crate (same pool as
+    // enemy loot). One spawn keeps powers a genuine reward, not a stream.
     const spawnWavePowerUps = () => {
-      const roll = Math.random();
-      let type: PowerUp['type'];
-      if (roll < 0.30) type = 'health';
-      else if (roll < 0.55) type = 'ammo';
-      else if (roll < 0.75) type = 'speed';
-      else if (roll < 0.88) type = 'damage';
-      else if (roll < 0.96) type = 'shield';
-      else type = 'infinite_ammo';
       const spot = findPickupSpot(camera.position.x, camera.position.z, 20, 35);
-      powerUps.push(createPowerUp(spot.x, spot.z, type));
+      powerUps.push(createPowerUp(spot.x, spot.z, randomLoot()));
     };
 
     const spawnWave = () => {
@@ -2641,6 +2983,8 @@ const ForestSurvivalGame = () => {
     const spawnSettings = getSpawnSettings();
 
     const continuousSpawn = () => {
+      // Guests never spawn — their enemies are mirrored from the host.
+      if (isMpGuest) return;
       const currentTime = Date.now();
       if (currentTime - lastSpawnTime <= spawnSettings.interval) return;
       if (enemies.length >= smartEnemyManager.getCurrentMaxEnemies() || !smartEnemyManager.canSpawnMore()) return;
@@ -2663,7 +3007,8 @@ const ForestSurvivalGame = () => {
       }
     };
 
-    spawnWave();
+    // Guests don't seed the opening wave — they receive enemies from the host.
+    if (!isMpGuest) spawnWave();
 
     // Movement
     const keys: Keys = {};
@@ -2723,13 +3068,120 @@ const ForestSurvivalGame = () => {
     const damageBoostMultiplier = 2.0; // Double damage
     const damageBoostDuration = 15000; // 15 seconds
 
+    // Held riot shield — directional (blocks the front arc) and time-based,
+    // and now backed by a DAMAGE-ABSORB POOL: frontal hits drain the pool
+    // instead of the player's health; when the pool empties (or time runs out)
+    // the shield shatters. Set by the shield power-up.
     let shieldActive = false;
-    let shieldHealth = 0;
-    const shieldMaxHealth = 50;
+    let shieldEndTime = 0;
+    const shieldDuration = 12000; // 12 seconds
+    const SHIELD_ABSORB_MAX = 160; // damage the shield soaks before it breaks
+    let shieldAbsorb = 0;          // remaining absorb (0..SHIELD_ABSORB_MAX)
+    const SHIELD_BLOCK_DOT = Math.cos((62 * Math.PI) / 180); // front arc half-angle
+    // Visual/animation state for the held shield mesh.
+    let shieldRaise = 0;        // 0 = stowed, 1 = fully braced (eased each frame)
+    let shieldHitFlash = 0;     // 0..1, spikes on a blocked hit then decays
+    let shieldBreakFlash = 0;   // 0..1, spikes when the shield shatters
+    // Reusable temps for the per-hit frontal-block test (avoid per-hit allocs).
+    const _shieldFwd = new THREE.Vector3();
+    const _shieldToEnemy = new THREE.Vector3();
+    const _shieldHitPos = new THREE.Vector3();
+
+    // ── HELD POWER-UP INVENTORY (one slot, loot-driven) ──────────────────────
+    // The player holds AT MOST ONE looted power at a time. Walking over a loot
+    // crate stows the power (it is NOT auto-applied); pressing E activates it,
+    // emptying the slot. While a power is held, new crates can't be collected —
+    // the player must spend the current one first. Truly random per drop.
+    type HeldPower = 'ammo' | 'speed' | 'damage' | 'shield' | 'infinite_ammo' | 'overcharge' | 'phantom';
+    const LOOT_POOL: HeldPower[] = ['ammo', 'speed', 'damage', 'shield', 'infinite_ammo', 'overcharge', 'phantom'];
+    const POWER_LABELS: Record<HeldPower, string> = {
+      ammo: 'Ammo', speed: 'Speed', damage: 'Damage', shield: 'Shield',
+      infinite_ammo: 'Inf. Ammo', overcharge: 'Overcharge', phantom: 'Phantom',
+    };
+    const randomLoot = (): HeldPower => LOOT_POOL[(Math.random() * LOOT_POOL.length) | 0];
+    let heldPower: HeldPower | null = null;
+    let lastHeldHintAt = 0; // throttles the "use your power first" hint
+
+    // Activate a looted power's effect (the slot is emptied by the caller).
+    // Hoisted so the keydown handler (defined earlier) can call it.
+    function applyPower(type: HeldPower) {
+      const nowMs = Date.now();
+      switch (type) {
+        case 'overcharge':
+          overchargeActive = true;
+          overchargeEndTime = nowMs + overchargeDuration;
+          setPowerUpMessage('Overcharge · faster fire & damage');
+          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Overcharge Active!', 'powerup');
+          createParticles(camera.position, 0xffcc33, 22);
+          break;
+        case 'ammo':
+          ammo = WEAPONS[currentWeapon].maxAmmo;
+          setPowerUpMessage('Ammo Refilled');
+          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Ammo Refilled', 'powerup');
+          createParticles(camera.position, 0xffd54a, 12);
+          break;
+        case 'speed':
+          speedBoostActive = true;
+          speedBoostEndTime = nowMs + speedBoostDuration;
+          setPowerUpMessage('Speed Boost · 10s');
+          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Speed Boost Active!', 'powerup');
+          createParticles(camera.position, 0x6ef0ff, 20);
+          break;
+        case 'damage':
+          damageBoostActive = true;
+          damageBoostEndTime = nowMs + damageBoostDuration;
+          setPowerUpMessage('Damage Boost · 15s');
+          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Damage Boost Active!', 'powerup');
+          createParticles(camera.position, 0xff8a3a, 20);
+          break;
+        case 'shield':
+          shieldActive = true;
+          shieldEndTime = nowMs + shieldDuration;
+          shieldAbsorb = SHIELD_ABSORB_MAX;
+          shieldBreakFlash = 0;
+          setPowerUpMessage('Riot Shield · absorbs frontal damage');
+          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Riot Shield Up!', 'powerup');
+          createParticles(camera.position, 0x66c2ff, 20);
+          break;
+        case 'infinite_ammo':
+          infiniteAmmoActive = true;
+          infiniteAmmoEndTime = nowMs + infiniteAmmoDuration;
+          setPowerUpMessage('Infinite Ammo · 20s');
+          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Infinite Ammo Active!', 'powerup');
+          createParticles(camera.position, 0xff5aff, 22);
+          break;
+        case 'phantom':
+          phantomActive = true;
+          phantomEndTime = nowMs + phantomDuration;
+          setPowerUpMessage('Phantom · enemies lose track of you');
+          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Phantom Active!', 'powerup');
+          createParticles(camera.position, 0xb388ff, 22);
+          break;
+      }
+      // Quick cast flourish + (for the ability-style powers) an activation flare.
+      gunModel.triggerAbility();
+      soundManager.play('powerUp', 0.7);
+      if (type === 'shield' || type === 'phantom' || type === 'overcharge') {
+        abilitySystem.createAbilityEffect(scene, camera.position, type);
+      }
+      setTimeout(() => setPowerUpMessage(''), 2000);
+    }
 
     let infiniteAmmoActive = false;
     let infiniteAmmoEndTime = 0;
     const infiniteAmmoDuration = 20000; // 20 seconds
+
+    // Overcharge — temporary +fire-rate & +damage combat burst (replaces heal).
+    let overchargeActive = false;
+    let overchargeEndTime = 0;
+    const overchargeDuration = 8000; // 8 seconds
+    const overchargeDamageMult = 1.6;
+    const overchargeFireRateMult = 1.8; // fires ~1.8x faster
+
+    // Phantom — stealth + intangible; enemies lose track of the player.
+    let phantomActive = false;
+    let phantomEndTime = 0;
+    const phantomDuration = 5000; // 5 seconds
 
     // DASH ABILITY - Quick burst of speed
     let isDashing = false;
@@ -2816,6 +3268,7 @@ const ForestSurvivalGame = () => {
         // Play dash sound and trigger effect
         soundManager.play('jump', 0.5);
         gunModel.triggerDash(); // Braced weapon pull-back animation
+        tutorial.recordAction('use_ability', 1); // advances the dash tutorial step
         if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
 
         // Slight time slow for cinematic effect
@@ -2831,39 +3284,17 @@ const ForestSurvivalGame = () => {
         return;
       }
 
-      // Ability activation — keys map directly to ability TYPE (the old
-      // index-based mapping was off by one, so E actually cast Dash).
-      const abilityKeys: Record<string, 'shield' | 'speed' | 'invincible' | 'heal'> = {
-        'KeyE': 'shield',     // Energy Shield
-        'KeyF': 'speed',      // Sprint (speed boost)
-        'KeyV': 'invincible', // Ghost Mode
-        'KeyB': 'heal',       // Quick Heal
-      };
-
-      if (abilityKeys[e.code] !== undefined && !paused) {
-        const abilityType = abilityKeys[e.code];
-        // Abilities unlock by score (Dash is always available). Locked
-        // abilities can't be cast — show how to unlock them instead.
-        if (!isTutorialMode && score < abilityUnlockScore[abilityType]) {
-          setPowerUpMessage(`Ability locked — unlocks at ${abilityUnlockScore[abilityType]} pts`);
-          setTimeout(() => setPowerUpMessage(''), 1600);
+      // USE HELD POWER — 'E' activates whatever loot power is currently held,
+      // then empties the slot. Powers come exclusively from enemy loot now
+      // (one at a time), so there's no point-unlock gating any more.
+      if (e.code === 'KeyE' && !paused) {
+        if (heldPower) {
+          const power = heldPower;
+          heldPower = null;
+          applyPower(power);
         } else {
-          const success = abilitySystem.useAbility(abilityType);
-          if (success) {
-            soundManager.play('powerUp', 0.6);
-            gunModel.triggerAbility(); // Quick weapon flourish on cast
-            // Quick Heal restores HP immediately
-            if (abilityType === 'heal') {
-              health = Math.min(100, health + 30);
-              setPowerUpMessage('+30 Health');
-              setTimeout(() => setPowerUpMessage(''), 1200);
-              updateGameState();
-            }
-            // Create visual effect
-            const effect = abilitySystem.createAbilityEffect(scene, camera.position, abilityType);
-            scene.add(effect);
-            setTimeout(() => scene.remove(effect), 2000);
-          }
+          setPowerUpMessage('No power held — defeat enemies to find loot');
+          setTimeout(() => setPowerUpMessage(''), 1600);
         }
       }
 
@@ -2885,6 +3316,7 @@ const ForestSurvivalGame = () => {
           ammo = WEAPONS[weaponName].maxAmmo;
           gunModel.switchWeapon(weaponName as GunWeaponType);
           setGunFillForWeapon(weaponName);
+          tutorial.recordAction('switch_weapon', 1);
           updateGameState();
         } else {
           const weapon = WEAPONS[weaponName];
@@ -2898,6 +3330,7 @@ const ForestSurvivalGame = () => {
         const weapon = WEAPONS[currentWeapon];
         soundManager.play('reload', 0.5);
         gunModel.triggerReload(); // Trigger reload animation
+        tutorial.recordAction('reload', 1);
         // Quickdraw skill speeds up the reload
         const reloadMs = weapon.reloadTime / (1 + skillBonus('reloadSpeed'));
         setTimeout(() => {
@@ -3030,7 +3463,9 @@ const ForestSurvivalGame = () => {
       if (ammo > 0 && !isGameOver && !paused && canShoot && !isReloading && !tutorialActiveRef.current) {
         const weapon = WEAPONS[currentWeapon];
         canShoot = false;
-        setTimeout(() => { canShoot = true; }, weapon.fireRate);
+        // Overcharge shortens the inter-shot delay (faster fire rate).
+        const fireDelay = overchargeActive ? weapon.fireRate / overchargeFireRateMult : weapon.fireRate;
+        setTimeout(() => { canShoot = true; }, fireDelay);
 
         // Only consume ammo if infinite ammo powerup is not active
         if (!infiniteAmmoActive) {
@@ -3088,8 +3523,9 @@ const ForestSurvivalGame = () => {
           }
           scene.add(bullet);
 
-          // Apply damage boost powerup AND the Heavy Hitter skill bonus
-          const baseWeaponDamage = damageBoostActive ? weapon.damage * damageBoostMultiplier : weapon.damage;
+          // Apply damage boost + overcharge powerups AND the Heavy Hitter skill bonus
+          let baseWeaponDamage = damageBoostActive ? weapon.damage * damageBoostMultiplier : weapon.damage;
+          if (overchargeActive) baseWeaponDamage *= overchargeDamageMult;
           const bulletDamage = baseWeaponDamage * (1 + skillBonus('weaponDamage'));
 
           bullets.push({
@@ -3210,6 +3646,9 @@ const ForestSurvivalGame = () => {
           euler.y -= e.movementX * baseSens;
           euler.x -= e.movementY * baseSens;
           euler.x = Math.max(-PI_2, Math.min(PI_2, euler.x));
+          if (isTutorialMode && (Math.abs(e.movementX) > 1 || Math.abs(e.movementY) > 1)) {
+            tutorial.recordAction('look', 1); // advances the camera-control step
+          }
         }
       }
     };
@@ -3240,6 +3679,7 @@ const ForestSurvivalGame = () => {
         ammo = weapon.maxAmmo;
         gunModel.switchWeapon(currentWeapon as 'pistol' | 'rifle' | 'shotgun' | 'smg' | 'sniper' | 'minigun' | 'launcher');
         setGunFillForWeapon(currentWeapon);
+        tutorial.recordAction('switch_weapon', 1);
         updateGameState();
         soundManager.play('reload', 0.4);
       }
@@ -3343,71 +3783,77 @@ const ForestSurvivalGame = () => {
     // Extracted enemy-kill handler — shared by direct bullet hits and the
     // rocket launcher's area-of-effect so score, combos, drops, achievements
     // and wave progression all behave identically however an enemy dies.
-    const handleEnemyKilled = (enemy: Enemy, isCritical: boolean) => {
+    const handleEnemyKilled = (enemy: Enemy, isCritical: boolean, killerId?: string) => {
+      // ── WORLD state (authoritative): the enemy is dead for everyone. ──
       enemy.dead = true;
       enemy.deathTime = 1.0;
-      score += enemy.scoreValue;
-      enemiesKilled++;
       soundManager.play('enemyDeath', 0.6);
-      if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
-      if (isCritical) {
-        timeScale = 0.3;
-        setTimeout(() => { timeScale = 1.0; }, 200);
-      }
-      const currentTime = Date.now();
-      const killTime = (currentTime - lastKillTime) / 1000;
-      if (currentTime - lastKillTime < 2000) {
-        combo++;
-        killStreak++;
-        score += combo * 5;
-      } else {
-        combo = 1;
-      }
-      lastKillTime = currentTime;
-      adaptiveDifficulty.recordKill(killTime);
-      spawnSystem.recordKill(enemy.mesh.position, enemy.type);
-      combatCoach.recordShot(true, isCritical);
-      missionSystem.updateProgress('elimination', 1);
-      if (enemy.type === 'boss') missionSystem.updateProgress('boss_hunt', 1);
-      if (killStreak >= 3) missionSystem.updateProgress('streak', 1);
-      if (combo >= 3) missionSystem.updateProgress('combo', 1);
-      tutorial.recordAction('kill', 1);
-      if (isCritical) triggerHeadshotFlash(); else triggerKillFlash();
-      skillTree.awardPoints(1);
-      const stState = skillTree.getState();
-      setSkillTreeData({
-        skills: skillTree.getAllSkills(),
-        availablePoints: stState.availablePoints,
-        spentPoints: stState.spentPoints,
-        totalPoints: stState.totalPoints,
-        detectedPlayStyle: 'balanced',
-        recommendations: [],
-      });
-      if (gameSettingsManager.getSetting('killFeed')) {
-        if (isCritical) addKillFeedEntry('HEADSHOT!', 'headshot');
-        else addKillFeedEntry('Enemy Eliminated', 'kill');
-        if (combo >= 5 && combo % 5 === 0) addKillFeedEntry(`${combo}x COMBO!`, 'combo');
-        if (killStreak === 10) addKillFeedEntry('10 Kill Streak!', 'combo');
-        else if (killStreak === 20) addKillFeedEntry('20 Kill Streak!', 'combo');
-        else if (killStreak === 30) addKillFeedEntry('30 Kill Streak! UNSTOPPABLE!', 'combo');
-      }
       createParticles(enemy.mesh.position, 0x00ff00, 8);
-      achievementSystem.updateProgress('first_blood', 1);
-      if (enemiesKilled >= 10) achievementSystem.updateProgress('slayer', 1);
-      if (enemiesKilled >= 50) achievementSystem.updateProgress('assassin', 1);
-      if (enemiesKilled >= 100) achievementSystem.updateProgress('legend', 1);
-      if (isCritical) {
-        achievementSystem.updateProgress('marksman', 1);
-        achievementSystem.updateProgress('ace', 1);
+
+      // Who gets the kill? In solo — and for the host's OWN kills — it's the
+      // local player. In multiplayer, when a guest's reported hit lands the
+      // killing blow, the host credits that guest's client instead so its
+      // scoreboard, combo and kill feed update for the player who earned it.
+      const localId = mp ? mp.getLocalPlayer().id : null;
+      const localGetsCredit = !isMultiplayer || killerId === undefined || killerId === localId;
+
+      if (localGetsCredit) {
+        score += enemy.scoreValue;
+        enemiesKilled++;
+        if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
+        if (isCritical) {
+          timeScale = 0.3;
+          setTimeout(() => { timeScale = 1.0; }, 200);
+        }
+        const currentTime = Date.now();
+        const killTime = (currentTime - lastKillTime) / 1000;
+        if (currentTime - lastKillTime < 2000) {
+          combo++;
+          killStreak++;
+          score += combo * 5;
+        } else {
+          combo = 1;
+        }
+        lastKillTime = currentTime;
+        adaptiveDifficulty.recordKill(killTime);
+        spawnSystem.recordKill(enemy.mesh.position, enemy.type);
+        combatCoach.recordShot(true, isCritical);
+        missionSystem.updateProgress('elimination', 1);
+        if (enemy.type === 'boss') missionSystem.updateProgress('boss_hunt', 1);
+        if (killStreak >= 3) missionSystem.updateProgress('streak', 1);
+        if (combo >= 3) { missionSystem.updateProgress('combo', 1); tutorial.recordAction('combo_3x', 1); }
+        tutorial.recordAction('kill', 1);
+        if (isCritical) triggerHeadshotFlash(); else triggerKillFlash();
+        // Skill points are no longer earned per kill — they're awarded at the end
+        // of a Solo run (server-side) so the tree is a real, competitive grind.
+        if (gameSettingsManager.getSetting('killFeed')) {
+          if (isCritical) addKillFeedEntry('HEADSHOT!', 'headshot');
+          else addKillFeedEntry('Enemy Eliminated', 'kill');
+          if (combo >= 5 && combo % 5 === 0) addKillFeedEntry(`${combo}x COMBO!`, 'combo');
+          if (killStreak === 10) addKillFeedEntry('10 Kill Streak!', 'combo');
+          else if (killStreak === 20) addKillFeedEntry('20 Kill Streak!', 'combo');
+          else if (killStreak === 30) addKillFeedEntry('30 Kill Streak! UNSTOPPABLE!', 'combo');
+        }
+        achievementSystem.updateProgress('first_blood', 1);
+        if (enemiesKilled >= 10) achievementSystem.updateProgress('slayer', 1);
+        if (enemiesKilled >= 50) achievementSystem.updateProgress('assassin', 1);
+        if (enemiesKilled >= 100) achievementSystem.updateProgress('legend', 1);
+        if (isCritical) {
+          achievementSystem.updateProgress('marksman', 1);
+          achievementSystem.updateProgress('ace', 1);
+        }
+        if (combo >= 5) achievementSystem.updateProgress('perfectionist', 1);
+        if (isMultiplayer && multiplayerManager) multiplayerManager.incrementKills();
+      } else if (mp && enemy.netId !== undefined) {
+        // Killing blow came from a guest — hand them the credit.
+        mp.broadcastEnemyKillCredit(killerId!, enemy.netId, enemy.scoreValue, isCritical);
       }
-      if (combo >= 5) achievementSystem.updateProgress('perfectionist', 1);
-      if (isMultiplayer && multiplayerManager) multiplayerManager.incrementKills();
-      // Scavenger skill boosts the chance enemies drop ammo on death.
-      // Snap the drop to the nearest clear spot so the pickup isn't
-      // spawned inside a tree when an enemy dies pressed against one.
-      // Drop rate slowed from 40% → 18% so ammo pickups feel earned;
-      // ammo management is now a real gameplay axis instead of trivial.
-      if (Math.random() < 0.18 * (1 + skillBonus('powerupSpawnRate'))) {
+      // Enemy loot — a defeated enemy may drop a single, TRULY RANDOM power
+      // crate (any power, equal odds) instead of the old guaranteed ammo.
+      // The player can only ever hold one looted power at a time, so this is
+      // the sole resupply path now. Scavenger skill nudges the drop rate.
+      // Snap the drop to the nearest clear spot so it isn't buried in a tree.
+      if (Math.random() < 0.26 * (1 + skillBonus('powerupSpawnRate'))) {
         const ex = enemy.mesh.position.x;
         const ez = enemy.mesh.position.z;
         const PICKUP_RADIUS = 1.0;
@@ -3416,8 +3862,7 @@ const ForestSurvivalGame = () => {
           const spot = findPickupSpot(ex, ez, 1.6, 4.0);
           dropX = spot.x; dropZ = spot.z;
         }
-        const ammoDrop = createPowerUp(dropX, dropZ, 'ammo');
-        powerUps.push(ammoDrop);
+        powerUps.push(createPowerUp(dropX, dropZ, randomLoot()));
       }
       updateGameState();
       // Wave complete — only once the whole wave budget has spawned AND
@@ -3440,6 +3885,198 @@ const ForestSurvivalGame = () => {
         updateGameState();
       }
     };
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  SHARED-ENEMY NETWORKING (multiplayer, host-authoritative)
+    // ═══════════════════════════════════════════════════════════════════
+    // The host simulates one enemy world and streams it to guests. Guests
+    // mirror it, report their own bullet hits, and take damage only when the
+    // host says a shared enemy struck them. These helpers + handlers are the
+    // glue; they are no-ops in solo.
+
+    const enemyLabelOf = (type: Enemy['type']): string =>
+      type === 'boss' ? 'Boss' : type === 'tank' ? 'Tank' : type === 'fast' ? 'Stalker' : 'Forest Creature';
+
+    // Apply incoming enemy damage to the LOCAL player. Shared by the local
+    // enemy-attack path (solo + the host's own hits) and, in multiplayer, by
+    // the `player_damaged` event the host sends when a shared enemy strikes a
+    // remote player. `enemyPos` enables the directional riot-shield check for
+    // local hits; network damage passes null (non-directional block).
+    const takeEnemyDamage = (incoming: number, enemyLabel: string, enemyPos: THREE.Vector3 | null) => {
+      if (phantomActive || isTutorialMode || playerEliminated) return;
+
+      let damage = incoming * Math.max(0, 1 - skillBonus('damageReduction'));
+
+      if (shieldActive && damage > 0) {
+        camera.getWorldDirection(_shieldFwd);
+        _shieldFwd.y = 0;
+        _shieldFwd.normalize();
+        let blocks = true;
+        if (enemyPos) {
+          _shieldToEnemy.subVectors(enemyPos, camera.position);
+          _shieldToEnemy.y = 0;
+          _shieldToEnemy.normalize();
+          blocks = _shieldFwd.dot(_shieldToEnemy) >= SHIELD_BLOCK_DOT;
+        }
+        if (blocks) {
+          const absorbed = Math.min(shieldAbsorb, damage);
+          shieldAbsorb -= absorbed;
+          damage -= absorbed;
+          shieldHitFlash = 1;
+          soundManager.play('hit', 0.5);
+          _shieldHitPos.copy(camera.position).addScaledVector(_shieldFwd, 1.6);
+          createParticles(_shieldHitPos, 0x9fd8ff, 7);
+          if (shieldAbsorb <= 0) {
+            shieldActive = false;
+            shieldBreakFlash = 1;
+            soundManager.play('hit', 0.8);
+            createParticles(_shieldHitPos, 0xbfe6ff, 22);
+            if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Shield Shattered', 'powerup');
+          }
+        }
+      }
+
+      health -= damage;
+
+      if (damage > 0) {
+        adaptiveDifficulty.recordDamage(damage, false);
+        adaptiveDifficulty.recordHealthStatus(health, 100);
+        missionSystem.updateProgress('survival', 1);
+        soundManager.play('playerHurt', 0.5);
+        cameraShakeIntensity = Math.min(cameraShakeIntensity + 0.2, 0.25);
+        triggerDamageFlash();
+        if (damage >= 15 && gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
+        if (combo > 0) combo = Math.max(0, combo - 1);
+        achievementSystem.updateProgress('survivor', 1);
+        if (isMultiplayer && multiplayerManager) multiplayerManager.updatePlayerHealth(health);
+      }
+
+      updateGameState();
+
+      if (health <= 0) {
+        health = 0;
+        playerEliminated = true;
+        document.exitPointerLock();
+        if (isMultiplayer && multiplayerManager) {
+          multiplayerManager.updatePlayerHealth(0);
+          const victim = multiplayerManager.getLocalPlayer();
+          multiplayerManager.broadcastKill(enemyLabel, victim.id, victim.name, victim.color, enemyLabel);
+          setIsSpectating(true);
+          updateGameState();
+        } else {
+          isGameOver = true;
+          updateGameState();
+        }
+      }
+    };
+
+    // Award a kill to the LOCAL player (used when the host tells us our hit
+    // finished off a shared enemy). Mirrors the credit half of handleEnemyKilled.
+    const creditLocalKill = (scoreValue: number, isCritical: boolean) => {
+      score += scoreValue;
+      enemiesKilled++;
+      const currentTime = Date.now();
+      if (currentTime - lastKillTime < 2000) {
+        combo++;
+        killStreak++;
+        score += combo * 5;
+      } else {
+        combo = 1;
+      }
+      lastKillTime = currentTime;
+      if (isCritical) triggerHeadshotFlash(); else triggerKillFlash();
+      if (gameSettingsManager.getSetting('killFeed')) {
+        addKillFeedEntry(isCritical ? 'HEADSHOT!' : 'Enemy Eliminated', isCritical ? 'headshot' : 'kill');
+      }
+      if (mp) mp.incrementKills();
+      updateGameState();
+    };
+
+    // Guest: reconcile our mirrored enemy set against the host's snapshot.
+    const handleEnemySync = (raw: unknown) => {
+      if (!isMpGuest) return;
+      const msg = raw as { enemies: EnemyWire[]; wave: number };
+
+      // Host advanced the wave → mirror the banner + a fresh power crate so
+      // guests keep pace (powerups stay per-client, as they always have).
+      if (typeof msg.wave === 'number' && msg.wave > wave) {
+        wave = msg.wave;
+        setShowWaveComplete(true);
+        if (waveTimeoutId !== null) window.clearTimeout(waveTimeoutId);
+        waveTimeoutId = window.setTimeout(() => {
+          waveTimeoutId = null;
+          setShowWaveComplete(false);
+        }, 2500);
+        spawnWavePowerUps();
+        updateGameState();
+      }
+
+      const seen = new Set<number>();
+      for (let s = 0; s < msg.enemies.length; s++) {
+        const w = msg.enemies[s];
+        seen.add(w.id);
+        let e = enemyByNetId.get(w.id);
+        if (!e) {
+          if (w.d) continue; // never materialise an already-dead enemy
+          const created = createEnemy(w.x, w.z, ENEMY_TYPE_FROM_CODE[w.ty] ?? 'normal');
+          if (!created) continue; // pool exhausted — try again next snapshot
+          created.netId = w.id;
+          created.mesh.position.set(w.x, w.y, w.z);
+          enemies.push(created);
+          enemyByNetId.set(w.id, created);
+          e = created;
+        }
+        e.netTargetX = w.x;
+        e.netTargetZ = w.z;
+        e.netYaw = w.ry;
+        e.health = w.hp;
+        e.maxHealth = w.mx;
+        if (w.d && !e.dead) {
+          e.dead = true;
+          e.deathTime = 1.0;
+          if (Math.random() < 0.26) {
+            const spot = findPickupSpot(e.mesh.position.x, e.mesh.position.z, 1.2, 3.5);
+            powerUps.push(createPowerUp(spot.x, spot.z, randomLoot()));
+          }
+        }
+      }
+
+      // Enemies the host removed (culled) that we still hold alive → collapse.
+      enemyByNetId.forEach((e, id) => {
+        if (!seen.has(id) && !e.dead) {
+          e.dead = true;
+          e.deathTime = 1.0;
+        }
+      });
+    };
+
+    if (isMultiplayer && mp) {
+      remotePlayerUnsubs.push(mp.onMessage('enemy_sync', handleEnemySync));
+
+      // Host: a guest reported a hit on a shared enemy — apply it authoritatively.
+      remotePlayerUnsubs.push(mp.onMessage('enemy_hit', (raw) => {
+        if (!isMpHost) return;
+        const m = raw as { netId: number; damage: number; isCritical: boolean; shooterId: string };
+        const e = enemyByNetId.get(m.netId);
+        if (!e || e.dead) return;
+        e.health -= m.damage;
+        e.damageFlashTime = m.isCritical ? 0.5 : 0.3;
+        if (e.health <= 0) handleEnemyKilled(e, m.isCritical, m.shooterId);
+      }));
+
+      // Any client: the host says this kill is ours — score it locally.
+      remotePlayerUnsubs.push(mp.onMessage('enemy_kill_credit', (raw) => {
+        const m = raw as { netId: number; killerId: string; scoreValue: number; isCritical: boolean };
+        if (m.killerId === mp.getLocalPlayer().id) creditLocalKill(m.scoreValue, m.isCritical);
+      }));
+
+      // Guest: a shared enemy struck us — the host is the authority on that.
+      remotePlayerUnsubs.push(mp.onMessage('player_damaged', (raw) => {
+        const m = raw as { targetId: string; damage: number; enemyType: string };
+        if (m.targetId !== mp.getLocalPlayer().id) return;
+        takeEnemyDamage(m.damage, m.enemyType, null);
+      }));
+    }
 
     // Leaves a temporary scorched crater ("ditch") at an explosion site.
     // Shared crater geometries — every explosion uses the same shapes.
@@ -3525,7 +4162,12 @@ const ForestSurvivalGame = () => {
         // Full damage at the centre, tapering to ~35% at the blast edge
         const falloff = 1 - (dist / RADIUS) * 0.65;
         const dmg = baseDamage * falloff;
-        e.health -= dmg;
+        if (isMpGuest && mp) {
+          // Guest: report the splash hit; the host resolves it.
+          if (e.netId !== undefined) mp.sendEnemyHit(e.netId, dmg, false);
+        } else {
+          e.health -= dmg;
+        }
         e.damageFlashTime = 0.4;
         adaptiveDifficulty.recordDamage(dmg, true);
         if (gameSettingsManager.getSetting('damageNumbers')) {
@@ -3535,8 +4177,8 @@ const ForestSurvivalGame = () => {
           addDamageNumber(Math.floor(dmg), sx, sy, false, false);
         }
         _tempVec3.subVectors(e.mesh.position, pos).normalize();
-        bloodSplatters.push(new BloodSplatter(scene, e.mesh.position.clone(), _tempVec3, 10));
-        if (e.health <= 0) handleEnemyKilled(e, false);
+        robotSparks.push(new RobotHitSparks(scene, e.mesh.position.clone(), _tempVec3, 10));
+        if (!isMpGuest && e.health <= 0) handleEnemyKilled(e, false);
       }
     };
 
@@ -3788,27 +4430,36 @@ const ForestSurvivalGame = () => {
       abilityHudAccum += rawDelta;
       if (abilityHudAccum >= 0.12) {
         abilityHudAccum = 0;
-        const abil = (type: 'shield' | 'speed' | 'invincible' | 'heal') => {
-          const a = abilitySystem.getAbility(type);
-          return {
-            cooldown: abilitySystem.getCooldownPercent(type) / 100,
-            active: a ? a.active : false,
-            unlocked: isTutorialMode || score >= abilityUnlockScore[type],
-            unlockScore: abilityUnlockScore[type],
-          };
-        };
+        // The power slot prioritises the HELD (actionable) power; if none is
+        // held it surfaces whatever timed power is currently running (with the
+        // shield's absorb bar) so the player still gets live feedback.
+        let powerType: HeldPower | null = null;
+        let powerState: 'empty' | 'held' | 'active' = 'empty';
+        let powerRatio: number | undefined;
+        if (heldPower) {
+          powerType = heldPower; powerState = 'held';
+        } else if (shieldActive) {
+          powerType = 'shield'; powerState = 'active';
+          powerRatio = Math.max(0, Math.min(1, shieldAbsorb / SHIELD_ABSORB_MAX));
+        } else if (phantomActive) { powerType = 'phantom'; powerState = 'active'; }
+        else if (overchargeActive) { powerType = 'overcharge'; powerState = 'active'; }
+        else if (infiniteAmmoActive) { powerType = 'infinite_ammo'; powerState = 'active'; }
+        else if (damageBoostActive) { powerType = 'damage'; powerState = 'active'; }
+        else if (speedBoostActive) { powerType = 'speed'; powerState = 'active'; }
+
         setAbilityHud([
           {
-            key: 'Q', name: 'Dash',
+            key: 'Q', name: 'Dash', kind: 'dash',
             cooldown: dashCooldown <= 0 ? 1 : Math.max(0, 1 - dashCooldown / dashCooldownTime),
             active: isDashing,
-            unlocked: true,
-            unlockScore: 0,
           },
-          { key: 'E', name: 'Shield', ...abil('shield') },
-          { key: 'F', name: 'Sprint', ...abil('speed') },
-          { key: 'V', name: 'Ghost', ...abil('invincible') },
-          { key: 'B', name: 'Heal', ...abil('heal') },
+          {
+            key: 'E', kind: 'power',
+            name: powerType ? POWER_LABELS[powerType] : 'Find Loot',
+            powerType,
+            state: powerState,
+            ratio: powerRatio,
+          },
         ]);
       }
 
@@ -4021,9 +4672,80 @@ const ForestSurvivalGame = () => {
         infiniteAmmoActive = false;
         if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Infinite Ammo Expired', 'powerup');
       }
+      if (shieldActive && now >= shieldEndTime) {
+        shieldActive = false;
+        if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Riot Shield Down', 'powerup');
+      }
+      if (overchargeActive && now >= overchargeEndTime) {
+        overchargeActive = false;
+        if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Overcharge Expired', 'powerup');
+      }
+      if (phantomActive && now >= phantomEndTime) {
+        phantomActive = false;
+        if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Phantom Faded', 'powerup');
+      }
+      // ── Animate the held shield ──────────────────────────────────────
+      // Ease it up when active, drop it when not, sway gently while braced,
+      // and react to blocked hits (flash/kick) and shatter (break flash).
+      {
+        const raiseTarget = shieldActive ? 1 : 0;
+        shieldRaise += (raiseTarget - shieldRaise) * Math.min(1, delta * 12);
+        const visible = shieldRaise > 0.02 || shieldBreakFlash > 0.01;
+        shieldMesh.visible = visible;
+        if (visible) {
+          const e = shieldRaise * shieldRaise * (3 - 2 * shieldRaise); // smoothstep
+          shieldMesh.position.set(
+            -0.46 + (1 - e) * -0.06,
+            -1.05 + e * 0.71,            // rises from stowed (low) to braced
+            -0.74 + (1 - e) * 0.05,
+          );
+          shieldMesh.rotation.set(
+            1.05 - e * 0.99,             // tilts up from face-down to braced
+            0.36,
+            0.2 - e * 0.15,
+          );
+          if (shieldActive) {
+            shieldMesh.position.x += Math.sin(now * 0.002) * 0.006;
+            shieldMesh.rotation.z += Math.sin(now * 0.0017) * 0.012;
+          }
+          shieldMesh.position.z += shieldHitFlash * 0.06; // recoil kick on a hit
+          // Integrity drives the status core colour (green → amber → red).
+          const integ = shieldActive ? Math.max(0, Math.min(1, shieldAbsorb / SHIELD_ABSORB_MAX)) : 0;
+          shieldCoreMat.emissive.setRGB(1 - integ, 0.2 + integ * 0.8, integ * 0.45);
+          shieldCoreMat.emissiveIntensity = 0.7 + shieldHitFlash * 2.2;
+          shieldGlassMat.opacity = 0.16 + shieldHitFlash * 0.5 + shieldBreakFlash * 0.6;
+          shieldGlassMat.emissiveIntensity = 0.15 + shieldHitFlash * 1.3 + shieldBreakFlash * 2.2;
+          shieldRimMat.opacity = 0.22 + shieldHitFlash * 0.75 + Math.sin(now * 0.004) * 0.06;
+          shieldRimMat.color.setRGB(0.4 + (1 - integ) * 0.6, 0.6 + integ * 0.4, 0.6 + integ * 0.4);
+          shieldEnergyMat.opacity = 0.1 + integ * 0.12 + shieldHitFlash * 0.4;
+        }
+        shieldHitFlash = Math.max(0, shieldHitFlash - delta * 4);
+        shieldBreakFlash = Math.max(0, shieldBreakFlash - delta * 2.5);
+      }
+      applyPhantomVisual(phantomActive);
+
+      // Floating effect indicators above the player's head (anchored at the
+      // player's feet + a fixed height inside EffectIndicators).
+      {
+        const activeEffects: EffectKey[] = [];
+        // Shield + Phantom intentionally omit their floating overhead icon —
+        // the shield has its braced mesh and Phantom fades the weapon, so the
+        // blue/purple sprites were redundant clutter.
+        if (speedBoostActive) activeEffects.push('speed');
+        if (damageBoostActive) activeEffects.push('damage');
+        if (overchargeActive) activeEffects.push('overcharge');
+        if (infiniteAmmoActive) activeEffects.push('infinite_ammo');
+        _effectAnchor.set(
+          camera.position.x,
+          camera.position.y - currentCameraHeight, // ~feet level
+          camera.position.z,
+        );
+        effectIndicators.update(activeEffects, _effectAnchor, now / 1000);
+      }
 
       // Player movement with weight-based speed and ability effects
       const isMoving = keys['KeyW'] || keys['KeyS'] || keys['KeyA'] || keys['KeyD'];
+      if (isTutorialMode && isMoving) tutorial.recordAction('move', 1); // advances the movement step
       const wantsToSprint = (keys['ShiftLeft'] || keys['ShiftRight']) && !isCrouching;
       // Stamina gates sprinting. Once exhausted, the player must let
       // stamina rebuild past STAMINA_REQUIRED_TO_SPRINT before they
@@ -4260,11 +4982,11 @@ const ForestSurvivalGame = () => {
         }
       }
 
-      // Update blood splatters
-      for (let i = bloodSplatters.length - 1; i >= 0; i--) {
-        if (bloodSplatters[i].update(delta)) {
-          bloodSplatters[i].dispose(scene);
-          bloodSplatters.splice(i, 1);
+      // Update robot hit sparks
+      for (let i = robotSparks.length - 1; i >= 0; i--) {
+        if (robotSparks[i].update(delta)) {
+          robotSparks[i].dispose(scene);
+          robotSparks.splice(i, 1);
         }
       }
 
@@ -4387,74 +5109,42 @@ const ForestSurvivalGame = () => {
           }
 
           if (checkCollision(camera.position, powerUp.position, 2)) {
-            powerUp.collected = true;
-            // All pickup materials + geometries are shared (cached per
-            // colour / per shape) so we do NOT dispose them — that would
-            // wipe out resources still in use by other live pickups.
-            // Just release the pool light and remove the group from the
-            // scene; GC reclaims the small per-instance Mesh wrappers.
-            const root = powerUp.mesh as unknown as THREE.Object3D;
-            const pooledLight = (root.userData.light as THREE.PointLight | null | undefined) ?? null;
-            releasePickupLight(pooledLight);
-            root.userData.light = null;
-            root.parent?.remove(root);
-            soundManager.play('powerUp', 0.8);
+            // ── ONE LOOTED POWER AT A TIME ──────────────────────────────
+            // If the player already holds a power, the crate stays put —
+            // they must spend the current power (E) before looting another.
+            if (heldPower !== null) {
+              const hintNow = Date.now();
+              if (hintNow - lastHeldHintAt > 1500) {
+                lastHeldHintAt = hintNow;
+                setPowerUpMessage('Use your power (E) before looting another');
+                setTimeout(() => setPowerUpMessage(''), 1400);
+              }
+            } else {
+              powerUp.collected = true;
+              // All pickup materials + geometries are shared (cached per
+              // colour / per shape) so we do NOT dispose them — that would
+              // wipe out resources still in use by other live pickups.
+              // Just release the pool light and remove the group from the
+              // scene; GC reclaims the small per-instance Mesh wrappers.
+              const root = powerUp.mesh as unknown as THREE.Object3D;
+              const pooledLight = (root.userData.light as THREE.PointLight | null | undefined) ?? null;
+              releasePickupLight(pooledLight);
+              root.userData.light = null;
+              root.parent?.remove(root);
+              soundManager.play('powerUp', 0.8);
 
-            switch(powerUp.type) {
-              case 'health':
-                health = Math.min(100, health + 30);
-                setPowerUpMessage('+30 Health Restored');
-                if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Health Restored', 'powerup');
-                // Visual feedback - green flash
-                createParticles(camera.position, 0x00ff00, 15);
-                break;
-              case 'ammo':
-                ammo = WEAPONS[currentWeapon].maxAmmo;
-                setPowerUpMessage('Ammo Refilled');
-                if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Ammo Refilled', 'powerup');
-                // Visual feedback - yellow flash
-                createParticles(camera.position, 0xffff00, 10);
-                break;
-              case 'speed':
-                // ACTUALLY APPLY SPEED BOOST
-                speedBoostActive = true;
-                speedBoostEndTime = Date.now() + speedBoostDuration;
-                setPowerUpMessage('Speed Boost · 10s');
-                if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Speed Boost Active!', 'powerup');
-                // Visual feedback - cyan particles
-                createParticles(camera.position, 0x00ffff, 20);
-                break;
-              case 'damage':
-                // DAMAGE BOOST - Double damage for 15 seconds
-                damageBoostActive = true;
-                damageBoostEndTime = Date.now() + damageBoostDuration;
-                setPowerUpMessage('Damage Boost · 15s');
-                if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Damage Boost Active!', 'powerup');
-                // Visual feedback - orange particles
-                createParticles(camera.position, 0xff4400, 20);
-                break;
-              case 'shield':
-                // SHIELD - Absorbs 50 damage
-                shieldActive = true;
-                shieldHealth = shieldMaxHealth;
-                setPowerUpMessage('Shield Active · 50 HP');
-                if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Shield Active!', 'powerup');
-                // Visual feedback - blue particles
-                createParticles(camera.position, 0x0099ff, 25);
-                break;
-              case 'infinite_ammo':
-                // INFINITE AMMO - Unlimited ammo for 20 seconds
-                infiniteAmmoActive = true;
-                infiniteAmmoEndTime = Date.now() + infiniteAmmoDuration;
-                setPowerUpMessage('Infinite Ammo · 20s');
-                if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Infinite Ammo Active!', 'powerup');
-                // Visual feedback - magenta particles
-                createParticles(camera.position, 0xff00ff, 25);
-                break;
+              // Stow the looted power — it is NOT applied until the player
+              // presses E. The HUD power slot reflects what's held.
+              heldPower = powerUp.type as HeldPower;
+              setPowerUpMessage(`${POWER_LABELS[heldPower]} looted · press E to use`);
+              if (gameSettingsManager.getSetting('killFeed')) {
+                addKillFeedEntry(`Looted ${POWER_LABELS[heldPower]}`, 'powerup');
+              }
+              createParticles(camera.position, 0xffffff, 10);
+              tutorial.recordAction('collect_powerup', 1); // advances the loot tutorial step
+              setTimeout(() => setPowerUpMessage(''), 2200);
+              updateGameState();
             }
-
-            setTimeout(() => setPowerUpMessage(''), 2000);
-            updateGameState();
           }
         }
       }
@@ -4560,10 +5250,17 @@ const ForestSurvivalGame = () => {
               createParticles(_tempVec3, 0xffff00, 8); // Yellow particles for crit
             } else {
               soundManager.play('hit', 0.4);
-              createParticles(enemy.mesh.position, 0xff0000, 3);
+              createParticles(enemy.mesh.position, 0xff9933, 3); // orange sparks (robot), not red blood
             }
 
-            enemy.health -= damage;
+            if (isMpGuest && mp) {
+              // Guests don't own enemy health — report the hit to the host and
+              // let it resolve damage and death authoritatively. We still show
+              // local sparks / flash / damage numbers below for snappy feedback.
+              if (enemy.netId !== undefined) mp.sendEnemyHit(enemy.netId, damage, isCritical);
+            } else {
+              enemy.health -= damage;
+            }
             scene.remove(bullet.mesh);
             bullets.splice(i, 1);
 
@@ -4595,17 +5292,17 @@ const ForestSurvivalGame = () => {
               addDamageNumber(Math.floor(damage), x, y, isCritical, isCritical);
             }
 
-            // BLOOD SPLATTER EFFECT - Realistic hit feedback (reuse temp vector)
+            // ROBOT HIT SPARKS - metal/spark burst feedback (reuse temp vector)
             _tempVec3_2.subVectors(enemy.mesh.position, bullet.mesh.position).normalize();
-            const blood = new BloodSplatter(
+            const sparks = new RobotHitSparks(
               scene,
               isCritical ? _tempVec3.clone() : enemy.mesh.position.clone(),
               _tempVec3_2,
               isCritical ? 20 : 12 // More particles for crits
             );
-            bloodSplatters.push(blood);
+            robotSparks.push(sparks);
 
-            if (enemy.health <= 0) {
+            if (!isMpGuest && enemy.health <= 0) {
               handleEnemyKilled(enemy, isCritical);
             }
             break;
@@ -4635,6 +5332,17 @@ const ForestSurvivalGame = () => {
       const PERCEPTION_TICK_MS = 220;  // ~4.5 Hz sight/sound — has raycasts
       const DODGE_TICK_MS_NEAR = 110;  // ~9 Hz bullet dodging when close
       const DODGE_TICK_MS_MID = 240;   // ~4 Hz when further out
+
+      // Host only: collect the alive remote players so each enemy can engage
+      // (and damage) whichever player is nearest, not just the host.
+      _mpFocusTargets.length = 0;
+      if (isMpHost && mp) {
+        mp.getRemotePlayers().forEach((p) => {
+          if (!p.isAlive) return;
+          _mpFocusTargets.push({ id: p.id, pos: new THREE.Vector3(p.position.x, p.position.y, p.position.z) });
+        });
+      }
+
       for (let i = enemies.length - 1; i >= 0; i--) {
         const enemy = enemies[i];
 
@@ -4681,6 +5389,7 @@ const ForestSurvivalGame = () => {
               // Fallback for enemies not using pool (shouldn't happen in normal operation)
               scene.remove(enemy.mesh);
             }
+            if (enemy.netId !== undefined) enemyByNetId.delete(enemy.netId);
             enemies.splice(i, 1);
           }
           continue;
@@ -4692,8 +5401,71 @@ const ForestSurvivalGame = () => {
         const baseScale = enemy.type === 'fast' ? 0.7 : enemy.type === 'tank' ? 1.5 : enemy.type === 'boss' ? 2.0 : 1.0;
         const groundY = 1.0 * baseScale;
 
+        // ── GUEST MIRROR ──────────────────────────────────────────────────
+        // Guests don't think — they interpolate this enemy toward the host's
+        // last snapshot, animate the walk cycle from the resulting movement,
+        // and run no AI / attack / collision logic at all.
+        if (isMpGuest) {
+          const tx = enemy.netTargetX ?? enemy.mesh.position.x;
+          const tz = enemy.netTargetZ ?? enemy.mesh.position.z;
+          const px = enemy.mesh.position.x;
+          const pz = enemy.mesh.position.z;
+          const posLerp = 1 - Math.exp(-14 * delta);
+          enemy.mesh.position.x = px + (tx - px) * posLerp;
+          enemy.mesh.position.z = pz + (tz - pz) * posLerp;
+          const movedLen = Math.hypot(enemy.mesh.position.x - px, enemy.mesh.position.z - pz);
+
+          // Yaw toward the networked facing (shortest arc).
+          const targetYaw = enemy.netYaw ?? enemy.mesh.rotation.y;
+          let dYaw = targetYaw - enemy.mesh.rotation.y;
+          while (dYaw > Math.PI) dYaw -= Math.PI * 2;
+          while (dYaw < -Math.PI) dYaw += Math.PI * 2;
+          enemy.mesh.rotation.y += dYaw * Math.min(1, delta * 10);
+
+          // Stride/arm swing scaled by how far it actually moved this frame.
+          enemy.walkTime += movedLen * 2.8 + delta * 0.6;
+          const stride = movedLen > 0.002 ? 0.62 : 0.0;
+          if (enemy.leftLeg && enemy.rightLeg) {
+            enemy.leftLeg.rotation.x = THREE.MathUtils.lerp(enemy.leftLeg.rotation.x, Math.sin(enemy.walkTime) * stride, 0.2);
+            enemy.rightLeg.rotation.x = THREE.MathUtils.lerp(enemy.rightLeg.rotation.x, Math.sin(enemy.walkTime + Math.PI) * stride, 0.2);
+          }
+          if (enemy.leftArm && enemy.rightArm) {
+            enemy.leftArm.rotation.x = THREE.MathUtils.lerp(enemy.leftArm.rotation.x, Math.sin(enemy.walkTime + Math.PI) * stride * 0.7, 0.18);
+            enemy.rightArm.rotation.x = THREE.MathUtils.lerp(enemy.rightArm.rotation.x, Math.sin(enemy.walkTime) * stride * 0.7, 0.18);
+          }
+          const bob = Math.abs(Math.sin(enemy.walkTime)) * 0.07 * (movedLen > 0.002 ? 1 : 0);
+          enemy.mesh.position.y = groundY + bob;
+
+          // Hit flash (driven by enemy_hit feedback) — scale pulse only.
+          if (enemy.damageFlashTime > 0) {
+            enemy.damageFlashTime -= delta;
+            if (enemy.torso) enemy.torso.scale.setScalar(1 + Math.max(0, enemy.damageFlashTime) * 0.3);
+          } else {
+            if (enemy.torso && enemy.torso.scale.x !== 1) enemy.torso.scale.setScalar(1);
+            enemy.mesh.scale.setScalar(baseScale);
+          }
+          continue;
+        }
+
+        // ── HOST/SOLO TARGET SELECTION ────────────────────────────────────
+        // In solo (and whenever the host itself is nearest) focusPos is the
+        // local camera, so every downstream calculation is byte-identical to
+        // the original single-player path. In multiplayer the host's enemies
+        // engage the NEAREST player and route melee damage to whoever they hit.
+        let focusPos: THREE.Vector3 = camera.position;
+        let focusVel: THREE.Vector3 = playerVelocity;
+        let focusPlayerId: string | null = null;
+        if (isMpHost && _mpFocusTargets.length > 0) {
+          let bestSq = enemy.mesh.position.distanceToSquared(camera.position);
+          for (let f = 0; f < _mpFocusTargets.length; f++) {
+            const cand = _mpFocusTargets[f];
+            const dsq = enemy.mesh.position.distanceToSquared(cand.pos);
+            if (dsq < bestSq) { bestSq = dsq; focusPos = cand.pos; focusVel = _zeroVel; focusPlayerId = cand.id; }
+          }
+        }
+
         // Performance optimization: Skip AI update for distant enemies
-        let distance = enemy.mesh.position.distanceTo(camera.position);
+        let distance = enemy.mesh.position.distanceTo(focusPos);
 
         // === ANTI-ESCAPE RECYCLING ===
         // An enemy that falls far behind — deep in the fog, out of sight —
@@ -4713,7 +5485,7 @@ const ForestSurvivalGame = () => {
           enemy.mesh.position.x = spot.x;
           enemy.mesh.position.z = spot.z;
           enemy.mesh.position.y = groundY;
-          distance = enemy.mesh.position.distanceTo(camera.position);
+          distance = enemy.mesh.position.distanceTo(focusPos);
         }
 
         if (distance > MAX_AI_UPDATE_DISTANCE) {
@@ -4723,7 +5495,7 @@ const ForestSurvivalGame = () => {
           // faster, so even players who try to out-snipe end up fighting
           // close-up within a few seconds.
           const sprintMul = diffSettings.chaseMult >= 1.2 ? 1.45 : 1.0;
-          _tempVec3.subVectors(camera.position, enemy.mesh.position).normalize();
+          _tempVec3.subVectors(focusPos, enemy.mesh.position).normalize();
           enemy.mesh.position.x += _tempVec3.x * enemy.speed * sprintMul * delta * 60;
           enemy.mesh.position.z += _tempVec3.z * enemy.speed * sprintMul * delta * 60;
           enemy.mesh.position.y = groundY;
@@ -4747,8 +5519,8 @@ const ForestSurvivalGame = () => {
           enemy.cachedPerception = enemy.perception.perceive(
             enemy.mesh.position,
             enemy.mesh.rotation.y,
-            camera.position,
-            playerVelocity,
+            focusPos,
+            focusVel,
             terrainObjects,
             timeOfDay === 'night'
           );
@@ -4758,8 +5530,10 @@ const ForestSurvivalGame = () => {
         }
         const perception = enemy.cachedPerception;
 
-        const canSeePlayer = perception?.canSeePlayer || false;
-        const canHearPlayer = perception?.canHearPlayer || false;
+        // Phantom: the player is cloaked — enemies can't see or hear them, so
+        // the behaviour tree stops pursuing/attacking and they wander/idle.
+        const canSeePlayer = phantomActive ? false : (perception?.canSeePlayer || false);
+        const canHearPlayer = phantomActive ? false : (perception?.canHearPlayer || false);
 
         // === AI DECISION MAKING (throttled — behaviour tree is expensive) ===
         if (enemy.aiBehavior && perception) {
@@ -4770,8 +5544,8 @@ const ForestSurvivalGame = () => {
             enemy.cachedAiDecision = enemy.aiBehavior.makeDecision({
               enemyPosition: enemy.mesh.position,
               enemyRotation: enemy.mesh.rotation.y,
-              playerPosition: camera.position,
-              playerVelocity: playerVelocity,
+              playerPosition: focusPos,
+              playerVelocity: focusVel,
               distanceToPlayer: distance,
               health: enemy.health,
               maxHealth: enemy.maxHealth,
@@ -4988,7 +5762,7 @@ const ForestSurvivalGame = () => {
             // essentially blocked, keep facing the player.
             let faceX: number, faceZ: number;
             if (movedLen > 0.0005) { faceX = movedX; faceZ = movedZ; }
-            else { faceX = camera.position.x - enemy.mesh.position.x; faceZ = camera.position.z - enemy.mesh.position.z; }
+            else { faceX = focusPos.x - enemy.mesh.position.x; faceZ = focusPos.z - enemy.mesh.position.z; }
             const targetAngle = Math.atan2(faceX, faceZ);
             let angleDiff = targetAngle - enemy.mesh.rotation.y;
             while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
@@ -5050,8 +5824,8 @@ const ForestSurvivalGame = () => {
 
           // === HEAD TRACKING — look at player ===
           if (enemy.head) {
-            const headDx = camera.position.x - enemy.mesh.position.x;
-            const headDz = camera.position.z - enemy.mesh.position.z;
+            const headDx = focusPos.x - enemy.mesh.position.x;
+            const headDz = focusPos.z - enemy.mesh.position.z;
             // Local-space rotation: subtract body rotation to get relative angle
             const headTargetY = Math.atan2(headDx, headDz) - enemy.mesh.rotation.y;
             // Clamp head turn to ±45°
@@ -5087,7 +5861,7 @@ const ForestSurvivalGame = () => {
           if (shouldAttack) {
             enemy.attackSystem.tryAttack(
               enemy.mesh.position,
-              camera.position
+              focusPos
             );
           }
 
@@ -5095,7 +5869,7 @@ const ForestSurvivalGame = () => {
           const hitPlayer = enemy.attackSystem.checkHit(
             enemy.mesh.position,
             enemy.mesh.rotation.y,
-            camera.position
+            focusPos
           );
 
           // Also check for overlap damage (when enemy clips into player).
@@ -5103,110 +5877,25 @@ const ForestSurvivalGame = () => {
           // per enemy per frame.
           const overlapDamage = enemy.attackSystem.checkOverlapDamage(
             enemy.mesh.position,
-            camera.position,
+            focusPos,
             enemy.lastAttackTime,
             frameNowMs
           );
 
           if (hitPlayer || overlapDamage) {
-            // Tutorial mode grants unlimited health — the player can never be
-            // hurt, so the tutorial is a safe, pressure-free practice space.
-            // An eliminated player takes no further damage (spectating).
-            if (!abilityEffects.isInvincible && !isTutorialMode && !playerEliminated) {
-              // Armor Plating skill reduces all incoming damage before shields
-              let damage = enemy.attackSystem.getDamage() * Math.max(0, 1 - skillBonus('damageReduction'));
-
-              // Apply ability shield if active
-              if (abilityEffects.hasShield && abilityEffects.shieldHealth > 0) {
-                // Shield absorbs damage
-                const shieldDamage = Math.min(damage, abilityEffects.shieldHealth);
-                abilitySystem.damageShield(shieldDamage);
-                damage -= shieldDamage;
-              }
-
-              // Apply powerup shield if active
-              if (shieldActive && shieldHealth > 0 && damage > 0) {
-                const absorbed = Math.min(damage, shieldHealth);
-                shieldHealth -= absorbed;
-                damage -= absorbed;
-                setPowerUpMessage(`Shield · ${shieldHealth}/${shieldMaxHealth}`);
-                if (shieldHealth <= 0) {
-                  shieldActive = false;
-                  setPowerUpMessage('Shield Broken');
-                  if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Shield Broken', 'powerup');
-                  setTimeout(() => setPowerUpMessage(''), 1500);
-                }
-              }
-
-              health -= damage;
-              enemy.lastAttackTime = frameNowMs; // Update for overlap cooldown
-
-              if (damage > 0) {
-                // 🤖 Record damage for AI systems
-                adaptiveDifficulty.recordDamage(damage, false);
-                adaptiveDifficulty.recordHealthStatus(health, 100);
-                missionSystem.updateProgress('survival', 1);
-
-                soundManager.play('playerHurt', 0.5);
-                cameraShakeIntensity = Math.min(cameraShakeIntensity + 0.2, 0.25);
-
-                // Trigger screen effects
-                triggerDamageFlash();
-                if (damage >= 15 && gameSettingsManager.getSetting('screenShake')) {
-                  triggerScreenShake();
-                }
-
-                if (combo > 0) {
-                  combo = Math.max(0, combo - 1);
-                }
-
-                // Track survival for achievements
-                achievementSystem.updateProgress('survivor', 1);
-
-                // Sync health in multiplayer
-                if (isMultiplayer && multiplayerManager) {
-                  multiplayerManager.updatePlayerHealth(health);
-                }
-              }
-
-              updateGameState();
-
-              // Game over check
-              if (health <= 0) {
-                health = 0;
-                playerEliminated = true; // Latch — no more damage / re-deaths
-                document.exitPointerLock();
-
-                // Sync death in multiplayer
-                if (isMultiplayer && multiplayerManager) {
-                  multiplayerManager.updatePlayerHealth(0);
-
-                  // Broadcast killer info so every player (especially the victim)
-                  // knows who/what killed them in real time
-                  const enemyTypeLabel =
-                    enemy.type === 'boss' ? 'Boss' :
-                    enemy.type === 'tank' ? 'Tank' :
-                    enemy.type === 'fast' ? 'Stalker' :
-                    'Forest Creature';
-                  const victim = multiplayerManager.getLocalPlayer();
-                  multiplayerManager.broadcastKill(
-                    enemyTypeLabel,
-                    victim.id,
-                    victim.name,
-                    victim.color,
-                    enemyTypeLabel
-                  );
-
-                  // In multiplayer, enter spectate mode instead of game over
-                  console.log('[Multiplayer] Local player eliminated - entering spectate mode');
-                  setIsSpectating(true);
-                  updateGameState();
-                } else {
-                  // In single player, it's game over
-                  isGameOver = true;
-                  updateGameState(); // CRITICAL FIX: Update state after setting isGameOver
-                }
-              }
+            const enemyLabel = enemyLabelOf(enemy.type);
+            const raw = enemy.attackSystem.getDamage();
+            enemy.lastAttackTime = frameNowMs; // Update for overlap cooldown
+            if (isMpHost && mp && focusPlayerId !== null) {
+              // SHARED ENEMY struck a REMOTE player. The host owns the enemy,
+              // so it tells that player's client to take the hit — this is how
+              // an enemy attacking one player is reflected on their screen.
+              mp.sendPlayerDamage(focusPlayerId, raw, enemyLabel);
+            } else {
+              // Local player takes the hit (solo, or the host's own avatar).
+              // All the shield / effects / death / spectate handling lives in
+              // takeEnemyDamage, shared with the guest `player_damaged` path.
+              takeEnemyDamage(raw, enemyLabel, enemy.mesh.position);
             }
           }
 
@@ -5224,8 +5913,8 @@ const ForestSurvivalGame = () => {
 
               // Attack lunge — lean forward and lurch toward player during strike
               if (atkState.attackPhase === 'strike') {
-                const lungeDx = camera.position.x - enemy.mesh.position.x;
-                const lungeDz = camera.position.z - enemy.mesh.position.z;
+                const lungeDx = focusPos.x - enemy.mesh.position.x;
+                const lungeDz = focusPos.z - enemy.mesh.position.z;
                 const lungeDist = Math.sqrt(lungeDx * lungeDx + lungeDz * lungeDz);
                 if (lungeDist > 0.5) {
                   const lungeStrength = 0.15 * baseScale;
@@ -5263,6 +5952,32 @@ const ForestSurvivalGame = () => {
           // Reset scale when flash is done
           enemy.torso.scale.setScalar(1);
         }
+      }
+
+      // === SHARED-ENEMY SNAPSHOT (host → guests) ===
+      // Several times a second the host streams the full living-enemy set so
+      // every guest renders the exact same enemies. Dead enemies are included
+      // for one window (d=1) so guests start the death animation, then drop out.
+      if (isMpHost && mp && frameNowMs - lastEnemySyncMs >= ENEMY_SYNC_INTERVAL_MS) {
+        lastEnemySyncMs = frameNowMs;
+        const wire: EnemyWire[] = [];
+        for (let e = 0; e < enemies.length; e++) {
+          const en = enemies[e];
+          if (en.netId === undefined) continue;
+          const r2 = (n: number) => Math.round(n * 100) / 100;
+          wire.push({
+            id: en.netId,
+            ty: ENEMY_TYPE_CODE[en.type],
+            x: r2(en.mesh.position.x),
+            y: r2(en.mesh.position.y),
+            z: r2(en.mesh.position.z),
+            ry: r2(en.mesh.rotation.y),
+            hp: Math.round(en.health),
+            mx: Math.round(en.maxHealth),
+            d: en.dead ? 1 : 0,
+          });
+        }
+        mp.broadcastEnemySync(wire, wave);
       }
 
       // === RENDERING — three.js EffectComposer (or direct render on Low) ===
@@ -5332,8 +6047,8 @@ const ForestSurvivalGame = () => {
         flash: MuzzleFlash | null;
         tracer: BulletTracer | null;
         impact: ImpactEffect | null;
-        blood: BloodSplatter | null;
-      } = { rocket: null, flash: null, tracer: null, impact: null, blood: null };
+        sparks: RobotHitSparks | null;
+      } = { rocket: null, flash: null, tracer: null, impact: null, sparks: null };
 
       // ── STAGE 1: spawn warmup bullets ──────────────────────────────
       await stage('Bullets', false, () => {
@@ -5349,7 +6064,7 @@ const ForestSurvivalGame = () => {
 
       // ── STAGE 2: spawn warmup pickups (every type) ─────────────────
       await stage('Pickups', false, () => {
-        const warmPowerUpTypes: PowerUp['type'][] = ['health', 'ammo', 'speed', 'damage', 'shield', 'infinite_ammo'];
+        const warmPowerUpTypes: PowerUp['type'][] = ['overcharge', 'ammo', 'speed', 'damage', 'shield', 'infinite_ammo', 'phantom'];
         warmPowerUpTypes.forEach((type, index) => {
           const warmPowerUp = createPowerUp(
             wp.x + (index - warmPowerUpTypes.length / 2) * 0.85,
@@ -5370,7 +6085,7 @@ const ForestSurvivalGame = () => {
         refs.flash = new MuzzleFlash(scene, wp, 0xffaa00);
         refs.tracer = new BulletTracer(scene, wp, wp.clone(), 0xffffaa);
         refs.impact = new ImpactEffect(scene, wp, 0xffaa00, 2);
-        refs.blood = new BloodSplatter(scene, wp, new THREE.Vector3(0, 1, 0), 2);
+        refs.sparks = new RobotHitSparks(scene, wp, new THREE.Vector3(0, 1, 0), 2);
       });
       await yieldFrame();
 
@@ -5442,7 +6157,7 @@ const ForestSurvivalGame = () => {
         refs.flash?.dispose(scene);
         refs.tracer?.dispose(scene);
         refs.impact?.dispose(scene);
-        refs.blood?.dispose(scene);
+        refs.sparks?.dispose(scene);
         refs.rocket?.traverse((o: THREE.Object3D) => {
           if (o instanceof THREE.Mesh) {
             o.geometry.dispose();
@@ -5607,6 +6322,9 @@ const ForestSurvivalGame = () => {
 
       // Cleanup the local player shadow caster (invisible body)
       localPlayerShadow.dispose();
+
+      // Cleanup floating effect indicators
+      effectIndicators.dispose(scene);
 
       // Cleanup SmartEnemyManager (releases pooled resources)
       smartEnemyManager.dispose();
@@ -6114,6 +6832,7 @@ const ForestSurvivalGame = () => {
             onMainMenu={returnToMenu}
             onSkillTree={() => { setIsPaused(false); setShowSkillTree(true); }}
             showSkillTree={gameMode !== 'tutorial'}
+            skillTreeLocked={!isAuthenticated}
             t={t}
           />
         </div>
@@ -6135,8 +6854,8 @@ const ForestSurvivalGame = () => {
 
       {/* 🤖 NEW AI-POWERED UI COMPONENTS */}
 
-      {/* Mission Display */}
-      {gameStarted && !gameState.isGameOver && activeMissions.length > 0 && (
+      {/* Mission Display — hidden in the tutorial (no waves/missions there) */}
+      {gameStarted && !gameState.isGameOver && gameMode !== 'tutorial' && activeMissions.length > 0 && (
         <MissionDisplay
           missions={activeMissions}
           onDismiss={(missionId) => {
@@ -6179,6 +6898,14 @@ const ForestSurvivalGame = () => {
               }
             }
           }}
+          onTry={() => {
+            // Practising an interactive step — unblock input + grab pointer lock
+            // so the action can actually be performed. The per-frame loop
+            // re-blocks automatically once the step advances.
+            tutorialActiveRef.current = false;
+            const canvas = mountRef.current?.querySelector('canvas');
+            if (canvas) (canvas as HTMLCanvasElement).requestPointerLock();
+          }}
           onNext={() => {
             const tut = tutorialRef.current;
             if (tut && tutorialStep?.id) {
@@ -6189,12 +6916,11 @@ const ForestSurvivalGame = () => {
                 setTutorialStep({ ...nextStep });
                 setTutorialProgress(tut.getProgress());
               } else {
-                // Tutorial done — unlock pointer
+                // Tutorial done — show completion card, unlock pointer.
                 setShowTutorial(false);
                 setTutorialStep(null);
                 tutorialActiveRef.current = false;
-                const canvas = mountRef.current?.querySelector('canvas');
-                if (canvas) setTimeout(() => canvas.requestPointerLock(), 100);
+                setTutorialComplete(true);
               }
             }
           }}
@@ -6212,6 +6938,48 @@ const ForestSurvivalGame = () => {
         />
       )}
 
+      {/* Tutorial Complete — the player has finished every step and can now
+          play freely (the sandbox keeps running) or head to the menu. */}
+      {tutorialComplete && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4"
+          style={{ background: 'rgba(5,8,10,0.78)', backdropFilter: 'blur(6px)' }}>
+          <div className="w-full max-w-md overflow-hidden rounded-2xl border border-emerald-400/25 bg-[#0b0f15] shadow-2xl"
+            style={{ animation: 'tutorialDoneIn 0.4s cubic-bezier(0.16,1,0.3,1) forwards' }}>
+            <div className="h-1 w-full bg-gradient-to-r from-transparent via-emerald-400 to-transparent" />
+            <div className="px-7 py-7 text-center">
+              <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-emerald-500/15 border border-emerald-400/30">
+                <GraduationCap className="w-8 h-8 text-emerald-300" strokeWidth={2} />
+              </div>
+              <h2 className="text-2xl font-black tracking-tight text-white">Tutorial Complete!</h2>
+              <p className="mt-2 text-sm leading-relaxed text-gray-400">
+                You've mastered the basics, survivor. You're free to keep practising here,
+                or jump into a real run from the menu.
+              </p>
+              <div className="mt-6 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                <button
+                  onClick={() => {
+                    setTutorialComplete(false);
+                    const canvas = mountRef.current?.querySelector('canvas');
+                    if (canvas) (canvas as HTMLCanvasElement).requestPointerLock();
+                  }}
+                  className="flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold tracking-wide text-[#04130a] transition-all hover:-translate-y-0.5"
+                  style={{ background: 'linear-gradient(135deg, #34d399, #22c55e)' }}
+                >
+                  <Play className="w-4 h-4" strokeWidth={2.5} /> Keep Playing
+                </button>
+                <button
+                  onClick={() => { setTutorialComplete(false); returnToMenu(); }}
+                  className="flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2.5 text-sm font-bold tracking-wide text-gray-200 transition-all hover:bg-white/[0.08]"
+                >
+                  <Home className="w-4 h-4" strokeWidth={2.25} /> Main Menu
+                </button>
+              </div>
+            </div>
+          </div>
+          <style>{`@keyframes tutorialDoneIn { from { opacity: 0; transform: translateY(16px) scale(0.96); } to { opacity: 1; transform: translateY(0) scale(1); } }`}</style>
+        </div>
+      )}
+
       {/* Skill Tree Menu — wired to real skill tree state */}
       {showSkillTree && (
         <SkillTreeMenu
@@ -6221,20 +6989,25 @@ const ForestSurvivalGame = () => {
           totalPoints={skillTreeData.totalPoints}
           detectedPlayStyle={skillTreeData.detectedPlayStyle}
           recommendations={skillTreeData.recommendations}
-          onUnlockSkill={(skillId) => {
-            if (skillTreeRef.current) {
-              const result = skillTreeRef.current.unlockSkill(skillId);
-              if (result.success) {
-                const s = skillTreeRef.current.getState();
-                setSkillTreeData({
-                  skills: skillTreeRef.current.getAllSkills(),
-                  availablePoints: s.availablePoints,
-                  spentPoints: s.spentPoints,
-                  totalPoints: s.totalPoints,
-                  detectedPlayStyle: 'balanced',
-                  recommendations: [],
-                });
-              }
+          onUnlockSkill={async (skillId) => {
+            if (!isAuthenticated || !skillTreeRef.current) return;
+            try {
+              // Server validates cost + prerequisites and is the source of truth.
+              const result = await unlockSkillMutation({ skillId });
+              // Mirror the persisted state into the live system so in-match
+              // bonuses pick it up on the next 0.4s refresh.
+              skillTreeRef.current.hydrate(result.skills, result.skillPoints);
+              const s = skillTreeRef.current.getState();
+              setSkillTreeData({
+                skills: skillTreeRef.current.getAllSkills(),
+                availablePoints: s.availablePoints,
+                spentPoints: s.spentPoints,
+                totalPoints: s.totalPoints,
+                detectedPlayStyle: 'balanced',
+                recommendations: [],
+              });
+            } catch {
+              // Validation failure (not enough points / reqs) — leave UI as-is.
             }
           }}
           onClose={() => { setShowSkillTree(false); setIsPaused(true); }}

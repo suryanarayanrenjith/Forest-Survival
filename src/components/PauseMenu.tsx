@@ -1,4 +1,4 @@
-import { Pause, Heart, Crosshair, Skull, Waves, Trophy, Network, LogOut, ChevronRight } from 'lucide-react';
+import { Pause, Heart, Crosshair, Skull, Waves, Trophy, Network, LogOut, ChevronRight, Lock } from 'lucide-react';
 
 interface PauseMenuProps {
   health: number;
@@ -11,10 +11,12 @@ interface PauseMenuProps {
   onSkillTree: () => void;
   /** When false the Skill Tree action is hidden (e.g. Tutorial mode). */
   showSkillTree?: boolean;
+  /** When true the Skill Tree is shown locked (guest play — sign-in required). */
+  skillTreeLocked?: boolean;
   t: (key: string) => string;
 }
 
-const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMenu, onSkillTree, showSkillTree = true }: PauseMenuProps) => {
+const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMenu, onSkillTree, showSkillTree = true, skillTreeLocked = false }: PauseMenuProps) => {
   const stats = [
     { icon: Heart, label: 'Health', value: `${Math.floor(health)}`, color: '#f87171' },
     { icon: Crosshair, label: 'Ammo', value: `${ammo}/${maxAmmo}`, color: '#fbbf24' },
@@ -77,17 +79,32 @@ const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMe
         {/* Actions */}
         <div className="flex flex-col gap-2.5">
           {showSkillTree && (
-          <button
-            onClick={onSkillTree}
-            className="group flex items-center gap-3 w-full rounded-xl px-4 py-3.5 border border-white/10
-              bg-white/[0.03] transition-all duration-200 hover:bg-white/[0.07] hover:border-violet-400/50"
-          >
-            <span className="flex items-center justify-center w-9 h-9 rounded-lg bg-violet-500/15">
-              <Network className="w-[18px] h-[18px] text-violet-400" strokeWidth={2} />
-            </span>
-            <span className="flex-1 text-left text-sm font-bold text-white tracking-wide">Skill Tree</span>
-            <ChevronRight className="w-4 h-4 text-gray-600 group-hover:text-gray-300 group-hover:translate-x-0.5 transition-all" strokeWidth={2} />
-          </button>
+            skillTreeLocked ? (
+              <div
+                className="flex items-center gap-3 w-full rounded-xl px-4 py-3.5 border border-white/10 bg-white/[0.02] opacity-80"
+                title="Sign in to unlock the skill tree"
+              >
+                <span className="flex items-center justify-center w-9 h-9 rounded-lg bg-white/[0.06]">
+                  <Lock className="w-[18px] h-[18px] text-gray-400" strokeWidth={2} />
+                </span>
+                <span className="flex-1 text-left">
+                  <span className="block text-sm font-bold text-gray-300 tracking-wide">Skill Tree</span>
+                  <span className="block text-[11px] text-gray-500">Sign in to unlock</span>
+                </span>
+              </div>
+            ) : (
+              <button
+                onClick={onSkillTree}
+                className="group flex items-center gap-3 w-full rounded-xl px-4 py-3.5 border border-white/10
+                  bg-white/[0.03] transition-all duration-200 hover:bg-white/[0.07] hover:border-violet-400/50"
+              >
+                <span className="flex items-center justify-center w-9 h-9 rounded-lg bg-violet-500/15">
+                  <Network className="w-[18px] h-[18px] text-violet-400" strokeWidth={2} />
+                </span>
+                <span className="flex-1 text-left text-sm font-bold text-white tracking-wide">Skill Tree</span>
+                <ChevronRight className="w-4 h-4 text-gray-600 group-hover:text-gray-300 group-hover:translate-x-0.5 transition-all" strokeWidth={2} />
+              </button>
+            )
           )}
 
           <button

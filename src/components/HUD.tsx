@@ -1,19 +1,36 @@
 import { useEffect, useState } from 'react';
 import {
   Heart, Crosshair, Skull, Waves, Flame, Lock,
-  Zap, Shield as ShieldIcon, Wind, Ghost, Plus, Footprints, type LucideIcon,
+  Zap, Shield as ShieldIcon, Wind, Ghost, Footprints, ChevronsRight,
+  Swords, Infinity as InfinityIcon, Boxes, PackageSearch, type LucideIcon,
 } from 'lucide-react';
 import { WEAPONS } from '../types/game';
 
-/** One ability slot's live state for the HUD ability bar. */
+/** One slot's live state for the HUD ability bar. */
 export interface AbilityHudItem {
   key: string;        // keybind label, e.g. 'Q'
-  name: string;       // ability name, e.g. 'Dash'
-  cooldown: number;   // 0..1 — 1 means fully recharged / ready
-  active: boolean;    // ability is currently active
-  unlocked?: boolean; // false = still locked behind a score threshold
-  unlockScore?: number; // score required to unlock
+  /** 'dash' = always-available cooldown ability; 'power' = looted power slot. */
+  kind: 'dash' | 'power';
+  name: string;       // label shown under the slot
+  // ── dash ──
+  cooldown?: number;  // 0..1 — 1 means fully recharged / ready
+  active?: boolean;   // currently dashing
+  // ── power slot ──
+  powerType?: string | null;         // which loot power (null = empty slot)
+  state?: 'empty' | 'held' | 'active'; // held = ready to use, active = running
+  ratio?: number;     // 0..1 absorb bar (shield while active)
 }
+
+/** Unique icon per looted power — no more duplicate lightning bolts. */
+const POWER_ICONS: Record<string, LucideIcon> = {
+  ammo: Boxes,
+  speed: Wind,
+  damage: Swords,
+  shield: ShieldIcon,
+  infinite_ammo: InfinityIcon,
+  overcharge: Zap,
+  phantom: Ghost,
+};
 
 interface HUDProps {
   health: number;
@@ -43,14 +60,6 @@ interface HUDProps {
    *  partially refills. The meter renders in a red "depleted" state. */
   staminaExhausted?: boolean;
 }
-
-const ABILITY_ICONS: Record<string, LucideIcon> = {
-  Dash: Zap,
-  Shield: ShieldIcon,
-  Sprint: Wind,
-  Ghost: Ghost,
-  Heal: Plus,
-};
 
 const HUD = ({
   health, maxHealth = 100, ammo, maxAmmo, enemiesKilled, score, wave, weaponName, combo,
@@ -238,54 +247,97 @@ const HUD = ({
   );
 };
 
-/** A single ability slot with a radial cooldown sweep that "refills". */
-const AbilitySlot = ({ ability }: { ability: AbilityHudItem }) => {
-  const locked = ability.unlocked === false;
-  const Icon = locked ? Lock : (ABILITY_ICONS[ability.name] ?? Zap);
-  const ready = !locked && ability.cooldown >= 1;
-  const deg = Math.min(360, Math.max(0, ability.cooldown * 360));
+/** Routes to the dash or looted-power renderer. */
+const AbilitySlot = ({ ability }: { ability: AbilityHudItem }) =>
+  ability.kind === 'dash' ? <DashSlot ability={ability} /> : <PowerSlot ability={ability} />;
 
+/** Dash — always available; radial cooldown sweep that "refills". */
+const DashSlot = ({ ability }: { ability: AbilityHudItem }) => {
+  const cd = ability.cooldown ?? 1;
+  const ready = cd >= 1;
+  const deg = Math.min(360, Math.max(0, cd * 360));
   return (
     <div className="flex flex-col items-center gap-1">
       <div
         className={`relative flex items-center justify-center w-12 h-12 rounded-xl border transition-colors duration-200 ${
-          locked
-            ? 'border-white/[0.07] bg-black/55'
-            : ability.active
-            ? 'border-emerald-400/80 bg-emerald-500/25'
-            : ready
-            ? 'border-emerald-400/55 bg-emerald-500/10'
+          ability.active ? 'border-emerald-400/80 bg-emerald-500/25'
+            : ready ? 'border-emerald-400/55 bg-emerald-500/10'
             : 'border-white/10 bg-black/45'
         }`}
         style={ready && !ability.active ? { animation: 'abilityReady 2.4s ease-in-out infinite' } : undefined}
       >
-        <Icon
-          className={`${locked ? 'w-4 h-4' : 'w-5 h-5'} ${
-            locked ? 'text-gray-600' : ability.active ? 'text-emerald-200' : ready ? 'text-emerald-300' : 'text-gray-500'
-          }`}
-          strokeWidth={2.25}
+        <ChevronsRight
+          className={`w-5 h-5 ${ability.active ? 'text-emerald-200' : ready ? 'text-emerald-300' : 'text-gray-500'}`}
+          strokeWidth={2.5}
         />
-        {/* Radial cooldown sweep — the dark wedge shrinks clockwise as it recharges */}
-        {!locked && !ready && (
+        {!ready && (
           <div
             className="absolute inset-0 rounded-xl pointer-events-none"
             style={{ background: `conic-gradient(rgba(0,0,0,0) ${deg}deg, rgba(3,6,10,0.82) ${deg}deg)` }}
           />
         )}
-        {/* Keybind chip */}
-        <kbd
-          className={`absolute -top-1.5 -right-1.5 px-1 min-w-[15px] h-[15px] flex items-center justify-center
-            rounded bg-[#0b0f15] border text-[9px] font-bold font-mono ${
-            ready ? 'border-emerald-400/50 text-emerald-300' : 'border-white/15 text-gray-500'
-          }`}
-        >
+        <kbd className={`absolute -top-1.5 -right-1.5 px-1 min-w-[15px] h-[15px] flex items-center justify-center
+          rounded bg-[#0b0f15] border text-[9px] font-bold font-mono ${
+          ready ? 'border-emerald-400/50 text-emerald-300' : 'border-white/15 text-gray-500'}`}>
+          {ability.key}
+        </kbd>
+      </div>
+      <span className={`text-[9px] font-semibold tracking-wide uppercase ${ready ? 'text-gray-300' : 'text-gray-500'}`}>
+        {ability.name}
+      </span>
+    </div>
+  );
+};
+
+/**
+ * The single looted-power slot. Three visual states:
+ *   • empty  — dashed grey "Find Loot" prompt (no power held)
+ *   • held   — amber, pulsing "ready to use" (press E)
+ *   • active — emerald, with the shield's absorb bar when applicable
+ */
+const PowerSlot = ({ ability }: { ability: AbilityHudItem }) => {
+  const state = ability.state ?? 'empty';
+  const empty = state === 'empty';
+  const held = state === 'held';
+  const active = state === 'active';
+  const Icon = empty ? PackageSearch : (POWER_ICONS[ability.powerType ?? ''] ?? PackageSearch);
+  return (
+    <div className="flex flex-col items-center gap-1">
+      <div
+        className={`relative flex items-center justify-center w-12 h-12 rounded-xl border transition-colors duration-200 ${
+          held ? 'border-amber-400/70 bg-amber-500/15'
+            : active ? 'border-emerald-400/70 bg-emerald-500/20'
+            : 'border-dashed border-white/15 bg-black/40'
+        }`}
+        style={held ? { animation: 'abilityReady 1.6s ease-in-out infinite' } : undefined}
+      >
+        <Icon
+          className={`w-5 h-5 ${held ? 'text-amber-300' : active ? 'text-emerald-200' : 'text-gray-600'}`}
+          strokeWidth={2.25}
+        />
+        {/* Shield absorb bar (only while a shield power is active). */}
+        {active && ability.ratio !== undefined && (
+          <div className="absolute -bottom-0.5 left-1 right-1 h-1 rounded-full bg-black/55 overflow-hidden">
+            <div
+              className="h-full rounded-full transition-all duration-200"
+              style={{
+                width: `${Math.round(Math.max(0, Math.min(1, ability.ratio)) * 100)}%`,
+                background: ability.ratio > 0.5 ? '#34d399' : ability.ratio > 0.25 ? '#fbbf24' : '#f87171',
+              }}
+            />
+          </div>
+        )}
+        <kbd className={`absolute -top-1.5 -right-1.5 px-1 min-w-[15px] h-[15px] flex items-center justify-center
+          rounded bg-[#0b0f15] border text-[9px] font-bold font-mono ${
+          held ? 'border-amber-400/50 text-amber-300'
+            : active ? 'border-emerald-400/50 text-emerald-300'
+            : 'border-white/15 text-gray-600'}`}>
           {ability.key}
         </kbd>
       </div>
       <span className={`text-[9px] font-semibold tracking-wide uppercase ${
-        locked ? 'text-gray-600' : ready ? 'text-gray-300' : 'text-gray-500'
-      }`}>
-        {locked ? `${ability.unlockScore ?? 0} pts` : ability.name}
+        held ? 'text-amber-300' : active ? 'text-emerald-300' : 'text-gray-600'}`}>
+        {empty ? 'Find Loot' : ability.name}
       </span>
     </div>
   );

@@ -1,6 +1,7 @@
 import {
   Sparkles, Heart, Code2, ExternalLink, X, ArrowLeft,
   Cpu, Wand2, Palette, Boxes, Zap, ArrowUpRight, Layers3,
+  Database, ShieldCheck, Triangle,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -21,9 +22,12 @@ const TECH_STACK: TechItem[] = [
   { label: '@react-three/fiber', hint: 'Loader scene · Canvas',   icon: Layers3, accent: '#60a5fa' },
   { label: '@react-three/drei',  hint: 'Preload · helpers',       icon: Sparkles, accent: '#a78bfa' },
   { label: 'three.js Postprocessing', hint: 'Bloom · GTAO · ACES · SMAA', icon: Wand2,   accent: '#c084fc' },
+  { label: 'Convex',            hint: 'Realtime DB · serverless', icon: Database, accent: '#f97316' },
+  { label: 'Convex Auth',       hint: 'Accounts · sessions',     icon: ShieldCheck, accent: '#22d3ee' },
   { label: 'Tailwind + Lucide', hint: 'Design system',           icon: Palette, accent: '#fbbf24' },
   { label: 'PeerJS',            hint: 'P2P multiplayer',         icon: Cpu,     accent: '#f87171' },
   { label: 'Vite',              hint: 'HMR · ESBuild',           icon: Zap,     accent: '#fb923c' },
+  { label: 'Vercel',            hint: 'Hosting · CI build',      icon: Triangle, accent: '#e5e7eb' },
 ];
 
 const CreditsMenu = ({ onClose }: CreditsMenuProps) => {

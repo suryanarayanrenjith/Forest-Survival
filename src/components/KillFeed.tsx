@@ -16,6 +16,11 @@ let killFeedEntries: KillFeedEntry[] = [];
 let updateCallback: (() => void) | null = null;
 
 export const addKillFeedEntry = (message: string, type: KillFeedEntry['type'] = 'kill') => {
+  // Power-up events are intentionally NOT shown in the kill feed — the
+  // bottom-centre toast already announces them. This keeps the top-right
+  // corner clean of the "X Active!" indicators for every power-up.
+  if (type === 'powerup') return;
+
   const entry: KillFeedEntry = {
     id: `${Date.now()}-${Math.random()}`,
     message,

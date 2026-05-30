@@ -213,13 +213,13 @@ export class TutorialSystem {
     this.addStep({
       id: 'abilities_intro',
       category: 'abilities',
-      title: 'Special Abilities',
+      title: 'Power-Ups & Loot',
       description: 'Unlock your potential',
       instructions: [
-        'Special abilities are mapped to the E, F, V and B keys',
-        'Each ability has a unique effect and a cooldown',
-        'Abilities can turn the tide of battle',
-        'Let\'s try a quick movement ability next...'
+        'Defeated enemies drop loot crates with a random power-up',
+        'You can carry only ONE power-up at a time',
+        'Press E to activate your held power-up, then find more loot',
+        'Dash is always available — let\'s try it next...'
       ],
       icon: '✨',
       required: true,
@@ -274,9 +274,9 @@ export class TutorialSystem {
       title: 'Power-ups',
       description: 'Collect enhancements',
       instructions: [
-        'Power-ups spawn randomly on the battlefield',
-        'Walk over them to collect',
-        'They provide health, ammo, or special effects',
+        'Loot crates drop from defeated enemies — the power inside is random',
+        'Walk over one to pick it up (you can hold just one)',
+        'Press E to use it, then hunt for more loot',
         'Collect a power-up to continue'
       ],
       icon: '⭐',

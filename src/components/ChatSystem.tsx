@@ -258,7 +258,10 @@ const ChatSystem = ({ manager, isVisible }: ChatSystemProps) => {
   if (!isVisible) return null;
 
   return (
-    <div className="absolute bottom-2 sm:bottom-4 left-2 sm:left-4 space-y-2" style={{ zIndex: 30 }}>
+    // Lifted up from the bottom edge so the panel clears the bottom-left
+    // stamina pie meter (HUD) that sits at bottom-4 left-4 — they used to
+    // overlap in multiplayer.
+    <div className="absolute bottom-24 sm:bottom-28 left-2 sm:left-4 space-y-2" style={{ zIndex: 30 }}>
       {/* Chat Messages - Responsive sizing */}
       {showChat && (
         <div className="w-[280px] sm:w-80 md:w-96 h-48 sm:h-56 md:h-64 bg-[#0b0f15]/95 backdrop-blur-md border border-white/10 rounded-2xl overflow-hidden flex flex-col">

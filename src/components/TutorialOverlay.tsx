@@ -1,5 +1,5 @@
-import React from 'react';
-import { Lightbulb, AlertTriangle, AlertOctagon, Siren, GraduationCap, X, type LucideIcon } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Lightbulb, AlertTriangle, AlertOctagon, Siren, GraduationCap, Play, Check, X, type LucideIcon } from 'lucide-react';
 import { type TutorialStep } from '../utils/TutorialSystem';
 
 interface TutorialOverlayProps {
@@ -7,57 +7,118 @@ interface TutorialOverlayProps {
   progress: number;
   onSkip?: () => void;
   onNext?: () => void;
+  /** Called when the player chooses to practise an interactive step — the host
+   *  unblocks input + locks the pointer so the action can be performed. */
+  onTry?: () => void;
   onEndTutorial?: () => void;
 }
+
+// Short, friendly prompt for each interactive action while the player practises.
+const ACTION_HINTS: Record<string, string> = {
+  move: 'Walk around with W A S D',
+  look: 'Move your mouse to look around',
+  shoot: 'Left-click to fire your weapon',
+  kill: 'Take down the approaching enemy',
+  reload: 'Press R to reload',
+  switch_weapon: 'Scroll the wheel or press 1–7',
+  use_ability: 'Press Q to Dash',
+  collect_powerup: 'Walk over the loot crate',
+};
 
 export const TutorialOverlay: React.FC<TutorialOverlayProps> = ({
   currentStep,
   progress,
   onSkip,
   onNext,
-  onEndTutorial
+  onTry,
+  onEndTutorial,
 }) => {
+  // An interactive step is one completed by performing an action — the player
+  // reads it, hits "Try it", and the card minimises so they can actually do it.
+  const interactive = currentStep?.completionCondition?.type === 'action';
+  const [trying, setTrying] = useState(false);
+
+  // Reset the practise state whenever the step changes (incl. auto-advance).
+  const lastIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (currentStep && currentStep.id !== lastIdRef.current) {
+      lastIdRef.current = currentStep.id;
+      setTrying(false);
+    }
+  }, [currentStep]);
+
   if (!currentStep) return null;
 
-  // All positions now use safe inset values that keep the card fully on-screen
-  // Center = dead center, top/bottom = centered horizontally near edge,
-  // left/right = centered vertically near the left/right side
+  const position = currentStep.position || 'center';
   const getPositionStyle = (pos: string): React.CSSProperties => {
     switch (pos) {
-      case 'top':
-        return { top: '1.5rem', left: '50%', transform: 'translateX(-50%)' };
-      case 'bottom':
-        return { bottom: '1.5rem', left: '50%', transform: 'translateX(-50%)' };
-      case 'left':
-        return { top: '50%', left: '1.5rem', transform: 'translateY(-50%)' };
-      case 'right':
-        return { top: '50%', right: '1.5rem', transform: 'translateY(-50%)' };
+      case 'top': return { top: '1.5rem', left: '50%', transform: 'translateX(-50%)' };
+      case 'bottom': return { bottom: '6.5rem', left: '50%', transform: 'translateX(-50%)' };
+      case 'left': return { top: '50%', left: '1.5rem', transform: 'translateY(-50%)' };
+      case 'right': return { top: '50%', right: '1.5rem', transform: 'translateY(-50%)' };
       case 'center':
-      default:
-        return { top: '50%', left: '50%', transform: 'translate(-50%, -50%)' };
+      default: return { top: '50%', left: '50%', transform: 'translate(-50%, -50%)' };
     }
   };
 
-  const position = currentStep.position || 'center';
+  const actionHint = (currentStep.completionCondition?.action && ACTION_HINTS[currentStep.completionCondition.action]) || 'Give it a try';
+  const done = currentStep.completed;
 
+  // ── PRACTISE MODE — minimised, non-blocking banner while the player tries ──
+  if (interactive && trying) {
+    return (
+      <div className="fixed inset-0 z-50 pointer-events-none">
+        <div
+          className="absolute bottom-24 left-1/2 -translate-x-1/2 pointer-events-auto"
+          style={{ animation: 'tutorialEnter 0.3s cubic-bezier(0.16,1,0.3,1) forwards' }}
+        >
+          <div className={`flex items-center gap-3 rounded-2xl border bg-black/75 backdrop-blur-md px-5 py-3 shadow-2xl transition-colors ${
+            done ? 'border-emerald-400/60' : 'border-emerald-400/25'
+          }`}>
+            <div className={`flex items-center justify-center w-9 h-9 rounded-xl flex-shrink-0 ${done ? 'bg-emerald-500/25' : 'bg-emerald-500/12'}`}>
+              {done ? <Check className="w-5 h-5 text-emerald-300" strokeWidth={2.5} /> : <Play className="w-4 h-4 text-emerald-400" strokeWidth={2.5} />}
+            </div>
+            <div className="min-w-0">
+              <div className="text-[10px] font-semibold tracking-[0.2em] text-emerald-300/80 uppercase">
+                {done ? 'Nice!' : 'Try it'}
+              </div>
+              <div className="text-sm font-semibold text-white whitespace-nowrap">
+                {done ? 'Great — moving on…' : actionHint}
+              </div>
+            </div>
+            {!done && (
+              <span className="ml-1 flex h-2 w-2 flex-shrink-0">
+                <span className="absolute inline-flex h-2 w-2 animate-ping rounded-full bg-emerald-400 opacity-75" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-400" />
+              </span>
+            )}
+            {!done && !currentStep.required && onSkip && (
+              <button
+                onClick={onSkip}
+                className="ml-2 text-[11px] font-semibold text-gray-400 transition-colors hover:text-gray-200"
+              >
+                Skip
+              </button>
+            )}
+          </div>
+        </div>
+        <style>{tutorialCss}</style>
+      </div>
+    );
+  }
+
+  // ── READING MODE — the instruction card (blocking) ─────────────────────────
   return (
     <div className="fixed inset-0 z-50">
-      {/* Dimmed backdrop */}
       <div className="absolute inset-0" style={{ background: 'rgba(5,8,10,0.6)', backdropFilter: 'blur(2px)' }} />
 
-      {/* Tutorial card */}
       <div
         className="absolute pointer-events-auto w-[90vw] max-w-md"
-        style={{
-          ...getPositionStyle(position),
-          animation: 'tutorialEnter 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards',
-        }}
+        style={{ ...getPositionStyle(position), animation: 'tutorialEnter 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards' }}
       >
         <div className="rounded-2xl border border-white/10 bg-[#0b0f15] overflow-hidden shadow-2xl">
-          {/* Accent edge */}
           <div className="h-0.5 w-full bg-emerald-400" />
 
-          {/* Header */}
           <div className="flex items-center gap-3 px-5 pt-4 pb-3">
             <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-emerald-500/12 flex-shrink-0">
               <GraduationCap className="w-5 h-5 text-emerald-400" strokeWidth={2} />
@@ -68,11 +129,9 @@ export const TutorialOverlay: React.FC<TutorialOverlayProps> = ({
             </div>
           </div>
 
-          {/* Content */}
           <div className="px-5 pb-5 space-y-3">
             <p className="text-sm text-gray-300 leading-relaxed">{currentStep.description}</p>
 
-            {/* Instructions */}
             {currentStep.instructions.length > 0 && (
               <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-3 space-y-1.5">
                 {currentStep.instructions.map((instruction, idx) => (
@@ -84,7 +143,6 @@ export const TutorialOverlay: React.FC<TutorialOverlayProps> = ({
               </div>
             )}
 
-            {/* Progress */}
             <div>
               <div className="flex justify-between text-[10px] font-semibold tracking-[0.12em] text-gray-500 uppercase mb-1.5">
                 <span>Progress</span>
@@ -95,13 +153,9 @@ export const TutorialOverlay: React.FC<TutorialOverlayProps> = ({
               </div>
             </div>
 
-            {/* Actions */}
             <div className="flex items-center gap-2 pt-1">
               {onEndTutorial && (
-                <button
-                  onClick={onEndTutorial}
-                  className="text-xs font-semibold text-gray-500 transition-colors hover:text-gray-300"
-                >
+                <button onClick={onEndTutorial} className="text-xs font-semibold text-gray-500 transition-colors hover:text-gray-300">
                   End Tutorial
                 </button>
               )}
@@ -109,17 +163,23 @@ export const TutorialOverlay: React.FC<TutorialOverlayProps> = ({
               {!currentStep.required && onSkip && (
                 <button
                   onClick={onSkip}
-                  className="rounded-lg px-3.5 py-2 text-xs font-semibold text-gray-300 border border-white/10
-                    transition-colors hover:bg-white/[0.06]"
+                  className="rounded-lg px-3.5 py-2 text-xs font-semibold text-gray-300 border border-white/10 transition-colors hover:bg-white/[0.06]"
                 >
                   Skip
                 </button>
               )}
-              {onNext && (
+              {interactive ? (
+                <button
+                  onClick={() => { setTrying(true); onTry?.(); }}
+                  className="flex items-center gap-1.5 rounded-lg px-5 py-2 text-xs font-bold tracking-wide text-[#04130a] transition-all duration-150 hover:-translate-y-0.5"
+                  style={{ background: 'linear-gradient(135deg, #34d399, #22c55e)' }}
+                >
+                  <Play className="w-3.5 h-3.5" strokeWidth={2.5} /> Try it
+                </button>
+              ) : onNext && (
                 <button
                   onClick={onNext}
-                  className="rounded-lg px-5 py-2 text-xs font-bold tracking-wide text-[#04130a]
-                    transition-all duration-150 hover:-translate-y-0.5"
+                  className="rounded-lg px-5 py-2 text-xs font-bold tracking-wide text-[#04130a] transition-all duration-150 hover:-translate-y-0.5"
                   style={{ background: 'linear-gradient(135deg, #34d399, #22c55e)' }}
                 >
                   Got it
@@ -130,23 +190,17 @@ export const TutorialOverlay: React.FC<TutorialOverlayProps> = ({
         </div>
       </div>
 
-      <style>{`
-        @keyframes tutorialEnter {
-          from {
-            opacity: 0;
-            transform: translateY(20px) scale(0.95);
-            filter: blur(5px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0) scale(1);
-            filter: blur(0);
-          }
-        }
-      `}</style>
+      <style>{tutorialCss}</style>
     </div>
   );
 };
+
+const tutorialCss = `
+  @keyframes tutorialEnter {
+    from { opacity: 0; transform: translateY(20px) scale(0.95); filter: blur(5px); }
+    to { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+  }
+`;
 
 interface CoachTipProps {
   icon: string;

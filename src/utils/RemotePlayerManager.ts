@@ -44,8 +44,10 @@ function asWeaponType(name: string | undefined): WeaponType {
 const MODEL_NATIVE_HEIGHT = RIG.headTopY;          // 4.45
 const PLAYER_EYE_HEIGHT = 5;                       // matches standingHeight in App.tsx
 const MODEL_SCALE = PLAYER_EYE_HEIGHT / MODEL_NATIVE_HEIGHT;
-const NAMEPLATE_Y = PLAYER_EYE_HEIGHT + 0.95;      // world units above feet
-const HEALTHBAR_Y = PLAYER_EYE_HEIGHT + 0.55;
+// Name tag sits on top, the health bar tucked directly beneath it so the two
+// read as a single floating "player card" rather than two stray sprites.
+const NAMEPLATE_Y = PLAYER_EYE_HEIGHT + 1.12;      // world units above feet
+const HEALTHBAR_Y = PLAYER_EYE_HEIGHT + 0.60;
 const POSITION_LERP_SPEED = 16;                    // higher = snappier; lower = smoother
 const ROTATION_LERP_SPEED = 14;
 
@@ -463,24 +465,40 @@ export class RemotePlayerManager {
     const ctx = rec.healthCtx;
     const w = rec.healthCanvas.width;
     const h = rec.healthCanvas.height;
+    const pad = 3;
+    const radius = (h - pad * 2) / 2; // full pill rounding
     ctx.clearRect(0, 0, w, h);
 
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    ctx.fillRect(0, 0, w, h);
+    // ── Track (rounded translucent pill backdrop) ──
+    this.roundRect(ctx, 1, 1, w - 2, h - 2, radius + 2);
+    ctx.fillStyle = 'rgba(6,9,14,0.78)';
+    ctx.fill();
 
-    const fillW = w * pct;
-    let r = 32, g = 200, b = 96;
-    if (pct < 0.55) { r = 245; g = 175; b = 50; }
-    if (pct < 0.30) { r = 240; g = 70; b = 70; }
-    const grd = ctx.createLinearGradient(0, 0, 0, h);
-    grd.addColorStop(0, `rgba(${r + 30},${g + 30},${b + 30},1)`);
-    grd.addColorStop(1, `rgba(${r},${g},${b},1)`);
-    ctx.fillStyle = grd;
-    ctx.fillRect(2, 2, Math.max(0, fillW - 4), h - 4);
+    // ── Fill (color-coded by health, vertical gradient for a glossy read) ──
+    let r = 46, g = 214, b = 120;            // healthy → emerald
+    if (pct < 0.55) { r = 250; g = 186; b = 60; }   // hurt → amber
+    if (pct < 0.28) { r = 244; g = 78; b = 78; }     // critical → red
+    const innerW = (w - pad * 2) * pct;
+    if (innerW > 1) {
+      const grd = ctx.createLinearGradient(0, pad, 0, h - pad);
+      grd.addColorStop(0, `rgba(${Math.min(255, r + 45)},${Math.min(255, g + 45)},${Math.min(255, b + 45)},1)`);
+      grd.addColorStop(0.5, `rgba(${r},${g},${b},1)`);
+      grd.addColorStop(1, `rgba(${Math.max(0, r - 35)},${Math.max(0, g - 35)},${Math.max(0, b - 35)},1)`);
+      this.roundRect(ctx, pad, pad, Math.max(radius * 2, innerW), h - pad * 2, radius);
+      ctx.fillStyle = grd;
+      ctx.fill();
+      // Top sheen
+      ctx.beginPath();
+      this.roundRect(ctx, pad, pad, Math.max(radius * 2, innerW), (h - pad * 2) * 0.45, radius);
+      ctx.fillStyle = 'rgba(255,255,255,0.18)';
+      ctx.fill();
+    }
 
-    ctx.strokeStyle = 'rgba(255,255,255,0.65)';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(1, 1, w - 2, h - 2);
+    // ── Border ──
+    this.roundRect(ctx, 1, 1, w - 2, h - 2, radius + 2);
+    ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
 
     rec.healthTexture.needsUpdate = true;
   }
@@ -532,17 +550,19 @@ export class RemotePlayerManager {
     });
 
     // ── Health bar sprite (canvas-backed, updated on health change) ─────
+    // Higher-res canvas + anisotropy so the pill stays crisp up close.
     const healthCanvas = document.createElement('canvas');
-    healthCanvas.width = 128;
-    healthCanvas.height = 14;
+    healthCanvas.width = 256;
+    healthCanvas.height = 32;
     const healthCtx = healthCanvas.getContext('2d')!;
     const healthTexture = new THREE.CanvasTexture(healthCanvas);
     healthTexture.minFilter = THREE.LinearFilter;
     healthTexture.magFilter = THREE.LinearFilter;
+    healthTexture.anisotropy = 4;
     const healthBar = new THREE.Sprite(new THREE.SpriteMaterial({
       map: healthTexture, depthTest: true, depthWrite: false, transparent: true,
     }));
-    healthBar.scale.set(1.55, 0.17, 1);
+    healthBar.scale.set(1.95, 0.26, 1);
     healthBar.position.set(0, HEALTHBAR_Y, 0);
     group.add(healthBar);
 
@@ -605,32 +625,52 @@ export class RemotePlayerManager {
 
   private makeNameplateSprite(name: string, color: number): THREE.Sprite {
     const canvas = document.createElement('canvas');
-    canvas.width = 256;
-    canvas.height = 64;
+    canvas.width = 320;
+    canvas.height = 84;
     const ctx = canvas.getContext('2d')!;
 
-    ctx.fillStyle = 'rgba(8, 10, 14, 0.78)';
-    this.roundRect(ctx, 4, 8, canvas.width - 8, canvas.height - 16, 10);
-    ctx.fill();
+    const hex = `#${(color >>> 0).toString(16).padStart(6, '0').slice(-6)}`;
+    const cardX = 6, cardY = 12;
+    const cardW = canvas.width - 12, cardH = canvas.height - 24;
+    const cardR = 16;
 
-    ctx.fillStyle = `#${color.toString(16).padStart(6, '0')}`;
-    this.roundRect(ctx, 4, 8, 8, canvas.height - 16, 4);
+    // Soft drop shadow beneath the card for separation from the world.
+    ctx.save();
+    ctx.shadowColor = 'rgba(0,0,0,0.55)';
+    ctx.shadowBlur = 10;
+    ctx.shadowOffsetY = 3;
+    this.roundRect(ctx, cardX, cardY, cardW, cardH, cardR);
+    // Vertical gradient body — deep slate, subtly lighter at the top.
+    const body = ctx.createLinearGradient(0, cardY, 0, cardY + cardH);
+    body.addColorStop(0, 'rgba(20,26,34,0.92)');
+    body.addColorStop(1, 'rgba(8,11,16,0.92)');
+    ctx.fillStyle = body;
     ctx.fill();
+    ctx.restore();
 
-    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+    // Player-colour accent bar down the left edge.
+    this.roundRect(ctx, cardX + 4, cardY + 6, 7, cardH - 12, 3.5);
+    ctx.fillStyle = hex;
+    ctx.shadowColor = hex;
+    ctx.shadowBlur = 8;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    // Hairline border tinted toward the player colour.
+    this.roundRect(ctx, cardX, cardY, cardW, cardH, cardR);
+    ctx.strokeStyle = 'rgba(255,255,255,0.22)';
     ctx.lineWidth = 2;
-    this.roundRect(ctx, 4, 8, canvas.width - 8, canvas.height - 16, 10);
     ctx.stroke();
 
     let text = name || 'Player';
     if (text.length > 16) text = text.slice(0, 15) + '…';
     ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 26px "Inter", "Segoe UI", system-ui, sans-serif';
+    ctx.font = '700 34px "Inter", "Segoe UI", system-ui, sans-serif';
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';
-    ctx.shadowColor = 'rgba(0,0,0,0.7)';
-    ctx.shadowBlur = 4;
-    ctx.fillText(text, 24, 32);
+    ctx.shadowColor = 'rgba(0,0,0,0.85)';
+    ctx.shadowBlur = 5;
+    ctx.fillText(text, cardX + 24, canvas.height / 2 + 1);
     ctx.shadowBlur = 0;
 
     const tex = new THREE.CanvasTexture(canvas);
@@ -641,7 +681,7 @@ export class RemotePlayerManager {
     const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
       map: tex, depthTest: true, depthWrite: false, transparent: true,
     }));
-    sprite.scale.set(2.4, 0.6, 1);
+    sprite.scale.set(2.7, 0.71, 1);
     return sprite;
   }
 

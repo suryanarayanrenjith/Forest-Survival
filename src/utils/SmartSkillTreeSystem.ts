@@ -549,6 +549,33 @@ export class SmartSkillTreeSystem {
   }
 
   /**
+   * Load persisted progression from the DB into the live system. Sets each
+   * skill's level, recomputes spent points, and applies the player's available
+   * points. Called once at match start for authenticated players so unlocked
+   * skills apply from the first frame.
+   */
+  public hydrate(skills: Record<string, number>, availablePoints: number): void {
+    this.state.unlockedSkills.clear();
+    for (const skill of this.skills.values()) {
+      skill.currentLevel = 0;
+    }
+
+    let spent = 0;
+    for (const [skillId, rawLevel] of Object.entries(skills)) {
+      const skill = this.skills.get(skillId);
+      if (!skill || rawLevel <= 0) continue;
+      const level = Math.min(Math.floor(rawLevel), skill.maxLevel);
+      skill.currentLevel = level;
+      this.state.unlockedSkills.set(skillId, level);
+      spent += skill.cost * level;
+    }
+
+    this.state.spentPoints = spent;
+    this.state.availablePoints = Math.max(0, Math.floor(availablePoints));
+    this.state.totalPoints = this.state.availablePoints + spent;
+  }
+
+  /**
    * Reset skill tree (respec)
    */
   public reset(refundPoints: boolean = true): void {

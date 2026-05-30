@@ -10,13 +10,73 @@ export interface Achievement {
   rarity: 'common' | 'rare' | 'epic' | 'legendary';
 }
 
+/**
+ * Stable, ordered list of achievement IDs. The index of each ID is its bit
+ * position in the persisted `achievements` bitmask in Convex. APPEND-ONLY —
+ * never reorder or remove entries, or existing players' unlocks will shift.
+ */
+export const ACHIEVEMENT_ORDER = [
+  'first_blood', 'slayer', 'massacre', 'legend',
+  'hot_streak', 'unstoppable',
+  'survivor', 'veteran', 'invincible',
+  'sharpshooter', 'deadeye',
+  'close_call', 'resourceful', 'arsenal', 'speed_demon', 'no_damage',
+  'team_player', 'champion',
+] as const;
+
 export class AchievementSystem {
   private achievements: Map<string, Achievement> = new Map();
   private listeners: ((achievement: Achievement) => void)[] = [];
+  private enabled: boolean;
+  private persistLocal: boolean;
 
-  constructor() {
+  /**
+   * @param opts.enabled       when false, progress updates are ignored entirely
+   *                           (guest play — achievements are locked).
+   * @param opts.persistLocal  when true, mirror progress to localStorage. Off
+   *                           by default; authenticated users use the DB instead.
+   */
+  constructor(opts?: { enabled?: boolean; persistLocal?: boolean }) {
+    this.enabled = opts?.enabled ?? true;
+    this.persistLocal = opts?.persistLocal ?? false;
     this.initializeAchievements();
-    this.loadProgress();
+    if (this.persistLocal) {
+      this.loadProgress();
+    }
+  }
+
+  setEnabled(enabled: boolean) {
+    this.enabled = enabled;
+  }
+
+  /** Compute the bit for a single achievement id (0 if unknown). */
+  static bitFor(id: string): number {
+    const index = ACHIEVEMENT_ORDER.indexOf(id as (typeof ACHIEVEMENT_ORDER)[number]);
+    return index >= 0 ? (1 << index) : 0;
+  }
+
+  /** Mark achievements unlocked from a persisted bitmask (DB hydration). */
+  hydrateFromMask(mask: number) {
+    ACHIEVEMENT_ORDER.forEach((id, index) => {
+      if (mask & (1 << index)) {
+        const achievement = this.achievements.get(id);
+        if (achievement) {
+          achievement.unlocked = true;
+          achievement.progress = achievement.target;
+        }
+      }
+    });
+  }
+
+  /** Bitmask of all currently-unlocked achievements. */
+  getUnlockedMask(): number {
+    let mask = 0;
+    ACHIEVEMENT_ORDER.forEach((id, index) => {
+      if (this.achievements.get(id)?.unlocked) {
+        mask |= (1 << index);
+      }
+    });
+    return mask;
   }
 
   private initializeAchievements() {
@@ -257,6 +317,7 @@ export class AchievementSystem {
   }
 
   private saveProgress() {
+    if (!this.persistLocal) return;
     try {
       const progress: Record<string, { unlocked: boolean; progress: number }> = {};
       this.achievements.forEach((achievement, id) => {
@@ -272,6 +333,7 @@ export class AchievementSystem {
   }
 
   updateProgress(achievementId: string, increment: number = 1): boolean {
+    if (!this.enabled) return false;
     const achievement = this.achievements.get(achievementId);
     if (!achievement || achievement.unlocked) return false;
 
@@ -289,6 +351,7 @@ export class AchievementSystem {
   }
 
   setProgress(achievementId: string, value: number): boolean {
+    if (!this.enabled) return false;
     const achievement = this.achievements.get(achievementId);
     if (!achievement || achievement.unlocked) return false;
 

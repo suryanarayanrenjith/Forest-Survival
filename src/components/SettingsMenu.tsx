@@ -3,7 +3,7 @@ import {
   Settings, X, Gamepad2, Volume2, SlidersHorizontal, Monitor,
   ArrowUp, ArrowDown, ArrowLeft, ArrowRight, ChevronsUp, Wind, Zap,
   Mouse, Crosshair, Target, RotateCcw, Grid3x3, Pause, Music, MousePointer2,
-  Eye, Activity, Skull, Hash, Check, Headphones, type LucideIcon,
+  Eye, Activity, Skull, Hash, Check, Headphones, Sparkles, type LucideIcon,
 } from 'lucide-react';
 import { soundManager } from '../utils/SoundManager';
 import { gameSettingsManager } from '../utils/GameSettingsManager';
@@ -69,6 +69,7 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
     { key: 'Space', action: 'Jump', icon: ChevronsUp },
     { key: 'Shift', action: 'Sprint', icon: Wind },
     { key: 'Q', action: 'Dash', icon: Zap },
+    { key: 'E', action: 'Use Power-Up', icon: Sparkles },
     { key: 'Mouse', action: 'Look Around', icon: Mouse },
     { key: 'LMB', action: 'Shoot', icon: Crosshair },
     { key: 'RMB', action: 'Aim (Sniper / Rifle)', icon: Target },

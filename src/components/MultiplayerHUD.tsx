@@ -1,5 +1,6 @@
 import { Timer, Users, Swords, Crosshair, Skull, Star } from 'lucide-react';
 import type { PlayerData } from '../utils/MultiplayerManager';
+import { RANK_TIERS } from '../utils/rankSystem';
 
 interface MultiplayerHUDProps {
   localPlayer: PlayerData;
@@ -82,6 +83,15 @@ const MultiplayerHUD = ({ localPlayer, remotePlayers, remainingTime, gameMode }:
                     {player.name}
                     {isLocal && <span className="text-emerald-400 ml-1">· you</span>}
                   </span>
+                  {player.rankTier !== undefined && RANK_TIERS[player.rankTier] && (
+                    <span
+                      className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide flex-shrink-0"
+                      style={{ color: RANK_TIERS[player.rankTier].color, background: `${RANK_TIERS[player.rankTier].color}22` }}
+                      title={`${RANK_TIERS[player.rankTier].name}${player.level ? ` · Level ${player.level}` : ''}`}
+                    >
+                      {RANK_TIERS[player.rankTier].name}
+                    </span>
+                  )}
                   {!player.isAlive && <Skull className="w-3.5 h-3.5 text-red-500 flex-shrink-0" strokeWidth={2.25} />}
                 </div>
 
