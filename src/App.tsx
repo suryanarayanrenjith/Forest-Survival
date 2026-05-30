@@ -190,7 +190,7 @@ const enhancedSettingsToUserSettings = (settings: GameSettings): Partial<UserSet
   damageNumbers: settings.showDamageNumbers,
 });
 
-const MENU_MUSIC_URL = '/audio/Before_The_Breach.mp3';
+const MENU_MUSIC_URL = '/audio/Beyond_The_Overgrowth.mp3';
 
 // Fixed key order so the serialized settings blob is stable for equality checks
 // (avoids spurious DB writes when the object identity changes but values don't).
