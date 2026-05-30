@@ -84,9 +84,16 @@ export type NetworkMessage =
   | { type: 'game_over'; winnerId: string; finalStats: PlayerData[] }
   | { type: 'enemy_killed'; playerId: string }
   // ── Shared-enemy (host-authoritative) sync ──
-  // Host broadcasts the full living-enemy set to all guests several times a
-  // second; guests render/interpolate from it instead of spawning their own.
-  | { type: 'enemy_sync'; enemies: EnemyWire[]; wave: number }
+  // Host streams enemy state to guests so everyone sees the same enemies.
+  // `full=true` is a KEYFRAME (the complete authoritative set — guests cull
+  // anything absent); `full=false` is a DELTA carrying only the enemies that
+  // changed since the last send (guests patch, never cull). Deltas slash
+  // bandwidth; a keyframe ~1×/sec self-heals any drift.
+  | { type: 'enemy_sync'; enemies: EnemyWire[]; wave: number; full: boolean }
+  // Guest → host: "I've finished warming up and I'm in the match." The host
+  // withholds the enemy stream until a guest is ready so it never floods a
+  // peer that's still on the loading screen.
+  | { type: 'client_ready'; playerId: string }
   // Guest → host: "my bullet hit shared enemy N for D damage". Host (the only
   // authority on enemy health) applies it and may award the kill.
   | { type: 'enemy_hit'; netId: number; damage: number; isCritical: boolean; shooterId: string }
@@ -135,6 +142,11 @@ export class MultiplayerManager {
   private isHost: boolean = false;
   private gameState: GameState | null = null;
   private messageHandlers: Map<string, Set<(data: unknown) => void>> = new Map(); // Changed to Set for deduplication
+
+  // Host-side: peers that have signalled `client_ready` for the current
+  // match. The host gates its enemy-sync stream on this so it never floods
+  // a guest that's still warming up. Cleared at the start of every match.
+  private readyPeers: Set<string> = new Set();
 
   // Throttling state
   private lastPositionUpdate: number = 0;
@@ -210,7 +222,6 @@ export class MultiplayerManager {
         this.startHeartbeat();
         this.startConnectionMonitoring();
 
-        console.log('Lobby created with ID:', id);
         resolve(id);
       });
 
@@ -271,6 +282,7 @@ export class MultiplayerManager {
 
           // Remove the timed out player
           this.remotePlayers.delete(playerId);
+          this.readyPeers.delete(playerId);
           if (this.gameState) {
             this.gameState.players.delete(playerId);
           }
@@ -316,7 +328,6 @@ export class MultiplayerManager {
           this.startHeartbeat();
           this.startConnectionMonitoring();
 
-          console.log('Joined lobby:', lobbyId);
           resolve();
         });
 
@@ -349,6 +360,7 @@ export class MultiplayerManager {
     conn.on('close', () => {
       this.connections.delete(conn.peer);
       this.remotePlayers.delete(conn.peer);
+      this.readyPeers.delete(conn.peer);
 
       // Notify others about player leaving
       this.broadcastMessage({
@@ -356,7 +368,6 @@ export class MultiplayerManager {
         playerId: conn.peer
       });
 
-      console.log('Player disconnected:', conn.peer);
     });
   }
 
@@ -375,7 +386,6 @@ export class MultiplayerManager {
       case 'player_joined':
         // Clamp untrusted peer-reported fields before storing/relaying.
         message.data = sanitizeRemotePlayer(message.data);
-        console.log('[MultiplayerManager] Player join request:', message.data.name);
 
         if (this.isHost && this.gameState) {
           // Check for duplicate names (case- and whitespace-insensitive)
@@ -384,7 +394,6 @@ export class MultiplayerManager {
             .find(p => (p.name || '').trim().toLowerCase() === incomingName);
 
           if (existingPlayerWithName) {
-            console.log('[MultiplayerManager] Rejecting player - duplicate name:', message.data.name);
             // Reject the player
             this.sendMessage(conn, {
               type: 'player_rejected',
@@ -396,7 +405,6 @@ export class MultiplayerManager {
           }
 
           // Name is unique, accept player
-          console.log('[MultiplayerManager] Accepting player:', message.data.name);
           message.data.lastHeartbeat = Date.now();
           this.remotePlayers.set(message.data.id, message.data);
 
@@ -407,7 +415,6 @@ export class MultiplayerManager {
           // This prevents auto-starting when players join the lobby
           // Note: startTime is undefined (not null) when game hasn't started, so use truthy check
           if (this.gameState.startTime) {
-            console.log('[MultiplayerManager] Game already in progress, sending game state to new player');
             this.sendMessage(conn, {
               type: 'game_start',
               gameState: {
@@ -419,7 +426,6 @@ export class MultiplayerManager {
                       }
             });
           } else {
-            console.log('[MultiplayerManager] Game not started yet, player added to lobby');
             // Send current player list to the joining player so they see everyone in lobby
             this.sendPlayerListToNewPlayer(conn);
           }
@@ -495,7 +501,6 @@ export class MultiplayerManager {
         break;
 
       case 'player_rejected': {
-        console.log('[MultiplayerManager] Player rejected by host:', message.reason);
         // Forward to registered handlers so lobby can show error
         const playerRejectedHandlers = this.messageHandlers.get('player_rejected');
         if (playerRejectedHandlers) {
@@ -505,15 +510,10 @@ export class MultiplayerManager {
       }
 
       case 'game_start':
-        console.log('[MultiplayerManager] ===== Received game_start message =====');
-        console.log('[MultiplayerManager] Message:', JSON.stringify(message, null, 2));
-        console.log('[MultiplayerManager] isHost:', this.isHost);
-
         if (message.gameState) {
           // Reconstruct players Map from the wire-format array
           const playersMap = new Map<string, PlayerData>();
           if (Array.isArray(message.gameState.players)) {
-            console.log(`Reconstructing players map from array (${message.gameState.players.length} players)`);
             message.gameState.players.forEach((player) => {
               playersMap.set(player.id, player);
             });
@@ -530,15 +530,12 @@ export class MultiplayerManager {
               this.remotePlayers.set(id, player);
             }
           });
-
-          console.log(`Game state updated - Mode: ${this.gameState.gameMode}, Local players: ${playersMap.size}, Remote players: ${this.remotePlayers.size}`);
         }
 
         // Forward to registered handlers so App.tsx can start the game
         {
           const gameStartHandlers = this.messageHandlers.get('game_start');
           if (gameStartHandlers && gameStartHandlers.size > 0) {
-            console.log(`Forwarding game_start to ${gameStartHandlers.size} registered handler(s)`);
             gameStartHandlers.forEach(handler => handler(message));
           } else {
             console.warn('No game_start handler registered!');
@@ -547,8 +544,6 @@ export class MultiplayerManager {
         break;
 
       case 'game_restart': {
-        console.log('[MultiplayerManager] ===== Received game_restart message =====');
-
         if (message.gameState) {
           const playersMap = new Map<string, PlayerData>();
           if (Array.isArray(message.gameState.players)) {
@@ -590,8 +585,6 @@ export class MultiplayerManager {
       }
 
       case 'return_to_lobby': {
-        console.log('[MultiplayerManager] ===== Received return_to_lobby message =====');
-
         if (message.gameState) {
           const playersMap = new Map<string, PlayerData>();
           if (Array.isArray(message.gameState.players)) {
@@ -655,6 +648,19 @@ export class MultiplayerManager {
         break;
       }
 
+      // Guest → host readiness. Host records the peer so its enemy stream can
+      // begin; still forwarded to handlers (App uses it to force a keyframe).
+      case 'client_ready': {
+        if (this.isHost && message.playerId) {
+          this.readyPeers.add(message.playerId);
+        }
+        const handlers = this.messageHandlers.get('client_ready');
+        if (handlers) {
+          handlers.forEach(handler => handler(message));
+        }
+        break;
+      }
+
       // Shared-enemy traffic. Star topology means host↔guest is a direct link,
       // so these are never relayed — they go straight to the registered
       // handlers (enemy_hit lands on the host; the rest land on guests).
@@ -684,7 +690,6 @@ export class MultiplayerManager {
     // so they can see everyone in the lobby
     if (!this.gameState) return;
 
-    console.log('[MultiplayerManager] Sending existing player list to new player');
     this.gameState.players.forEach((player, playerId) => {
       if (playerId !== conn.peer) {
         this.sendMessage(conn, {
@@ -696,20 +701,11 @@ export class MultiplayerManager {
   }
 
   broadcastMessage(message: NetworkMessage, excludePeerId?: string) {
-    const targetCount = Array.from(this.connections.keys()).filter(id => id !== excludePeerId).length;
-    console.log(`[MultiplayerManager] Broadcasting ${message.type} to ${targetCount} connection(s)`, excludePeerId ? `(excluding ${excludePeerId})` : '');
-    console.log(`[MultiplayerManager] Total connections: ${this.connections.size}`);
-    console.log(`[MultiplayerManager] Connection IDs:`, Array.from(this.connections.keys()));
-
-    let sentCount = 0;
     this.connections.forEach((conn, peerId) => {
       if (peerId !== excludePeerId) {
-        console.log(`[MultiplayerManager]  -> Sending ${message.type} to peer ${peerId}, connection open:`, conn.open);
         this.sendMessage(conn, message);
-        sentCount++;
       }
     });
-    console.log(`[MultiplayerManager] Successfully sent to ${sentCount} peers`);
   }
 
   updateLocalPlayer(updates: Partial<PlayerData>) {
@@ -816,9 +812,28 @@ export class MultiplayerManager {
   // Thin wrappers over broadcastMessage so App.tsx stays declarative about the
   // host-authoritative enemy protocol.
 
-  /** Host → all guests: the full living-enemy snapshot for this tick. */
-  broadcastEnemySync(enemies: EnemyWire[], wave: number): void {
-    this.broadcastMessage({ type: 'enemy_sync', enemies, wave });
+  /**
+   * Host → all guests: an enemy snapshot. `full=true` is a keyframe (complete
+   * set, guests cull anything missing); `full=false` is a delta (changed
+   * enemies only, guests patch without culling).
+   */
+  broadcastEnemySync(enemies: EnemyWire[], wave: number, full: boolean): void {
+    this.broadcastMessage({ type: 'enemy_sync', enemies, wave, full });
+  }
+
+  /** Guest → host: signal that this client has finished warming up. */
+  sendClientReady(): void {
+    this.broadcastMessage({ type: 'client_ready', playerId: this.localPlayer.id });
+  }
+
+  /** Host-side: has at least one guest signalled ready for this match? */
+  hasReadyGuest(): boolean {
+    return this.readyPeers.size > 0;
+  }
+
+  /** Number of currently-open peer connections. */
+  getConnectionCount(): number {
+    return this.connections.size;
   }
 
   /** Guest → host: report a bullet hit on a shared enemy. */
@@ -841,22 +856,16 @@ export class MultiplayerManager {
   private checkGameOver() {
     if (!this.gameState) return;
 
-    console.log('[MultiplayerManager] Checking game over conditions...');
-
     const allPlayers = Array.from(this.gameState.players.values());
     const alivePlayers = allPlayers.filter(p => p.isAlive);
-
-    console.log(`[MultiplayerManager] Alive: ${alivePlayers.length}/${allPlayers.length}`);
 
     let shouldEndGame = false;
 
     // Game ends when all players are dead OR only one player remains in survival mode
     if (alivePlayers.length === 0) {
       shouldEndGame = true;
-      console.log('[MultiplayerManager] All players dead - game over');
     } else if (alivePlayers.length === 1 && allPlayers.length > 1 && this.gameState.gameMode === 'survival') {
       shouldEndGame = true;
-      console.log('[MultiplayerManager] Last player standing in survival mode - game over');
     }
 
     // Only host broadcasts game over
@@ -867,9 +876,6 @@ export class MultiplayerManager {
         return b.score - a.score; // Tiebreaker: higher score
       });
       const winner = sortedByKills[0];
-
-      console.log(`[MultiplayerManager] Winner (most kills): ${winner.name} with ${winner.kills} kills`);
-      console.log('[MultiplayerManager] Broadcasting game_over message');
 
       const finalStats = Array.from(this.gameState.players.values());
       const gameOverMessage = {
@@ -884,7 +890,6 @@ export class MultiplayerManager {
       // Also trigger the handlers locally for the host
       const gameOverHandlers = this.messageHandlers.get('game_over');
       if (gameOverHandlers) {
-        console.log('[MultiplayerManager] Triggering game_over handlers for host');
         gameOverHandlers.forEach(handler => handler(gameOverMessage));
       }
     }
@@ -943,6 +948,9 @@ export class MultiplayerManager {
     // Reset stats locally
     this.resetGameStats();
 
+    // Fresh match → guests re-warm and must re-signal readiness.
+    this.readyPeers.clear();
+
     // Use previous settings if not overridden
     const mode = gameMode || this.gameState.gameMode;
     const tLimit = timeLimit !== undefined ? timeLimit : this.gameState.timeLimit;
@@ -958,8 +966,6 @@ export class MultiplayerManager {
 
     // Make sure local player is in gameState.players
     this.gameState.players.set(this.localPlayer.id, this.localPlayer);
-
-    console.log('[MultiplayerManager] Restarting game in existing lobby - Players:', this.gameState.players.size);
 
     const restartMessage = {
       type: 'game_restart' as const,
@@ -996,8 +1002,6 @@ export class MultiplayerManager {
     // but clear startTime so the lobby reads as "not in a match".
     this.gameState.startTime = undefined;
     this.gameState.players.set(this.localPlayer.id, this.localPlayer);
-
-    console.log('[MultiplayerManager] Returning all players to lobby - Players:', this.gameState.players.size);
 
     const lobbyMessage = {
       type: 'return_to_lobby' as const,
@@ -1051,23 +1055,20 @@ export class MultiplayerManager {
     map?: string,
     difficulty?: 'easy' | 'medium' | 'hard' | 'adaptive',
   ) {
-    console.log('[MultiplayerManager] ===== startGame() called =====');
-    console.log('[MultiplayerManager] gameMode:', gameMode, 'timeLimit:', timeLimit, 'map:', map, 'difficulty:', difficulty);
-    console.log('[MultiplayerManager] isHost:', this.isHost, 'has gameState:', !!this.gameState);
-
     if (!this.isHost || !this.gameState) {
       console.warn('[MultiplayerManager] Cannot start game - not host or no game state');
       return;
     }
+
+    // Fresh match → guests must re-signal readiness before the enemy stream
+    // resumes (they each re-run warmup on game_start).
+    this.readyPeers.clear();
 
     this.gameState.gameMode = gameMode;
     this.gameState.timeLimit = timeLimit;
     this.gameState.startTime = Date.now();
     this.gameState.map = map;
     this.gameState.difficulty = difficulty;
-
-    console.log(`[MultiplayerManager] Host starting game - Mode: ${gameMode}, Map: ${map}, Difficulty: ${difficulty}, Players: ${this.gameState.players.size}, Connections: ${this.connections.size}`);
-    console.log('[MultiplayerManager] Players:', Array.from(this.gameState.players.values()).map(p => ({ id: p.id, name: p.name })));
 
     // Convert Map to array for serialization (cast to any for network transmission)
     const gameStartMessage = {
@@ -1083,9 +1084,7 @@ export class MultiplayerManager {
       }
     };
 
-    console.log('[MultiplayerManager] Broadcasting game_start message...');
     this.broadcastMessage(gameStartMessage);
-    console.log('[MultiplayerManager] Broadcast complete!');
   }
 
   /**
@@ -1101,12 +1100,10 @@ export class MultiplayerManager {
 
     // Check if this exact handler is already registered (deduplication)
     if (handlers.has(handler)) {
-      console.log(`Handler for ${type} already registered, skipping duplicate`);
       return () => this.offMessage(type, handler);
     }
 
     handlers.add(handler);
-    console.log(`Registered handler for ${type} (total: ${handlers.size})`);
 
     // Return unsubscribe function
     return () => this.offMessage(type, handler);
@@ -1119,7 +1116,6 @@ export class MultiplayerManager {
     const handlers = this.messageHandlers.get(type);
     if (handlers) {
       handlers.delete(handler);
-      console.log(`Removed handler for ${type} (remaining: ${handlers.size})`);
     }
   }
 

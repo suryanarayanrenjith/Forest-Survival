@@ -334,9 +334,19 @@ const ForestSurvivalGame = () => {
   const [isSpectating, setIsSpectating] = useState(false); // Track if local player is eliminated and spectating
   const [, setMultiplayerKillFeed] = useState<Array<{ id: string; killerName: string; victimName: string; victimColor: number; weapon: string; timestamp: number }>>([]);
   const [lastKillerInfo, setLastKillerInfo] = useState<{ killerName: string; weapon: string } | null>(null);
+  // Guest-only: true between entering the match and the first enemy keyframe
+  // arriving from the host. Drives a small "syncing" affordance so a slow
+  // connection shows progress instead of an empty world.
+  const [mpWaitingForHost, setMpWaitingForHost] = useState(false);
   const [, setMpStatsTick] = useState(0); // Force HUD re-render for remote player stats
   const [gameRestartKey, setGameRestartKey] = useState(0); // Bump to force game useEffect re-run on restart
   const multiplayerTimeLimitRef = useRef<number | undefined>(undefined);
+  // Guards handleMultiplayerStartGame against duplicate/late game_start
+  // messages re-entering the match flow. Reset on leaving the match.
+  const mpStartHandledRef = useRef(false);
+  // Mirrors mpWaitingForHost for reads inside the game loop (avoids stale
+  // closures) and lets us clear the affordance once without setState spam.
+  const mpWaitingForHostRef = useRef(false);
 
   // Achievement system state — supports multiple in-flight notifications
   type QueuedAchievement = Achievement & { queueId: number };
@@ -391,6 +401,16 @@ const ForestSurvivalGame = () => {
     }));
   }, [gameStarted, isAuthenticated, playerStats]);
 
+  // Leaving a match (back to lobby / menu / game-over) re-arms the
+  // multiplayer start guard so the next match can begin cleanly.
+  useEffect(() => {
+    if (!gameStarted) {
+      mpStartHandledRef.current = false;
+      mpWaitingForHostRef.current = false;
+      setMpWaitingForHost(false);
+    }
+  }, [gameStarted]);
+
   // Game settings
   const [gameSettings, setGameSettings] = useState<GameSettings>(() => createEnhancedSettingsDefaults(gameSettingsManager.getSettings()));
 
@@ -405,7 +425,6 @@ const ForestSurvivalGame = () => {
     const role = params.get('role');
 
     if (lobbyId && role) {
-      console.log('[App] Detected multiplayer session in URL - lobby:', lobbyId, 'role:', role);
       // Go directly to multiplayer lobby, which will handle the auto-rejoin
       setGameMode('multiplayer');
       setShowMultiplayerLobby(true);
@@ -605,8 +624,6 @@ const ForestSurvivalGame = () => {
   useEffect(() => {
     if (!multiplayerManager) return;
 
-    console.log('[App] Setting up multiplayer listeners - isHost:', multiplayerManager.isGameHost());
-
     // Helper: narrow the polymorphic network payload to the message
     // variant we just subscribed to. The MultiplayerManager dispatches
     // each handler by string type, so the cast is sound at runtime.
@@ -616,7 +633,6 @@ const ForestSurvivalGame = () => {
     // Listen for game over
     const unsubGameOver = multiplayerManager.onMessage('game_over', (raw) => {
       const data = asMsg<'game_over'>(raw);
-      console.log('[App] Received game_over message:', data);
       setMultiplayerWinner(data.winnerId);
       setMultiplayerGameOver(true);
       // Stop all sounds when game is over
@@ -626,7 +642,6 @@ const ForestSurvivalGame = () => {
     // Listen for kill events - real-time killer/victim info
     const unsubKilled = multiplayerManager.onMessage('player_killed', (raw) => {
       const data = asMsg<'player_killed'>(raw);
-      console.log('[App] Received player_killed:', data);
       const entry = {
         id: `kill-${data.timestamp}-${Math.random().toString(36).slice(2, 6)}`,
         killerName: data.killerName || 'Unknown',
@@ -647,7 +662,6 @@ const ForestSurvivalGame = () => {
     // Listen for game restart (guests receive this from host)
     const unsubRestart = multiplayerManager.onMessage('game_restart', (raw) => {
       const data = asMsg<'game_restart'>(raw);
-      console.log('[App] Received game_restart - resetting local state');
       // Reset UI state
       setMultiplayerGameOver(false);
       setMultiplayerWinner(null);
@@ -684,7 +698,6 @@ const ForestSurvivalGame = () => {
     // Host sent everyone back to the lobby after a match — tear down the
     // game scene and show the lobby UI without forcing a peer rejoin.
     const unsubReturnLobby = multiplayerManager.onMessage('return_to_lobby', () => {
-      console.log('[App] Received return_to_lobby - returning to lobby UI');
       setMultiplayerGameOver(false);
       setMultiplayerWinner(null);
       setIsSpectating(false);
@@ -712,10 +725,26 @@ const ForestSurvivalGame = () => {
       setShowMultiplayerLobby(true);
     });
 
-    // Refresh the HUD / leaderboard the instant any player's stats change —
-    // an arriving player_update or enemy_killed bumps the tick immediately so
-    // kills and scores are reflected in real time, not on a polling delay.
-    const bumpStats = () => setMpStatsTick(v => (v + 1) % 1000000);
+    // Refresh the HUD / leaderboard when player stats change. CRITICAL PERF:
+    // player_update arrives ~15Hz from EVERY peer, and a naive re-render per
+    // packet reconciled the entire (very large) App tree dozens of times a
+    // second, competing with the 60fps render loop — the chief cause of the
+    // "random" multiplayer lag. We coalesce bumps to ~6Hz (leading + trailing
+    // edge) which is plenty for a scoreboard while slashing reconciliation cost.
+    const STATS_BUMP_MS = 160;
+    let lastStatsBump = 0;
+    let statsTrailingTimer: ReturnType<typeof setTimeout> | null = null;
+    const doBump = () => { lastStatsBump = Date.now(); setMpStatsTick(v => (v + 1) % 1000000); };
+    const bumpStats = () => {
+      const now = Date.now();
+      const since = now - lastStatsBump;
+      if (since >= STATS_BUMP_MS) {
+        if (statsTrailingTimer) { clearTimeout(statsTrailingTimer); statsTrailingTimer = null; }
+        doBump();
+      } else if (!statsTrailingTimer) {
+        statsTrailingTimer = setTimeout(() => { statsTrailingTimer = null; doBump(); }, STATS_BUMP_MS - since);
+      }
+    };
     const unsubPlayerUpdate = multiplayerManager.onMessage('player_update', bumpStats);
     const unsubEnemyKilled = multiplayerManager.onMessage('enemy_killed', bumpStats);
 
@@ -731,8 +760,6 @@ const ForestSurvivalGame = () => {
       });
     }, 1000);
 
-    console.log('[App] Multiplayer listeners registered');
-
     return () => {
       unsubGameOver();
       unsubKilled();
@@ -742,6 +769,7 @@ const ForestSurvivalGame = () => {
       unsubEnemyKilled();
       clearInterval(statsInterval);
       clearInterval(killFeedInterval);
+      if (statsTrailingTimer) clearTimeout(statsTrailingTimer);
     };
   }, [multiplayerManager]);
 
@@ -869,6 +897,10 @@ const ForestSurvivalGame = () => {
     const mp = isMultiplayer ? multiplayerManager : null;
     const isMpHost = !!mp && mp.isGameHost();
     const isMpGuest = !!mp && !isMpHost;
+    // Guests show a brief "syncing" affordance until the host's first enemy
+    // keyframe arrives; everyone else never sees it.
+    mpWaitingForHostRef.current = isMpGuest;
+    setMpWaitingForHost(isMpGuest);
     // Enemy type ⇄ compact wire code.
     const ENEMY_TYPE_CODE: Record<'normal' | 'fast' | 'tank' | 'boss', number> = {
       normal: 0, fast: 1, tank: 2, boss: 3,
@@ -877,11 +909,54 @@ const ForestSurvivalGame = () => {
     // Guest-side lookup from netId → mirrored enemy. Host fills netId on spawn.
     const enemyByNetId = new Map<number, Enemy>();
     let nextEnemyNetId = 1;
+    // ── Host enemy-sync stream state ──────────────────────────────────────
     let lastEnemySyncMs = 0;
-    const ENEMY_SYNC_INTERVAL_MS = 80;   // ~12.5 snapshots/sec
+    const ENEMY_SYNC_INTERVAL_MS = 100;        // ~10 snapshots/sec (was 80)
+    const ENEMY_KEYFRAME_INTERVAL_MS = 1000;   // full authoritative set ~1×/sec
+    const ENEMY_SYNC_READY_FALLBACK_MS = 4000; // stream anyway if no ready by now
+    let lastEnemyKeyframeMs = 0;
+    let forceEnemyKeyframe = true;             // first send + each newly-ready guest
+    // Last quantized values we transmitted per enemy, so deltas carry only
+    // what actually changed. Pruned to live enemies on every keyframe.
+    const enemySyncLastSent = new Map<number, EnemyWire>();
+    const hostMatchStartMs = Date.now();
     const _zeroVel = new THREE.Vector3(0, 0, 0);
-    // Reused per-frame list of alive remote players the host's enemies can target.
-    const _mpFocusTargets: Array<{ id: string; pos: THREE.Vector3 }> = [];
+
+    // ── FAIR-SHARE ENEMY TARGETING (host) ─────────────────────────────────
+    // Reused per-frame tables describing the alive players an enemy may
+    // engage, plus how many enemies are already assigned to each. Enemies
+    // pick a target with load balancing (nearest among the under-capacity
+    // players) and stick to it, so no single player gets swarmed while
+    // others are ignored. All allocation-free per frame.
+    const mpTgtIds: string[] = [];
+    const mpTgtX: number[] = [];
+    const mpTgtY: number[] = [];
+    const mpTgtZ: number[] = [];
+    const mpTgtCount: number[] = [];
+    const mpTgtIndex = new Map<string, number>();
+    let mpDesiredCap = 0;
+    const _focusVec = new THREE.Vector3();
+    const TARGET_EVAL_MS = 2000; // sticky-target re-evaluation cadence
+    const mpAddTarget = (id: string, x: number, y: number, z: number) => {
+      const idx = mpTgtIds.length;
+      mpTgtIds.push(id);
+      mpTgtX[idx] = x; mpTgtY[idx] = y; mpTgtZ[idx] = z; mpTgtCount[idx] = 0;
+      mpTgtIndex.set(id, idx);
+    };
+    // Nearest target that's still under the fair cap; falls back to the
+    // nearest overall once everyone is at capacity.
+    const pickFairTarget = (epx: number, epz: number): number => {
+      let bestUnder = -1, bestUnderSq = Infinity;
+      let bestAny = 0, bestAnySq = Infinity;
+      for (let t = 0; t < mpTgtIds.length; t++) {
+        const dx = epx - mpTgtX[t];
+        const dz = epz - mpTgtZ[t];
+        const dsq = dx * dx + dz * dz;
+        if (dsq < bestAnySq) { bestAnySq = dsq; bestAny = t; }
+        if (mpTgtCount[t] < mpDesiredCap && dsq < bestUnderSq) { bestUnderSq = dsq; bestUnder = t; }
+      }
+      return bestUnder !== -1 ? bestUnder : bestAny;
+    };
 
     // Initialize ability system (for all modes)
     const abilitySystem = new AbilitySystem();
@@ -4135,9 +4210,20 @@ const ForestSurvivalGame = () => {
     };
 
     // Guest: reconcile our mirrored enemy set against the host's snapshot.
+    // A keyframe (`full`) is the complete authoritative set, so anything we
+    // still hold that's absent gets culled. A delta only patches the enemies
+    // it carries and must NEVER cull (absent ≠ gone, just unchanged). The
+    // guest signalled readiness once warmup finished, so the very first
+    // snapshot it receives is always a keyframe.
     const handleEnemySync = (raw: unknown) => {
       if (!isMpGuest) return;
-      const msg = raw as { enemies: EnemyWire[]; wave: number };
+      const msg = raw as { enemies: EnemyWire[]; wave: number; full?: boolean };
+      const isKeyframe = msg.full !== false; // default true for safety
+      // First snapshot from the host → we're in sync; drop the affordance.
+      if (mpWaitingForHostRef.current) {
+        mpWaitingForHostRef.current = false;
+        setMpWaitingForHost(false);
+      }
 
       // Host advanced the wave → mirror the banner + a fresh power crate so
       // guests keep pace (powerups stay per-client, as they always have).
@@ -4183,13 +4269,16 @@ const ForestSurvivalGame = () => {
         }
       }
 
-      // Enemies the host removed (culled) that we still hold alive → collapse.
-      enemyByNetId.forEach((e, id) => {
-        if (!seen.has(id) && !e.dead) {
-          e.dead = true;
-          e.deathTime = 1.0;
-        }
-      });
+      // Only a keyframe is authoritative about which enemies still exist.
+      // On a delta, absent enemies are simply unchanged — leave them be.
+      if (isKeyframe) {
+        enemyByNetId.forEach((e, id) => {
+          if (!seen.has(id) && !e.dead) {
+            e.dead = true;
+            e.deathTime = 1.0;
+          }
+        });
+      }
     };
 
     if (isMultiplayer && mp) {
@@ -4217,6 +4306,13 @@ const ForestSurvivalGame = () => {
         const m = raw as { targetId: string; damage: number; enemyType: string };
         if (m.targetId !== mp.getLocalPlayer().id) return;
         takeEnemyDamage(m.damage, m.enemyType, null);
+      }));
+
+      // Host: a guest just finished warming up. Force the next snapshot to be
+      // a full keyframe so the freshly-arrived player sees every enemy at once
+      // (rather than waiting up to a keyframe interval).
+      remotePlayerUnsubs.push(mp.onMessage('client_ready', () => {
+        if (isMpHost) forceEnemyKeyframe = true;
       }));
     }
 
@@ -5545,14 +5641,31 @@ const ForestSurvivalGame = () => {
       const DODGE_TICK_MS_NEAR = 110;  // ~9 Hz bullet dodging when close
       const DODGE_TICK_MS_MID = 240;   // ~4 Hz when further out
 
-      // Host only: collect the alive remote players so each enemy can engage
-      // (and damage) whichever player is nearest, not just the host.
-      _mpFocusTargets.length = 0;
+      // Host only: rebuild the fair-share target table — every alive player
+      // (the host's own camera + alive remotes) and a running tally of how
+      // many enemies each is already engaging. `mpDesiredCap` is the even
+      // split that the per-enemy assignment below balances toward.
       if (isMpHost && mp) {
+        mpTgtIds.length = 0;
+        mpTgtIndex.clear();
+        const localPlayer = mp.getLocalPlayer();
+        if (localPlayer.isAlive) {
+          mpAddTarget(localPlayer.id, camera.position.x, camera.position.y, camera.position.z);
+        }
         mp.getRemotePlayers().forEach((p) => {
-          if (!p.isAlive) return;
-          _mpFocusTargets.push({ id: p.id, pos: new THREE.Vector3(p.position.x, p.position.y, p.position.z) });
+          if (p.isAlive) mpAddTarget(p.id, p.position.x, p.position.y, p.position.z);
         });
+        let livingEnemies = 0;
+        for (let e = 0; e < enemies.length; e++) {
+          const en = enemies[e];
+          if (en.dead) continue;
+          livingEnemies++;
+          if (en.targetPlayerId !== undefined) {
+            const ti = mpTgtIndex.get(en.targetPlayerId);
+            if (ti !== undefined) mpTgtCount[ti]++;
+          }
+        }
+        mpDesiredCap = mpTgtIds.length > 0 ? Math.max(1, Math.ceil(livingEnemies / mpTgtIds.length)) : 0;
       }
 
       for (let i = enemies.length - 1; i >= 0; i--) {
@@ -5660,20 +5773,37 @@ const ForestSurvivalGame = () => {
         }
 
         // ── HOST/SOLO TARGET SELECTION ────────────────────────────────────
-        // In solo (and whenever the host itself is nearest) focusPos is the
-        // local camera, so every downstream calculation is byte-identical to
-        // the original single-player path. In multiplayer the host's enemies
-        // engage the NEAREST player and route melee damage to whoever they hit.
+        // Solo: focusPos stays the local camera, so every downstream
+        // calculation is byte-identical to the original single-player path.
+        // Multiplayer host: each enemy sticks to a fairly-assigned player so
+        // aggro is shared evenly. It re-picks only when its target dies/leaves
+        // or, on a periodic re-evaluation, when its target is over the fair
+        // cap and a lighter-loaded player is available — preventing both
+        // pile-on and per-frame target jitter.
         let focusPos: THREE.Vector3 = camera.position;
         let focusVel: THREE.Vector3 = playerVelocity;
         let focusPlayerId: string | null = null;
-        if (isMpHost && _mpFocusTargets.length > 0) {
-          let bestSq = enemy.mesh.position.distanceToSquared(camera.position);
-          for (let f = 0; f < _mpFocusTargets.length; f++) {
-            const cand = _mpFocusTargets[f];
-            const dsq = enemy.mesh.position.distanceToSquared(cand.pos);
-            if (dsq < bestSq) { bestSq = dsq; focusPos = cand.pos; focusVel = _zeroVel; focusPlayerId = cand.id; }
+        if (isMpHost && mp && mpTgtIds.length > 0) {
+          let tIdx = enemy.targetPlayerId !== undefined ? (mpTgtIndex.get(enemy.targetPlayerId) ?? -1) : -1;
+          if (tIdx === -1) {
+            // No valid target (new enemy, or its target just died/left) → assign.
+            tIdx = pickFairTarget(enemy.mesh.position.x, enemy.mesh.position.z);
+            mpTgtCount[tIdx]++;
+            enemy.targetPlayerId = mpTgtIds[tIdx];
+            enemy.nextTargetEvalAt = frameNowMs + TARGET_EVAL_MS + Math.random() * 700;
+          } else if (frameNowMs >= (enemy.nextTargetEvalAt ?? 0)) {
+            // Periodic re-eval: only shed OFF an over-subscribed player.
+            if (mpTgtCount[tIdx] > mpDesiredCap) {
+              const alt = pickFairTarget(enemy.mesh.position.x, enemy.mesh.position.z);
+              if (alt !== tIdx && mpTgtCount[alt] < mpDesiredCap) {
+                mpTgtCount[tIdx]--; mpTgtCount[alt]++; tIdx = alt;
+                enemy.targetPlayerId = mpTgtIds[alt];
+              }
+            }
+            enemy.nextTargetEvalAt = frameNowMs + TARGET_EVAL_MS + Math.random() * 700;
           }
+          focusPos = _focusVec.set(mpTgtX[tIdx], mpTgtY[tIdx], mpTgtZ[tIdx]);
+          if (mpTgtIds[tIdx] !== mp.getLocalPlayer().id) { focusPlayerId = mpTgtIds[tIdx]; focusVel = _zeroVel; }
         }
 
         // Performance optimization: Skip AI update for distant enemies
@@ -6167,29 +6297,59 @@ const ForestSurvivalGame = () => {
       }
 
       // === SHARED-ENEMY SNAPSHOT (host → guests) ===
-      // Several times a second the host streams the full living-enemy set so
-      // every guest renders the exact same enemies. Dead enemies are included
-      // for one window (d=1) so guests start the death animation, then drop out.
+      // The host streams enemy state so every guest renders the same enemies.
+      // To stay light on slow connections we (1) hold the stream until a guest
+      // is actually in the match (no flooding a peer still on the loader),
+      // (2) send compact DELTAS carrying only enemies that changed, and
+      // (3) emit a full KEYFRAME ~1×/sec (and to each newly-ready guest) so a
+      // guest can never drift permanently out of sync.
       if (isMpHost && mp && frameNowMs - lastEnemySyncMs >= ENEMY_SYNC_INTERVAL_MS) {
-        lastEnemySyncMs = frameNowMs;
-        const wire: EnemyWire[] = [];
-        for (let e = 0; e < enemies.length; e++) {
-          const en = enemies[e];
-          if (en.netId === undefined) continue;
+        const guestReady = mp.hasReadyGuest() || (frameNowMs - hostMatchStartMs > ENEMY_SYNC_READY_FALLBACK_MS);
+        if (mp.getConnectionCount() > 0 && guestReady) {
+          lastEnemySyncMs = frameNowMs;
+          const sendFull = forceEnemyKeyframe || (frameNowMs - lastEnemyKeyframeMs >= ENEMY_KEYFRAME_INTERVAL_MS);
           const r2 = (n: number) => Math.round(n * 100) / 100;
-          wire.push({
-            id: en.netId,
-            ty: ENEMY_TYPE_CODE[en.type],
-            x: r2(en.mesh.position.x),
-            y: r2(en.mesh.position.y),
-            z: r2(en.mesh.position.z),
-            ry: r2(en.mesh.rotation.y),
-            hp: Math.round(en.health),
-            mx: Math.round(en.maxHealth),
-            d: en.dead ? 1 : 0,
-          });
+          const wire: EnemyWire[] = [];
+          for (let e = 0; e < enemies.length; e++) {
+            const en = enemies[e];
+            if (en.netId === undefined) continue;
+            const w: EnemyWire = {
+              id: en.netId,
+              ty: ENEMY_TYPE_CODE[en.type],
+              x: r2(en.mesh.position.x),
+              y: r2(en.mesh.position.y),
+              z: r2(en.mesh.position.z),
+              ry: r2(en.mesh.rotation.y),
+              hp: Math.round(en.health),
+              mx: Math.round(en.maxHealth),
+              d: en.dead ? 1 : 0,
+            };
+            if (sendFull) {
+              wire.push(w);
+              enemySyncLastSent.set(en.netId, w);
+            } else {
+              const p = enemySyncLastSent.get(en.netId);
+              if (!p || p.x !== w.x || p.y !== w.y || p.z !== w.z || p.ry !== w.ry || p.hp !== w.hp || p.d !== w.d) {
+                wire.push(w);
+                enemySyncLastSent.set(en.netId, w);
+              }
+            }
+          }
+          if (sendFull) {
+            // Prune entries for enemies that no longer exist so the map stays bounded.
+            if (enemySyncLastSent.size > enemies.length) {
+              const live = new Set<number>();
+              for (let e = 0; e < enemies.length; e++) { const id = enemies[e].netId; if (id !== undefined) live.add(id); }
+              enemySyncLastSent.forEach((_v, id) => { if (!live.has(id)) enemySyncLastSent.delete(id); });
+            }
+            lastEnemyKeyframeMs = frameNowMs;
+            forceEnemyKeyframe = false;
+            mp.broadcastEnemySync(wire, wave, true);
+          } else if (wire.length > 0) {
+            mp.broadcastEnemySync(wire, wave, false);
+          }
+          // Empty delta → send nothing this tick (pure bandwidth save).
         }
-        mp.broadcastEnemySync(wire, wave);
       }
 
       // === RENDERING — three.js EffectComposer (or direct render on Low) ===
@@ -6207,6 +6367,34 @@ const ForestSurvivalGame = () => {
     // loader appears for only 1 frame total before the synchronous chain
     // completes, defeating its purpose.
     const yieldFrame = () => new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+
+    // ── WARMUP WATCHDOG ────────────────────────────────────────────────
+    // Races an async warmup step against a timeout so a single GPU/driver
+    // stall (most commonly `compileAsync` never reporting completion via
+    // KHR_parallel_shader_compile) can never wedge the loader forever — the
+    // bug that left multiplayer matches stuck on the "Preparing the
+    // battlefield" screen. On TIMEOUT we resolve(null) and let warmup carry
+    // on: any not-yet-compiled program simply compiles lazily on its first
+    // real render (a one-time hitch, no visual change). A genuine REJECTION
+    // is still propagated so true compile failures surface the error card.
+    const withTimeout = <T,>(promise: Promise<T>, ms: number, label: string): Promise<T | null> =>
+      new Promise<T | null>((resolve, reject) => {
+        let settled = false;
+        const timer = window.setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          console.warn(`[Warmup] "${label}" exceeded ${ms}ms — proceeding without waiting.`);
+          resolve(null);
+        }, ms);
+        promise.then(
+          (v) => { if (!settled) { settled = true; window.clearTimeout(timer); resolve(v); } },
+          (err) => { if (!settled) { settled = true; window.clearTimeout(timer); reject(err); } },
+        );
+      });
+    // Absolute backstop for the whole warmup chain. Even if some future
+    // await stalls in a way the per-step guards miss, the loader still
+    // proceeds within this window.
+    const WARMUP_OVERALL_CAP_MS = 12000;
 
     // Set true inside a stage that fails AND is marked critical. The
     // warmup completion handler reads this to decide whether to pause
@@ -6335,7 +6523,10 @@ const ForestSurvivalGame = () => {
           compileAsync?: (scene: THREE.Scene, camera: THREE.Camera) => Promise<unknown>;
         };
         if (typeof r.compileAsync === 'function') {
-          await r.compileAsync(scene, camera);
+          // 6s cap: long enough for a heavy multiplayer scene (remote-player
+          // avatars + nameplate/health sprites) to compile normally, short
+          // enough that a driver stall doesn't strand the player on the loader.
+          await withTimeout(r.compileAsync(scene, camera), 6000, 'Shader Compile');
         } else {
           renderer.compile(scene, camera);
         }
@@ -6397,7 +6588,7 @@ const ForestSurvivalGame = () => {
       // Skipped when the user has hit Continue-Anyway (they want to get
       // into the game NOW).
       if (!continueAnywayRef.current) {
-        const MIN_LOADER_MS = 1200;
+        const MIN_LOADER_MS = 900;
         const elapsed = performance.now() - warmupStart;
         if (elapsed < MIN_LOADER_MS) {
           await new Promise<void>((resolve) => window.setTimeout(resolve, MIN_LOADER_MS - elapsed));
@@ -6421,7 +6612,7 @@ const ForestSurvivalGame = () => {
       // main thread back to the React loader between heavy steps.
       void (async () => {
         try {
-          await warmUpShaders();
+          await withTimeout(warmUpShaders(), WARMUP_OVERALL_CAP_MS, 'Warmup (overall)');
 
           // Critical-stage failure → block on the loader's error UI
           // until the user explicitly continues or reloads.
@@ -6444,6 +6635,11 @@ const ForestSurvivalGame = () => {
           if (!isSceneDisposed) {
             setWarmupError(null);
             setShowShaderProcessing(false);
+            // Guest is now fully in the match → tell the host it can begin
+            // streaming enemies (the host holds the stream until this lands).
+            if (isMpGuest && mp) {
+              try { mp.sendClientReady(); } catch { /* best-effort */ }
+            }
             animate();
           }
         }
@@ -6612,15 +6808,24 @@ const ForestSurvivalGame = () => {
     setShowMultiplayerLobby(true);
   };
 
-  // Handle multiplayer game start from lobby
-  const handleMultiplayerStartGame = (
+  // Handle multiplayer game start from lobby.
+  // Memoised (stable identity) so the lobby's game_start listener effect
+  // doesn't re-subscribe on every render. Guarded by mpStartHandledRef so a
+  // duplicate/late game_start (e.g. from leaked listeners) can't re-show the
+  // loader after the match is already running. The ref is reset whenever we
+  // leave the match (see the gameStarted effect below).
+  const handleMultiplayerStartGame = useCallback((
     manager: MultiplayerManager,
     gameMode: 'coop' | 'survival',
     timeLimit?: number,
     map?: MapType,
     difficulty?: 'easy' | 'medium' | 'hard' | 'adaptive',
   ) => {
-    console.log('[App] handleMultiplayerStartGame called - isHost:', manager.isGameHost(), 'map:', map, 'difficulty:', difficulty);
+    if (mpStartHandledRef.current) {
+      // Duplicate/late game_start — match is already starting.
+      return;
+    }
+    mpStartHandledRef.current = true;
     setMultiplayerManager(manager);
     setMultiplayerGameMode(gameMode);
     if (map) {
@@ -6659,15 +6864,12 @@ const ForestSurvivalGame = () => {
     setShowShaderProcessing(true);
     setGameStarted(true);
 
-    // Start the game in multiplayer manager (host broadcasts to guests)
-    // Guests have their handler registered in MultiplayerLobby already
+    // Host broadcasts game_start to all guests; guests have already
+    // transitioned via the state updates above.
     if (manager.isGameHost()) {
-      console.log('[App] Host starting game, broadcasting to all guests...');
       manager.startGame(gameMode, timeLimit, map, difficulty || 'medium');
-    } else {
-      console.log('[App] Guest received game_start and transitioning...');
     }
-  };
+  }, []);
 
   // Handle classic mode start
   const handleClassicGameStart = (difficulty: 'easy' | 'medium' | 'hard' | 'adaptive', timeOfDay: 'day' | 'night' | 'auto', map: MapType, isRandom: boolean = false) => {
@@ -6692,12 +6894,10 @@ const ForestSurvivalGame = () => {
     // straight into a new match. The lobby reuses the existing manager so
     // no one has to re-enter the lobby ID. Only the host can initiate this.
     if (gameMode === 'multiplayer' && multiplayerManager) {
-      if (!multiplayerManager.isGameHost()) {
-        console.log('[App] Guest requested restart - waiting for host return_to_lobby');
-        return;
-      }
+      // Only the host can return everyone to the lobby; guests wait for the
+      // host's return_to_lobby broadcast.
+      if (!multiplayerManager.isGameHost()) return;
 
-      console.log('[App] Host returning all players to lobby for next match');
       // Broadcast first so guests are queued to flip into lobby view; the
       // host's own UI flips via the local handler registered above.
       multiplayerManager.returnToLobby();
@@ -6877,6 +7077,18 @@ const ForestSurvivalGame = () => {
         }}
       />
       <div ref={mountRef} className="absolute inset-0" style={{ zIndex: 0 }} />
+
+      {/* Guest-only: brief "syncing with host" affordance shown after the
+          loader hides but before the first enemy keyframe arrives — keeps a
+          slow connection from looking like an empty, broken world. */}
+      {mpWaitingForHost && !showShaderProcessing && !photoMode && (
+        <div className="pointer-events-none absolute left-1/2 top-[18%] z-20 -translate-x-1/2">
+          <div className="flex items-center gap-2.5 rounded-full border border-emerald-400/30 bg-black/55 px-4 py-2 backdrop-blur-md">
+            <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-emerald-300/40 border-t-emerald-300" />
+            <span className="text-[12px] font-semibold uppercase tracking-[0.18em] text-emerald-200/90">Syncing with host…</span>
+          </div>
+        </div>
+      )}
 
       {!photoMode && (
       <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 10 }}>

@@ -1,7 +1,7 @@
 import { type FormEvent, useEffect, useMemo, useState } from 'react';
 import {
   KeyRound, LogOut, ShieldCheck, X, User, BarChart3, Trophy, Settings as SettingsIcon,
-  Lock, Eye, EyeOff, Check, Calendar, Camera, Download, Trash2, ImageOff, Loader2,
+  Lock, Eye, EyeOff, Check, Calendar, Camera, Download, Trash2, ImageOff, Loader2, Maximize2,
 } from 'lucide-react';
 import { useAction, useMutation, useQuery } from 'convex/react';
 import type { Id } from '../../convex/_generated/dataModel';
@@ -522,22 +522,34 @@ const PhotosPanel = () => {
           {photos.map((p) => (
             <div
               key={p.id}
-              className="group relative overflow-hidden rounded-xl border border-white/10 bg-black/30"
+              className="group relative overflow-hidden rounded-xl border border-white/10 bg-black/30 transition-all duration-200 hover:border-emerald-400/40 hover:shadow-[0_8px_30px_rgba(16,185,129,0.12)]"
             >
               <button
                 type="button"
                 onClick={() => p.url && setPreviewId(p.id)}
-                className="block aspect-video w-full cursor-zoom-in"
+                className="block aspect-video w-full cursor-zoom-in overflow-hidden"
                 title="Click to preview"
               >
                 {p.url ? (
-                  <img src={p.url} alt="Captured photo" className="h-full w-full object-cover" loading="lazy" />
+                  <img
+                    src={p.url}
+                    alt="Captured photo"
+                    className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.05]"
+                    loading="lazy"
+                  />
                 ) : (
                   <div className="flex h-full w-full items-center justify-center text-gray-600">
                     <ImageOff className="h-6 w-6" strokeWidth={1.8} />
                   </div>
                 )}
               </button>
+
+              {/* Expand hint (top-right, on hover) */}
+              {p.url && (
+                <span className="pointer-events-none absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-lg bg-black/55 text-white opacity-0 backdrop-blur-md transition-opacity group-hover:opacity-100">
+                  <Maximize2 className="h-3.5 w-3.5" strokeWidth={2.3} />
+                </span>
+              )}
 
               {/* Action overlay */}
               <div className="pointer-events-none absolute inset-0 flex items-end justify-between gap-2 bg-gradient-to-t from-black/75 via-black/10 to-transparent p-2 opacity-0 transition-opacity group-hover:opacity-100">
@@ -587,37 +599,63 @@ const PhotosPanel = () => {
         </div>
       )}
 
-      {/* Full-size preview lightbox */}
+      {/* Full-size preview lightbox — a bounded framed card so the image never
+          overflows and the action bar is always visible. */}
       {previewPhoto && (
         <div
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/92 p-4 backdrop-blur-md"
-          style={{ animation: 'authFade 0.2s ease forwards' }}
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/90 p-4 sm:p-6 backdrop-blur-md"
+          style={{ animation: 'pmPrevBack 0.18s ease forwards' }}
           onClick={() => setPreviewId(null)}
         >
-          <div className="relative flex max-h-[90vh] w-full max-w-4xl flex-col items-center" onClick={(e) => e.stopPropagation()}>
-            <button
-              onClick={() => setPreviewId(null)}
-              aria-label="Close preview"
-              className="absolute -right-1 -top-10 flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 text-gray-300 transition-colors hover:bg-white/10 hover:text-white"
-            >
-              <X className="h-[18px] w-[18px]" strokeWidth={2.25} />
-            </button>
-            {previewPhoto.url ? (
-              <img
-                src={previewPhoto.url}
-                alt="Photo preview"
-                className="max-h-[78vh] w-auto rounded-xl border border-white/10 object-contain shadow-[0_30px_120px_rgba(0,0,0,0.7)]"
-              />
-            ) : (
-              <div className="flex h-64 w-full items-center justify-center rounded-xl border border-white/10 bg-black/40 text-gray-500">
-                <ImageOff className="h-8 w-8" strokeWidth={1.8} />
+          <div
+            className="relative flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#0b0f15] shadow-[0_40px_140px_rgba(0,0,0,0.7)]"
+            style={{ animation: 'pmPrevCard 0.26s cubic-bezier(0.16,1,0.3,1) forwards' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between gap-3 border-b border-white/[0.07] px-4 py-3">
+              <div className="flex min-w-0 items-center gap-2.5">
+                <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg border border-emerald-400/30 bg-emerald-500/12">
+                  <Camera className="h-4 w-4 text-emerald-300" strokeWidth={2.2} />
+                </span>
+                <div className="min-w-0">
+                  <p className="text-sm font-bold leading-none text-white">Photo Preview</p>
+                  <p className="mt-1 truncate text-[11px] text-gray-500">{formatPhotoDate(previewPhoto.createdAt)}</p>
+                </div>
               </div>
-            )}
-            <div className="mt-4 flex items-center gap-2.5">
+              <button
+                onClick={() => setPreviewId(null)}
+                aria-label="Close preview"
+                className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg border border-white/10 text-gray-400 transition-colors hover:bg-white/10 hover:text-white"
+              >
+                <X className="h-[17px] w-[17px]" strokeWidth={2.3} />
+              </button>
+            </div>
+
+            {/* Image stage */}
+            <div
+              className="flex min-h-0 flex-1 items-center justify-center p-3 sm:p-4"
+              style={{ background: 'radial-gradient(120% 120% at 50% 0%, rgba(52,211,153,0.07), transparent 60%), #06090d' }}
+            >
+              {previewPhoto.url ? (
+                <img
+                  src={previewPhoto.url}
+                  alt="Photo preview"
+                  className="max-h-full max-w-full rounded-lg object-contain shadow-[0_12px_50px_rgba(0,0,0,0.55)]"
+                />
+              ) : (
+                <div className="flex h-56 w-full items-center justify-center text-gray-600">
+                  <ImageOff className="h-8 w-8" strokeWidth={1.8} />
+                </div>
+              )}
+            </div>
+
+            {/* Footer actions */}
+            <div className="flex items-center justify-end gap-2.5 border-t border-white/[0.07] px-4 py-3">
               <button
                 onClick={() => handleDownload(previewPhoto.url, previewPhoto.id)}
                 disabled={busyId === previewPhoto.id || !previewPhoto.url}
-                className="flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-bold text-[#04130a] transition-all disabled:opacity-50"
+                className="flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-bold text-[#04130a] transition-all hover:brightness-110 disabled:opacity-50"
                 style={{ background: 'linear-gradient(135deg, #34d399, #22c55e)' }}
               >
                 {busyId === previewPhoto.id ? <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2.4} /> : <Download className="h-4 w-4" strokeWidth={2.4} />}
@@ -633,6 +671,14 @@ const PhotosPanel = () => {
               </button>
             </div>
           </div>
+
+          <style>{`
+            @keyframes pmPrevBack { from { opacity: 0; } to { opacity: 1; } }
+            @keyframes pmPrevCard {
+              from { opacity: 0; transform: scale(0.95) translateY(10px); }
+              to { opacity: 1; transform: scale(1) translateY(0); }
+            }
+          `}</style>
         </div>
       )}
     </div>
@@ -651,6 +697,16 @@ const HeadlineStat = ({ label, value, accent }: { label: string; value: string; 
     </div>
   );
 };
+
+function formatPhotoDate(ms: number): string {
+  try {
+    return new Date(ms).toLocaleString(undefined, {
+      month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit',
+    });
+  } catch {
+    return '';
+  }
+}
 
 function extractErrorMessage(error: unknown): string {
   if (error && typeof error === 'object' && 'data' in error) {

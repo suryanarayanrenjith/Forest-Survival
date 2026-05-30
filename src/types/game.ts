@@ -175,6 +175,13 @@ export interface Enemy {
   netTargetX?: number;
   netTargetZ?: number;
   netYaw?: number;
+  // ── Multiplayer fair-share targeting (host only) ──
+  // The player id this enemy is currently engaging. Assigned with load
+  // balancing so aggro is spread evenly across all alive players instead of
+  // every enemy piling onto whoever is nearest. Sticky between evaluations
+  // (re-evaluated when its target dies/leaves or after nextTargetEvalAt).
+  targetPlayerId?: string;
+  nextTargetEvalAt?: number;
   // ── Per-enemy throttle state (used by the round-robin scheduler) ──
   // Heavy AI/perception/dodge work is run on a slow tick (5-10 Hz) and the
   // last result is cached so steering and animation still update at 60 Hz.

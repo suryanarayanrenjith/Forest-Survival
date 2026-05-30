@@ -127,9 +127,15 @@ const PhotoMode = ({ photoCount, maxPhotos, onFilterChange, onCapture, onExit }:
       {/* Bottom control dock */}
       <div className="flex justify-center px-3 pb-5">
         <div
-          className="pointer-events-auto w-full max-w-2xl rounded-2xl border border-white/10 bg-[#0b0f15]/90 p-4 shadow-[0_20px_70px_rgba(0,0,0,0.6)] backdrop-blur-xl"
-          style={{ animation: 'pmUp 0.3s cubic-bezier(0.16,1,0.3,1) forwards' }}
+          className="pointer-events-auto relative w-full max-w-2xl overflow-hidden rounded-2xl border border-white/10 p-4 shadow-[0_24px_80px_rgba(0,0,0,0.65)] backdrop-blur-xl"
+          style={{
+            background: 'linear-gradient(180deg, rgba(17,25,33,0.93), rgba(8,11,16,0.95))',
+            animation: 'pmUp 0.3s cubic-bezier(0.16,1,0.3,1) forwards',
+          }}
         >
+          {/* Emerald top accent */}
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-emerald-400/60 to-transparent" />
+
           {/* Header row */}
           <div className="mb-3 flex items-center justify-between">
             <div className="flex items-center gap-2">

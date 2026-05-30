@@ -334,7 +334,6 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
 
     if (lobby && role) {
       autoJoinAttemptedRef.current = true;
-      console.log('[MultiplayerLobby] Found session in URL - lobby:', lobby, 'role:', role);
 
       if (role === 'host') {
         setView('host');
@@ -371,7 +370,6 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
       await newManager.joinLobby(lobbyIdToJoin);
       if (rejected) { newManager.disconnect(); return; }
       setManager(newManager);
-      console.log('[MultiplayerLobby] Successfully rejoined lobby:', lobbyIdToJoin);
     } catch (err) {
       console.error('[MultiplayerLobby] Failed to rejoin lobby:', err);
       newManager.disconnect();
@@ -392,11 +390,14 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
     }
   }, [manager]);
 
-  // Register game_start handler immediately when manager is created
+  // Register game_start handler immediately when manager is created.
+  // Both subscriptions are torn down on cleanup so navigating the lobby (or a
+  // manager swap) never leaves stale listeners stacked on the manager — a
+  // leak that previously let a single game_start fire many duplicate handlers.
   useEffect(() => {
     if (!manager) return;
 
-    manager.onMessage('game_start', (raw) => {
+    const unsubStart = manager.onMessage('game_start', (raw) => {
       const data = raw as GameStartMsg;
       if (data.gameState) {
         const gameMode = data.gameState.gameMode || 'coop';
@@ -407,14 +408,18 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
       }
     });
 
-    manager.onMessage('player_rejected', (raw) => {
+    const unsubRejected = manager.onMessage('player_rejected', (raw) => {
       const data = raw as PlayerRejectedMsg;
-      console.log('[MultiplayerLobby] Player rejected:', data.reason);
       setError(data.reason);
       setManager(null);
       setView('menu');
       setIsConnecting(false);
     });
+
+    return () => {
+      unsubStart();
+      unsubRejected();
+    };
   }, [manager, onStartGame]);
 
   // Create lobby when switching to host view
