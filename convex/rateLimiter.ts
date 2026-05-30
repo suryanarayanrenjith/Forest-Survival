@@ -22,4 +22,9 @@ export const rateLimiter = new RateLimiter(components.rateLimiter, {
   soloRun: { kind: "token bucket", rate: 20, period: HOUR, capacity: 5 },
   mpResult: { kind: "token bucket", rate: 30, period: HOUR, capacity: 6 },
   achievementSync: { kind: "token bucket", rate: 30, period: MINUTE, capacity: 12 },
+
+  // Photo Mode upload throttle (keyed by userId). The hard 5-photo cap already
+  // bounds total storage; this stops a delete→reupload loop from hammering the
+  // storage API while still allowing a normal photoshoot session.
+  photoUpload: { kind: "token bucket", rate: 15, period: HOUR, capacity: 6 },
 });

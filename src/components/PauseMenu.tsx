@@ -1,4 +1,4 @@
-import { Pause, Heart, Crosshair, Skull, Waves, Trophy, Network, LogOut, ChevronRight, Lock } from 'lucide-react';
+import { Pause, Heart, Crosshair, Skull, Waves, Trophy, Network, LogOut, ChevronRight, Lock, Camera } from 'lucide-react';
 
 interface PauseMenuProps {
   health: number;
@@ -13,10 +13,14 @@ interface PauseMenuProps {
   showSkillTree?: boolean;
   /** When true the Skill Tree is shown locked (guest play — sign-in required). */
   skillTreeLocked?: boolean;
+  /** Enters the in-game photoshoot. */
+  onPhotoMode?: () => void;
+  /** When true the Photo Mode action is shown (solo + signed in). */
+  showPhotoMode?: boolean;
   t: (key: string) => string;
 }
 
-const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMenu, onSkillTree, showSkillTree = true, skillTreeLocked = false }: PauseMenuProps) => {
+const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMenu, onSkillTree, showSkillTree = true, skillTreeLocked = false, onPhotoMode, showPhotoMode = false }: PauseMenuProps) => {
   const stats = [
     { icon: Heart, label: 'Health', value: `${Math.floor(health)}`, color: '#f87171' },
     { icon: Crosshair, label: 'Ammo', value: `${ammo}/${maxAmmo}`, color: '#fbbf24' },
@@ -105,6 +109,23 @@ const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMe
                 <ChevronRight className="w-4 h-4 text-gray-600 group-hover:text-gray-300 group-hover:translate-x-0.5 transition-all" strokeWidth={2} />
               </button>
             )
+          )}
+
+          {showPhotoMode && onPhotoMode && (
+            <button
+              onClick={onPhotoMode}
+              className="group flex items-center gap-3 w-full rounded-xl px-4 py-3.5 border border-white/10
+                bg-white/[0.03] transition-all duration-200 hover:bg-white/[0.07] hover:border-emerald-400/50"
+            >
+              <span className="flex items-center justify-center w-9 h-9 rounded-lg bg-emerald-500/15">
+                <Camera className="w-[18px] h-[18px] text-emerald-400" strokeWidth={2} />
+              </span>
+              <span className="flex-1 text-left">
+                <span className="block text-sm font-bold text-white tracking-wide">Photo Mode</span>
+                <span className="block text-[11px] text-gray-500">Freeze the world & capture the shot</span>
+              </span>
+              <ChevronRight className="w-4 h-4 text-gray-600 group-hover:text-gray-300 group-hover:translate-x-0.5 transition-all" strokeWidth={2} />
+            </button>
           )}
 
           <button

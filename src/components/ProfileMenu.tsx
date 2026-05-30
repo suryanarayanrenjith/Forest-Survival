@@ -1,9 +1,10 @@
 import { type FormEvent, useEffect, useMemo, useState } from 'react';
 import {
   KeyRound, LogOut, ShieldCheck, X, User, BarChart3, Trophy, Settings as SettingsIcon,
-  Lock, Eye, EyeOff, Check, Calendar,
+  Lock, Eye, EyeOff, Check, Calendar, Camera, Download, Trash2, ImageOff, Loader2,
 } from 'lucide-react';
-import { useAction, useMutation } from 'convex/react';
+import { useAction, useMutation, useQuery } from 'convex/react';
+import type { Id } from '../../convex/_generated/dataModel';
 import { useAuthActions } from '@convex-dev/auth/react';
 import { api } from '../../convex/_generated/api';
 import { usePlayerData } from '../hooks/usePlayerData';
@@ -18,12 +19,13 @@ interface ProfileMenuProps {
   onClose: () => void;
 }
 
-type TabKey = 'overview' | 'stats' | 'achievements' | 'settings';
+type TabKey = 'overview' | 'stats' | 'achievements' | 'photos' | 'settings';
 
 const TABS: { key: TabKey; label: string; Icon: typeof User }[] = [
   { key: 'overview', label: 'Overview', Icon: User },
   { key: 'stats', label: 'Stats', Icon: BarChart3 },
   { key: 'achievements', label: 'Achievements', Icon: Trophy },
+  { key: 'photos', label: 'Photos', Icon: Camera },
   { key: 'settings', label: 'Settings', Icon: SettingsIcon },
 ];
 
@@ -313,6 +315,8 @@ const ProfileMenu = ({ onClose }: ProfileMenuProps) => {
             </div>
           )}
 
+          {tab === 'photos' && <PhotosPanel />}
+
           {tab === 'settings' && (
             <div className="space-y-5">
               {/* Avatar picker */}
@@ -428,6 +432,209 @@ const ProfileMenu = ({ onClose }: ProfileMenuProps) => {
           to { opacity: 1; transform: scale(1) translateY(0); }
         }
       `}</style>
+    </div>
+  );
+};
+
+/**
+ * Photo Mode gallery — the captures taken from the in-game pause menu. Players
+ * can download a copy to their device or delete it from cloud storage (which
+ * reflects in the DB instantly via the reactive query).
+ */
+const PhotosPanel = () => {
+  const data = useQuery(api.photos.listPhotos);
+  const deletePhoto = useMutation(api.photos.deletePhoto);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [previewId, setPreviewId] = useState<string | null>(null);
+
+  const loading = data === undefined;
+  const photos = data?.photos ?? [];
+  const max = data?.max ?? 5;
+  const previewPhoto = photos.find((p) => p.id === previewId) ?? null;
+
+  const handleDownload = async (url: string | null, id: string) => {
+    if (!url) return;
+    setBusyId(id);
+    try {
+      const res = await fetch(url);
+      const blob = await res.blob();
+      const objUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = objUrl;
+      a.download = `forest-survival-photo-${id.slice(-6)}.jpg`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(objUrl);
+    } catch {
+      // Fall back to opening in a new tab if the blob download is blocked.
+      window.open(url, '_blank', 'noopener');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    setBusyId(id);
+    try {
+      await deletePhoto({ id: id as Id<'playerPhotos'> });
+    } catch {
+      // Reactive query will simply keep showing the photo on failure.
+    } finally {
+      setBusyId(null);
+      setConfirmId(null);
+      setPreviewId((cur) => (cur === id ? null : cur));
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-sm font-semibold text-gray-200">Photo Gallery</p>
+          <p className="mt-0.5 text-[11px] text-gray-500">
+            Captured from <span className="text-gray-300">Pause → Photo Mode</span> during Solo play.
+          </p>
+        </div>
+        <span className="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-bold tabular-nums text-emerald-200">
+          {photos.length} / {max}
+        </span>
+      </div>
+
+      {loading ? (
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="aspect-video animate-pulse rounded-xl bg-white/[0.04]" />
+          ))}
+        </div>
+      ) : photos.length === 0 ? (
+        <div className="flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-white/10 bg-white/[0.02] px-4 py-10 text-center">
+          <Camera className="h-7 w-7 text-gray-600" strokeWidth={1.8} />
+          <p className="text-sm font-semibold text-gray-300">No photos yet</p>
+          <p className="max-w-xs text-[11px] text-gray-500">
+            Open <span className="text-gray-300">Photo Mode</span> from the in-game pause menu to freeze the
+            world, frame your shot, and capture up to {max} photos.
+          </p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+          {photos.map((p) => (
+            <div
+              key={p.id}
+              className="group relative overflow-hidden rounded-xl border border-white/10 bg-black/30"
+            >
+              <button
+                type="button"
+                onClick={() => p.url && setPreviewId(p.id)}
+                className="block aspect-video w-full cursor-zoom-in"
+                title="Click to preview"
+              >
+                {p.url ? (
+                  <img src={p.url} alt="Captured photo" className="h-full w-full object-cover" loading="lazy" />
+                ) : (
+                  <div className="flex h-full w-full items-center justify-center text-gray-600">
+                    <ImageOff className="h-6 w-6" strokeWidth={1.8} />
+                  </div>
+                )}
+              </button>
+
+              {/* Action overlay */}
+              <div className="pointer-events-none absolute inset-0 flex items-end justify-between gap-2 bg-gradient-to-t from-black/75 via-black/10 to-transparent p-2 opacity-0 transition-opacity group-hover:opacity-100">
+                <button
+                  onClick={(e) => { e.stopPropagation(); handleDownload(p.url, p.id); }}
+                  disabled={busyId === p.id || !p.url}
+                  className="pointer-events-auto flex items-center gap-1.5 rounded-lg bg-white/10 px-2.5 py-1.5 text-[11px] font-semibold text-white backdrop-blur-md transition-colors hover:bg-white/20 disabled:opacity-50"
+                >
+                  {busyId === p.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2.4} /> : <Download className="h-3.5 w-3.5" strokeWidth={2.4} />}
+                  Save
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); setConfirmId(p.id); }}
+                  disabled={busyId === p.id}
+                  className="pointer-events-auto flex items-center gap-1.5 rounded-lg bg-rose-500/20 px-2.5 py-1.5 text-[11px] font-semibold text-rose-100 backdrop-blur-md transition-colors hover:bg-rose-500/35 disabled:opacity-50"
+                >
+                  <Trash2 className="h-3.5 w-3.5" strokeWidth={2.4} />
+                  Delete
+                </button>
+              </div>
+
+              {/* Delete confirmation */}
+              {confirmId === p.id && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-2.5 bg-black/85 p-3 text-center backdrop-blur-sm">
+                  <p className="text-[12px] font-semibold text-white">Delete this photo?</p>
+                  <p className="text-[10px] text-gray-400">This removes it from cloud storage permanently.</p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => handleDelete(p.id)}
+                      disabled={busyId === p.id}
+                      className="flex items-center gap-1.5 rounded-lg bg-rose-500 px-3 py-1.5 text-[11px] font-bold text-white transition-colors hover:bg-rose-600 disabled:opacity-60"
+                    >
+                      {busyId === p.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2.4} /> : <Trash2 className="h-3.5 w-3.5" strokeWidth={2.4} />}
+                      Delete
+                    </button>
+                    <button
+                      onClick={() => setConfirmId(null)}
+                      className="rounded-lg border border-white/15 px-3 py-1.5 text-[11px] font-semibold text-gray-300 transition-colors hover:bg-white/10"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Full-size preview lightbox */}
+      {previewPhoto && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/92 p-4 backdrop-blur-md"
+          style={{ animation: 'authFade 0.2s ease forwards' }}
+          onClick={() => setPreviewId(null)}
+        >
+          <div className="relative flex max-h-[90vh] w-full max-w-4xl flex-col items-center" onClick={(e) => e.stopPropagation()}>
+            <button
+              onClick={() => setPreviewId(null)}
+              aria-label="Close preview"
+              className="absolute -right-1 -top-10 flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 text-gray-300 transition-colors hover:bg-white/10 hover:text-white"
+            >
+              <X className="h-[18px] w-[18px]" strokeWidth={2.25} />
+            </button>
+            {previewPhoto.url ? (
+              <img
+                src={previewPhoto.url}
+                alt="Photo preview"
+                className="max-h-[78vh] w-auto rounded-xl border border-white/10 object-contain shadow-[0_30px_120px_rgba(0,0,0,0.7)]"
+              />
+            ) : (
+              <div className="flex h-64 w-full items-center justify-center rounded-xl border border-white/10 bg-black/40 text-gray-500">
+                <ImageOff className="h-8 w-8" strokeWidth={1.8} />
+              </div>
+            )}
+            <div className="mt-4 flex items-center gap-2.5">
+              <button
+                onClick={() => handleDownload(previewPhoto.url, previewPhoto.id)}
+                disabled={busyId === previewPhoto.id || !previewPhoto.url}
+                className="flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-bold text-[#04130a] transition-all disabled:opacity-50"
+                style={{ background: 'linear-gradient(135deg, #34d399, #22c55e)' }}
+              >
+                {busyId === previewPhoto.id ? <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2.4} /> : <Download className="h-4 w-4" strokeWidth={2.4} />}
+                Download
+              </button>
+              <button
+                onClick={() => handleDelete(previewPhoto.id)}
+                disabled={busyId === previewPhoto.id}
+                className="flex items-center gap-2 rounded-lg border border-rose-400/40 bg-rose-500/10 px-4 py-2.5 text-sm font-bold text-rose-100 transition-colors hover:bg-rose-500/25 disabled:opacity-50"
+              >
+                <Trash2 className="h-4 w-4" strokeWidth={2.4} />
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

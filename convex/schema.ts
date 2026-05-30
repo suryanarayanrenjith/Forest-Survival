@@ -72,4 +72,13 @@ export default defineSchema({
     }),
     updatedAt: v.number(),
   }).index("by_user", ["userId"]),
+
+  // Photo Mode captures. Storage-efficient: each row holds only a pointer to
+  // the file in Convex storage + a timestamp. A hard per-user cap (enforced in
+  // photos.ts) keeps total file storage bounded on the free plan.
+  playerPhotos: defineTable({
+    userId: v.id("users"),
+    storageId: v.id("_storage"),
+    createdAt: v.number(),
+  }).index("by_user", ["userId"]),
 });

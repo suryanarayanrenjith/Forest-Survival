@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState } from 'react';
+import { useRef, useEffect, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { GraduationCap, Play, Home } from 'lucide-react';
 import { Analytics } from '@vercel/analytics/react';
@@ -34,6 +34,7 @@ import ClassicMenu from './components/ClassicMenu';
 import TutorialMenu from './components/TutorialMenu';
 import GameOver from './components/GameOver';
 import PauseMenu from './components/PauseMenu';
+import PhotoMode from './components/PhotoMode';
 import Notifications from './components/Notifications';
 import MobileWarning from './components/MobileWarning';
 import MultiplayerLobby from './components/MultiplayerLobby';
@@ -64,7 +65,7 @@ import ShaderProcessingScreen, { type WarmupErrorInfo } from './components/Shade
 import MenuBackdrop, { type MenuBackdropVariant } from './components/MenuBackdrop';
 import MusicMuteButton from './components/MusicMuteButton';
 import { musicMute } from './utils/musicMute';
-import { useMutation } from 'convex/react';
+import { useMutation, useQuery } from 'convex/react';
 import { useConvexAuth } from '@convex-dev/auth/react';
 import { api } from '../convex/_generated/api';
 import { usePlayerData } from './hooks/usePlayerData';
@@ -265,6 +266,64 @@ const ForestSurvivalGame = () => {
   // so the HUD can draw the bottom-left pie meter at the correct fill.
   const [staminaRatio, setStaminaRatio] = useState(1);
   const [staminaExhaustedUI, setStaminaExhaustedUI] = useState(false);
+
+  // ─── Photo Mode (in-game photoshoot → Convex storage) ────────────────────
+  const generatePhotoUploadUrl = useMutation(api.photos.generateUploadUrl);
+  const savePhotoMutation = useMutation(api.photos.savePhoto);
+  // Only subscribe to the count during solo play (where Photo Mode is reachable).
+  const photoCountData = useQuery(
+    api.photos.getPhotoCount,
+    isAuthenticated && gameMode === 'classic' ? {} : 'skip',
+  );
+  const [photoMode, setPhotoMode] = useState(false);
+  const photoModeRef = useRef(false);   // read live by the game loop
+  const photoFilterRef = useRef('');    // latest CSS filter (baked into captures)
+  // Set inside the game loop; grabs the live frame (filters baked in) as a Blob.
+  const photoCaptureRef = useRef<((filterCss: string) => Promise<Blob | null>) | null>(null);
+
+  const handlePhotoFilterChange = useCallback((css: string) => {
+    photoFilterRef.current = css;
+    const canvas = mountRef.current?.querySelector('canvas') as HTMLCanvasElement | null;
+    if (canvas) canvas.style.filter = css;
+  }, []);
+
+  const enterPhotoMode = useCallback(() => {
+    photoModeRef.current = true;
+    setPhotoMode(true);
+    setIsPaused(false); // hide the pause menu — the loop keeps the world frozen
+  }, []);
+
+  const exitPhotoMode = useCallback(() => {
+    photoModeRef.current = false;
+    photoFilterRef.current = '';
+    const canvas = mountRef.current?.querySelector('canvas') as HTMLCanvasElement | null;
+    if (canvas) canvas.style.filter = '';
+    setPhotoMode(false);
+    setIsPaused(true); // return to the pause menu
+  }, []);
+
+  const handlePhotoCapture = useCallback(async (): Promise<{ ok: boolean; message: string }> => {
+    const capture = photoCaptureRef.current;
+    if (!capture) return { ok: false, message: 'Renderer not ready yet.' };
+    const blob = await capture(photoFilterRef.current);
+    if (!blob) return { ok: false, message: 'Could not capture the frame.' };
+    try {
+      const uploadUrl = await generatePhotoUploadUrl();
+      const res = await fetch(uploadUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': blob.type },
+        body: blob,
+      });
+      if (!res.ok) return { ok: false, message: 'Upload failed — please try again.' };
+      const { storageId } = await res.json();
+      await savePhotoMutation({ storageId });
+      return { ok: true, message: 'Saved! View it in Profile → Photos.' };
+    } catch (err) {
+      const data = (err as { data?: unknown })?.data;
+      if (typeof data === 'string') return { ok: false, message: data };
+      return { ok: false, message: err instanceof Error ? err.message : 'Upload failed.' };
+    }
+  }, [generatePhotoUploadUrl, savePhotoMutation]);
 
   // Multiplayer state
   const [showMultiplayerLobby, setShowMultiplayerLobby] = useState(false);
@@ -1175,6 +1234,30 @@ const ForestSurvivalGame = () => {
       }
     };
 
+    // Photo Mode capture: render a fresh frame, then copy the WebGL canvas onto
+    // a 2D canvas with the chosen CSS filter baked in (toDataURL/drawImage read
+    // raw pixels, not CSS, so the filter must be re-applied here). Reading the
+    // buffer synchronously right after the render works without
+    // preserveDrawingBuffer (the buffer is valid until the task yields).
+    const capturePhotoBlob = (filterCss: string): Promise<Blob | null> => {
+      try {
+        composePostFX(0);
+        const src = renderer.domElement;
+        const out = document.createElement('canvas');
+        out.width = src.width;
+        out.height = src.height;
+        const ctx2d = out.getContext('2d');
+        if (!ctx2d) return Promise.resolve(null);
+        if (filterCss) ctx2d.filter = filterCss;
+        ctx2d.drawImage(src, 0, 0);
+        return new Promise((resolve) => out.toBlob((b) => resolve(b), 'image/jpeg', 0.9));
+      } catch (err) {
+        console.warn('[PhotoMode] capture failed:', err);
+        return Promise.resolve(null);
+      }
+    };
+    photoCaptureRef.current = capturePhotoBlob;
+
     // Check for WebGL errors (with cleanup-safe event handlers)
     const onWebGLContextLost = (event: Event) => {
       event.preventDefault();
@@ -1949,7 +2032,7 @@ const ForestSurvivalGame = () => {
     // so the game loop can animate raise/lower, hit flashes and shatter.
     const shieldMesh = new THREE.Group();
     // Definite-assignment: all four are set synchronously in the block below.
-    let shieldGlassMat!: THREE.MeshPhysicalMaterial;
+    let shieldGlassMat!: THREE.MeshStandardMaterial;
     let shieldCoreMat!: THREE.MeshStandardMaterial;
     let shieldRimMat!: THREE.MeshBasicMaterial;
     let shieldEnergyMat!: THREE.MeshBasicMaterial;
@@ -1985,11 +2068,15 @@ const ForestSurvivalGame = () => {
       }));
       shieldMesh.add(frame);
 
-      // Clear ballistic panel — glossy, see-through polycarbonate.
-      shieldGlassMat = new THREE.MeshPhysicalMaterial({
+      // Clear ballistic panel — glossy, see-through polycarbonate. Uses
+      // MeshStandardMaterial (not Physical/clearcoat) on purpose: the heavy
+      // physical über-shader stalled the first shield raise while its program
+      // compiled, and the glassy look reads fine from a low-opacity standard
+      // panel with a bright emissive tint + low roughness.
+      shieldGlassMat = new THREE.MeshStandardMaterial({
         color: 0xbfe0ff, transparent: true, opacity: 0.16,
-        roughness: 0.06, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.04,
-        emissive: 0x3aa0ff, emissiveIntensity: 0.15,
+        roughness: 0.08, metalness: 0.0,
+        emissive: 0x3aa0ff, emissiveIntensity: 0.18,
         side: THREE.DoubleSide, depthWrite: false, fog: false,
       });
       const glass = new THREE.Mesh(new THREE.ShapeGeometry(roundedRect(W, H, 0.09)), shieldGlassMat);
@@ -3146,7 +3233,7 @@ const ForestSurvivalGame = () => {
         case 'infinite_ammo':
           infiniteAmmoActive = true;
           infiniteAmmoEndTime = nowMs + infiniteAmmoDuration;
-          setPowerUpMessage('Infinite Ammo · 20s');
+          setPowerUpMessage('Infinite Ammo · 10s');
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Infinite Ammo Active!', 'powerup');
           createParticles(camera.position, 0xff5aff, 22);
           break;
@@ -3169,7 +3256,7 @@ const ForestSurvivalGame = () => {
 
     let infiniteAmmoActive = false;
     let infiniteAmmoEndTime = 0;
-    const infiniteAmmoDuration = 20000; // 20 seconds
+    const infiniteAmmoDuration = 10000; // 10 seconds
 
     // Overcharge — temporary +fire-rate & +damage combat burst (replaces heal).
     let overchargeActive = false;
@@ -3201,12 +3288,35 @@ const ForestSurvivalGame = () => {
     let recoilYaw = 0;
     const _recoilEuler = new THREE.Euler(0, 0, 0, 'YXZ');
 
+    // ─── Photo Mode loop state ───────────────────────────────────────────────
+    // `photoActive` mirrors photoModeRef inside the loop so enter/exit side
+    // effects (anchor, hide gun, restore viewpoint) run exactly once.
+    let photoActive = false;
+    let photoDragging = false; // left button held over the canvas → free-look
+    const photoAnchor = new THREE.Vector3();      // centre of the move perimeter
+    const photoReturnPos = new THREE.Vector3();   // player's real spot (restored on exit)
+    const photoReturnEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+    const PHOTO_PERIMETER = 7;   // max metres the camera may roam from the anchor
+    const PHOTO_MIN_Y = 1.0;
+    const PHOTO_MAX_Y = 6.5;
+    let photoFov = 75;           // scroll-to-zoom FOV (set to baseFOV on entry)
+    const PHOTO_FOV_MIN = 25;    // zoomed in
+    const PHOTO_FOV_MAX = 115;   // zoomed out (wide)
+
     const onKeyDown = (e: KeyboardEvent) => {
       // CRITICAL: Always set the key state first to ensure movement works
       // This ensures keys are registered even if later checks fail
       const isMovementKey = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'ShiftLeft', 'ShiftRight'].includes(e.code);
       if (isMovementKey) {
         keys[e.code] = true;
+      }
+
+      // Photo Mode owns the keyboard: movement keys (set above) reposition the
+      // camera; Escape leaves the mode; everything else (shoot/reload/weapons)
+      // is swallowed so the frozen shot can't be disturbed.
+      if (photoModeRef.current) {
+        if (e.code === 'Escape') exitPhotoMode();
+        return;
       }
 
       if (e.code === 'Escape') {
@@ -3351,7 +3461,7 @@ const ForestSurvivalGame = () => {
     const onPointerLockChange = () => {
       // Don't auto-pause when losing pointer lock in multiplayer or during tutorial
       const inMultiplayerGame = isMultiplayer || gameMode === 'multiplayer';
-      if (!document.pointerLockElement && !paused && !isGameOver && !inMultiplayerGame && !tutorialActiveRef.current) {
+      if (!document.pointerLockElement && !paused && !isGameOver && !inMultiplayerGame && !tutorialActiveRef.current && !photoModeRef.current) {
         paused = true;
         setIsPaused(true);
       }
@@ -3584,6 +3694,17 @@ const ForestSurvivalGame = () => {
     let autoFireInterval: number | null = null;
 
     const onMouseDown = (e: MouseEvent) => {
+      // Photo Mode: dragging on the canvas free-looks (no pointer lock so the
+      // adjustment panel stays clickable). Clicks on the panel have a different
+      // target, so they never start a look-drag.
+      if (photoModeRef.current) {
+        if (e.button === 0 && e.target === renderer.domElement) {
+          photoDragging = true;
+          e.preventDefault();
+        }
+        return;
+      }
+
       // Right mouse button for aiming
       if (e.button === 2 && !paused && !isGameOver) {
         const weapon = WEAPONS[currentWeapon];
@@ -3610,6 +3731,11 @@ const ForestSurvivalGame = () => {
     };
 
     const onMouseUp = (e: MouseEvent) => {
+      if (photoModeRef.current) {
+        photoDragging = false;
+        return;
+      }
+
       // Right mouse button - stop aiming
       if (e.button === 2) {
         isAiming = false;
@@ -3637,6 +3763,16 @@ const ForestSurvivalGame = () => {
     }, 200);
 
     const onMouseMove = (e: MouseEvent) => {
+      // Photo Mode free-look (drag): rotate the base aim from raw mouse deltas.
+      if (photoModeRef.current) {
+        if (photoDragging) {
+          const s = 0.0022 * sensitivityMultiplier;
+          euler.y -= e.movementX * s;
+          euler.x -= e.movementY * s;
+          euler.x = Math.max(-PI_2, Math.min(PI_2, euler.x));
+        }
+        return;
+      }
       if (!paused && !isGameOver) {
         if (document.pointerLockElement === renderer.domElement || mouseDown) {
           // Mouse only updates the BASE aim (`euler`). The render loop
@@ -3657,6 +3793,12 @@ const ForestSurvivalGame = () => {
 
     // Mouse wheel weapon switching
     const onMouseWheel = (e: WheelEvent) => {
+      // Photo Mode: scroll zooms the lens (FOV). Scroll up = zoom in.
+      if (photoModeRef.current) {
+        e.preventDefault();
+        photoFov = Math.max(PHOTO_FOV_MIN, Math.min(PHOTO_FOV_MAX, photoFov + (e.deltaY > 0 ? 4 : -4)));
+        return;
+      }
       if (!paused && !isGameOver) {
         e.preventDefault();
 
@@ -4182,6 +4324,45 @@ const ForestSurvivalGame = () => {
       }
     };
 
+    // Photo Mode camera driver: WASD pans, Space/Shift change height, all
+    // clamped to a circular perimeter around the entry anchor. Mouse-drag
+    // updates `euler` (handled in onMouseMove); here we just apply it.
+    const updatePhotoCamera = (dt: number) => {
+      camera.getWorldDirection(_moveDirection);
+      _moveDirection.y = 0;
+      _moveDirection.normalize();
+      _moveRight.crossVectors(camera.up, _moveDirection).normalize();
+
+      const step = 6 * dt; // metres/sec
+      let nx = camera.position.x;
+      let nz = camera.position.z;
+      let ny = camera.position.y;
+      if (keys['KeyW'] || keys['ArrowUp']) { nx += _moveDirection.x * step; nz += _moveDirection.z * step; }
+      if (keys['KeyS'] || keys['ArrowDown']) { nx -= _moveDirection.x * step; nz -= _moveDirection.z * step; }
+      if (keys['KeyA'] || keys['ArrowLeft']) { nx += _moveRight.x * step; nz += _moveRight.z * step; }
+      if (keys['KeyD'] || keys['ArrowRight']) { nx -= _moveRight.x * step; nz -= _moveRight.z * step; }
+      if (keys['Space']) ny += step;
+      if (keys['ShiftLeft'] || keys['ShiftRight']) ny -= step;
+
+      // Clamp to the perimeter (XZ radius around the anchor) + a height band.
+      const dx = nx - photoAnchor.x;
+      const dz = nz - photoAnchor.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist > PHOTO_PERIMETER) {
+        nx = photoAnchor.x + (dx / dist) * PHOTO_PERIMETER;
+        nz = photoAnchor.z + (dz / dist) * PHOTO_PERIMETER;
+      }
+      ny = Math.max(PHOTO_MIN_Y, Math.min(PHOTO_MAX_Y, ny));
+      camera.position.set(nx, ny, nz);
+      camera.quaternion.setFromEuler(euler);
+
+      // Apply the scroll-driven zoom (FOV) for framing.
+      if (Math.abs(camera.fov - photoFov) > 0.01) {
+        camera.fov = photoFov;
+        camera.updateProjectionMatrix();
+      }
+    };
+
     const animate = () => {
       animationId = requestAnimationFrame(animate);
 
@@ -4202,7 +4383,9 @@ const ForestSurvivalGame = () => {
       }
 
       // Update day-night cycle system
-      atmosphericSettings = dayCycleSystem.update(delta);
+      // Freeze the day-night cycle during a photoshoot so the lighting the
+      // player framed doesn't drift while they compose the shot.
+      atmosphericSettings = dayCycleSystem.update(photoModeRef.current ? 0 : delta);
 
       const sunDirection = computeSunDirection();
       const lowLight = sunDirection.y < 0.18;
@@ -4574,6 +4757,35 @@ const ForestSurvivalGame = () => {
 
       // Drive the grass wind sway
       biomeSystem.updateGrass(clock.getElapsedTime());
+
+      // ─── PHOTO MODE ─────────────────────────────────────────────────────
+      // The world is frozen (enemies, shooting, timers all skipped) but the
+      // player can roam a small perimeter and free-look to frame a shot. The
+      // scene still renders so the live CSS filter preview is accurate.
+      if (photoModeRef.current && !isGameOver) {
+        if (!photoActive) {
+          // Entering: remember the real viewpoint, anchor the perimeter here,
+          // and hide the first-person gun so it never photobombs the shot.
+          photoActive = true;
+          photoReturnPos.copy(camera.position);
+          photoReturnEuler.copy(euler);
+          photoAnchor.copy(camera.position);
+          photoFov = baseFOV; // start zoom at the player's configured FOV
+          gunModel.group.visible = false;
+        }
+        updatePhotoCamera(rawDelta);
+        composePostFX(rawDelta);
+        return;
+      } else if (photoActive) {
+        // Exiting: restore the player's real viewpoint + gun so gameplay
+        // resumes exactly where it left off (the shoot was non-destructive).
+        photoActive = false;
+        photoDragging = false;
+        camera.position.copy(photoReturnPos);
+        euler.copy(photoReturnEuler);
+        camera.quaternion.setFromEuler(euler);
+        gunModel.group.visible = true;
+      }
 
       // Freeze the whole simulation while a tutorial overlay card is on screen
       // — the scene still renders, but nothing moves and enemies cannot attack.
@@ -6086,6 +6298,14 @@ const ForestSurvivalGame = () => {
         refs.tracer = new BulletTracer(scene, wp, wp.clone(), 0xffffaa);
         refs.impact = new ImpactEffect(scene, wp, 0xffaa00, 2);
         refs.sparks = new RobotHitSparks(scene, wp, new THREE.Vector3(0, 1, 0), 2);
+        // Pre-warm the power-up visuals so the FIRST activation in a fight
+        // never stalls compiling their shaders. The held riot-shield mesh is
+        // briefly made visible (restored in teardown) so the compile stage
+        // picks up its materials; the ability flares auto-remove after 2s.
+        shieldMesh.visible = true;
+        abilitySystem.createAbilityEffect(scene, wp, 'shield');
+        abilitySystem.createAbilityEffect(scene, wp, 'overcharge');
+        abilitySystem.createAbilityEffect(scene, wp, 'phantom');
       });
       await yieldFrame();
 
@@ -6146,6 +6366,7 @@ const ForestSurvivalGame = () => {
       // Wrapped in a single guard because we want the loader to finish
       // even if one resource fails to dispose cleanly.
       try {
+        shieldMesh.visible = false; // restore — it was raised only to warm its shaders
         warm.forEach(o => scene.remove(o));
         warmPowerUps.forEach((powerUp) => {
           const root = powerUp.mesh as unknown as THREE.Object3D;
@@ -6279,6 +6500,10 @@ const ForestSurvivalGame = () => {
         clearTimeout(waveTimeoutId);
         waveTimeoutId = null;
       }
+
+      // Photo Mode can't survive a scene teardown — clear it so a fresh run
+      // never starts mid-photoshoot.
+      photoModeRef.current = false;
 
       // Detach the canvas safely. By the time this cleanup runs the game
       // view may already have been unmounted (e.g. for the game-over screen)
@@ -6653,6 +6878,7 @@ const ForestSurvivalGame = () => {
       />
       <div ref={mountRef} className="absolute inset-0" style={{ zIndex: 0 }} />
 
+      {!photoMode && (
       <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 10 }}>
         <HUD
           health={gameState.health}
@@ -6675,9 +6901,10 @@ const ForestSurvivalGame = () => {
           staminaExhausted={staminaExhaustedUI}
         />
       </div>
+      )}
 
       {/* FPS Counter - shown if enabled in settings */}
-      {userSettings.showFPS && gameStarted && (
+      {userSettings.showFPS && gameStarted && !photoMode && (
         <div
           className="absolute top-3 sm:top-5 left-1/2 transform -translate-x-1/2 z-20 select-none"
           style={{ pointerEvents: 'none' }}
@@ -6697,6 +6924,7 @@ const ForestSurvivalGame = () => {
         </div>
       )}
 
+      {!photoMode && (
       <div className="absolute inset-0" style={{ zIndex: 10, pointerEvents: 'none' }}>
         {!gameState.isGameOver && !isPaused && (
           <div
@@ -6763,6 +6991,7 @@ const ForestSurvivalGame = () => {
           t={t}
         />
       </div>
+      )}
 
       {/* Multiplayer HUD */}
       {gameMode === 'multiplayer' && multiplayerManager && !gameState.isGameOver && (
@@ -6788,7 +7017,7 @@ const ForestSurvivalGame = () => {
        * sandbox where achievements would be cheap/spammy AND visually
        * compete with the tutorial overlay card. The onUnlock subscription
        * is also skipped for tutorial sessions so the queue never grows. */}
-      {gameMode !== 'tutorial' && achievementQueue.map((achievement, index) => (
+      {gameMode !== 'tutorial' && !photoMode && achievementQueue.map((achievement, index) => (
         <AchievementNotification
           key={achievement.queueId}
           achievement={achievement}
@@ -6803,7 +7032,7 @@ const ForestSurvivalGame = () => {
       ))}
 
       {/* Enhanced UI Components */}
-      {gameStarted && !gameState.isGameOver && (
+      {gameStarted && !gameState.isGameOver && !photoMode && (
         <>
           <HitMarkers />
           <ScreenEffects
@@ -6833,9 +7062,22 @@ const ForestSurvivalGame = () => {
             onSkillTree={() => { setIsPaused(false); setShowSkillTree(true); }}
             showSkillTree={gameMode !== 'tutorial'}
             skillTreeLocked={!isAuthenticated}
+            onPhotoMode={enterPhotoMode}
+            showPhotoMode={gameMode === 'classic' && isAuthenticated}
             t={t}
           />
         </div>
+      )}
+
+      {/* Photo Mode overlay — frozen world, drag-look, filters + capture. */}
+      {photoMode && (
+        <PhotoMode
+          photoCount={photoCountData?.count ?? 0}
+          maxPhotos={photoCountData?.max ?? 5}
+          onFilterChange={handlePhotoFilterChange}
+          onCapture={handlePhotoCapture}
+          onExit={exitPhotoMode}
+        />
       )}
 
       {gameState.isGameOver && (
@@ -6855,7 +7097,7 @@ const ForestSurvivalGame = () => {
       {/* 🤖 NEW AI-POWERED UI COMPONENTS */}
 
       {/* Mission Display — hidden in the tutorial (no waves/missions there) */}
-      {gameStarted && !gameState.isGameOver && gameMode !== 'tutorial' && activeMissions.length > 0 && (
+      {gameStarted && !gameState.isGameOver && !photoMode && gameMode !== 'tutorial' && activeMissions.length > 0 && (
         <MissionDisplay
           missions={activeMissions}
           onDismiss={(missionId) => {
@@ -6865,7 +7107,7 @@ const ForestSurvivalGame = () => {
       )}
 
       {/* Combat Coach Tips */}
-      {gameStarted && !gameState.isGameOver && coachTips.length > 0 && (
+      {gameStarted && !gameState.isGameOver && !photoMode && coachTips.length > 0 && (
         <CoachTipsDisplay
           tips={coachTips}
           onDismissTip={(tipId) => {

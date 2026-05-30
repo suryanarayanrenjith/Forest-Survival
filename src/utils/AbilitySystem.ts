@@ -2,6 +2,19 @@ import * as THREE from 'three';
 
 export type AbilityType = 'dash' | 'shield' | 'speed' | 'phantom' | 'explosive' | 'overcharge';
 
+// Shared geometries for the activation flares — created once and reused by
+// every effect (they're tiny and live for the whole session), so activating a
+// power-up never allocates fresh GPU geometry mid-fight. Only the per-effect
+// materials are created/disposed per activation; these geometries are NOT
+// disposed by the effect cleanup.
+const FLARE_GEO = {
+  dash: new THREE.PlaneGeometry(0.5, 0.1),
+  shield: new THREE.TorusGeometry(1.1, 0.06, 8, 24),
+  overcharge: new THREE.SphereGeometry(0.08, 4, 4),
+  explosive: new THREE.TorusGeometry(1.5, 0.1, 16, 32),
+  phantom: new THREE.TorusGeometry(1.3, 0.08, 8, 24),
+};
+
 export interface Ability {
   type: AbilityType;
   name: string;
@@ -191,7 +204,9 @@ export class AbilitySystem {
     return { ...this.effects };
   }
 
-  // Create visual effect for ability use
+  // Create visual effect for ability use. Geometries are shared (FLARE_GEO);
+  // only the lightweight per-effect materials are allocated here and disposed
+  // when the flare auto-removes.
   createAbilityEffect(scene: THREE.Scene, position: THREE.Vector3, type: AbilityType): THREE.Group {
     const effect = new THREE.Group();
 
@@ -199,13 +214,12 @@ export class AbilitySystem {
       case 'dash':
         // Speed lines
         for (let i = 0; i < 10; i++) {
-          const geometry = new THREE.PlaneGeometry(0.5, 0.1);
           const material = new THREE.MeshBasicMaterial({
             color: 0x00ffff,
             transparent: true,
             opacity: 0.6
           });
-          const line = new THREE.Mesh(geometry, material);
+          const line = new THREE.Mesh(FLARE_GEO.dash, material);
           line.position.set(
             Math.random() * 2 - 1,
             Math.random() * 2,
@@ -218,13 +232,12 @@ export class AbilitySystem {
       case 'shield': {
         // Quick activation flare only — the persistent shield is a held mesh
         // on the player's arm (managed in the game loop), NOT a bubble here.
-        const ringGeometry = new THREE.TorusGeometry(1.1, 0.06, 8, 24);
         const ringMaterial = new THREE.MeshBasicMaterial({
           color: 0x55b0ff,
           transparent: true,
           opacity: 0.7,
         });
-        const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+        const ring = new THREE.Mesh(FLARE_GEO.shield, ringMaterial);
         ring.rotation.x = Math.PI / 2;
         effect.add(ring);
         break;
@@ -233,13 +246,12 @@ export class AbilitySystem {
       case 'overcharge':
         // Electric spark motes that pop on activation.
         for (let i = 0; i < 18; i++) {
-          const geometry = new THREE.SphereGeometry(0.08, 4, 4);
           const material = new THREE.MeshBasicMaterial({
             color: Math.random() > 0.5 ? 0xffd23f : 0xff8a1e,
             transparent: true,
             opacity: 0.9,
           });
-          const particle = new THREE.Mesh(geometry, material);
+          const particle = new THREE.Mesh(FLARE_GEO.overcharge, material);
           particle.position.set(
             Math.random() * 2 - 1,
             Math.random() * 2,
@@ -251,13 +263,12 @@ export class AbilitySystem {
 
       case 'explosive': {
         // Fire ring
-        const ringGeometry = new THREE.TorusGeometry(1.5, 0.1, 16, 32);
         const ringMaterial = new THREE.MeshBasicMaterial({
           color: 0xff4400,
           transparent: true,
           opacity: 0.7
         });
-        const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+        const ring = new THREE.Mesh(FLARE_GEO.explosive, ringMaterial);
         ring.rotation.x = Math.PI / 2;
         effect.add(ring);
         break;
@@ -266,14 +277,13 @@ export class AbilitySystem {
       case 'phantom': {
         // Brief dematerialize pulse — the persistent translucency is applied
         // to the player body in the game loop, not a bubble here.
-        const auraGeometry = new THREE.TorusGeometry(1.3, 0.08, 8, 24);
         const auraMaterial = new THREE.MeshBasicMaterial({
           color: 0x9a6bff,
           transparent: true,
           opacity: 0.5,
           side: THREE.DoubleSide
         });
-        const aura = new THREE.Mesh(auraGeometry, auraMaterial);
+        const aura = new THREE.Mesh(FLARE_GEO.phantom, auraMaterial);
         aura.rotation.x = Math.PI / 2;
         effect.add(aura);
         break;
@@ -283,15 +293,13 @@ export class AbilitySystem {
     effect.position.copy(position);
     scene.add(effect);
 
-    // Auto-remove after animation
+    // Auto-remove after animation. Dispose only the per-effect materials —
+    // the geometries are shared (FLARE_GEO) and must persist.
     setTimeout(() => {
       scene.remove(effect);
       effect.traverse((child) => {
-        if (child instanceof THREE.Mesh) {
-          child.geometry.dispose();
-          if (child.material instanceof THREE.Material) {
-            child.material.dispose();
-          }
+        if (child instanceof THREE.Mesh && child.material instanceof THREE.Material) {
+          child.material.dispose();
         }
       });
     }, 2000);

@@ -65,20 +65,27 @@ const RankBadge = ({ rank, variant = 'featured' }: RankBadgeProps) => {
   }
 
   return (
-    <div className="flex items-center gap-4">
+    <div className="flex items-center gap-4 sm:gap-5">
       {Emblem}
       <div className="min-w-0 flex-1">
-        <div className="flex items-baseline gap-2">
-          <span className="text-xl font-black uppercase tracking-wide" style={{ color }}>{rank.tierName}</span>
-          <span className="text-sm font-bold text-gray-400">Level {rank.level}</span>
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
+          <span className="text-lg sm:text-xl font-black uppercase leading-none tracking-wider" style={{ color }}>
+            {rank.tierName}
+          </span>
+          <span
+            className="rounded-md border px-2 py-1 text-[10px] font-bold uppercase leading-none tracking-wide tabular-nums"
+            style={{ color, borderColor: `${color}40`, background: `${color}14` }}
+          >
+            Level {rank.level}
+          </span>
         </div>
-        <div className="mt-2 h-2.5 w-full overflow-hidden rounded-full bg-white/[0.06]">
+        <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-white/[0.06]">
           <div
             className="h-full rounded-full transition-all duration-500"
             style={{ width: `${progress}%`, background: `linear-gradient(90deg, ${color}, ${color}aa)`, boxShadow: `0 0 10px ${color}99` }}
           />
         </div>
-        <p className="mt-1.5 text-[11px] text-gray-500">
+        <p className="mt-2 text-[11px] leading-none text-gray-500">
           {rank.nextTierName
             ? <><span className="font-semibold text-gray-300 tabular-nums">{(rank.xpForNextTier! - rank.xpIntoTier).toLocaleString()}</span> XP to {rank.nextTierName}</>
             : <>Top tier · <span className="font-semibold text-gray-300 tabular-nums">{rank.xp.toLocaleString()}</span> XP</>}

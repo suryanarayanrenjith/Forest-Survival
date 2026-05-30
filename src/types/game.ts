@@ -43,7 +43,7 @@ export const WEAPONS: Record<string, Weapon> = {
     bulletSpeed: 3,
     bulletColor: 0xff6600,
     spread: 0.01,
-    unlockScore: 100,
+    unlockScore: 300,
     weight: 1.5, // Medium weight
     canAim: true // Rifle can aim
   },
@@ -56,7 +56,7 @@ export const WEAPONS: Record<string, Weapon> = {
     bulletSpeed: 1.5,
     bulletColor: 0xff0000,
     spread: 0.15,
-    unlockScore: 200,
+    unlockScore: 800,
     weight: 1.7, // Heavy weapon
     canAim: false
   },
@@ -69,7 +69,7 @@ export const WEAPONS: Record<string, Weapon> = {
     bulletSpeed: 2.5,
     bulletColor: 0x00ffff,
     spread: 0.03,
-    unlockScore: 300,
+    unlockScore: 1600,
     autoFire: true,
     weight: 1.2, // Light-medium weight
     canAim: false
@@ -83,7 +83,7 @@ export const WEAPONS: Record<string, Weapon> = {
     bulletSpeed: 5,
     bulletColor: 0x00ff00,
     spread: 0.005,
-    unlockScore: 500,
+    unlockScore: 3000,
     autoFire: false,
     weight: 2.0, // Heavy weapon - slower movement
     canAim: true // Sniper can aim
@@ -97,7 +97,7 @@ export const WEAPONS: Record<string, Weapon> = {
     bulletSpeed: 3,
     bulletColor: 0xffaa00, // Realistic yellow-orange fire
     spread: 0.05,
-    unlockScore: 800,
+    unlockScore: 5500,
     autoFire: true,
     weight: 3.0, // Very heavy - significantly slower
     canAim: false
@@ -111,7 +111,7 @@ export const WEAPONS: Record<string, Weapon> = {
     bulletSpeed: 1.8,
     bulletColor: 0xff4400,
     spread: 0.01,
-    unlockScore: 1200,
+    unlockScore: 9000,
     autoFire: false,
     weight: 2.5, // Very heavy
     canAim: false
