@@ -84,13 +84,11 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
             </h3>
 
             <p className="text-[14px] leading-relaxed text-gray-300/90 max-w-prose mb-3">
-              A 3D first-person wave survival shooter — eight biome maps, seven weapons, four enemy types,
-              P2P co-op, a full skill tree, and 14 mission types. Every line of gameplay logic, AI behaviour,
-              and UI was vibecoded from start to finish: no manual engine work, just conversational AI
-              turning ideas into a real, playable game.
+              A 3D first-person wave survival shooter vibecoded from start to finish, completely built from scratch. Used agentic AI to
+              turn ideas into a real, playable game.
             </p>
             <p className="text-[12px] leading-relaxed text-emerald-300/70 max-w-prose">
-              100% open source · MIT license
+              Open Source · MIT license
             </p>
           </div>
 
@@ -116,13 +114,13 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
               </span>
               <span className="flex-1 min-w-0">
                 <span className="block text-[10px] font-bold tracking-[0.22em] text-emerald-300/90 uppercase mb-0.5">
-                  Portfolio
+                  Surya Portfolio
                 </span>
                 <span className="block text-base font-bold text-white tracking-tight truncate">
                   surya.is-a.dev
                 </span>
                 <span className="block text-[11px] text-gray-500 truncate">
-                  More projects, writing, and ways to get in touch
+                  More about me, my work, and ways to get in touch
                 </span>
               </span>
               <span className="flex items-center gap-1 text-emerald-300 group-hover:translate-x-0.5 transition-transform">
