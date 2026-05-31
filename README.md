@@ -103,6 +103,14 @@ Premium low-poly creatures with chest cores, shoulder plating, glowing visors an
 - Themed tutorial that freezes the world while you read each step
 - Full settings menu with persistence
 
+**Mobile & Tablet** (best on desktop — see [Mobile & Tablet](#-mobile--tablet))
+- Auto-detected touch controls: virtual joystick, swipe-to-look, and on-screen
+  buttons for every action
+- Console-style aim assist for touch players
+- Landscape orientation gate + best-effort fullscreen/orientation lock
+- Compact, non-overlapping HUD, menus and multiplayer scoreboard/chat tuned for
+  small screens and the visible (dynamic) viewport
+
 ---
 
 ## 🎁 Power-Ups
@@ -123,6 +131,8 @@ Spawn between waves, with a chance to drop from fallen enemies:
 
 ## 🎮 Controls
 
+### Desktop (keyboard & mouse)
+
 | Key | Action |
 |-----|--------|
 | W / A / S / D | Move |
@@ -137,6 +147,34 @@ Spawn between waves, with a chance to drop from fallen enemies:
 | 1–7 / Scroll | Switch weapons |
 | E / F / V / B | Abilities |
 | ESC | Pause |
+
+---
+
+## 📱 Mobile & Tablet
+
+> ⚠️ **Best experienced on desktop or laptop.** Forest Survival is built and tuned
+> for keyboard & mouse. It is **fully playable** on phones and tablets via on-screen
+> touch controls, but the mobile experience may not be as polished — for the best
+> experience, play on a desktop or laptop.
+
+Touch devices are auto-detected and the game remaps to on-screen controls:
+
+| Touch control | Action |
+|---------------|--------|
+| Left joystick | Move (push to the edge to sprint) |
+| Swipe right side | Look around (with console-style **aim assist**) |
+| FIRE button | Shoot |
+| Aim button | Aim down sights (Rifle / Sniper) |
+| Jump / Dash / Crouch buttons | Movement actions |
+| Power button | Use held power-up |
+| Reload button | Reload |
+| Weapon button | Switch weapons |
+| Pause button | Pause menu |
+
+- **Landscape only** — a rotate prompt appears in portrait; the game requests
+  fullscreen + landscape lock on start where supported.
+- The HUD, menus and multiplayer scoreboard/chat all adapt to a compact,
+  non-overlapping touch layout sized to the visible viewport.
 
 ---
 

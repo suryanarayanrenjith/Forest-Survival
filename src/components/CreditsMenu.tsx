@@ -1,7 +1,7 @@
 import {
   Sparkles, Heart, Code2, ExternalLink, X, ArrowLeft,
   Cpu, Wand2, Palette, Boxes, Zap, ArrowUpRight, Layers3,
-  Database, ShieldCheck, Triangle,
+  Database, ShieldCheck, Triangle, GitFork,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -32,6 +32,7 @@ const TECH_STACK: TechItem[] = [
 
 const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
   const portfolioUrl = 'https://surya.is-a.dev/';
+  const githubUrl = 'https://github.com/suryanarayanrenjith/Forest-Survival';
 
   return (
     <div
@@ -82,9 +83,14 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
               Surya
             </h3>
 
-            <p className="text-[14px] leading-relaxed text-gray-300/90 max-w-prose">
-              A first-person survival shooter built using AI with wave combat, multiplayer, abilities,
-              weather, day-night cycles.
+            <p className="text-[14px] leading-relaxed text-gray-300/90 max-w-prose mb-3">
+              A 3D first-person wave survival shooter — eight biome maps, seven weapons, four enemy types,
+              P2P co-op, a full skill tree, and 14 mission types. Every line of gameplay logic, AI behaviour,
+              and UI was vibecoded from start to finish: no manual engine work, just conversational AI
+              turning ideas into a real, playable game.
+            </p>
+            <p className="text-[12px] leading-relaxed text-emerald-300/70 max-w-prose">
+              100% open source · MIT license
             </p>
           </div>
 
@@ -121,6 +127,44 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
               </span>
               <span className="flex items-center gap-1 text-emerald-300 group-hover:translate-x-0.5 transition-transform">
                 <span className="text-[10px] font-bold tracking-[0.22em] uppercase">Visit</span>
+                <ArrowUpRight className="w-4 h-4" strokeWidth={2.5} />
+              </span>
+            </span>
+          </a>
+
+          {/* ── GitHub CTA ─────────────────────────────────────────────── */}
+          <a
+            href={githubUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="group relative flex items-center gap-4 w-full rounded-2xl overflow-hidden p-[1px]
+              transition-transform duration-300 hover:-translate-y-0.5"
+            style={{
+              background: 'linear-gradient(135deg, rgba(148,163,184,0.4), rgba(100,116,139,0.3), rgba(71,85,105,0.3))',
+            }}
+          >
+            <span className="relative flex items-center gap-4 w-full rounded-2xl bg-[#0b0f15] px-4 sm:px-5 py-4
+              group-hover:bg-[#0d1218] transition-colors">
+              <span className="relative flex items-center justify-center w-12 h-12 rounded-xl bg-slate-500/12 border border-slate-400/30 flex-shrink-0">
+                <GitFork className="w-[18px] h-[18px] text-slate-300" strokeWidth={2} />
+                <span
+                  className="absolute inset-0 rounded-xl"
+                  style={{ boxShadow: '0 0 18px -4px rgba(148,163,184,0.35)' }}
+                />
+              </span>
+              <span className="flex-1 min-w-0">
+                <span className="block text-[10px] font-bold tracking-[0.22em] text-slate-300/90 uppercase mb-0.5">
+                  Open Source · MIT
+                </span>
+                <span className="block text-base font-bold text-white tracking-tight truncate">
+                  github.com / Forest-Survival
+                </span>
+                <span className="block text-[11px] text-gray-500 truncate">
+                  Source code, issues, and contributions welcome
+                </span>
+              </span>
+              <span className="flex items-center gap-1 text-slate-300 group-hover:translate-x-0.5 transition-transform">
+                <span className="text-[10px] font-bold tracking-[0.22em] uppercase">Star</span>
                 <ArrowUpRight className="w-4 h-4" strokeWidth={2.5} />
               </span>
             </span>

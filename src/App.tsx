@@ -72,6 +72,7 @@ import { useDeviceInfo } from './hooks/useDeviceInfo';
 import { touchControls } from './utils/touchControls';
 import TouchControls from './components/TouchControls';
 import OrientationGate from './components/OrientationGate';
+import MobileNotice from './components/MobileNotice';
 
 /**
  * Quick WebGL2 availability check. We do this BEFORE the scene useEffect
@@ -8008,6 +8009,9 @@ const WrappedGame = () => (
         rendered once at the top level so it overlays every screen on a touch
         device held in portrait. No-op on desktop. */}
     <OrientationGate />
+    {/* One-time "best on desktop" heads-up for touch players. No-op on desktop
+        and after it's been dismissed once. */}
+    <MobileNotice />
   </ErrorBoundary>
 );
 
