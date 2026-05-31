@@ -1,13 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import {
   Settings, X, Gamepad2, Volume2, SlidersHorizontal, Monitor,
-  ArrowUp, ArrowDown, ArrowLeft, ArrowRight, ChevronsUp, Wind, Zap,
+  ArrowUp, ArrowDown, ArrowLeft, ArrowRight, ChevronsUp, ChevronsDown, ChevronsRight, Wind, Zap,
   Mouse, Crosshair, Target, RotateCcw, Grid3x3, Pause, Music, MousePointer2,
-  Eye, Activity, Skull, Hash, Check, Headphones, Sparkles, type LucideIcon,
+  Eye, Activity, Skull, Hash, Check, Headphones, Sparkles, Hand, type LucideIcon,
 } from 'lucide-react';
 import { soundManager } from '../utils/SoundManager';
 import { gameSettingsManager } from '../utils/GameSettingsManager';
 import { type GraphicsQuality, GRAPHICS_PRESETS } from '../utils/GameSettingsManager';
+import { detectIsTouch } from '../hooks/useDeviceInfo';
 
 interface SettingsMenuProps {
   onClose: () => void;
@@ -61,7 +62,11 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
     setSettings((prev) => ({ ...prev, [key]: value }));
   };
 
-  const controls: { key: string; action: string; icon: LucideIcon }[] = [
+  // Touch devices remap every action to the on-screen controls, so the
+  // reference list shown here swaps to the touch gestures/buttons.
+  const isTouch = detectIsTouch();
+
+  const keyboardControls: { key: string; action: string; icon: LucideIcon }[] = [
     { key: 'W', action: 'Move Forward', icon: ArrowUp },
     { key: 'S', action: 'Move Backward', icon: ArrowDown },
     { key: 'A', action: 'Move Left', icon: ArrowLeft },
@@ -77,6 +82,23 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
     { key: '1 – 7', action: 'Switch Weapon', icon: Grid3x3 },
     { key: 'ESC', action: 'Pause Menu', icon: Pause },
   ];
+
+  const touchControlsList: { key: string; action: string; icon: LucideIcon }[] = [
+    { key: 'Left stick', action: 'Move', icon: Gamepad2 },
+    { key: 'Swipe right', action: 'Look Around', icon: Hand },
+    { key: 'Push stick', action: 'Sprint', icon: Wind },
+    { key: 'FIRE', action: 'Shoot', icon: Crosshair },
+    { key: 'Aim', action: 'Aim (Sniper / Rifle)', icon: Target },
+    { key: 'Jump', action: 'Jump', icon: ChevronsUp },
+    { key: 'Dash', action: 'Dash', icon: ChevronsRight },
+    { key: 'Crouch', action: 'Crouch', icon: ChevronsDown },
+    { key: 'Power', action: 'Use Power-Up', icon: Sparkles },
+    { key: 'Reload', action: 'Reload', icon: RotateCcw },
+    { key: 'Weapon', action: 'Switch Weapon', icon: Grid3x3 },
+    { key: 'Pause', action: 'Pause Menu', icon: Pause },
+  ];
+
+  const controls = isTouch ? touchControlsList : keyboardControls;
 
   const tabs: { id: 'controls' | 'audio' | 'gameplay' | 'display'; label: string; icon: LucideIcon }[] = [
     { id: 'controls', label: 'Controls', icon: Gamepad2 },
@@ -154,7 +176,9 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
                 );
               })}
               <p className="sm:col-span-2 text-xs text-gray-600 text-center mt-1">
-                Key bindings are fixed in this version.
+                {isTouch
+                  ? 'On-screen touch controls are active. Play in landscape.'
+                  : 'Key bindings are fixed in this version.'}
               </p>
             </div>
           )}

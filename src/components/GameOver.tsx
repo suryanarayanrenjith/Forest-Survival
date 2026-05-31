@@ -28,12 +28,13 @@ const GameOver = ({ isVictory, score, enemiesKilled, wave, onRestart, onMainMenu
 
   return (
     <div
-      className="absolute inset-0 flex items-center justify-center overflow-y-auto p-4"
+      className="absolute inset-0 overflow-y-auto"
       style={{
         background: 'radial-gradient(ellipse at center, rgba(8,11,16,0.94) 0%, rgba(2,4,8,0.98) 100%)',
         backdropFilter: 'blur(12px)',
       }}
     >
+      <div className="flex min-h-full items-center justify-center p-4">
       <div
         className="relative w-full max-w-md"
         style={{ animation: 'goFade 0.45s cubic-bezier(0.16, 1, 0.3, 1) forwards' }}
@@ -99,6 +100,7 @@ const GameOver = ({ isVictory, score, enemiesKilled, wave, onRestart, onMainMenu
             Menu
           </button>
         </div>
+      </div>
       </div>
 
       <style>{`

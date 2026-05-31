@@ -264,7 +264,7 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
             </div>
           </div>
 
-          {/* ----- Detail panel ----- */}
+          {/* ----- Detail panel (desktop / wide) ----- */}
           <div className="w-80 flex-shrink-0 border-l border-white/[0.07] overflow-y-auto hidden lg:block">
             {focused ? (
               <SkillDetails
@@ -282,6 +282,39 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
             )}
           </div>
         </div>
+
+        {/* ----- Detail sheet (mobile / tablet, < lg) ----- */}
+        {/* The right detail column is hidden below lg, so on phones/tablets a
+            tapped skill opens this bottom sheet — the only place to read its
+            details and actually unlock it. */}
+        {selectedSkill && (
+          <div className="absolute inset-0 z-20 flex flex-col justify-end bg-black/60 lg:hidden" onClick={() => setSelectedSkill(null)}>
+            <div
+              className="max-h-[78%] overflow-y-auto rounded-t-2xl border-t border-white/10 bg-[#0b0f15]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-end px-3 pt-2">
+                <button
+                  onClick={() => setSelectedSkill(null)}
+                  className="flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 text-gray-400 transition-colors hover:bg-white/[0.06] hover:text-white"
+                  aria-label="Close skill details"
+                >
+                  <X className="h-5 w-5" strokeWidth={2} />
+                </button>
+              </div>
+              <SkillDetails
+                key={`m-${selectedSkill.id}`}
+                skill={selectedSkill}
+                allSkills={skills}
+                canAfford={availablePoints >= selectedSkill.cost}
+                onUnlock={() => {
+                  onUnlockSkill(selectedSkill.id);
+                  setSelectedSkill(null);
+                }}
+              />
+            </div>
+          </div>
+        )}
 
         {/* ===== FOOTER ===== */}
         <div className="flex items-center justify-between px-6 py-3.5 border-t border-white/[0.07] bg-gradient-to-t from-white/[0.02] to-transparent">

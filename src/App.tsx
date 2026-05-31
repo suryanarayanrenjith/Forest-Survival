@@ -36,7 +36,6 @@ import GameOver from './components/GameOver';
 import PauseMenu from './components/PauseMenu';
 import PhotoMode from './components/PhotoMode';
 import Notifications from './components/Notifications';
-import MobileWarning from './components/MobileWarning';
 import MultiplayerLobby from './components/MultiplayerLobby';
 import MultiplayerHUD from './components/MultiplayerHUD';
 import MultiplayerGameOver from './components/MultiplayerGameOver';
@@ -69,6 +68,10 @@ import { useMutation, useQuery } from 'convex/react';
 import { useConvexAuth } from '@convex-dev/auth/react';
 import { api } from '../convex/_generated/api';
 import { usePlayerData } from './hooks/usePlayerData';
+import { useDeviceInfo } from './hooks/useDeviceInfo';
+import { touchControls } from './utils/touchControls';
+import TouchControls from './components/TouchControls';
+import OrientationGate from './components/OrientationGate';
 
 /**
  * Quick WebGL2 availability check. We do this BEFORE the scene useEffect
@@ -370,8 +373,14 @@ const ForestSurvivalGame = () => {
   type QueuedAchievement = Achievement & { queueId: number };
   const [achievementQueue, setAchievementQueue] = useState<QueuedAchievement[]>([]);
 
-  // Mobile detection
-  const [isMobile, setIsMobile] = useState(false);
+  // Touch device + orientation detection (drives the mobile/tablet port).
+  // `isTouch` gates the on-screen controls + control remap; `isLandscape`
+  // drives the rotate-to-landscape gate. Desktop = both irrelevant.
+  const { isTouch, isLandscape } = useDeviceInfo();
+  // True while the game loop should freeze because a touch device is held in
+  // portrait. Read inside the render loop's freeze gate (kept as a ref so the
+  // long-lived loop closure always sees the current value).
+  const orientationBlockedRef = useRef(false);
 
   // AI SYSTEMS STATE
   const [activeMissions, setActiveMissions] = useState<Mission[]>([]);
@@ -448,20 +457,33 @@ const ForestSurvivalGame = () => {
     }
   }, []);
 
+  // Enable the touch-input bridge + tag <body> for touch-only CSS. Runs before
+  // any game loop starts (mount-time), so the loop always reads the right flag.
   useEffect(() => {
-    const checkMobile = () => {
-      const isMobileDevice = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-      const isSmallScreen = window.innerWidth < 1024;
-      const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
-
-      setIsMobile(isMobileDevice || isSmallScreen || isTouchDevice);
+    touchControls.enabled = isTouch;
+    if (isTouch) document.body.classList.add('is-touch');
+    return () => {
+      document.body.classList.remove('is-touch');
+      touchControls.enabled = false;
     };
+  }, [isTouch]);
 
-    checkMobile();
-    window.addEventListener('resize', checkMobile);
+  // First-run graphics default for touch devices: phones/tablets start at a
+  // lighter preset (low on weak hardware) instead of desktop's `high`. Only
+  // applied when the user has no saved preference yet, so it never overrides a
+  // choice. Reuses the existing GRAPHICS_PRESETS tiers.
+  useEffect(() => {
+    if (!isTouch) return;
+    try {
+      if (!localStorage.getItem('gameSettings')) {
+        const cores = navigator.hardwareConcurrency ?? 8;
+        const mem = (navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 8;
+        const lowEnd = cores <= 4 || mem <= 4;
+        gameSettingsManager.setGraphicsQuality(lowEnd ? 'low' : 'medium');
+      }
+    } catch { /* localStorage unavailable — keep defaults */ }
+  }, [isTouch]);
 
-    return () => window.removeEventListener('resize', checkMobile);
-  }, []);
 
   // Sync user settings from localStorage
   useEffect(() => {
@@ -593,7 +615,7 @@ const ForestSurvivalGame = () => {
       };
     };
 
-    const shouldPlayMenuMusic = !gameStarted && !isMobile && !musicMuted;
+    const shouldPlayMenuMusic = !gameStarted && !musicMuted;
 
     if (shouldPlayMenuMusic) {
       if (music.paused || music.ended) {
@@ -615,11 +637,11 @@ const ForestSurvivalGame = () => {
       music.pause();
       // Reset playhead only when leaving the menus, not when the user
       // simply muted — so unmuting later resumes from the same spot.
-      if (gameStarted || isMobile) {
+      if (gameStarted) {
         music.currentTime = 0;
       }
     }
-  }, [gameStarted, isMobile, musicMuted, userSettings.masterVolume, userSettings.musicVolume]);
+  }, [gameStarted, musicMuted, userSettings.masterVolume, userSettings.musicVolume]);
 
   useEffect(() => {
     return () => {
@@ -805,6 +827,14 @@ const ForestSurvivalGame = () => {
     currentWeapon: 'pistol',
     unlockedWeapons: ['pistol']
   });
+
+  // Freeze the sim + show the rotate prompt when a touch device is in portrait.
+  // (Defined here, after gameState, so it can read the live game-over flag.)
+  useEffect(() => {
+    const blocked = isTouch && !isLandscape && gameStarted && !gameState.isGameOver;
+    orientationBlockedRef.current = blocked;
+    if (blocked) touchControls.reset();
+  }, [isTouch, isLandscape, gameStarted, gameState.isGameOver]);
 
   // Persist a finished Solo run for signed-in players (best score/wave + totals,
   // and award persistent skill points). Guarded to fire once per run.
@@ -1223,7 +1253,9 @@ const ForestSurvivalGame = () => {
 
       // Aggressively try to auto-lock the pointer for multiplayer so the
       // player doesn't have to click to start controlling the camera.
-      if (gameMode === 'multiplayer') {
+      // (Touch devices never use pointer lock — the on-screen controls drive
+      // the camera instead.)
+      if (gameMode === 'multiplayer' && !touchControls.enabled) {
         const tryLock = () => {
           if (!renderer.domElement || document.pointerLockElement) return;
           try {
@@ -3585,7 +3617,7 @@ const ForestSurvivalGame = () => {
         setIsPaused(paused);
         if (paused) {
           document.exitPointerLock();
-        } else if (!tutorialActiveRef.current) {
+        } else if (!tutorialActiveRef.current && !touchControls.enabled) {
           renderer.domElement.requestPointerLock();
         }
         return;
@@ -3616,6 +3648,13 @@ const ForestSurvivalGame = () => {
         if (keys['KeyS']) dashDirection.sub(dir);
         if (keys['KeyA']) dashDirection.add(right);
         if (keys['KeyD']) dashDirection.sub(right);
+
+        // Touch: dash in the joystick's direction when it's being held.
+        if (dashDirection.length() === 0 && touchControls.enabled && touchControls.moving) {
+          dashDirection
+            .addScaledVector(dir, touchControls.moveY)
+            .addScaledVector(right, -touchControls.moveX);
+        }
 
         // Default to forward if no movement keys pressed
         if (dashDirection.length() === 0) {
@@ -3706,6 +3745,9 @@ const ForestSurvivalGame = () => {
     document.addEventListener('keyup', onKeyUp);
 
     const onPointerLockChange = () => {
+      // Touch devices never acquire pointer lock — skip entirely so the
+      // "lost lock → auto-pause" path can't fire on every frame.
+      if (touchControls.enabled) return;
       // Don't auto-pause when losing pointer lock in multiplayer or during tutorial
       const inMultiplayerGame = isMultiplayer || gameMode === 'multiplayer';
       if (!document.pointerLockElement && !paused && !isGameOver && !inMultiplayerGame && !tutorialActiveRef.current && !photoModeRef.current) {
@@ -3727,8 +3769,9 @@ const ForestSurvivalGame = () => {
     document.addEventListener('pointerlockchange', onPointerLockChange);
 
     const onCanvasClick = (e: MouseEvent) => {
-      // Left click to lock pointer (skip during tutorial popup)
-      if (e.button === 0 && !isGameOver && !paused && !tutorialActiveRef.current && document.pointerLockElement !== renderer.domElement) {
+      // Left click to lock pointer (skip during tutorial popup, and on touch
+      // devices which control the camera via the on-screen look surface).
+      if (e.button === 0 && !isGameOver && !paused && !tutorialActiveRef.current && !touchControls.enabled && document.pointerLockElement !== renderer.domElement) {
         renderer.domElement.requestPointerLock();
       }
 
@@ -3740,6 +3783,9 @@ const ForestSurvivalGame = () => {
 
     const onContextMenu = (e: MouseEvent) => {
       e.preventDefault();
+      // Touch: suppress the long-press context menu and do nothing else
+      // (ADS is driven by the on-screen aim button, not right-click).
+      if (touchControls.enabled) return;
       // Right click for aiming (if weapon supports it) or pointer lock
       const weapon = WEAPONS[currentWeapon];
       if (weapon.canAim && document.pointerLockElement === renderer.domElement) {
@@ -4014,7 +4060,7 @@ const ForestSurvivalGame = () => {
     document.addEventListener('mouseup', onMouseUp);
 
     setTimeout(() => {
-      if (renderer.domElement && !paused && !isGameOver && !tutorialActiveRef.current) {
+      if (renderer.domElement && !paused && !isGameOver && !tutorialActiveRef.current && !touchControls.enabled) {
         renderer.domElement.requestPointerLock();
       }
     }, 200);
@@ -4154,6 +4200,7 @@ const ForestSurvivalGame = () => {
     // === REUSABLE VECTORS FOR PERFORMANCE (avoid allocations in animation loop) ===
     const _moveDirection = new THREE.Vector3();
     const _moveRight = new THREE.Vector3();
+    const _touchMove = new THREE.Vector3(); // analog joystick movement (mobile)
     const _tempVec3 = new THREE.Vector3();
     const _tempVec3_2 = new THREE.Vector3();
 
@@ -5122,9 +5169,26 @@ const ForestSurvivalGame = () => {
 
       // Freeze the whole simulation while a tutorial overlay card is on screen
       // — the scene still renders, but nothing moves and enemies cannot attack.
-      if (isGameOver || paused || tutorialActiveRef.current) {
+      // `orientationBlockedRef` adds the touch-portrait freeze (rotate prompt).
+      if (isGameOver || paused || tutorialActiveRef.current || orientationBlockedRef.current) {
         composePostFX(rawDelta);
         return;
+      }
+
+      // ── TOUCH LOOK + ADS ── consume the right-half swipe delta into the base
+      // aim (`euler`), mirroring the desktop onMouseMove handler, and mirror the
+      // ADS button into `isAiming`. Guarded so the desktop path is untouched.
+      if (touchControls.enabled) {
+        const tSens = 0.0032 * sensitivityMultiplier;
+        const ldx = touchControls.consumeLookX();
+        const ldy = touchControls.consumeLookY();
+        if (ldx !== 0 || ldy !== 0) {
+          euler.y -= ldx * tSens;
+          euler.x -= ldy * tSens;
+          euler.x = Math.max(-PI_2, Math.min(PI_2, euler.x));
+          if (isTutorialMode) tutorial.recordAction('look', 1);
+        }
+        isAiming = touchControls.aiming && WEAPONS[currentWeapon].canAim === true;
       }
 
       // Update gun animations - recoil handles its own offset
@@ -5288,10 +5352,13 @@ const ForestSurvivalGame = () => {
         effectIndicators.update(activeEffects, _effectAnchor, now / 1000);
       }
 
-      // Player movement with weight-based speed and ability effects
-      const isMoving = keys['KeyW'] || keys['KeyS'] || keys['KeyA'] || keys['KeyD'];
+      // Player movement with weight-based speed and ability effects.
+      // On touch, the analog joystick contributes to both "is moving" and the
+      // sprint intent (pushed to the outer ring).
+      const touchMoving = touchControls.enabled && touchControls.moving;
+      const isMoving = keys['KeyW'] || keys['KeyS'] || keys['KeyA'] || keys['KeyD'] || touchMoving;
       if (isTutorialMode && isMoving) tutorial.recordAction('move', 1); // advances the movement step
-      const wantsToSprint = (keys['ShiftLeft'] || keys['ShiftRight']) && !isCrouching;
+      const wantsToSprint = ((keys['ShiftLeft'] || keys['ShiftRight']) || (touchControls.enabled && touchControls.sprinting)) && !isCrouching;
       // Stamina gates sprinting. Once exhausted, the player must let
       // stamina rebuild past STAMINA_REQUIRED_TO_SPRINT before they
       // can sprint again — prevents 0-stamina stutter-sprint exploit.
@@ -5424,6 +5491,28 @@ const ForestSurvivalGame = () => {
         if (!checkTerrainCollision(newX, newZ, camera.position.y)) {
           camera.position.x = newX;
           camera.position.z = newZ;
+        }
+      }
+
+      // ── ANALOG TOUCH MOVEMENT (mobile joystick) ──
+      // Combine forward (moveY along view dir) + strafe (moveX; +X = right, so
+      // it subtracts `_moveRight` to match KeyD), scaled by joystick magnitude
+      // for fine speed control. Reuses the same collision check as keyboard.
+      if (!isDashing && touchMoving) {
+        const mag = Math.min(1, Math.hypot(touchControls.moveX, touchControls.moveY));
+        _touchMove.set(0, 0, 0)
+          .addScaledVector(_moveDirection, touchControls.moveY)
+          .addScaledVector(_moveRight, -touchControls.moveX);
+        _touchMove.y = 0;
+        if (_touchMove.lengthSq() > 1e-6) {
+          _touchMove.normalize();
+          const step = currentSpeed * mag;
+          const newX = camera.position.x + _touchMove.x * step;
+          const newZ = camera.position.z + _touchMove.z * step;
+          if (!checkTerrainCollision(newX, newZ, camera.position.y)) {
+            camera.position.x = newX;
+            camera.position.z = newZ;
+          }
         }
       }
 
@@ -7046,6 +7135,29 @@ const ForestSurvivalGame = () => {
   }, [gameStarted, gameMode, classicDifficulty, classicTimeOfDay, selectedMap, multiplayerManager, gameRestartKey]);
 
   // Handle mode selection
+  // Best-effort immersive mode on touch: go fullscreen and lock to landscape.
+  // Must be called from a user-gesture handler (the Start button). Every call
+  // is wrapped so unsupported platforms (notably iOS Safari, which rejects
+  // orientation.lock) fail silently instead of throwing.
+  const enterImmersiveMode = useCallback(() => {
+    if (!touchControls.enabled) return;
+    try {
+      const el = document.documentElement as HTMLElement & {
+        webkitRequestFullscreen?: () => Promise<void> | void;
+      };
+      const req = el.requestFullscreen?.() ?? el.webkitRequestFullscreen?.();
+      if (req && typeof (req as Promise<void>).catch === 'function') {
+        (req as Promise<void>).catch(() => { /* denied — ignore */ });
+      }
+    } catch { /* unsupported — ignore */ }
+    try {
+      const orientation = screen.orientation as ScreenOrientation & {
+        lock?: (o: string) => Promise<void>;
+      };
+      orientation?.lock?.('landscape').catch(() => { /* unsupported — ignore */ });
+    } catch { /* unsupported — ignore */ }
+  }, []);
+
   const handleModeSelection = () => {
     setGameMode('classic');
     setShowClassicMenu(true);
@@ -7070,6 +7182,7 @@ const ForestSurvivalGame = () => {
     setShowTutorialMenu(false);
     setEnemyIntro(null); // clear any leftover "New Threat" banner from a prior run
     soundManager.initialize();
+    enterImmersiveMode();
     setShowShaderProcessing(true);
     setGameStarted(true);
   };
@@ -7098,6 +7211,7 @@ const ForestSurvivalGame = () => {
       return;
     }
     mpStartHandledRef.current = true;
+    enterImmersiveMode();
     setMultiplayerManager(manager);
     setMultiplayerGameMode(gameMode);
     if (map) {
@@ -7141,7 +7255,7 @@ const ForestSurvivalGame = () => {
     if (manager.isGameHost()) {
       manager.startGame(gameMode, timeLimit, map, difficulty || 'medium');
     }
-  }, []);
+  }, [enterImmersiveMode]);
 
   // Handle classic mode start
   const handleClassicGameStart = (difficulty: 'easy' | 'medium' | 'hard' | 'adaptive', timeOfDay: 'day' | 'night' | 'auto', map: MapType, isRandom: boolean = false) => {
@@ -7154,6 +7268,7 @@ const ForestSurvivalGame = () => {
       setGameSettings(prev => ({ ...prev, adaptiveDifficulty: true }));
     }
     soundManager.initialize();
+    enterImmersiveMode();
     setShowClassicMenu(false);
     setShowShaderProcessing(true);
     setGameStarted(true);
@@ -7239,11 +7354,6 @@ const ForestSurvivalGame = () => {
     }
     window.location.reload();
   };
-
-  // Show mobile warning if on mobile device
-  if (isMobile) {
-    return <MobileWarning />;
-  }
 
   // ─── MENU SHELL ─────────────────────────────────────────────────────
   // All four menus (MainMenu, ClassicMenu, TutorialMenu, MultiplayerLobby)
@@ -7382,8 +7492,23 @@ const ForestSurvivalGame = () => {
           staminaRatio={staminaRatio}
           staminaExhausted={staminaExhaustedUI}
           unlimitedStamina={gameMode === 'tutorial'}
+          isTouch={isTouch}
         />
       </div>
+      )}
+
+      {/* ON-SCREEN TOUCH CONTROLS — only on touch devices, only during live
+          play. The joystick/look-surface write into the touchControls bridge;
+          fire + action buttons dispatch synthetic mouse/keyboard events so the
+          existing desktop handlers do all the work. */}
+      {isTouch && gameStarted && !isPaused && !gameState.isGameOver && !photoMode && (
+        <TouchControls
+          unlockedWeapons={gameState.unlockedWeapons}
+          currentWeapon={gameState.currentWeapon}
+          abilities={abilityHud}
+          reloadDuration={reloadDurationUI}
+          canPause={gameMode !== 'multiplayer'}
+        />
       )}
 
       {/* FPS Counter - shown if enabled in settings */}
@@ -7577,7 +7702,14 @@ const ForestSurvivalGame = () => {
             showSkillTree={gameMode !== 'tutorial'}
             skillTreeLocked={!isAuthenticated}
             onPhotoMode={enterPhotoMode}
-            showPhotoMode={gameMode === 'classic' && isAuthenticated}
+            showPhotoMode={gameMode === 'classic' && isAuthenticated && !isTouch}
+            isTouch={isTouch}
+            onResume={() => {
+              // Mirror the desktop Esc-to-resume: the loop's local `paused`
+              // only flips inside the keydown handler, so dispatch a synthetic
+              // Escape rather than just toggling React state.
+              document.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', key: 'Escape', bubbles: true }));
+            }}
             t={t}
           />
         </div>
@@ -7650,7 +7782,7 @@ const ForestSurvivalGame = () => {
                 setTutorialStep(null);
                 tutorialActiveRef.current = false;
                 const canvas = mountRef.current?.querySelector('canvas');
-                if (canvas) setTimeout(() => canvas.requestPointerLock(), 100);
+                if (canvas && !isTouch) setTimeout(() => canvas.requestPointerLock(), 100);
               }
             }
           }}
@@ -7660,7 +7792,7 @@ const ForestSurvivalGame = () => {
             // re-blocks automatically once the step advances.
             tutorialActiveRef.current = false;
             const canvas = mountRef.current?.querySelector('canvas');
-            if (canvas) (canvas as HTMLCanvasElement).requestPointerLock();
+            if (canvas && !isTouch) (canvas as HTMLCanvasElement).requestPointerLock();
           }}
           onNext={() => {
             const tut = tutorialRef.current;
@@ -7689,7 +7821,7 @@ const ForestSurvivalGame = () => {
               tutorialRef.current.setEnabled(false);
             }
             const canvas = mountRef.current?.querySelector('canvas');
-            if (canvas) setTimeout(() => canvas.requestPointerLock(), 100);
+            if (canvas && !isTouch) setTimeout(() => canvas.requestPointerLock(), 100);
           }}
         />
       )}
@@ -7725,7 +7857,7 @@ const ForestSurvivalGame = () => {
                   onClick={() => {
                     setTutorialComplete(false);
                     const canvas = mountRef.current?.querySelector('canvas');
-                    if (canvas) (canvas as HTMLCanvasElement).requestPointerLock();
+                    if (canvas && !isTouch) (canvas as HTMLCanvasElement).requestPointerLock();
                   }}
                   className="flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold tracking-wide text-[#04130a] transition-all hover:-translate-y-0.5"
                   style={{ background: 'linear-gradient(135deg, #34d399, #22c55e)' }}
@@ -7802,6 +7934,10 @@ const ForestSurvivalGame = () => {
 const WrappedGame = () => (
   <ErrorBoundary>
     <ForestSurvivalGame />
+    {/* Rotate-to-landscape gate. Self-contained (uses useDeviceInfo) and
+        rendered once at the top level so it overlays every screen on a touch
+        device held in portrait. No-op on desktop. */}
+    <OrientationGate />
   </ErrorBoundary>
 );
 

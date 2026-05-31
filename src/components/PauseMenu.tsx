@@ -1,4 +1,4 @@
-import { Pause, Heart, Crosshair, Skull, Waves, Trophy, Network, LogOut, ChevronRight, Lock, Camera } from 'lucide-react';
+import { Pause, Play, Heart, Crosshair, Skull, Waves, Trophy, Network, LogOut, ChevronRight, Lock, Camera } from 'lucide-react';
 
 interface PauseMenuProps {
   health: number;
@@ -17,10 +17,14 @@ interface PauseMenuProps {
   onPhotoMode?: () => void;
   /** When true the Photo Mode action is shown (solo + signed in). */
   showPhotoMode?: boolean;
+  /** Touch devices have no ESC key — show an on-screen Resume button + hint. */
+  isTouch?: boolean;
+  /** Resume gameplay (touch). */
+  onResume?: () => void;
   t: (key: string) => string;
 }
 
-const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMenu, onSkillTree, showSkillTree = true, skillTreeLocked = false, onPhotoMode, showPhotoMode = false }: PauseMenuProps) => {
+const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMenu, onSkillTree, showSkillTree = true, skillTreeLocked = false, onPhotoMode, showPhotoMode = false, isTouch = false, onResume }: PauseMenuProps) => {
   const stats = [
     { icon: Heart, label: 'Health', value: `${Math.floor(health)}`, color: '#f87171' },
     { icon: Crosshair, label: 'Ammo', value: `${ammo}/${maxAmmo}`, color: '#fbbf24' },
@@ -47,7 +51,11 @@ const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMe
           </div>
           <h1 className="text-3xl font-bold tracking-[0.2em] text-white uppercase">Paused</h1>
           <p className="mt-1.5 text-sm text-gray-500">
-            Press <kbd className="px-1.5 py-0.5 rounded bg-white/10 text-gray-300 font-mono text-xs">ESC</kbd> to resume
+            {isTouch ? (
+              'Tap Resume to keep playing'
+            ) : (
+              <>Press <kbd className="px-1.5 py-0.5 rounded bg-white/10 text-gray-300 font-mono text-xs">ESC</kbd> to resume</>
+            )}
           </p>
         </div>
 
@@ -82,6 +90,21 @@ const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMe
 
         {/* Actions */}
         <div className="flex flex-col gap-2.5">
+          {/* Resume — touch only (desktop resumes with ESC). */}
+          {isTouch && onResume && (
+            <button
+              onClick={onResume}
+              className="group flex items-center gap-3 w-full rounded-xl px-4 py-3.5 border border-emerald-400/40
+                bg-emerald-500/15 transition-all duration-200 hover:bg-emerald-500/25"
+            >
+              <span className="flex items-center justify-center w-9 h-9 rounded-lg bg-emerald-500/25">
+                <Play className="w-[18px] h-[18px] text-emerald-300" strokeWidth={2.5} fill="currentColor" />
+              </span>
+              <span className="flex-1 text-left text-sm font-bold text-white tracking-wide">Resume</span>
+              <ChevronRight className="w-4 h-4 text-emerald-400/70 group-hover:translate-x-0.5 transition-all" strokeWidth={2} />
+            </button>
+          )}
+
           {showSkillTree && (
             skillTreeLocked ? (
               <div

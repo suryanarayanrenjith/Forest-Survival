@@ -61,6 +61,10 @@ interface HUDProps {
   staminaExhausted?: boolean;
   /** Tutorial mode — sprinting is free, so the meter shows an "∞" full ring. */
   unlimitedStamina?: boolean;
+  /** Touch devices use a compact top-left layout so the bottom corners stay
+   *  free for the joystick + fire button, and the top-right for the
+   *  weapon/pause touch buttons. Desktop (false) is unchanged. */
+  isTouch?: boolean;
 }
 
 const HUD = ({
@@ -68,6 +72,7 @@ const HUD = ({
   unlockedWeapons, currentWeapon, hideStatsPanel = false, unlimitedHealth = false,
   hideWave = false, abilities = [],
   staminaRatio = 1, staminaExhausted = false, unlimitedStamina = false,
+  isTouch = false,
 }: HUDProps) => {
   const [scorePopup, setScorePopup] = useState(false);
   const [prevScore, setPrevScore] = useState(score);
@@ -91,6 +96,89 @@ const HUD = ({
   const isLowAmmo = ammo <= Math.ceil(maxAmmo * 0.2);
 
   const weaponKeys = Object.keys(WEAPONS);
+
+  // ── Compact touch HUD ──
+  // Everything lives in one small top-left panel so the bottom corners (joystick
+  // + fire) and the top-right (weapon/pause buttons) stay clear of the HUD. The
+  // loadout grid, ability bar and stamina pie are intentionally omitted — those
+  // are surfaced through the on-screen touch buttons instead.
+  if (isTouch) {
+    const staminaPct = (unlimitedStamina ? 1 : Math.max(0, Math.min(1, staminaRatio))) * 100;
+    const staminaColor = unlimitedStamina ? '#34d399' : staminaExhausted ? '#f87171' : staminaPct < 30 ? '#fbbf24' : '#34d399';
+    return (
+      <>
+        <div className="touch-safe-pad absolute left-0 top-0 select-none">
+          <div className="m-2 rounded-xl border border-white/10 bg-black/55 px-2.5 py-1.5 backdrop-blur-md">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+              {/* Health */}
+              <div className="flex items-center gap-1.5">
+                <Heart className="h-3.5 w-3.5" style={{ color: healthColor }} strokeWidth={2.25} fill={isLowHealth ? healthColor : 'none'} />
+                <span className="text-sm font-bold tabular-nums" style={{ color: healthColor }}>
+                  {unlimitedHealth ? '∞' : Math.max(0, Math.floor(health))}
+                </span>
+              </div>
+              {/* Ammo */}
+              <div className="flex items-baseline gap-1">
+                <Crosshair className="h-3.5 w-3.5 self-center text-gray-300" strokeWidth={2.25} />
+                <span className={`text-sm font-bold tabular-nums ${isLowAmmo ? 'text-red-400' : 'text-white'}`}>{ammo}</span>
+                <span className="text-[10px] font-medium text-gray-500">/ {maxAmmo}</span>
+              </div>
+              {/* Score */}
+              {!hideStatsPanel && (
+                <div className="flex items-baseline gap-1">
+                  <span className="text-[9px] font-semibold uppercase tracking-wider text-gray-500">Score</span>
+                  <span className="text-sm font-bold tabular-nums text-white">{score.toLocaleString()}</span>
+                </div>
+              )}
+              {/* Kills */}
+              {!hideStatsPanel && (
+                <div className="flex items-center gap-1">
+                  <Skull className="h-3 w-3 text-gray-500" strokeWidth={2.25} />
+                  <span className="text-xs font-semibold tabular-nums text-gray-200">{enemiesKilled}</span>
+                </div>
+              )}
+              {/* Wave */}
+              {!hideWave && !hideStatsPanel && (
+                <div className="flex items-center gap-1">
+                  <Waves className="h-3 w-3 text-emerald-500" strokeWidth={2.25} />
+                  <span className="text-xs font-semibold tabular-nums text-emerald-300">{wave}</span>
+                </div>
+              )}
+            </div>
+            {/* Health + stamina bars */}
+            <div className="mt-1.5 flex items-center gap-2">
+              <div className="h-1 flex-1 overflow-hidden rounded-full bg-white/10">
+                <div className="h-full rounded-full transition-all duration-300" style={{ width: `${healthPct}%`, backgroundColor: healthColor }} />
+              </div>
+              <div className="flex items-center gap-1">
+                <Footprints className="h-3 w-3" style={{ color: staminaColor }} strokeWidth={2.25} />
+                <div className="h-1 w-12 overflow-hidden rounded-full bg-white/10">
+                  <div className="h-full rounded-full transition-all duration-200" style={{ width: `${staminaPct}%`, backgroundColor: staminaColor }} />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Combo — top-center, transient (same as desktop). */}
+        {combo > 1 && (
+          <div className="absolute left-1/2 top-2 -translate-x-1/2 select-none" style={{ animation: 'comboIn 0.25s cubic-bezier(0.34, 1.56, 0.64, 1)' }}>
+            <div className="flex items-center gap-2 rounded-full border border-orange-400/40 bg-orange-500/15 px-3 py-1 backdrop-blur-md">
+              <Flame className="h-3.5 w-3.5 text-orange-400" strokeWidth={2.25} fill="currentColor" />
+              <span className="text-sm font-bold tabular-nums tracking-wide text-orange-200">{combo}x</span>
+            </div>
+          </div>
+        )}
+
+        <style>{`
+          @keyframes comboIn {
+            0% { transform: translateX(-50%) scale(0.6); opacity: 0; }
+            100% { transform: translateX(-50%) scale(1); opacity: 1; }
+          }
+        `}</style>
+      </>
+    );
+  }
 
   return (
     <>

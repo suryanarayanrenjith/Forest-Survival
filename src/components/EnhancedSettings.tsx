@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { detectIsTouch } from '../hooks/useDeviceInfo';
 
 export interface GameSettings {
   // Graphics
@@ -321,12 +322,16 @@ const GameplaySettings: React.FC<{
 const ControlsSettings: React.FC<{
   settings: GameSettings;
   onChange: <K extends keyof GameSettings>(key: K, value: GameSettings[K]) => void;
-}> = ({ settings, onChange }) => (
+}> = ({ settings, onChange }) => {
+  // On touch devices the controls are the on-screen joystick/buttons, so the
+  // labels + reference list swap to match.
+  const isTouch = detectIsTouch();
+  return (
   <div className="space-y-4 sm:space-y-6">
     <h3 className="text-lg sm:text-xl font-bold text-white mb-3 sm:mb-4">Controls Settings</h3>
 
     <SliderSetting
-      label="Mouse Sensitivity"
+      label={isTouch ? 'Look Sensitivity' : 'Mouse Sensitivity'}
       value={settings.mouseSensitivity}
       min={0}
       max={100}
@@ -340,29 +345,51 @@ const ControlsSettings: React.FC<{
       onChange={(v) => onChange('invertY', v)}
     />
 
-    <ToggleSetting
-      label="Toggle Aim"
-      description="Right-click toggles aim instead of hold"
-      value={settings.toggleAim}
-      onChange={(v) => onChange('toggleAim', v)}
-    />
+    {!isTouch && (
+      <ToggleSetting
+        label="Toggle Aim"
+        description="Right-click toggles aim instead of hold"
+        value={settings.toggleAim}
+        onChange={(v) => onChange('toggleAim', v)}
+      />
+    )}
 
     <div className="bg-gray-800/50 p-3 sm:p-4 rounded-lg">
-      <h4 className="text-white font-bold mb-2 text-sm sm:text-base">Key Bindings</h4>
+      <h4 className="text-white font-bold mb-2 text-sm sm:text-base">
+        {isTouch ? 'Touch Controls' : 'Key Bindings'}
+      </h4>
       <div className="text-xs sm:text-sm text-gray-400 space-y-1 grid grid-cols-2 sm:block gap-x-4">
-        <div>WASD - Movement</div>
-        <div>Mouse - Look / Aim</div>
-        <div>Left Click - Shoot</div>
-        <div>R - Reload</div>
-        <div>Q - Switch Weapon</div>
-        <div>1-6 - Abilities</div>
-        <div>E - Interact</div>
-        <div>Shift - Sprint</div>
-        <div>ESC - Pause</div>
+        {isTouch ? (
+          <>
+            <div>Left stick - Move</div>
+            <div>Swipe right - Look / Aim</div>
+            <div>Push stick - Sprint</div>
+            <div>FIRE - Shoot</div>
+            <div>Aim - Aim down sights</div>
+            <div>Jump / Dash / Crouch buttons</div>
+            <div>Power - Use power-up</div>
+            <div>Reload - Reload</div>
+            <div>Weapon - Switch weapon</div>
+            <div>Pause - Pause menu</div>
+          </>
+        ) : (
+          <>
+            <div>WASD - Movement</div>
+            <div>Mouse - Look / Aim</div>
+            <div>Left Click - Shoot</div>
+            <div>R - Reload</div>
+            <div>Q - Switch Weapon</div>
+            <div>1-6 - Abilities</div>
+            <div>E - Interact</div>
+            <div>Shift - Sprint</div>
+            <div>ESC - Pause</div>
+          </>
+        )}
       </div>
     </div>
   </div>
-);
+  );
+};
 
 // UI Settings Panel
 const UISettings: React.FC<{

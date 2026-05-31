@@ -199,7 +199,8 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode }: MainMenu
 
       {/* Main Screen */}
       {!showSettings && (
-        <div className="relative z-10 min-h-screen overflow-y-auto flex flex-col items-center justify-center px-6 py-10">
+        <div className="relative z-10 h-screen overflow-y-auto">
+        <div className="flex min-h-full flex-col items-center justify-center px-6 py-10">
           {/* Title */}
           <div className="relative mb-10 sm:mb-14 text-center">
             <div className="flex items-center justify-center gap-3 mb-3">
@@ -421,6 +422,7 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode }: MainMenu
               vibe-coded by <span className="font-semibold">Surya</span>
             </button>
           </div>
+        </div>
         </div>
       )}
 

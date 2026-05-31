@@ -593,3 +593,49 @@ button,
     background: rgba(0, 0, 0, 0.85) !important;
   }
 }
+
+/* ===== MOBILE / TOUCH PORT ===== */
+
+/* The WebGL canvas must never scroll/zoom under touch gestures — the look
+   surface and joystick own those gestures instead. Harmless on desktop. */
+canvas {
+  touch-action: none;
+}
+
+/* Applied to <body> by the app when a touch device is detected. Keeps the
+   game from rubber-banding / pull-to-refresh and removes the grey tap flash.
+   Desktop never gets this class, so its behaviour is unchanged. */
+.is-touch {
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+}
+
+.is-touch * {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* On-screen control surfaces own their gestures and never select text. */
+.touch-control,
+.touch-control * {
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Safe-area aware padding for the in-game touch layer (notches / rounded
+   corners on phones). Falls back to 0 where env() is unsupported. */
+.touch-safe-pad {
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+}
+
+@keyframes rotateHint {
+  0%, 100% { transform: rotate(-12deg); }
+  50% { transform: rotate(78deg); }
+}
+.animate-rotate-hint {
+  animation: rotateHint 2.2s ease-in-out infinite;
+}

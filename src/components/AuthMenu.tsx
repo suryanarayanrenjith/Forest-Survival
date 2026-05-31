@@ -145,13 +145,14 @@ const AuthMenu = ({ onClose, onSignedIn, initialMode = 'signIn' }: AuthMenuProps
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto p-3 sm:p-4"
+      className="fixed inset-0 z-50 overflow-y-auto"
       style={{ background: 'rgba(5,8,10,0.94)', backdropFilter: 'blur(14px)' }}
     >
       <MenuShell variant="main" />
 
+      <div className="relative z-10 flex min-h-full items-center justify-center p-3 sm:p-4">
       <div
-        className="relative z-10 w-full max-w-2xl overflow-hidden rounded-[20px] border border-white/10 bg-[#0b0f15] shadow-[0_30px_80px_rgba(0,0,0,0.5)]"
+        className="w-full max-w-2xl overflow-hidden rounded-[20px] border border-white/10 bg-[#0b0f15] shadow-[0_30px_80px_rgba(0,0,0,0.5)]"
         style={{ animation: 'authFade 0.28s cubic-bezier(0.16,1,0.3,1) forwards' }}
       >
         <div className="flex items-start justify-between gap-4 border-b border-white/[0.07] px-4 py-3">
@@ -353,6 +354,7 @@ const AuthMenu = ({ onClose, onSignedIn, initialMode = 'signIn' }: AuthMenuProps
             </form>
           </div>
         </section>
+      </div>
       </div>
 
       <style>{`
