@@ -66,7 +66,7 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
           </button>
         </div>
 
-        <div className="relative p-5 sm:p-7 space-y-6 max-h-[78vh] overflow-y-auto">
+        <div className="relative p-5 sm:p-7 space-y-6 max-h-[78dvh] overflow-y-auto">
           {/* ── Hero ─────────────────────────────────────────────────── */}
           <div className="rounded-2xl border border-white/10 bg-white/[0.02] px-5 sm:px-6 py-6 sm:py-7">
             <h3

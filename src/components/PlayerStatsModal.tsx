@@ -32,7 +32,7 @@ const PlayerStatsModal = ({ username, onClose }: PlayerStatsModalProps) => {
       onClick={onClose}
     >
       <div
-        className="relative max-h-[94vh] w-full max-w-sm overflow-y-auto rounded-2xl border border-white/10 bg-[#0b0f15] shadow-[0_30px_80px_rgba(0,0,0,0.6)]"
+        className="relative max-h-[94dvh] w-full max-w-sm overflow-y-auto rounded-2xl border border-white/10 bg-[#0b0f15] shadow-[0_30px_80px_rgba(0,0,0,0.6)]"
         style={{ animation: 'authFade 0.25s cubic-bezier(0.16,1,0.3,1) forwards' }}
         onClick={(e) => e.stopPropagation()}
       >

@@ -114,7 +114,7 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
     >
       <div
         className="w-full max-w-3xl flex flex-col rounded-2xl border border-white/10 bg-[#0b0f15]"
-        style={{ maxHeight: '94vh', animation: 'smFade 0.3s cubic-bezier(0.16,1,0.3,1)' }}
+        style={{ maxHeight: '94dvh', animation: 'smFade 0.3s cubic-bezier(0.16,1,0.3,1)' }}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.07]">

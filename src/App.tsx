@@ -3584,6 +3584,14 @@ const ForestSurvivalGame = () => {
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
+      // Ignore gameplay keys while the player is typing in a text field (e.g.
+      // multiplayer chat) — otherwise letters like W/A/S/D would also move the
+      // player. Applies on desktop and mobile (on-screen keyboard).
+      const el = e.target as HTMLElement | null;
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) {
+        return;
+      }
+
       // CRITICAL: Always set the key state first to ensure movement works
       // This ensures keys are registered even if later checks fail
       const isMovementKey = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'ShiftLeft', 'ShiftRight'].includes(e.code);
@@ -4201,6 +4209,8 @@ const ForestSurvivalGame = () => {
     const _moveDirection = new THREE.Vector3();
     const _moveRight = new THREE.Vector3();
     const _touchMove = new THREE.Vector3(); // analog joystick movement (mobile)
+    const _assistFwd = new THREE.Vector3(); // camera forward (aim assist)
+    const _assistDir = new THREE.Vector3(); // camera→enemy (aim assist)
     const _tempVec3 = new THREE.Vector3();
     const _tempVec3_2 = new THREE.Vector3();
 
@@ -5182,13 +5192,54 @@ const ForestSurvivalGame = () => {
         const tSens = 0.0032 * sensitivityMultiplier;
         const ldx = touchControls.consumeLookX();
         const ldy = touchControls.consumeLookY();
-        if (ldx !== 0 || ldy !== 0) {
+        const looked = ldx !== 0 || ldy !== 0;
+        if (looked) {
           euler.y -= ldx * tSens;
           euler.x -= ldy * tSens;
           euler.x = Math.max(-PI_2, Math.min(PI_2, euler.x));
           if (isTutorialMode) tutorial.recordAction('look', 1);
         }
         isAiming = touchControls.aiming && WEAPONS[currentWeapon].canAim === true;
+
+        // ── AIM ASSIST (mobile/tablet only) ── console-style magnetism: while
+        // firing, aiming, or actively swiping, gently rotate the camera toward
+        // the nearest enemy inside a small acquisition cone. It never fully
+        // locks — a deliberate swipe always overrides it — and stays idle when
+        // the player isn't interacting, so the camera never drifts on its own.
+        const firing = mouseDown || touchControls.aiming;
+        if (firing || looked) {
+          camera.getWorldDirection(_assistFwd);
+          const ACQUIRE_COS = 0.978; // ~12° cone
+          const ASSIST_RANGE = 75;
+          let bestEnemy: Enemy | null = null;
+          let bestDot = ACQUIRE_COS;
+          for (let i = 0; i < enemies.length; i++) {
+            const e = enemies[i];
+            if (e.dead || e.health <= 0) continue;
+            _assistDir.set(e.mesh.position.x, e.mesh.position.y + 1.1, e.mesh.position.z).sub(camera.position);
+            const dist = _assistDir.length();
+            if (dist < 3 || dist > ASSIST_RANGE) continue;
+            _assistDir.multiplyScalar(1 / dist);
+            const dot = _assistDir.dot(_assistFwd);
+            if (dot > bestDot) { bestDot = dot; bestEnemy = e; }
+          }
+          if (bestEnemy) {
+            _assistDir.set(bestEnemy.mesh.position.x, bestEnemy.mesh.position.y + 1.1, bestEnemy.mesh.position.z)
+              .sub(camera.position).normalize();
+            const targetYaw = Math.atan2(-_assistDir.x, -_assistDir.z);
+            const targetPitch = Math.asin(Math.max(-1, Math.min(1, _assistDir.y)));
+            let dY = targetYaw - euler.y;
+            while (dY > Math.PI) dY -= Math.PI * 2;
+            while (dY < -Math.PI) dY += Math.PI * 2;
+            const dX = targetPitch - euler.x;
+            // Soft pull, scaled by how centered the target is (gentler at the edge).
+            const closeness = (bestDot - ACQUIRE_COS) / (1 - ACQUIRE_COS);
+            const pull = (firing ? 0.20 : 0.06) * (0.35 + 0.65 * closeness);
+            euler.y += dY * pull;
+            euler.x += dX * pull;
+            euler.x = Math.max(-PI_2, Math.min(PI_2, euler.x));
+          }
+        }
       }
 
       // Update gun animations - recoil handles its own offset
@@ -5776,7 +5827,7 @@ const ForestSurvivalGame = () => {
               const hintNow = Date.now();
               if (hintNow - lastHeldHintAt > 1500) {
                 lastHeldHintAt = hintNow;
-                setPowerUpMessage('Use your power (E) before looting another');
+                setPowerUpMessage(touchControls.enabled ? 'Use your power (tap Power) before looting another' : 'Use your power (E) before looting another');
                 setTimeout(() => setPowerUpMessage(''), 1400);
               }
             } else {
@@ -5796,7 +5847,7 @@ const ForestSurvivalGame = () => {
               // Stow the looted power — it is NOT applied until the player
               // presses E. The HUD power slot reflects what's held.
               heldPower = powerUp.type as HeldPower;
-              setPowerUpMessage(`${POWER_LABELS[heldPower]} looted · press E to use`);
+              setPowerUpMessage(`${POWER_LABELS[heldPower]} looted · ${touchControls.enabled ? 'tap Power' : 'press E'} to use`);
               if (gameSettingsManager.getSetting('killFeed')) {
                 addKillFeedEntry(`Looted ${POWER_LABELS[heldPower]}`, 'powerup');
               }
@@ -7417,7 +7468,7 @@ const ForestSurvivalGame = () => {
     const localPlayer = multiplayerManager.getLocalPlayer();
 
     return (
-      <div className="relative w-full h-screen overflow-hidden bg-black">
+      <div className="relative w-full h-dvh overflow-hidden bg-black">
         <div ref={mountRef} className="absolute inset-0" style={{ zIndex: 0 }} />
         <SpectateScreen
           localPlayer={localPlayer}
@@ -7442,7 +7493,7 @@ const ForestSurvivalGame = () => {
   }
 
   return (
-    <div className="relative w-full h-screen overflow-hidden bg-black">
+    <div className="relative w-full h-dvh overflow-hidden bg-black">
       <Analytics />
       <SpeedInsights />
       <ShaderProcessingScreen
@@ -7493,6 +7544,7 @@ const ForestSurvivalGame = () => {
           staminaExhausted={staminaExhaustedUI}
           unlimitedStamina={gameMode === 'tutorial'}
           isTouch={isTouch}
+          fpsVisible={userSettings.showFPS}
         />
       </div>
       )}
@@ -7511,10 +7563,11 @@ const ForestSurvivalGame = () => {
         />
       )}
 
-      {/* FPS Counter - shown if enabled in settings */}
+      {/* FPS Counter — top-center. The combo pill drops below it (see HUD
+          fpsVisible) so the two never overlap. */}
       {userSettings.showFPS && gameStarted && !photoMode && (
         <div
-          className="absolute top-3 sm:top-5 left-1/2 transform -translate-x-1/2 z-20 select-none"
+          className="absolute top-2 left-1/2 transform -translate-x-1/2 z-20 select-none"
           style={{ pointerEvents: 'none' }}
         >
           <div
@@ -7632,23 +7685,40 @@ const ForestSurvivalGame = () => {
       </div>
       )}
 
-      {/* Multiplayer HUD */}
+      {/* Multiplayer HUD. On touch it manages its own fixed, high-z layout
+          (compact toggle + scoreboard modal) so it sits above the on-screen
+          controls; on desktop it keeps the full top-right scoreboard panel. */}
       {gameMode === 'multiplayer' && multiplayerManager && !gameState.isGameOver && (
-        <div className="absolute inset-0" style={{ zIndex: 15, pointerEvents: 'none' }}>
+        isTouch ? (
           <MultiplayerHUD
             localPlayer={multiplayerManager.getLocalPlayer()}
             remotePlayers={Array.from(multiplayerManager.getRemotePlayers().values())}
             remainingTime={multiplayerManager.getRemainingTime()}
             gameMode={multiplayerGameMode}
+            isTouch
           />
-        </div>
+        ) : (
+          <div className="absolute inset-0" style={{ zIndex: 15, pointerEvents: 'none' }}>
+            <MultiplayerHUD
+              localPlayer={multiplayerManager.getLocalPlayer()}
+              remotePlayers={Array.from(multiplayerManager.getRemotePlayers().values())}
+              remainingTime={multiplayerManager.getRemainingTime()}
+              gameMode={multiplayerGameMode}
+            />
+          </div>
+        )
       )}
 
-      {/* Chat System for Multiplayer */}
+      {/* Chat System for Multiplayer. Touch uses a collapsed toggle + overlay
+          (rendered above the controls); desktop keeps the docked panel. */}
       {gameMode === 'multiplayer' && multiplayerManager && !gameState.isGameOver && (
-        <div className="absolute inset-0" style={{ zIndex: 30, pointerEvents: 'auto' }}>
-          <ChatSystem manager={multiplayerManager} isVisible={!isPaused} />
-        </div>
+        isTouch ? (
+          <ChatSystem manager={multiplayerManager} isVisible={!isPaused} isTouch />
+        ) : (
+          <div className="absolute inset-0" style={{ zIndex: 30, pointerEvents: 'auto' }}>
+            <ChatSystem manager={multiplayerManager} isVisible={!isPaused} />
+          </div>
+        )
       )}
 
       {/* Achievement Notifications - Stacked vertically.

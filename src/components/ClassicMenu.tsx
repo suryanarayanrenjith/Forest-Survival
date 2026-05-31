@@ -47,7 +47,7 @@ const ClassicMenu = ({ onStartGame, onBack }: ClassicMenuProps) => {
   const SelectedMapIcon = MAP_ICONS[selectedMap];
 
   return (
-    <div className="relative w-full h-screen overflow-hidden">
+    <div className="relative w-full h-dvh overflow-hidden">
       <MenuShell variant="classic" />
       <div className="fixed inset-0 z-[1] pointer-events-none bg-gradient-to-b from-black/50 via-black/30 to-black/75" />
       <div
@@ -67,7 +67,7 @@ const ClassicMenu = ({ onStartGame, onBack }: ClassicMenuProps) => {
       </button>
 
       {/* Scrollable content */}
-      <div className="relative z-20 h-screen overflow-y-auto">
+      <div className="relative z-20 h-dvh overflow-y-auto">
         <div className="flex flex-col items-center px-4 pt-20 pb-36 max-w-2xl mx-auto">
           {/* Title */}
           <div className="text-center mb-8">

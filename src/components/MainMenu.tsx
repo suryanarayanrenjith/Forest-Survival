@@ -187,7 +187,7 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode }: MainMenu
   const { signOut } = useAuthActions();
 
   return (
-    <div className="relative w-full h-screen overflow-hidden">
+    <div className="relative w-full h-dvh overflow-hidden">
       <MenuShell variant="main" />
 
       {/* Cinematic vignette + readability overlay */}
@@ -199,7 +199,7 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode }: MainMenu
 
       {/* Main Screen */}
       {!showSettings && (
-        <div className="relative z-10 h-screen overflow-y-auto">
+        <div className="relative z-10 h-dvh overflow-y-auto">
         <div className="flex min-h-full flex-col items-center justify-center px-6 py-10">
           {/* Title */}
           <div className="relative mb-10 sm:mb-14 text-center">

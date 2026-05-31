@@ -65,7 +65,7 @@ export const EnhancedSettings: React.FC<EnhancedSettingsProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-2 sm:p-4 overflow-y-auto">
-      <div className="bg-gray-900 border-2 border-cyan-400 rounded-lg shadow-2xl w-full max-w-4xl max-h-[95vh] flex flex-col my-auto">
+      <div className="bg-gray-900 border-2 border-cyan-400 rounded-lg shadow-2xl w-full max-w-4xl max-h-[95dvh] flex flex-col my-auto">
         {/* Header */}
         <div className="bg-gradient-to-r from-cyan-900/50 to-purple-900/50 p-3 sm:p-4 border-b-2 border-cyan-400/50 rounded-t-lg">
           <h2 className="text-xl sm:text-2xl font-bold text-white">Settings</h2>

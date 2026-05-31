@@ -13,6 +13,8 @@
  * - Adaptive pacing
  */
 
+import { detectIsTouch } from '../hooks/useDeviceInfo';
+
 export type TutorialCategory = 'basic' | 'combat' | 'movement' | 'abilities' | 'advanced' | 'multiplayer';
 
 export interface TutorialStep {
@@ -74,6 +76,10 @@ export class TutorialSystem {
   }
 
   private initializeTutorial(): void {
+    // Touch devices use the on-screen controls, so the instruction copy swaps
+    // from keyboard/mouse prompts to joystick/button prompts.
+    const touch = detectIsTouch();
+
     // BASIC TUTORIAL
     this.addStep({
       id: 'welcome',
@@ -98,7 +104,13 @@ export class TutorialSystem {
       category: 'movement',
       title: 'Movement Controls',
       description: 'Learn how to move around',
-      instructions: [
+      instructions: touch ? [
+        'Use the left joystick to move around',
+        'Drag it in any direction to walk',
+        'Push it to the edge to sprint — in training your stamina is unlimited',
+        'Tap Jump and Crouch on the right',
+        'Move in any direction to continue'
+      ] : [
         'Use WASD keys to move around',
         'W / A / S / D to move in any direction',
         'Hold SHIFT to sprint — in training your stamina is unlimited',
@@ -118,7 +130,11 @@ export class TutorialSystem {
       category: 'basic',
       title: 'Camera Control',
       description: 'Look around your environment',
-      instructions: [
+      instructions: touch ? [
+        'Swipe the right side of the screen to look around',
+        'The camera follows your finger',
+        'Practice looking in different directions'
+      ] : [
         'Move your mouse to look around',
         'The camera follows your mouse movement',
         'Practice looking in different directions'
@@ -137,7 +153,11 @@ export class TutorialSystem {
       category: 'combat',
       title: 'Combat Basics',
       description: 'Learn to fight enemies',
-      instructions: [
+      instructions: touch ? [
+        'Tap and hold the FIRE button to shoot',
+        'Aim at enemies with your crosshair (aim assist helps you track)',
+        'Fire 10 shots to continue'
+      ] : [
         'Left-click to shoot your weapon',
         'Aim at enemies with your crosshair',
         'Fire 10 shots to continue'
@@ -175,7 +195,12 @@ export class TutorialSystem {
       category: 'combat',
       title: 'Reload Your Weapon',
       description: 'Keep your weapon ready',
-      instructions: [
+      instructions: touch ? [
+        'Tap the Reload button when ammo is low',
+        'Watch your ammo count in the HUD',
+        'Reload before you run out in combat!',
+        'Reload your weapon to continue'
+      ] : [
         'Press R to reload when ammo is low',
         'Watch your ammo count in the HUD',
         'Reload before you run out in combat!',
@@ -195,7 +220,11 @@ export class TutorialSystem {
       category: 'combat',
       title: 'Switch Weapons',
       description: 'Use different weapons for different situations',
-      instructions: [
+      instructions: touch ? [
+        'Tap the Weapon button (top-right), then pick a weapon to switch',
+        'Each weapon has unique stats and behavior',
+        'In Tutorial mode every weapon is already unlocked for you'
+      ] : [
         'Scroll the mouse wheel — or press number keys 1-7 — to switch weapons',
         'Each weapon has unique stats and behavior',
         'In Tutorial mode every weapon is already unlocked for you'
@@ -214,7 +243,12 @@ export class TutorialSystem {
       category: 'abilities',
       title: 'Power-Ups & Loot',
       description: 'Unlock your potential',
-      instructions: [
+      instructions: touch ? [
+        'Defeated enemies drop loot crates with a random power-up',
+        'You can carry only ONE power-up at a time',
+        'Tap the Power button to activate your held power-up, then find more loot',
+        'Dash is always available — let\'s try it next...'
+      ] : [
         'Defeated enemies drop loot crates with a random power-up',
         'You can carry only ONE power-up at a time',
         'Press E to activate your held power-up, then find more loot',
@@ -234,7 +268,12 @@ export class TutorialSystem {
       category: 'abilities',
       title: 'Dash Ability',
       description: 'Quick movement burst',
-      instructions: [
+      instructions: touch ? [
+        'Tap the Dash button',
+        'Dash gives you a quick burst of speed',
+        'Great for dodging attacks or closing distance',
+        'Try it out once the tutorial finishes'
+      ] : [
         'Press Q to Dash',
         'Dash gives you a quick burst of speed',
         'Great for dodging attacks or closing distance',
@@ -272,7 +311,12 @@ export class TutorialSystem {
       category: 'advanced',
       title: 'Power-ups',
       description: 'Collect enhancements',
-      instructions: [
+      instructions: touch ? [
+        'Loot crates drop from defeated enemies — the power inside is random',
+        'Walk over one to pick it up (you can hold just one)',
+        'Tap the Power button to use it, then hunt for more loot',
+        'Collect a power-up to continue'
+      ] : [
         'Loot crates drop from defeated enemies — the power inside is random',
         'Walk over one to pick it up (you can hold just one)',
         'Press E to use it, then hunt for more loot',

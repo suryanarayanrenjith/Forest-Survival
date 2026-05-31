@@ -61,7 +61,7 @@ const SpectateScreen = ({ localPlayer, alivePlayers, allPlayers, killerInfo, onM
       className="fixed inset-0 flex items-center justify-center p-4"
       style={{ zIndex: 150, background: 'rgba(6,9,13,0.86)', backdropFilter: 'blur(10px)' }}
     >
-      <div className="w-full max-w-3xl max-h-[94vh] overflow-y-auto space-y-3">
+      <div className="w-full max-w-3xl max-h-[94dvh] overflow-y-auto space-y-3">
         {/* Eliminated banner */}
         <div className="rounded-2xl border border-red-500/30 bg-red-500/[0.06] px-6 py-4 flex items-center gap-4">
           <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-red-500/15 flex-shrink-0">

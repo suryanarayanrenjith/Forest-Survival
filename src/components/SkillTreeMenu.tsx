@@ -97,7 +97,7 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
     >
       <MusicMuteButton />
       <div
-        className="relative w-full max-w-6xl h-[90vh] flex flex-col rounded-2xl border border-white/10 bg-[#0b0f15] overflow-hidden shadow-2xl"
+        className="relative w-full max-w-6xl h-[90dvh] flex flex-col rounded-2xl border border-white/10 bg-[#0b0f15] overflow-hidden shadow-2xl"
         style={{ animation: 'stFade 0.35s cubic-bezier(0.16,1,0.3,1) forwards' }}
       >
         {/* Top accent line */}

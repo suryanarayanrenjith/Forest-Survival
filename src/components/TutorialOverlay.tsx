@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Lightbulb, AlertTriangle, AlertOctagon, Siren, GraduationCap, Play, Check, X, type LucideIcon } from 'lucide-react';
 import { type TutorialStep } from '../utils/TutorialSystem';
+import { detectIsTouch } from '../hooks/useDeviceInfo';
 
 interface TutorialOverlayProps {
   currentStep: TutorialStep | null;
@@ -14,7 +15,7 @@ interface TutorialOverlayProps {
 }
 
 // Short, friendly prompt for each interactive action while the player practises.
-const ACTION_HINTS: Record<string, string> = {
+const ACTION_HINTS_KEYBOARD: Record<string, string> = {
   move: 'Walk around with W A S D',
   look: 'Move your mouse to look around',
   shoot: 'Left-click to fire your weapon',
@@ -24,6 +25,19 @@ const ACTION_HINTS: Record<string, string> = {
   use_ability: 'Press Q to Dash',
   collect_powerup: 'Walk over the loot crate',
 };
+
+const ACTION_HINTS_TOUCH: Record<string, string> = {
+  move: 'Walk around with the left joystick',
+  look: 'Swipe the right side to look around',
+  shoot: 'Hold the FIRE button',
+  kill: 'Take down the approaching enemy',
+  reload: 'Tap the Reload button',
+  switch_weapon: 'Tap the Weapon button, then pick one',
+  use_ability: 'Tap the Dash button',
+  collect_powerup: 'Walk over the loot crate',
+};
+
+const ACTION_HINTS = detectIsTouch() ? ACTION_HINTS_TOUCH : ACTION_HINTS_KEYBOARD;
 
 export const TutorialOverlay: React.FC<TutorialOverlayProps> = ({
   currentStep,

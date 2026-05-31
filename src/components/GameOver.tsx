@@ -40,34 +40,34 @@ const GameOver = ({ isVictory, score, enemiesKilled, wave, onRestart, onMainMenu
         style={{ animation: 'goFade 0.45s cubic-bezier(0.16, 1, 0.3, 1) forwards' }}
       >
         {/* Header */}
-        <div className="text-center mb-7">
+        <div className="text-center mb-4 sm:mb-7">
           <div
-            className="inline-flex items-center justify-center w-16 h-16 rounded-2xl border mb-4"
+            className="inline-flex items-center justify-center w-12 h-12 sm:w-16 sm:h-16 rounded-2xl border mb-2.5 sm:mb-4"
             style={{ borderColor: `${accent}55`, background: `${accent}1a` }}
           >
             {isVictory
-              ? <Crown className="w-8 h-8" style={{ color: accent }} strokeWidth={2} />
-              : <Skull className="w-8 h-8" style={{ color: accent }} strokeWidth={2} />}
+              ? <Crown className="w-6 h-6 sm:w-8 sm:h-8" style={{ color: accent }} strokeWidth={2} />
+              : <Skull className="w-6 h-6 sm:w-8 sm:h-8" style={{ color: accent }} strokeWidth={2} />}
           </div>
           <h1
-            className="text-4xl sm:text-5xl font-bold tracking-[0.12em] uppercase"
+            className="text-3xl sm:text-5xl font-bold tracking-[0.12em] uppercase"
             style={{ color: accent }}
           >
             {isVictory ? 'Victory' : 'Game Over'}
           </h1>
-          <p className="mt-2 text-sm font-semibold tracking-[0.2em] uppercase" style={{ color: rating.color }}>
+          <p className="mt-1.5 sm:mt-2 text-xs sm:text-sm font-semibold tracking-[0.2em] uppercase" style={{ color: rating.color }}>
             {rating.text}
           </p>
         </div>
 
         {/* Stats */}
-        <div className="rounded-2xl border border-white/10 bg-white/[0.03] backdrop-blur-md overflow-hidden mb-6">
+        <div className="rounded-2xl border border-white/10 bg-white/[0.03] backdrop-blur-md overflow-hidden mb-4 sm:mb-6">
           {stats.map((s, i) => {
             const Icon = s.icon;
             return (
               <div
                 key={s.label}
-                className={`flex items-center justify-between px-5 py-4 ${i < stats.length - 1 ? 'border-b border-white/[0.07]' : ''}`}
+                className={`flex items-center justify-between px-4 py-2.5 sm:px-5 sm:py-4 ${i < stats.length - 1 ? 'border-b border-white/[0.07]' : ''}`}
               >
                 <div className="flex items-center gap-3">
                   <Icon className="w-[18px] h-[18px]" style={{ color: s.color }} strokeWidth={2.25} />

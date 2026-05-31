@@ -53,7 +53,7 @@ const MultiplayerGameOver = ({
       style={{ zIndex: 200, background: 'rgba(5,8,10,0.95)', backdropFilter: 'blur(12px)' }}
     >
       <div
-        className="w-full max-w-2xl max-h-[96vh] overflow-y-auto rounded-2xl border bg-[#0b0f15]/95 p-6"
+        className="w-full max-w-2xl max-h-[96dvh] overflow-y-auto rounded-2xl border bg-[#0b0f15]/95 p-6"
         style={{ borderColor: `${accent}44`, animation: 'mgoFade 0.4s cubic-bezier(0.16,1,0.3,1) forwards' }}
       >
         {/* Header */}
@@ -90,7 +90,7 @@ const MultiplayerGameOver = ({
           <div className="px-4 py-2.5 border-b border-white/[0.07]">
             <h2 className="text-[11px] font-semibold tracking-[0.2em] text-gray-400 uppercase">Final Scoreboard</h2>
           </div>
-          <div className="max-h-[34vh] overflow-y-auto">
+          <div className="max-h-[34dvh] overflow-y-auto">
             {sortedPlayers.map((player, index) => {
               const isLocal = player.id === localPlayerId;
               const tier = player.rankTier !== undefined ? RANK_TIERS[player.rankTier] : null;

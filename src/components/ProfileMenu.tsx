@@ -166,7 +166,7 @@ const ProfileMenu = ({ onClose }: ProfileMenuProps) => {
       <MenuShell variant="main" />
 
       <div
-        className="relative z-10 flex max-h-[94vh] w-full max-w-3xl flex-col overflow-hidden rounded-[24px] border border-white/10 bg-[#0b0f15] shadow-[0_30px_120px_rgba(0,0,0,0.58)]"
+        className="relative z-10 flex max-h-[94dvh] w-full max-w-3xl flex-col overflow-hidden rounded-[24px] border border-white/10 bg-[#0b0f15] shadow-[0_30px_120px_rgba(0,0,0,0.58)]"
         style={{ animation: 'authFade 0.32s cubic-bezier(0.16,1,0.3,1) forwards' }}
       >
         {/* Header */}
@@ -629,7 +629,7 @@ const PhotosPanel = () => {
           onClick={() => setPreviewId(null)}
         >
           <div
-            className="relative flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#0b0f15] shadow-[0_40px_140px_rgba(0,0,0,0.7)]"
+            className="relative flex max-h-[92dvh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#0b0f15] shadow-[0_40px_140px_rgba(0,0,0,0.7)]"
             style={{ animation: 'pmPrevCard 0.26s cubic-bezier(0.16,1,0.3,1) forwards' }}
             onClick={(e) => e.stopPropagation()}
           >
@@ -662,7 +662,7 @@ const PhotosPanel = () => {
                 <img
                   src={previewPhoto.url}
                   alt="Photo preview"
-                  className="max-h-[calc(92vh-9rem)] max-w-full rounded-lg object-contain shadow-[0_12px_50px_rgba(0,0,0,0.55)]"
+                  className="max-h-[calc(92dvh-9rem)] max-w-full rounded-lg object-contain shadow-[0_12px_50px_rgba(0,0,0,0.55)]"
                 />
               ) : (
                 <div className="flex h-56 w-full items-center justify-center text-gray-600">

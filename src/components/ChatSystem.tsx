@@ -15,6 +15,9 @@ export interface ChatMessage {
 interface ChatSystemProps {
   manager: MultiplayerManager;
   isVisible: boolean;
+  /** Touch layout: collapsed by default, opens as an overlay above the
+   *  on-screen controls instead of docking over the joystick. */
+  isTouch?: boolean;
 }
 
 const EMOTES = [
@@ -32,11 +35,12 @@ const EMOTES = [
 const CHAT_COOLDOWN_MS = 500; // 500ms between chat messages
 const EMOTE_COOLDOWN_MS = 1500; // 1.5s between emotes
 
-const ChatSystem = ({ manager, isVisible }: ChatSystemProps) => {
+const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [showEmotes, setShowEmotes] = useState(false);
   const [showChat, setShowChat] = useState(true);
+  const [touchOpen, setTouchOpen] = useState(false); // touch overlay visibility
   const [chatCooldown, setChatCooldown] = useState(false);
   const [emoteCooldown, setEmoteCooldown] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -256,6 +260,150 @@ const ChatSystem = ({ manager, isVisible }: ChatSystemProps) => {
   };
 
   if (!isVisible) return null;
+
+  // ── Touch layout ──
+  // Collapsed by default: a small recent-events feed (top-left, below the
+  // vitals) plus a chat toggle on the right edge (below the scoreboard
+  // toggle). Tapping the toggle opens a bottom-sheet chat overlay that sits
+  // ABOVE the on-screen controls so the input + emotes are usable.
+  if (isTouch) {
+    const feed = messages.filter((m) => m.type === 'kill' || m.type === 'join' || m.type === 'leave').slice(-3);
+    return (
+      <>
+        {/* Recent events feed — non-interactive */}
+        <div className="touch-safe-pad pointer-events-none fixed left-2 top-[60px] z-[20] space-y-1">
+          {feed.map((msg) => {
+            const style = getMessageStyle(msg);
+            const colorHex = formatColor(msg.playerColor);
+            return (
+              <div
+                key={msg.id}
+                className={`${style.bg} border ${style.border} rounded-lg px-2 py-1 backdrop-blur-sm animate-slideInLeft max-w-[180px]`}
+              >
+                <div className="flex items-center gap-1.5 text-[10px]">
+                  <style.icon className="w-3 h-3 flex-shrink-0" style={{ color: style.iconColor }} strokeWidth={2.25} />
+                  <span className="font-bold truncate" style={{ color: colorHex }}>{msg.playerName}</span>
+                  <span className="text-gray-300 truncate">{msg.message}</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Chat toggle */}
+        <button
+          onClick={() => setTouchOpen(true)}
+          aria-label="Open chat"
+          className="touch-control fixed right-2 top-[112px] z-[46] flex h-12 w-12 items-center justify-center rounded-2xl border border-white/15 bg-black/60 backdrop-blur-md active:scale-95"
+          style={{ pointerEvents: 'auto' }}
+        >
+          <MessageSquare className="h-5 w-5 text-emerald-300" strokeWidth={2.25} />
+        </button>
+
+        {/* Chat overlay (bottom sheet) */}
+        {touchOpen && (
+          <div
+            className="fixed inset-0 z-[120] flex items-end justify-center bg-black/60 p-2"
+            style={{ pointerEvents: 'auto' }}
+            onClick={() => { setTouchOpen(false); setShowEmotes(false); }}
+          >
+            <div
+              className="flex max-h-[80dvh] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#0b0f15]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between border-b border-white/[0.07] px-3 py-2.5">
+                <div className="flex items-center gap-2">
+                  <MessageSquare className="h-4 w-4 text-emerald-400" strokeWidth={2.25} />
+                  <span className="text-xs font-semibold uppercase tracking-[0.12em] text-white">Chat</span>
+                </div>
+                <button
+                  onClick={() => { setTouchOpen(false); setShowEmotes(false); }}
+                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 text-gray-400 hover:bg-white/[0.06] hover:text-white"
+                  aria-label="Close chat"
+                >
+                  <X className="h-4 w-4" strokeWidth={2.25} />
+                </button>
+              </div>
+
+              <div className="flex-1 space-y-1 overflow-y-auto p-2" style={{ minHeight: '30vh' }}>
+                {messages.length === 0 && (
+                  <div className="mt-4 text-center text-xs text-gray-600">No messages yet — say hello.</div>
+                )}
+                {messages.map((msg) => {
+                  const style = getMessageStyle(msg);
+                  const colorHex = formatColor(msg.playerColor);
+                  return (
+                    <div key={msg.id} className={`${style.bg} border ${style.border} rounded px-2 py-1 text-xs animate-fadeIn`}>
+                      <div className="flex items-start gap-1.5">
+                        <style.icon className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" style={{ color: style.iconColor }} strokeWidth={2.25} />
+                        <div className="min-w-0 flex-1 break-words">
+                          <span className="font-bold" style={{ color: colorHex }}>{msg.playerName}</span>
+                          {msg.type === 'chat' || msg.type === 'emote' ? (
+                            <span className="ml-1 text-white">: {msg.message}</span>
+                          ) : (
+                            <span className="ml-1 text-gray-300">{msg.message}</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+                <div ref={messagesEndRef} />
+              </div>
+
+              {showEmotes && (
+                <div className="grid grid-cols-4 gap-1.5 border-t border-white/[0.07] p-2">
+                  {EMOTES.map((emote) => (
+                    <button
+                      key={emote.id}
+                      onClick={() => sendEmote(emote)}
+                      disabled={emoteCooldown}
+                      className={`flex flex-col items-center gap-0.5 rounded-lg border border-white/10 bg-white/[0.03] px-1 py-2 ${emoteCooldown ? 'opacity-50' : 'active:bg-white/[0.08]'}`}
+                    >
+                      <div className="text-xl">{emote.icon}</div>
+                      <div className="truncate text-[9px] font-medium text-gray-300">{emote.label.split(' ')[0]}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <div className="border-t border-white/[0.07] p-2">
+                <div className="flex gap-1.5">
+                  <input
+                    ref={inputRef}
+                    type="text"
+                    value={inputValue}
+                    onChange={(e) => setInputValue(e.target.value)}
+                    onKeyDown={(e) => e.stopPropagation()}
+                    onKeyPress={handleKeyPress}
+                    placeholder="Type a message…"
+                    className={`min-w-0 flex-1 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white placeholder-gray-600 transition-colors focus:border-emerald-400/50 focus:outline-none ${chatCooldown ? 'opacity-50' : ''}`}
+                    maxLength={100}
+                    disabled={chatCooldown}
+                  />
+                  <button
+                    onClick={() => setShowEmotes((v) => !v)}
+                    className={`flex w-10 items-center justify-center rounded-md border border-violet-500/30 bg-violet-500/20 text-violet-300 ${emoteCooldown ? 'opacity-50' : 'active:bg-violet-500/30'}`}
+                    aria-label="Emotes"
+                  >
+                    <Smile className="h-5 w-5" strokeWidth={2.25} />
+                  </button>
+                  <button
+                    onClick={sendMessage}
+                    disabled={chatCooldown}
+                    className={`flex w-10 items-center justify-center rounded-md border border-emerald-500/30 bg-emerald-500/20 text-emerald-300 ${chatCooldown ? 'opacity-50' : 'active:bg-emerald-500/30'}`}
+                    aria-label="Send message"
+                  >
+                    <Send className="h-5 w-5" strokeWidth={2.25} />
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </>
+    );
+  }
 
   return (
     // Lifted up from the bottom edge so the panel clears the bottom-left

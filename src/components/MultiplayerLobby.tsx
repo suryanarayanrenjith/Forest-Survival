@@ -560,7 +560,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
   const backdrop = 'fixed inset-0 z-50 flex items-center justify-center p-4 overflow-y-auto';
   const backdropStyle = { background: 'rgba(5,8,10,0.24)', backdropFilter: 'blur(14px) saturate(130%)' } as const;
   const panelClass = 'w-full max-w-sm rounded-3xl border border-white/10 bg-white/[0.04] backdrop-blur-2xl shadow-[0_24px_80px_-24px_rgba(0,0,0,0.6)]';
-  const panelInnerClass = 'w-full max-w-xl rounded-3xl border border-white/10 bg-white/[0.035] backdrop-blur-2xl shadow-[0_24px_80px_-24px_rgba(0,0,0,0.6)] overflow-hidden flex flex-col max-h-[94vh]';
+  const panelInnerClass = 'w-full max-w-xl rounded-3xl border border-white/10 bg-white/[0.035] backdrop-blur-2xl shadow-[0_24px_80px_-24px_rgba(0,0,0,0.6)] overflow-hidden flex flex-col max-h-[94dvh]';
 
   // ── AUTH GATE ───────────────────────────────────────────────────────────
   // Multiplayer always plays as the signed-in account username. Guests who

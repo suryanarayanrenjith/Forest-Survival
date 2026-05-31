@@ -71,7 +71,7 @@ const ComboDisplay = ({ combo, killStreak, visible }: ComboDisplayProps) => {
 
   return (
     <div
-      className={`fixed top-20 left-1/2 -translate-x-1/2 z-40 pointer-events-none flex flex-col items-center gap-1.5
+      className={`fixed top-28 left-1/2 -translate-x-1/2 z-40 pointer-events-none flex flex-col items-center gap-1.5
         transition-all duration-400 ${fadeOut ? 'opacity-0 -translate-y-2' : 'opacity-100'}`}
     >
       {/* Combo counter */}

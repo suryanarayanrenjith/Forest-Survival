@@ -39,7 +39,7 @@ const TutorialMenu = ({ onStartTutorial, onBack }: TutorialMenuProps) => {
   const SelectedMapIcon = MAP_ICONS[selectedMap];
 
   return (
-    <div className="relative w-full h-screen overflow-hidden">
+    <div className="relative w-full h-dvh overflow-hidden">
       <MenuShell variant="tutorial" />
       <div className="absolute inset-0 bg-gradient-to-b from-black/45 via-black/28 to-black/72 pointer-events-none" />
       <div
@@ -59,7 +59,7 @@ const TutorialMenu = ({ onStartTutorial, onBack }: TutorialMenuProps) => {
       </button>
 
       {/* Scrollable content */}
-      <div className="relative z-20 h-screen overflow-y-auto">
+      <div className="relative z-20 h-dvh overflow-y-auto">
         <div className="flex flex-col items-center px-4 pt-20 pb-36 max-w-2xl mx-auto">
           {/* Title */}
           <div className="text-center mb-8">

@@ -65,6 +65,9 @@ interface HUDProps {
    *  free for the joystick + fire button, and the top-right for the
    *  weapon/pause touch buttons. Desktop (false) is unchanged. */
   isTouch?: boolean;
+  /** When the top-center FPS counter is on, the combo pill drops below it so
+   *  the two never overlap. */
+  fpsVisible?: boolean;
 }
 
 const HUD = ({
@@ -72,7 +75,7 @@ const HUD = ({
   unlockedWeapons, currentWeapon, hideStatsPanel = false, unlimitedHealth = false,
   hideWave = false, abilities = [],
   staminaRatio = 1, staminaExhausted = false, unlimitedStamina = false,
-  isTouch = false,
+  isTouch = false, fpsVisible = false,
 }: HUDProps) => {
   const [scorePopup, setScorePopup] = useState(false);
   const [prevScore, setPrevScore] = useState(score);
@@ -160,9 +163,9 @@ const HUD = ({
           </div>
         </div>
 
-        {/* Combo — top-center, transient (same as desktop). */}
+        {/* Combo — top-center, transient. Drops below the FPS pill when shown. */}
         {combo > 1 && (
-          <div className="absolute left-1/2 top-2 -translate-x-1/2 select-none" style={{ animation: 'comboIn 0.25s cubic-bezier(0.34, 1.56, 0.64, 1)' }}>
+          <div className={`absolute left-1/2 ${fpsVisible ? 'top-11' : 'top-2'} -translate-x-1/2 select-none`} style={{ animation: 'comboIn 0.25s cubic-bezier(0.34, 1.56, 0.64, 1)' }}>
             <div className="flex items-center gap-2 rounded-full border border-orange-400/40 bg-orange-500/15 px-3 py-1 backdrop-blur-md">
               <Flame className="h-3.5 w-3.5 text-orange-400" strokeWidth={2.25} fill="currentColor" />
               <span className="text-sm font-bold tabular-nums tracking-wide text-orange-200">{combo}x</span>
@@ -253,7 +256,7 @@ const HUD = ({
       {/* ===== Top Center — Combo ===== */}
       {combo > 1 && (
         <div
-          className="absolute top-5 left-1/2 -translate-x-1/2 select-none"
+          className={`absolute ${fpsVisible ? 'top-14' : 'top-5'} left-1/2 -translate-x-1/2 select-none`}
           style={{ animation: 'comboIn 0.25s cubic-bezier(0.34, 1.56, 0.64, 1)' }}
         >
           <div className="flex items-center gap-2 rounded-full border border-orange-400/40 bg-orange-500/15 backdrop-blur-md px-4 py-1.5">
