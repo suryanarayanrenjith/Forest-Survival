@@ -9,14 +9,12 @@ import {
   retrieveAccount,
 } from "@convex-dev/auth/server";
 import { ConvexError } from "convex/values";
+import { checkPassword } from "./authValidation";
 
 function validatePasswordRequirements(password: string) {
-  if (password.length < 8) {
-    throw new ConvexError("Password must be at least 8 characters.");
-  }
-
-  if (!/[a-zA-Z]/.test(password) || !/\d/.test(password)) {
-    throw new ConvexError("Password must include letters and numbers.");
+  const error = checkPassword(password);
+  if (error !== null) {
+    throw new ConvexError(error);
   }
 }
 

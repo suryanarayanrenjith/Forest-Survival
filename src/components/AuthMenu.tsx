@@ -4,18 +4,23 @@ import { useAuthActions } from '@convex-dev/auth/react';
 import { useQuery } from 'convex/react';
 import { api } from '../../convex/_generated/api';
 import { getDeviceFingerprints } from '../utils/deviceFingerprint';
+import {
+  checkDisplayName,
+  checkDob,
+  checkPassword,
+  checkPasswordAgainstUsername,
+  checkUsername,
+  maxDobString,
+  normalizeDisplayName,
+  normalizeDob,
+  normalizeUsername,
+} from '../../convex/authValidation';
 import MenuShell from './MenuShell';
 
 interface AuthMenuProps {
   onClose: () => void;
   onSignedIn: () => void;
   initialMode?: 'signIn' | 'signUp';
-}
-
-function maxDobString(): string {
-  const d = new Date();
-  d.setFullYear(d.getFullYear() - 13);
-  return d.toISOString().slice(0, 10);
 }
 
 const AuthMenu = ({ onClose, onSignedIn, initialMode = 'signIn' }: AuthMenuProps) => {
@@ -35,34 +40,38 @@ const AuthMenu = ({ onClose, onSignedIn, initialMode = 'signIn' }: AuthMenuProps
   const registrationFull = availability?.full ?? false;
   const remaining = availability?.remaining;
 
-  // ── Live username availability check (sign-up step 1) ──────────────────────
-  // Mirrors the server's username rules for a fast local verdict, then asks
-  // Convex whether the handle is already taken — debounced so we don't fire a
-  // query on every keystroke. The "Continue" gate blocks taken/checking names.
-  const normalizedUsername = username.trim().toLowerCase();
-  const usernameFormatValid = /^[a-z0-9](?:[a-z0-9._-]{1,18}[a-z0-9])?$/.test(normalizedUsername);
+  // ── Live username validation + availability check (sign-up step 1) ─────────
+  // The username runs through the SAME `checkUsername` the server uses, so a
+  // reserved/spammy/badly-formatted handle is rejected inline in step 1 — never
+  // after the user has filled in the profile step. Only once the handle passes
+  // every format rule do we ask Convex whether it's already taken (debounced so
+  // we don't fire a query on every keystroke).
+  const normalizedUsername = normalizeUsername(username);
+  const usernameFormatError = normalizedUsername.length === 0 ? null : checkUsername(normalizedUsername);
+  const usernameFormatValid = normalizedUsername.length > 0 && usernameFormatError === null;
   const [debouncedUsername, setDebouncedUsername] = useState('');
   useEffect(() => {
     const id = setTimeout(() => setDebouncedUsername(normalizedUsername), 400);
     return () => clearTimeout(id);
   }, [normalizedUsername]);
 
-  const checkUsername = isSignUp && step === 1 && usernameFormatValid && debouncedUsername === normalizedUsername;
+  const shouldCheckAvailability = isSignUp && step === 1 && usernameFormatValid && debouncedUsername === normalizedUsername;
   const usernameTaken = useQuery(
     api.profile.usernameExists,
-    checkUsername ? { username: debouncedUsername } : 'skip',
+    shouldCheckAvailability ? { username: debouncedUsername } : 'skip',
   );
-  // 'idle' | 'checking' | 'available' | 'taken' — drives the inline indicator.
-  // Invalid formats stay 'idle' (no spinner) — the Continue gate surfaces the
-  // specific format error instead.
-  const usernameStatus: 'idle' | 'checking' | 'available' | 'taken' =
-    !isSignUp || step !== 1 || normalizedUsername.length === 0 || !usernameFormatValid
+  // 'idle' | 'invalid' | 'checking' | 'available' | 'taken' — drives the inline
+  // indicator. 'invalid' surfaces the exact format/reserved/spammy reason live.
+  const usernameStatus: 'idle' | 'invalid' | 'checking' | 'available' | 'taken' =
+    !isSignUp || step !== 1 || normalizedUsername.length === 0
       ? 'idle'
-      : debouncedUsername !== normalizedUsername || usernameTaken === undefined
-        ? 'checking'
-        : usernameTaken
-          ? 'taken'
-          : 'available';
+      : usernameFormatError !== null
+        ? 'invalid'
+        : debouncedUsername !== normalizedUsername || usernameTaken === undefined
+          ? 'checking'
+          : usernameTaken
+            ? 'taken'
+            : 'available';
 
   const switchMode = (next: 'signIn' | 'signUp') => {
     setMode(next);
@@ -70,17 +79,22 @@ const AuthMenu = ({ onClose, onSignedIn, initialMode = 'signIn' }: AuthMenuProps
     setError(null);
   };
 
-  // Step 1 → 2 gate: validate account fields before showing onboarding.
+  // Step 1 → 2 gate: enforce the FULL server rule-set for the account fields
+  // before showing onboarding, so no credential error can slip through to the
+  // profile step. Every check here mirrors `convex/auth.ts` via the shared
+  // `convex/authValidation` module — same messages, same order.
   const goToProfileStep = () => {
-    const trimmed = username.trim();
-    if (!trimmed) return setError('Enter a username.');
-    if (trimmed.length < 3) return setError('Username must be at least 3 characters.');
-    if (!usernameFormatValid) return setError('Use letters, numbers, dots, underscores, or dashes.');
+    if (!username.trim()) return setError('Enter a username.');
+    const usernameError = checkUsername(normalizedUsername);
+    if (usernameError) return setError(usernameError);
     // Don't advance until the availability check has confirmed the handle is free.
     if (usernameStatus === 'taken') return setError('That username is already taken. Choose another.');
     if (usernameStatus === 'checking') return setError('Checking username availability…');
-    if (password.length < 8) return setError('Password must be at least 8 characters.');
-    if (!/[a-zA-Z]/.test(password) || !/\d/.test(password)) return setError('Password must include letters and numbers.');
+    if (!password) return setError('Enter a password.');
+    const passwordError = checkPassword(password);
+    if (passwordError) return setError(passwordError);
+    const passwordUsernameError = checkPasswordAgainstUsername(password, normalizedUsername);
+    if (passwordUsernameError) return setError(passwordUsernameError);
     if (password !== confirmPassword) return setError('Passwords do not match.');
     setError(null);
     setStep(2);
@@ -101,9 +115,18 @@ const AuthMenu = ({ onClose, onSignedIn, initialMode = 'signIn' }: AuthMenuProps
 
   const submitSignUp = async () => {
     if (registrationFull) return setError('Registration is full right now. Please try again later.');
-    if (fullName.trim().length < 2) return setError('Enter your name (at least 2 characters).');
+    // Re-run the step-1 credential gate defensively, then validate the profile
+    // fields with the same checks the server uses.
+    const usernameError = checkUsername(normalizedUsername);
+    if (usernameError) { setStep(1); return setError(usernameError); }
+    const passwordError = checkPassword(password) ?? checkPasswordAgainstUsername(password, normalizedUsername);
+    if (passwordError) { setStep(1); return setError(passwordError); }
+    if (!fullName.trim()) return setError('Enter your name.');
+    const nameError = checkDisplayName(normalizeDisplayName(fullName));
+    if (nameError) return setError(nameError);
     if (!dob) return setError('Enter your date of birth.');
-    if (dob > maxDobString()) return setError('You must be at least 13 years old to play.');
+    const dobError = checkDob(normalizeDob(dob));
+    if (dobError) return setError(dobError);
     await runAuth(async () => {
       const fd = new FormData();
       fd.set('username', username.trim());
@@ -247,15 +270,16 @@ const AuthMenu = ({ onClose, onSignedIn, initialMode = 'signIn' }: AuthMenuProps
                     />
                     {isSignUp && step === 1 && usernameStatus !== 'idle' && (
                       <p className={`mt-1 flex items-center gap-1.5 text-[11px] font-medium ${
-                        usernameStatus === 'taken' ? 'text-rose-300'
+                        usernameStatus === 'taken' || usernameStatus === 'invalid' ? 'text-rose-300'
                           : usernameStatus === 'available' ? 'text-emerald-300'
                           : 'text-gray-500'
                       }`}>
                         {usernameStatus === 'checking' && <Loader2 className="w-3 h-3 animate-spin" strokeWidth={2.5} />}
                         {usernameStatus === 'available' && <Check className="w-3 h-3" strokeWidth={2.75} />}
-                        {usernameStatus === 'taken' && <X className="w-3 h-3" strokeWidth={2.75} />}
+                        {(usernameStatus === 'taken' || usernameStatus === 'invalid') && <X className="w-3 h-3 flex-shrink-0" strokeWidth={2.75} />}
                         {usernameStatus === 'checking' ? 'Checking availability…'
                           : usernameStatus === 'available' ? 'Username is available'
+                          : usernameStatus === 'invalid' ? usernameFormatError
                           : 'Username is already taken'}
                       </p>
                     )}
@@ -285,6 +309,17 @@ const AuthMenu = ({ onClose, onSignedIn, initialMode = 'signIn' }: AuthMenuProps
                         placeholder="Confirm your password"
                         className={inputClass}
                       />
+                      {confirmPassword.length > 0 && (
+                        password === confirmPassword ? (
+                          <p className="mt-1 flex items-center gap-1.5 text-[11px] font-medium text-emerald-300">
+                            <Check className="w-3 h-3" strokeWidth={2.75} /> Passwords match
+                          </p>
+                        ) : (
+                          <p className="mt-1 flex items-center gap-1.5 text-[11px] font-medium text-rose-300">
+                            <X className="w-3 h-3 flex-shrink-0" strokeWidth={2.75} /> Passwords do not match
+                          </p>
+                        )
+                      )}
                     </Field>
                   )}
                 </>
@@ -334,7 +369,7 @@ const AuthMenu = ({ onClose, onSignedIn, initialMode = 'signIn' }: AuthMenuProps
                   <LogIn className="w-4 h-4" strokeWidth={2.25} /> {busy ? 'Signing In...' : 'Sign In'}
                 </SubmitButton>
               ) : step === 1 ? (
-                <SubmitButton busy={false} disabled={registrationFull || usernameStatus === 'taken'}>
+                <SubmitButton busy={false} disabled={registrationFull || usernameStatus === 'taken' || usernameStatus === 'invalid'}>
                   Continue <ArrowRight className="w-4 h-4" strokeWidth={2.25} />
                 </SubmitButton>
               ) : (

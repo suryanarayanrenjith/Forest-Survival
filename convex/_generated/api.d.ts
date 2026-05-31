@@ -10,6 +10,7 @@
 
 import type * as account from "../account.js";
 import type * as auth from "../auth.js";
+import type * as authValidation from "../authValidation.js";
 import type * as gameLimits from "../gameLimits.js";
 import type * as http from "../http.js";
 import type * as photos from "../photos.js";
@@ -29,6 +30,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   account: typeof account;
   auth: typeof auth;
+  authValidation: typeof authValidation;
   gameLimits: typeof gameLimits;
   http: typeof http;
   photos: typeof photos;

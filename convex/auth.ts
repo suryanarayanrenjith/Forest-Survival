@@ -3,110 +3,28 @@ import { createAccount, convexAuth, retrieveAccount } from "@convex-dev/auth/ser
 import { api, internal } from "./_generated/api";
 import { ConvexError } from "convex/values";
 import { Scrypt } from "lucia";
-
-const USERNAME_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{1,18}[a-z0-9])?$/;
-const RESERVED_USERNAMES = new Set([
-  "admin",
-  "anonymous",
-  "demo",
-  "guest",
-  "null",
-  "official",
-  "owner",
-  "root",
-  "security",
-  "staff",
-  "support",
-  "system",
-  "test",
-  "undefined",
-]);
+import {
+  MAX_PASSWORD_LENGTH,
+  checkDisplayName,
+  checkDob,
+  checkPassword,
+  checkPasswordAgainstUsername,
+  checkUsername,
+  normalizeDisplayName,
+  normalizeDob,
+  normalizeUsername,
+} from "./authValidation";
 
 function readStringParam(params: Record<string, unknown>, key: string): string {
   const value = params[key];
   return typeof value === "string" ? value : "";
 }
 
-function normalizeUsername(rawUsername: string): string {
-  return rawUsername.trim().toLowerCase();
-}
-
-function validateUsername(username: string) {
-  if (username.length < 3 || username.length > 20) {
-    throw new ConvexError("Username must be 3 to 20 characters long.");
+/** Throw the shared validator's message as a ConvexError when one is returned. */
+function assertValid(error: string | null): void {
+  if (error !== null) {
+    throw new ConvexError(error);
   }
-  if (!USERNAME_PATTERN.test(username)) {
-    throw new ConvexError("Use letters, numbers, dots, underscores, or dashes.");
-  }
-  if (RESERVED_USERNAMES.has(username)) {
-    throw new ConvexError("Choose a different username.");
-  }
-  if (
-    username.includes("http") ||
-    username.includes("www") ||
-    username.includes("@") ||
-    username.includes("://")
-  ) {
-    throw new ConvexError("Username looks invalid.");
-  }
-  if (/[._-]{2,}/.test(username)) {
-    throw new ConvexError("Username looks spammy.");
-  }
-  if (/(.)\1{4,}/.test(username)) {
-    throw new ConvexError("Username looks spammy.");
-  }
-  const digitCount = (username.match(/\d/g) ?? []).length;
-  if (digitCount > Math.max(4, Math.floor(username.length * 0.6))) {
-    throw new ConvexError("Username looks spammy.");
-  }
-}
-
-function validatePasswordRequirements(password: string) {
-  if (password.length < 8) {
-    throw new ConvexError("Password must be at least 8 characters.");
-  }
-  // Cap length so an oversized password can't burn CPU on Scrypt hashing (DoS).
-  if (password.length > 128) {
-    throw new ConvexError("Password is too long (max 128 characters).");
-  }
-  if (!/[a-zA-Z]/.test(password) || !/\d/.test(password)) {
-    throw new ConvexError("Password must include letters and numbers.");
-  }
-}
-
-function validateDisplayName(name: string): string {
-  const trimmed = name.trim().replace(/\s+/g, " ");
-  if (trimmed.length < 2 || trimmed.length > 30) {
-    throw new ConvexError("Name must be 2 to 30 characters long.");
-  }
-  if (!/^[\p{L}][\p{L}\p{M}'.\- ]*$/u.test(trimmed)) {
-    throw new ConvexError("Name contains invalid characters.");
-  }
-  return trimmed;
-}
-
-/** Validate a YYYY-MM-DD date of birth; returns the normalized string. */
-function validateDob(dob: string): string {
-  const value = dob.trim();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    throw new ConvexError("Enter a valid date of birth.");
-  }
-  const date = new Date(`${value}T00:00:00Z`);
-  if (Number.isNaN(date.getTime())) {
-    throw new ConvexError("Enter a valid date of birth.");
-  }
-  const now = Date.now();
-  if (date.getTime() > now) {
-    throw new ConvexError("Date of birth cannot be in the future.");
-  }
-  const ageYears = (now - date.getTime()) / (365.25 * 24 * 60 * 60 * 1000);
-  if (ageYears < 13) {
-    throw new ConvexError("You must be at least 13 years old to play.");
-  }
-  if (ageYears > 120) {
-    throw new ConvexError("Enter a valid date of birth.");
-  }
-  return value;
 }
 
 /**
@@ -162,23 +80,22 @@ export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
 
         // Guard both flows: an oversized password would burn CPU on Scrypt
         // hash/verify (mild DoS) before any other validation runs.
-        if (password.length > 128) {
-          throw new ConvexError("Password is too long (max 128 characters).");
+        if (password.length > MAX_PASSWORD_LENGTH) {
+          throw new ConvexError(`Password is too long (max ${MAX_PASSWORD_LENGTH} characters).`);
         }
 
         if (flow === "signUp") {
-          validateUsername(normalizedUsername);
-          validatePasswordRequirements(password);
+          assertValid(checkUsername(normalizedUsername));
+          assertValid(checkPassword(password));
+          assertValid(checkPasswordAgainstUsername(password, normalizedUsername));
 
           // Onboarding fields collected interactively during sign-up.
-          const displayName = validateDisplayName(
+          const displayName = normalizeDisplayName(
             readStringParam(credentials, "name") || displayUsername,
           );
-          const dob = validateDob(readStringParam(credentials, "dob"));
-
-          if (password.toLowerCase().includes(normalizedUsername)) {
-            throw new ConvexError("Password should not include your username.");
-          }
+          assertValid(checkDisplayName(displayName));
+          const dob = normalizeDob(readStringParam(credentials, "dob"));
+          assertValid(checkDob(dob));
 
           const usernameTaken = await ctx.runQuery(api.profile.usernameExists, {
             username: normalizedUsername,

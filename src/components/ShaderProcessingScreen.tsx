@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
-import { AlertTriangle, RefreshCw, ArrowRightCircle, Crosshair } from 'lucide-react';
+import { AlertTriangle, RefreshCw, ArrowRightCircle, Crosshair, Check, Loader2 } from 'lucide-react';
 
 /**
- * Loader phases shown in the status line. They roughly map to the staged
+ * Loader phases shown in the status checklist. They roughly map to the staged
  * warmup pipeline in App.tsx so the user gets meaningful feedback about
- * what's happening while shaders compile.
+ * what's happening while shaders compile. The active phase is derived from the
+ * progress value (monotonic — it never resets), so the checklist fills steadily
+ * from top to bottom as warmup advances.
  */
 const PHASES = [
   { label: 'Compiling shaders',       hint: 'GPU programs' },
@@ -28,48 +30,22 @@ interface ShaderProcessingScreenProps {
   onContinueAnyway?: () => void;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Map-agnostic loader — pure CSS/SVG, zero WebGL, minimal animations.
-//
-//  Earlier iterations were either too heavy (R3F Canvas → competing
-//  WebGL context) or too map-specific (forest pines + "Entering the
-//  Forest" copy, despite the game shipping 8 different biomes from
-//  scorched_wasteland to frozen_tundra). This rewrite is fully neutral:
-//  abstract crosshair-themed centerpiece in the brand's emerald/cyan
-//  accent, generic "Preparing the battlefield" copy.
-//
-//  Live animations (intentionally kept small for low-end machines):
-//    • Crosshair pulse + slow rotation  (2 transforms on one element)
-//    • 3 concentric ring sweeps         (1 keyframe each, GPU composited)
-//    • 4 traveling dot accents          (CSS keyframes around the rings)
-//    • Centre glow breathe              (opacity loop)
-//  Total: 9 cheap transform/opacity loops. No fancy gradients or radial
-//  pulses to chew compositor time.
-// ─────────────────────────────────────────────────────────────────────────────
-
 const ShaderProcessingScreen = ({ visible, error, onContinueAnyway }: ShaderProcessingScreenProps) => {
-  const [phaseIndex, setPhaseIndex] = useState(0);
   const [progress, setProgress] = useState(0);
   const progressRef = useRef(0);
 
   useEffect(() => {
     if (!visible) {
-      setPhaseIndex(0);
       setProgress(0);
       progressRef.current = 0;
       return;
     }
     if (error) return; // freeze on error
 
-    setPhaseIndex(0);
     setProgress(0);
     progressRef.current = 0;
 
     const startedAt = performance.now();
-    const phaseInterval = window.setInterval(() => {
-      setPhaseIndex((current) => (current + 1) % PHASES.length);
-    }, 750);
-
     let raf = 0;
     let lastReactPushAt = 0;
     const tick = () => {
@@ -85,19 +61,19 @@ const ShaderProcessingScreen = ({ visible, error, onContinueAnyway }: ShaderProc
     raf = window.requestAnimationFrame(tick);
 
     return () => {
-      window.clearInterval(phaseInterval);
       window.cancelAnimationFrame(raf);
     };
   }, [visible, error]);
 
   if (!visible) return null;
 
-  const phase = PHASES[phaseIndex];
   const isError = !!error;
   const accent = isError ? '#f87171' : '#34d399';
   const accentSoft = isError ? 'rgba(248,113,113,0.32)' : 'rgba(52,211,153,0.34)';
   const accentFaint = isError ? 'rgba(248,113,113,0.10)' : 'rgba(34,211,238,0.10)';
   const progressValue = Math.min(99, Math.round(progress));
+  // Active phase derived from progress so the checklist fills monotonically.
+  const activePhase = progress >= 75 ? 3 : progress >= 50 ? 2 : progress >= 25 ? 1 : 0;
 
   // Circular progress ring geometry.
   const R = 62;
@@ -160,7 +136,7 @@ const ShaderProcessingScreen = ({ visible, error, onContinueAnyway }: ShaderProc
     );
   }
 
-  // ── LOADING STATE — minimal centred ring ───────────────────────────────────
+  // ── LOADING STATE — centred ring + aligned phase checklist ──────────────────
   return (
     <div className="fixed inset-0 z-[90] flex items-center justify-center overflow-hidden bg-[#05080a]">
       {/* Soft brand glow */}
@@ -170,6 +146,17 @@ const ShaderProcessingScreen = ({ visible, error, onContinueAnyway }: ShaderProc
       />
 
       <div className="relative flex w-full max-w-sm flex-col items-center px-6 text-center">
+        {/* Brand wordmark — game title (biome-neutral), abstract emerald mark */}
+        <div className="mb-8 flex items-center gap-2.5">
+          <span className="relative flex h-2.5 w-2.5">
+            <span className="absolute inline-flex h-full w-full rounded-sm bg-emerald-400/60 sps-glow" />
+            <span className="relative inline-flex h-2.5 w-2.5 rotate-45 rounded-sm bg-emerald-400 shadow-[0_0_12px_rgba(52,211,153,0.8)]" />
+          </span>
+          <span className="text-[12px] font-bold uppercase tracking-[0.5em] text-gray-300/90">
+            Forest <span className="text-emerald-300">Survival</span>
+          </span>
+        </div>
+
         {/* Progress ring */}
         <div className="relative" style={{ width: 168, height: 168 }}>
           <svg viewBox="0 0 160 160" className="h-full w-full -rotate-90">
@@ -181,8 +168,11 @@ const ShaderProcessingScreen = ({ visible, error, onContinueAnyway }: ShaderProc
             />
           </svg>
           <div className="absolute inset-0 flex flex-col items-center justify-center">
-            <Crosshair className="sps-reticle mb-1 h-7 w-7" style={{ color: accent }} strokeWidth={1.75} />
-            <span className="text-3xl font-black tabular-nums tracking-tight text-white">{progressValue}<span className="text-lg text-gray-500">%</span></span>
+            <Crosshair className="sps-reticle mb-1.5 h-6 w-6" style={{ color: accent }} strokeWidth={1.75} />
+            <div className="flex items-baseline">
+              <span className="text-4xl font-black leading-none tabular-nums tracking-tight text-white">{progressValue}</span>
+              <span className="ml-0.5 text-base font-bold text-gray-500">%</span>
+            </div>
           </div>
         </div>
 
@@ -203,12 +193,44 @@ const ShaderProcessingScreen = ({ visible, error, onContinueAnyway }: ShaderProc
           />
         </div>
 
-        {/* Current phase */}
-        <div className="mt-3 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.2em] text-gray-500">
-          <span className="block h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.7)]" />
-          <span className="text-gray-300">{phase.label}</span>
-          <span className="hidden normal-case tracking-normal text-gray-600 sm:inline">· {phase.hint}</span>
-        </div>
+        {/* Phase checklist — fills top-to-bottom as warmup advances */}
+        <ul className="mt-6 w-full space-y-1.5 text-left">
+          {PHASES.map((phase, index) => {
+            const state = index < activePhase ? 'done' : index === activePhase ? 'active' : 'pending';
+            return (
+              <li
+                key={phase.label}
+                className={`flex items-center gap-3 rounded-lg border px-3 py-2 transition-colors duration-300 ${
+                  state === 'active'
+                    ? 'border-emerald-400/25 bg-emerald-500/[0.06]'
+                    : 'border-transparent bg-transparent'
+                }`}
+              >
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center">
+                  {state === 'done' ? (
+                    <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500/20">
+                      <Check className="h-3 w-3 text-emerald-300" strokeWidth={3} />
+                    </span>
+                  ) : state === 'active' ? (
+                    <Loader2 className="h-4 w-4 animate-spin text-emerald-300" strokeWidth={2.5} />
+                  ) : (
+                    <span className="h-1.5 w-1.5 rounded-full bg-white/15" />
+                  )}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span
+                    className={`block text-[12px] font-semibold leading-tight transition-colors duration-300 ${
+                      state === 'pending' ? 'text-gray-600' : 'text-gray-200'
+                    }`}
+                  >
+                    {phase.label}
+                  </span>
+                  <span className="block truncate text-[10px] leading-tight text-gray-600">{phase.hint}</span>
+                </span>
+              </li>
+            );
+          })}
+        </ul>
       </div>
 
       <style>{`
