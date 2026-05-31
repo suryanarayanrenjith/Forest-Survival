@@ -469,13 +469,22 @@ export class BiomeSystem {
     }
   }
 
-  updateGroundMaterial(ground: THREE.Mesh, biome: BiomeType) {
+  updateGroundMaterial(
+    ground: THREE.Mesh,
+    biome: BiomeType,
+    override?: {
+      color?: number;
+      emissive?: number;
+      roughness?: number;
+      metalness?: number;
+    },
+  ) {
     const config = this.getBiomeConfig(biome);
     if (ground.material instanceof THREE.MeshStandardMaterial) {
-      ground.material.color.setHex(config.groundColor);
-      ground.material.emissive.setHex(config.groundEmissive);
-      ground.material.roughness = config.groundRoughness;
-      ground.material.metalness = config.groundMetalness;
+      ground.material.color.setHex(override?.color ?? config.groundColor);
+      ground.material.emissive.setHex(override?.emissive ?? config.groundEmissive);
+      ground.material.roughness = override?.roughness ?? config.groundRoughness;
+      ground.material.metalness = override?.metalness ?? config.groundMetalness;
     }
   }
 

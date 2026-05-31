@@ -17,7 +17,7 @@ import { BulletDodging } from './utils/BulletDodging';
 import { WeatherSystem } from './utils/WeatherSystem';
 import { BiomeSystem } from './utils/BiomeSystem';
 import { createAtmosphericHazeMaterial, createSkyDomeMaterial, updateShaderTime } from './utils/Shaders';
-import { getMapConfig, getRandomMap, DEFAULT_MAP, type MapType } from './utils/MapSystem';
+import { getMapConfig, getRandomMap, DEFAULT_MAP, type MapConfig, type MapType } from './utils/MapSystem';
 import { getHDRIEnvironmentIntensity, loadHDRIEnvironment, type HDRIEnvironmentProfile } from './utils/HDRIEnvironment';
 import { MultiplayerManager, type PlayerData as MpPlayerData, type NetworkMessage, type EnemyWire } from './utils/MultiplayerManager';
 import { RemotePlayerManager } from './utils/RemotePlayerManager';
@@ -27,7 +27,7 @@ import type { ClassId } from './utils/CharacterModels';
 import { AbilitySystem } from './utils/AbilitySystem';
 import { AchievementSystem, type Achievement } from './utils/AchievementSystem';
 import { EnhancedPowerUpSystem } from './utils/EnhancedPowerUps';
-import { DayCycleSystem } from './utils/DayCycleSystem';
+import { DayCycleSystem, type AtmosphericSettings } from './utils/DayCycleSystem';
 import HUD, { type AbilityHudItem } from './components/HUD';
 import MainMenu from './components/MainMenu';
 import ClassicMenu from './components/ClassicMenu';
@@ -1151,6 +1151,19 @@ const ForestSurvivalGame = () => {
 
     // Get initial atmospheric settings from day cycle system
     let atmosphericSettings = dayCycleSystem.getSettings(actualTimeOfDay);
+    const renderProfile: NonNullable<MapConfig['renderProfile']> = mapConfig.renderProfile ?? {};
+    const _blendColorA = new THREE.Color();
+    const _blendColorB = new THREE.Color();
+    const _darkenColor = new THREE.Color();
+    const _renderTint = new THREE.Vector3();
+
+    const blendHexColor = (from: number, to: number, weight: number): number => {
+      return _blendColorA.setHex(from).lerp(_blendColorB.setHex(to), THREE.MathUtils.clamp(weight, 0, 1)).getHex();
+    };
+
+    const darkenHexColor = (hex: number, scalar: number): number => {
+      return _darkenColor.setHex(hex).multiplyScalar(scalar).getHex();
+    };
 
     // Blend map colors with atmospheric settings for unique map feel
     // Map fog settings override base fog for specific map atmospheres.
@@ -1162,15 +1175,59 @@ const ForestSurvivalGame = () => {
       0.026,
       ((atmosphericSettings.fogDensity + mapFogDensity) / 2) * 1.62,
     );
+    const getSpecialFogDensity = () => blendedFogDensity * (renderProfile.fogDensity ?? 1.0);
+    const getMapLightingWeight = () => atmosphericSettings.sunVisible
+      ? (renderProfile.atmosphereWeight ?? (mapConfig.hasSpecialWeather ? 0.78 : 0.18))
+      : (renderProfile.nightAtmosphereWeight ?? (mapConfig.hasSpecialWeather ? 0.36 : 0.12));
+    const getGroundOverride = () => ({
+      color: atmosphericSettings.sunVisible ? mapConfig.groundColor : darkenHexColor(mapConfig.groundColor, 0.45),
+      emissive: atmosphericSettings.sunVisible ? mapConfig.groundEmissive : darkenHexColor(mapConfig.groundEmissive, 0.5),
+      roughness: mapConfig.groundRoughness,
+      metalness: mapConfig.groundMetalness,
+    });
+    const getRenderAtmosphere = (): AtmosphericSettings => {
+      const mapWeight = getMapLightingWeight();
+      const skyWeight = mapConfig.hasSpecialWeather ? 1.0 : mapWeight * 0.35;
+      const fogWeight = mapConfig.hasSpecialWeather ? 1.0 : mapWeight * 0.45;
+      const tintScale = atmosphericSettings.sunVisible ? 1.0 : 0.92;
+      _renderTint.set(
+        THREE.MathUtils.clamp(atmosphericSettings.colorTint.x * tintScale, 0.45, 1.35),
+        THREE.MathUtils.clamp(atmosphericSettings.colorTint.y * tintScale, 0.45, 1.35),
+        THREE.MathUtils.clamp(atmosphericSettings.colorTint.z * tintScale, 0.45, 1.35),
+      );
+
+      return {
+        ...atmosphericSettings,
+        skyColor: blendHexColor(atmosphericSettings.skyColor, mapConfig.skyColor, skyWeight),
+        fogColor: blendHexColor(atmosphericSettings.fogColor, mapConfig.fogColor, fogWeight),
+        fogDensity: mapConfig.hasSpecialWeather ? getSpecialFogDensity() : atmosphericSettings.fogDensity,
+        ambientColor: blendHexColor(atmosphericSettings.ambientColor, mapConfig.ambientLightColor, mapWeight),
+        ambientIntensity: THREE.MathUtils.lerp(
+          atmosphericSettings.ambientIntensity,
+          mapConfig.ambientLightIntensity,
+          mapWeight,
+        ) * (renderProfile.ambientLight ?? 1.0),
+        lightColor: blendHexColor(atmosphericSettings.lightColor, mapConfig.directionalLightColor, mapWeight),
+        lightIntensity: THREE.MathUtils.lerp(
+          atmosphericSettings.lightIntensity,
+          mapConfig.directionalLightIntensity,
+          mapWeight,
+        ) * (renderProfile.directLight ?? 1.0),
+        bloomStrength: atmosphericSettings.bloomStrength * (renderProfile.bloomStrength ?? 1.0),
+        colorTint: _renderTint,
+        saturation: atmosphericSettings.saturation * (renderProfile.saturation ?? 1.0),
+        contrast: 1.0 + (atmosphericSettings.contrast - 1.0) * (renderProfile.contrast ?? 1.0),
+        exposure: atmosphericSettings.exposure * (renderProfile.exposure ?? 1.0),
+      };
+    };
+    let renderAtmosphere = getRenderAtmosphere();
 
     // Use dynamic atmospheric settings blended with map config
     scene.fog = new THREE.FogExp2(
-      mapConfig.hasSpecialWeather ? mapConfig.fogColor : atmosphericSettings.fogColor,
-      blendedFogDensity
+      renderAtmosphere.fogColor,
+      renderAtmosphere.fogDensity,
     );
-    scene.background = new THREE.Color(
-      mapConfig.hasSpecialWeather ? mapConfig.skyColor : atmosphericSettings.skyColor
-    );
+    scene.background = new THREE.Color(renderAtmosphere.skyColor);
 
     // === GRAPHICS QUALITY SYSTEM ===
     const graphicsPreset = gameSettingsManager.getGraphicsPreset();
@@ -1345,13 +1402,20 @@ const ForestSurvivalGame = () => {
       // Initialise the grading uniforms from the current atmosphere snapshot
       // so the first rendered frame already has the right look.
       postFX.updateAtmosphere({
-        saturation: atmosphericSettings.saturation,
-        contrast: atmosphericSettings.contrast,
-        temperature: atmosphericSettings.temperature,
-        exposure: atmosphericSettings.exposure,
-        colorTint: atmosphericSettings.colorTint,
+        saturation: renderAtmosphere.saturation,
+        contrast: renderAtmosphere.contrast,
+        temperature: renderAtmosphere.temperature,
+        exposure: renderAtmosphere.exposure,
+        bloomStrength: renderAtmosphere.bloomStrength,
+        colorTint: renderAtmosphere.colorTint,
         sunDirection: initialSunDirection,
-        isNight: !atmosphericSettings.sunVisible,
+        isNight: !renderAtmosphere.sunVisible,
+        godRayStrength: renderProfile.godRayStrength,
+        aerialPerspective: renderProfile.aerialPerspective,
+        highlightRecovery: renderProfile.highlightRecovery,
+        highlightDesaturation: renderProfile.highlightDesaturation,
+        vibranceScale: renderProfile.vibrance,
+        shadowLiftScale: renderProfile.shadowLift,
       });
     }
 
@@ -1411,7 +1475,7 @@ const ForestSurvivalGame = () => {
     // the AGX post pipeline, so an extra +20% on top blows out the sky.
     // Ambient at 80% — shadow detail readable but the lit/shadow contrast
     // is dramatic enough to read as proper Cyberpunk "hit-by-sun" lighting.
-    const ambientLight = new THREE.AmbientLight(atmosphericSettings.ambientColor, atmosphericSettings.ambientIntensity * 0.8);
+    const ambientLight = new THREE.AmbientLight(renderAtmosphere.ambientColor, renderAtmosphere.ambientIntensity * 0.8);
     scene.add(ambientLight);
 
     // Main directional light (Sun/Moon) — cranked 60% above base so direct
@@ -1419,11 +1483,11 @@ const ForestSurvivalGame = () => {
     // Cyberpunk-style "wet asphalt sun glint" highlights. Combined with
     // the per-pixel normal perturbation in the ground shader, this is the
     // primary visual driver — not emissive, not bloom.
-    const mainLight = new THREE.DirectionalLight(atmosphericSettings.lightColor, atmosphericSettings.lightIntensity * 1.6);
+    const mainLight = new THREE.DirectionalLight(renderAtmosphere.lightColor, renderAtmosphere.lightIntensity * 1.6);
     mainLight.position.set(
-      atmosphericSettings.lightPosition.x,
-      atmosphericSettings.lightPosition.y,
-      atmosphericSettings.lightPosition.z
+      renderAtmosphere.lightPosition.x,
+      renderAtmosphere.lightPosition.y,
+      renderAtmosphere.lightPosition.z
     );
     mainLight.castShadow = graphicsPreset.shadowsEnabled;
 
@@ -1452,7 +1516,7 @@ const ForestSurvivalGame = () => {
     scene.add(mainLight.target);
 
     // Hemisphere light for natural sky reflection (dynamic based on atmospheric settings)
-    const skyColor = new THREE.Color(atmosphericSettings.skyColor);
+    const skyColor = new THREE.Color(renderAtmosphere.skyColor);
     const groundColor = skyColor.clone().multiplyScalar(0.35); // Darker ground reflection
     // Hemisphere provides natural sky-tinted shadow fill. Boosted back to
     // 0.75× so shadow areas keep a cool sky tint and read as "in shadow",
@@ -1460,20 +1524,20 @@ const ForestSurvivalGame = () => {
     const skyLight = new THREE.HemisphereLight(
       skyColor.getHex(),
       groundColor.getHex(),
-      atmosphericSettings.ambientIntensity * 0.75
+      renderAtmosphere.ambientIntensity * 0.75
     );
     scene.add(skyLight);
 
     // Soft warm bounce (sun-side) — faked indirect kick that warms the
     // lit ground. Krunker-grade golden-hour feel during day.
     const volumetricLight = new THREE.DirectionalLight(
-      atmosphericSettings.sunVisible ? 0xffe8b8 : 0x9ab2e6,
-      atmosphericSettings.sunVisible ? 0.55 : 0.5
+      renderAtmosphere.sunVisible ? 0xffe8b8 : 0x9ab2e6,
+      (renderAtmosphere.sunVisible ? 0.55 : 0.5) * (renderProfile.volumetricLight ?? 1.0)
     );
     volumetricLight.position.set(
-      atmosphericSettings.lightPosition.x * 0.5,
-      atmosphericSettings.lightPosition.y * 0.8,
-      atmosphericSettings.lightPosition.z * 0.5
+      renderAtmosphere.lightPosition.x * 0.5,
+      renderAtmosphere.lightPosition.y * 0.8,
+      renderAtmosphere.lightPosition.z * 0.5
     );
     scene.add(volumetricLight);
     scene.add(volumetricLight.target);
@@ -1482,33 +1546,33 @@ const ForestSurvivalGame = () => {
     // side of geometry still reads as fully lit, just cooler. The gun,
     // enemies, and tree trunks on the dark side all benefit.
     const fillLight = new THREE.DirectionalLight(
-      atmosphericSettings.sunVisible ? 0xbcd6ff : 0x7a92d2,
-      atmosphericSettings.sunVisible ? 0.55 : 0.7
+      renderAtmosphere.sunVisible ? 0xbcd6ff : 0x7a92d2,
+      (renderAtmosphere.sunVisible ? 0.55 : 0.7) * (renderProfile.fillLight ?? 1.0)
     );
     fillLight.position.set(
-      -atmosphericSettings.lightPosition.x * 0.6,
-      atmosphericSettings.lightPosition.y * 0.4,
-      -atmosphericSettings.lightPosition.z * 0.6
+      -renderAtmosphere.lightPosition.x * 0.6,
+      renderAtmosphere.lightPosition.y * 0.4,
+      -renderAtmosphere.lightPosition.z * 0.6
     );
     scene.add(fillLight);
     scene.add(fillLight.target);
 
     // Rim/Back light for dramatic silhouettes.
     const rimLight = new THREE.DirectionalLight(
-      atmosphericSettings.sunVisible ? 0xffffff : 0xc4d2ff,
-      atmosphericSettings.sunVisible ? 0.55 : 0.8
+      renderAtmosphere.sunVisible ? 0xffffff : 0xc4d2ff,
+      (renderAtmosphere.sunVisible ? 0.55 : 0.8) * (renderProfile.rimLight ?? 1.0)
     );
     rimLight.position.set(
-      atmosphericSettings.lightPosition.x * 0.3,
-      atmosphericSettings.lightPosition.y * 1.2,
-      atmosphericSettings.lightPosition.z
+      renderAtmosphere.lightPosition.x * 0.3,
+      renderAtmosphere.lightPosition.y * 1.2,
+      renderAtmosphere.lightPosition.z
     );
     scene.add(rimLight);
     scene.add(rimLight.target);
 
     // Additional ambient fill for night visibility — significantly boosted
     // so the night reads as "moody blue dusk" instead of "pitch black hole".
-    const nightFillLight = new THREE.AmbientLight(0x5c7ac0, atmosphericSettings.sunVisible ? 0.0 : 1.8);
+    const nightFillLight = new THREE.AmbientLight(0x5c7ac0, renderAtmosphere.sunVisible ? 0.0 : 1.8);
     scene.add(nightFillLight);
 
     // Player-attached night lantern — softly illuminates surroundings when
@@ -1593,27 +1657,28 @@ const ForestSurvivalGame = () => {
 
     // Precompute base light offsets so lights can follow the player
     const mainLightBaseOffset = new THREE.Vector3(
-      atmosphericSettings.lightPosition.x,
-      atmosphericSettings.lightPosition.y,
-      atmosphericSettings.lightPosition.z
+      renderAtmosphere.lightPosition.x,
+      renderAtmosphere.lightPosition.y,
+      renderAtmosphere.lightPosition.z
     );
     const volumetricLightBaseOffset = mainLightBaseOffset.clone().multiplyScalar(0.5);
-    volumetricLightBaseOffset.y = atmosphericSettings.lightPosition.y * 0.8;
+    volumetricLightBaseOffset.y = renderAtmosphere.lightPosition.y * 0.8;
     const fillLightBaseOffset = new THREE.Vector3(
-      -atmosphericSettings.lightPosition.x * 0.6,
-      atmosphericSettings.lightPosition.y * 0.4,
-      -atmosphericSettings.lightPosition.z * 0.6
+      -renderAtmosphere.lightPosition.x * 0.6,
+      renderAtmosphere.lightPosition.y * 0.4,
+      -renderAtmosphere.lightPosition.z * 0.6
     );
     const rimLightBaseOffset = new THREE.Vector3(
-      atmosphericSettings.lightPosition.x * 0.3,
-      atmosphericSettings.lightPosition.y * 1.2,
-      atmosphericSettings.lightPosition.z
+      renderAtmosphere.lightPosition.x * 0.3,
+      renderAtmosphere.lightPosition.y * 1.2,
+      renderAtmosphere.lightPosition.z
     );
 
     // INFINITE LOW-POLY Ground with dynamic day/night and map-specific colors
     const groundGeometry = new THREE.PlaneGeometry(mapConfig.groundSize || 2000, mapConfig.groundSize || 2000, 40, 40);
     // Blend map ground colors with day/night variations
-    const isDay = atmosphericSettings.sunVisible;
+    const isDay = renderAtmosphere.sunVisible;
+    const initialGroundOverride = getGroundOverride();
     const groundBaseColor = isDay ? mapConfig.groundColor : new THREE.Color(mapConfig.groundColor).multiplyScalar(0.45).getHex();
     const groundEmissive = isDay ? mapConfig.groundEmissive : new THREE.Color(mapConfig.groundEmissive).multiplyScalar(0.5).getHex();
     // ── AAA GROUND: PBR base + Cyberpunk-style sun shader ───────────────
@@ -1647,8 +1712,8 @@ const ForestSurvivalGame = () => {
       emissiveIntensity: isDay ? 0.0 : 0.12,
       // Tight roughness gives a real specular lobe for the sun — wet/glossy
       // PBR look. Slight metalness pushes the reflection toward warm.
-      roughness: 0.52,
-      metalness: 0.08,
+      roughness: initialGroundOverride.roughness ?? 0.52,
+      metalness: initialGroundOverride.metalness ?? 0.08,
     });
 
     // ── Shared uniforms for the injected ground shader ───────────────────
@@ -1656,11 +1721,11 @@ const ForestSurvivalGame = () => {
       uTime: { value: 0 },
       uSunDirection: { value: initialSunDirection.clone() },
       uSunColor: { value: new THREE.Color(1.0, 0.94, 0.78) },
-      uIncidentBoost: { value: isDay ? 0.12 : 0.04 },
-      uSpecularStrength: { value: isDay ? 0.65 : 0.18 },
-      uNormalStrength: { value: 0.35 },
+      uIncidentBoost: { value: (isDay ? 0.12 : 0.04) * (renderProfile.groundSpecular ?? 1.0) },
+      uSpecularStrength: { value: (isDay ? 0.65 : 0.18) * (renderProfile.groundSpecular ?? 1.0) },
+      uNormalStrength: { value: 0.35 * (renderProfile.groundNormal ?? 1.0) },
       uPatchScale: { value: 0.035 },
-      uPatchStrength: { value: 0.18 },
+      uPatchStrength: { value: 0.18 * (renderProfile.groundPatch ?? 1.0) },
       uIsNight: { value: isDay ? 0.0 : 1.0 },
     };
 
@@ -1830,17 +1895,17 @@ const ForestSurvivalGame = () => {
 
     // === ADVANCED SKY DOME SYSTEM ===
     const skyGeometry = new THREE.SphereGeometry(500, 32, 32);
-    const skyTopColor = new THREE.Color(mapConfig.hasSpecialWeather ? mapConfig.skyColor : atmosphericSettings.skyColor);
-    const skyHorizonColor = new THREE.Color(mapConfig.hasSpecialWeather ? mapConfig.fogColor : atmosphericSettings.fogColor);
+    const skyTopColor = new THREE.Color(renderAtmosphere.skyColor);
+    const skyHorizonColor = new THREE.Color(renderAtmosphere.fogColor);
     const skyMaterial = createSkyDomeMaterial(
       skyTopColor,
       skyHorizonColor,
       new THREE.Vector3(
-        atmosphericSettings.lightPosition.x,
-        atmosphericSettings.lightPosition.y,
-        atmosphericSettings.lightPosition.z
+        renderAtmosphere.lightPosition.x,
+        renderAtmosphere.lightPosition.y,
+        renderAtmosphere.lightPosition.z
       ),
-      !atmosphericSettings.sunVisible
+      !renderAtmosphere.sunVisible
     );
     const skyDome = new THREE.Mesh(skyGeometry, skyMaterial);
     // Render the sky first and ignore depth so it never appears as a "blob"
@@ -1854,14 +1919,15 @@ const ForestSurvivalGame = () => {
       : new THREE.SphereGeometry(420, 32, 16);
     const hazeMaterial = hazeGeometry
       ? createAtmosphericHazeMaterial(
-          new THREE.Color(mapConfig.hasSpecialWeather ? mapConfig.fogColor : atmosphericSettings.fogColor),
+          new THREE.Color(renderAtmosphere.fogColor),
           new THREE.Vector3(
-            atmosphericSettings.lightPosition.x,
-            atmosphericSettings.lightPosition.y,
-            atmosphericSettings.lightPosition.z
+            renderAtmosphere.lightPosition.x,
+            renderAtmosphere.lightPosition.y,
+            renderAtmosphere.lightPosition.z
           ),
-          (graphicsQuality === 'ultra' ? 0.10 : graphicsQuality === 'high' ? 0.08 : 0.06) * (mapConfig.hasSpecialWeather ? 1.25 : 1.0),
-          !atmosphericSettings.sunVisible
+          (graphicsQuality === 'ultra' ? 0.10 : graphicsQuality === 'high' ? 0.08 : 0.06) *
+            (renderProfile.hazeDensity ?? 1.0),
+          !renderAtmosphere.sunVisible
         )
       : null;
     const atmosphericHaze = hazeGeometry && hazeMaterial
@@ -1885,7 +1951,7 @@ const ForestSurvivalGame = () => {
       pmrem.compileEquirectangularShader();
       environmentRenderTarget = pmrem.fromScene(scene, 0.04);
       scene.environment = environmentRenderTarget.texture;
-      scene.environmentIntensity = 0.72;
+      scene.environmentIntensity = 0.72 * (renderProfile.environmentIntensity ?? 1.0);
       pmrem.dispose();
     } catch (err) {
       console.warn('[App] Environment map generation failed:', err);
@@ -1906,9 +1972,9 @@ const ForestSurvivalGame = () => {
         scene.environmentRotation.y = loadedEnvironment.profile.rotationY;
         scene.environmentIntensity = getHDRIEnvironmentIntensity(
           loadedEnvironment.profile,
-          atmosphericSettings.sunVisible,
-          atmosphericSettings.ambientIntensity,
-        );
+          renderAtmosphere.sunVisible,
+          renderAtmosphere.ambientIntensity,
+        ) * (renderProfile.environmentIntensity ?? 1.0);
       })
       .catch((err) => {
         console.warn('[App] HDRI environment loading failed; using generated sky IBL fallback:', err);
@@ -2043,7 +2109,7 @@ const ForestSurvivalGame = () => {
       }
 
       // Update ground color based on biome in this area
-      biomeSystem.updateGroundMaterial(ground, biome);
+      biomeSystem.updateGroundMaterial(ground, biome, getGroundOverride());
     };
 
     const updateWorldGeneration = (playerX: number, playerZ: number) => {
@@ -4778,6 +4844,7 @@ const ForestSurvivalGame = () => {
       // Freeze the day-night cycle during a photoshoot so the lighting the
       // player framed doesn't drift while they compose the shot.
       atmosphericSettings = dayCycleSystem.update(photoModeRef.current ? 0 : delta);
+      renderAtmosphere = getRenderAtmosphere();
 
       const sunDirection = computeSunDirection();
       const lowLight = sunDirection.y < 0.18;
@@ -4792,21 +4859,23 @@ const ForestSurvivalGame = () => {
       // adds the per-pixel normal perturbation + sharp specular pop.
       groundShaderUniforms.uTime.value += delta;
       groundShaderUniforms.uSunDirection.value.copy(sunDirection);
-      groundShaderUniforms.uSunColor.value.setHex(atmosphericSettings.lightColor);
+      groundShaderUniforms.uSunColor.value.setHex(renderAtmosphere.lightColor);
       const sunAlt = THREE.MathUtils.clamp(sunDirection.y, 0, 1);
-      const isNightShader = !atmosphericSettings.sunVisible;
+      const isNightShader = !renderAtmosphere.sunVisible;
       // Incident boost is SMALL — just a hint of warmth on sun-facing
       // surfaces. Pow(N·L,3) inside the shader does the directional
       // sharpening.
       groundShaderUniforms.uIncidentBoost.value = isNightShader
-        ? 0.04
-        : 0.08 + sunAlt * 0.10;
+        ? 0.04 * (renderProfile.groundSpecular ?? 1.0)
+        : (0.08 + sunAlt * 0.10) * (renderProfile.groundSpecular ?? 1.0);
       // Specular is what makes the ground look "polished / wet" — bigger
       // contribution than the diffuse boost. Still bounded so it never
       // crosses the bloom threshold uniformly.
       groundShaderUniforms.uSpecularStrength.value = isNightShader
-        ? 0.18
-        : 0.45 + sunAlt * 0.35;
+        ? 0.18 * (renderProfile.groundSpecular ?? 1.0)
+        : (0.45 + sunAlt * 0.35) * (renderProfile.groundSpecular ?? 1.0);
+      groundShaderUniforms.uNormalStrength.value = 0.35 * (renderProfile.groundNormal ?? 1.0);
+      groundShaderUniforms.uPatchStrength.value = 0.18 * (renderProfile.groundPatch ?? 1.0);
       groundShaderUniforms.uIsNight.value = isNightShader ? 1.0 : 0.0;
 
       // Apply updated atmospheric settings to scene (optimized - update existing fog instead of recreating)
@@ -4814,22 +4883,24 @@ const ForestSurvivalGame = () => {
       // otherwise the day-cycle would overwrite the map's atmosphere after the
       // first frame, making every map look the same.
       if (scene.fog instanceof THREE.FogExp2) {
-        scene.fog.color.setHex(mapConfig.hasSpecialWeather ? mapConfig.fogColor : atmosphericSettings.fogColor);
-        scene.fog.density = mapConfig.hasSpecialWeather ? blendedFogDensity : atmosphericSettings.fogDensity;
+        scene.fog.color.setHex(renderAtmosphere.fogColor);
+        scene.fog.density = renderAtmosphere.fogDensity;
       }
       if (scene.background instanceof THREE.Color) {
-        scene.background.setHex(mapConfig.hasSpecialWeather ? mapConfig.skyColor : atmosphericSettings.skyColor);
+        scene.background.setHex(renderAtmosphere.skyColor);
       }
+      biomeSystem.updateGroundMaterial(ground, mapConfig.primaryBiome, getGroundOverride());
+      groundMaterial.emissiveIntensity = renderAtmosphere.sunVisible ? 0.0 : 0.12;
 
       // Update main light — position follows player so shadow frustum stays on-screen.
       // Multiplier matches the init-time 1.6× so the bright-sun look is
       // preserved across day-cycle transitions (don't overwrite!).
-      mainLight.color.setHex(atmosphericSettings.lightColor);
-      mainLight.intensity = atmosphericSettings.lightIntensity * 1.6;
+      mainLight.color.setHex(renderAtmosphere.lightColor);
+      mainLight.intensity = renderAtmosphere.lightIntensity * 1.6;
       mainLightBaseOffset.set(
-        atmosphericSettings.lightPosition.x,
-        atmosphericSettings.lightPosition.y,
-        atmosphericSettings.lightPosition.z
+        renderAtmosphere.lightPosition.x,
+        renderAtmosphere.lightPosition.y,
+        renderAtmosphere.lightPosition.z
       );
       mainLight.position.set(
         camera.position.x + mainLightBaseOffset.x,
@@ -4841,12 +4912,12 @@ const ForestSurvivalGame = () => {
 
       // Keep volumetric, fill, and rim lights aimed at the player too
       volumetricLightBaseOffset.set(
-        atmosphericSettings.lightPosition.x * 0.5,
-        atmosphericSettings.lightPosition.y * 0.8,
-        atmosphericSettings.lightPosition.z * 0.5
+        renderAtmosphere.lightPosition.x * 0.5,
+        renderAtmosphere.lightPosition.y * 0.8,
+        renderAtmosphere.lightPosition.z * 0.5
       );
-      volumetricLight.color.setHex(atmosphericSettings.sunVisible ? 0xffe8b8 : 0x9ab2e6);
-      volumetricLight.intensity = atmosphericSettings.sunVisible ? 0.55 : 0.5;
+      volumetricLight.color.setHex(renderAtmosphere.sunVisible ? 0xffe8b8 : 0x9ab2e6);
+      volumetricLight.intensity = (renderAtmosphere.sunVisible ? 0.55 : 0.5) * (renderProfile.volumetricLight ?? 1.0);
       volumetricLight.position.set(
         camera.position.x + volumetricLightBaseOffset.x,
         volumetricLightBaseOffset.y,
@@ -4856,12 +4927,12 @@ const ForestSurvivalGame = () => {
       volumetricLight.target.updateMatrixWorld();
 
       fillLightBaseOffset.set(
-        -atmosphericSettings.lightPosition.x * 0.6,
-        atmosphericSettings.lightPosition.y * 0.4,
-        -atmosphericSettings.lightPosition.z * 0.6
+        -renderAtmosphere.lightPosition.x * 0.6,
+        renderAtmosphere.lightPosition.y * 0.4,
+        -renderAtmosphere.lightPosition.z * 0.6
       );
-      fillLight.color.setHex(atmosphericSettings.sunVisible ? 0xbcd6ff : 0x7a92d2);
-      fillLight.intensity = atmosphericSettings.sunVisible ? 0.55 : 0.7;
+      fillLight.color.setHex(renderAtmosphere.sunVisible ? 0xbcd6ff : 0x7a92d2);
+      fillLight.intensity = (renderAtmosphere.sunVisible ? 0.55 : 0.7) * (renderProfile.fillLight ?? 1.0);
       fillLight.position.set(
         camera.position.x + fillLightBaseOffset.x,
         fillLightBaseOffset.y,
@@ -4871,12 +4942,12 @@ const ForestSurvivalGame = () => {
       fillLight.target.updateMatrixWorld();
 
       rimLightBaseOffset.set(
-        atmosphericSettings.lightPosition.x * 0.3,
-        atmosphericSettings.lightPosition.y * 1.2,
-        atmosphericSettings.lightPosition.z
+        renderAtmosphere.lightPosition.x * 0.3,
+        renderAtmosphere.lightPosition.y * 1.2,
+        renderAtmosphere.lightPosition.z
       );
-      rimLight.color.setHex(atmosphericSettings.sunVisible ? 0xffffff : 0xc4d2ff);
-      rimLight.intensity = atmosphericSettings.sunVisible ? 0.55 : 0.8;
+      rimLight.color.setHex(renderAtmosphere.sunVisible ? 0xffffff : 0xc4d2ff);
+      rimLight.intensity = (renderAtmosphere.sunVisible ? 0.55 : 0.8) * (renderProfile.rimLight ?? 1.0);
       rimLight.position.set(
         camera.position.x + rimLightBaseOffset.x,
         rimLightBaseOffset.y,
@@ -4887,20 +4958,20 @@ const ForestSurvivalGame = () => {
 
       // Multiplier matches init (0.8×) — readable shadow detail without
       // washing out the lit/shadow contrast.
-      ambientLight.color.setHex(atmosphericSettings.ambientColor);
-      ambientLight.intensity = atmosphericSettings.ambientIntensity * 0.8;
+      ambientLight.color.setHex(renderAtmosphere.ambientColor);
+      ambientLight.intensity = renderAtmosphere.ambientIntensity * 0.8;
 
       // Keep hemisphere light synced with current sky & ground tones.
       // Multiplier matches init (0.75×) so shadowed surfaces keep their
       // cool sky-tint fill. setHex + multiplyScalar avoids the per-frame
       // `new THREE.Color()` allocation.
-      skyLight.color.setHex(atmosphericSettings.skyColor);
-      skyLight.groundColor.setHex(atmosphericSettings.skyColor).multiplyScalar(0.35);
-      skyLight.intensity = atmosphericSettings.ambientIntensity * 0.75;
+      skyLight.color.setHex(renderAtmosphere.skyColor);
+      skyLight.groundColor.setHex(renderAtmosphere.skyColor).multiplyScalar(0.35);
+      skyLight.intensity = renderAtmosphere.ambientIntensity * 0.75;
 
       // Nighttime moonlight fill + attached lantern so players can see
-      nightFillLight.intensity = atmosphericSettings.sunVisible ? 0.0 : 1.8;
-      playerNightLantern.intensity = atmosphericSettings.sunVisible ? 0.0 : 2.4;
+      nightFillLight.intensity = renderAtmosphere.sunVisible ? 0.0 : 1.8;
+      playerNightLantern.intensity = renderAtmosphere.sunVisible ? 0.0 : 2.4;
 
       // Keep the sky dome centered on the player so the player never walks
       // "outside" the sphere (which is what caused the giant-blob glitch).
@@ -4909,40 +4980,44 @@ const ForestSurvivalGame = () => {
       if (atmosphericHaze && hazeMaterial) {
         atmosphericHaze.position.copy(camera.position);
         hazeMaterial.uniforms.time.value += delta;
-        hazeMaterial.uniforms.hazeColor.value.setHex(
-          mapConfig.hasSpecialWeather ? mapConfig.fogColor : atmosphericSettings.fogColor
-        );
+        hazeMaterial.uniforms.hazeColor.value.setHex(renderAtmosphere.fogColor);
         hazeMaterial.uniforms.sunPosition.value.set(
-          atmosphericSettings.lightPosition.x,
-          atmosphericSettings.lightPosition.y,
-          atmosphericSettings.lightPosition.z
+          renderAtmosphere.lightPosition.x,
+          renderAtmosphere.lightPosition.y,
+          renderAtmosphere.lightPosition.z
         );
-        hazeMaterial.uniforms.isNight.value = !atmosphericSettings.sunVisible;
+        hazeMaterial.uniforms.isNight.value = !renderAtmosphere.sunVisible;
         hazeMaterial.uniforms.density.value =
           (graphicsQuality === 'ultra' ? 0.10 : graphicsQuality === 'high' ? 0.08 : 0.06) *
-          (mapConfig.hasSpecialWeather ? 1.25 : 1.0) *
-          (atmosphericSettings.sunVisible ? 1.0 : 0.82);
+          (renderProfile.hazeDensity ?? 1.0) *
+          (renderAtmosphere.sunVisible ? 1.0 : 0.82);
       }
 
       if (hdriEnvironmentProfile) {
         scene.environmentIntensity = getHDRIEnvironmentIntensity(
           hdriEnvironmentProfile,
-          atmosphericSettings.sunVisible,
-          atmosphericSettings.ambientIntensity,
-        );
+          renderAtmosphere.sunVisible,
+          renderAtmosphere.ambientIntensity,
+        ) * (renderProfile.environmentIntensity ?? 1.0);
       }
 
       // Push live grading into the post-processing chain so dusk/dawn/night
       // colour shifts read on screen as the day cycle advances.
       postFX?.updateAtmosphere({
-        saturation: atmosphericSettings.saturation,
-        contrast: atmosphericSettings.contrast,
-        temperature: atmosphericSettings.temperature,
-        exposure: atmosphericSettings.exposure,
-        bloomStrength: atmosphericSettings.bloomStrength,
-        colorTint: atmosphericSettings.colorTint,
+        saturation: renderAtmosphere.saturation,
+        contrast: renderAtmosphere.contrast,
+        temperature: renderAtmosphere.temperature,
+        exposure: renderAtmosphere.exposure,
+        bloomStrength: renderAtmosphere.bloomStrength,
+        colorTint: renderAtmosphere.colorTint,
         sunDirection,
-        isNight: !atmosphericSettings.sunVisible,
+        isNight: !renderAtmosphere.sunVisible,
+        godRayStrength: renderProfile.godRayStrength,
+        aerialPerspective: renderProfile.aerialPerspective,
+        highlightRecovery: renderProfile.highlightRecovery,
+        highlightDesaturation: renderProfile.highlightDesaturation,
+        vibranceScale: renderProfile.vibrance,
+        shadowLiftScale: renderProfile.shadowLift,
       });
 
       // Update sky dome shader
@@ -4951,25 +5026,21 @@ const ForestSurvivalGame = () => {
       }
       if (skyMaterial.uniforms.sunPosition) {
         skyMaterial.uniforms.sunPosition.value.set(
-          atmosphericSettings.lightPosition.x,
-          atmosphericSettings.lightPosition.y,
-          atmosphericSettings.lightPosition.z
+          renderAtmosphere.lightPosition.x,
+          renderAtmosphere.lightPosition.y,
+          renderAtmosphere.lightPosition.z
         );
       }
       if (skyMaterial.uniforms.isNight) {
-        skyMaterial.uniforms.isNight.value = !atmosphericSettings.sunVisible;
+        skyMaterial.uniforms.isNight.value = !renderAtmosphere.sunVisible;
       }
       // Keep the sky gradient synced with the day-night cycle (and the map's
       // own atmosphere for special-weather maps) so it never drifts dark.
       if (skyMaterial.uniforms.skyColorTop) {
-        skyMaterial.uniforms.skyColorTop.value.setHex(
-          mapConfig.hasSpecialWeather ? mapConfig.skyColor : atmosphericSettings.skyColor
-        );
+        skyMaterial.uniforms.skyColorTop.value.setHex(renderAtmosphere.skyColor);
       }
       if (skyMaterial.uniforms.skyColorHorizon) {
-        skyMaterial.uniforms.skyColorHorizon.value.setHex(
-          mapConfig.hasSpecialWeather ? mapConfig.fogColor : atmosphericSettings.fogColor
-        );
+        skyMaterial.uniforms.skyColorHorizon.value.setHex(renderAtmosphere.fogColor);
       }
 
       // === UPDATE ENHANCED SYSTEMS ===

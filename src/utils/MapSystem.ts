@@ -60,6 +60,36 @@ export interface MapConfig {
   // 1.0 = baseline; >1 = more dramatic bloom; <1 = restrained.
   bloomMultiplier?: number;
   bloomThresholdBias?: number; // added to base threshold; negative = MORE blooms
+  // Map-aware rendering controls. These are intentionally multipliers so the
+  // forest reference can stay close to the global grade while high-albedo maps
+  // like snow/desert can pull back exposure, haze, and highlight energy.
+  renderProfile?: {
+    atmosphereWeight?: number;
+    nightAtmosphereWeight?: number;
+    exposure?: number;
+    saturation?: number;
+    contrast?: number;
+    bloomStrength?: number;
+    godRayStrength?: number;
+    aerialPerspective?: number;
+    highlightRecovery?: number;
+    highlightDesaturation?: number;
+    vibrance?: number;
+    shadowLift?: number;
+    hazeDensity?: number;
+    fogDensity?: number;
+    environmentIntensity?: number;
+    directLight?: number;
+    ambientLight?: number;
+    volumetricLight?: number;
+    fillLight?: number;
+    rimLight?: number;
+    groundSpecular?: number;
+    groundNormal?: number;
+    groundPatch?: number;
+  };
+  groundRoughness?: number;
+  groundMetalness?: number;
 }
 
 export const MAP_CONFIGS: Record<MapType, MapConfig> = {
@@ -89,6 +119,31 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     enemySpawnRadiusMult: 1.0,
     bloomMultiplier: 1.05,
     bloomThresholdBias: -0.02,
+    renderProfile: {
+      atmosphereWeight: 0.18,
+      nightAtmosphereWeight: 0.12,
+      exposure: 1.0,
+      saturation: 1.0,
+      contrast: 1.0,
+      bloomStrength: 1.0,
+      godRayStrength: 1.0,
+      aerialPerspective: 0.9,
+      highlightRecovery: 0.14,
+      highlightDesaturation: 0.14,
+      vibrance: 1.0,
+      shadowLift: 1.0,
+      hazeDensity: 1.0,
+      fogDensity: 1.0,
+      environmentIntensity: 1.0,
+      directLight: 1.0,
+      ambientLight: 1.0,
+      volumetricLight: 1.0,
+      fillLight: 1.0,
+      rimLight: 1.0,
+      groundSpecular: 1.0,
+      groundNormal: 1.0,
+      groundPatch: 1.0,
+    },
   },
 
   // ── Charred volcanic hellscape ──
@@ -122,6 +177,31 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     // the new boosted global baseline.
     bloomMultiplier: 1.25,                // was 1.55
     bloomThresholdBias: -0.06,            // was -0.10
+    renderProfile: {
+      atmosphereWeight: 0.66,
+      nightAtmosphereWeight: 0.35,
+      exposure: 0.82,
+      saturation: 0.9,
+      contrast: 1.04,
+      bloomStrength: 0.9,
+      godRayStrength: 0.62,
+      aerialPerspective: 0.5,
+      highlightRecovery: 0.36,
+      highlightDesaturation: 0.22,
+      vibrance: 0.9,
+      shadowLift: 0.92,
+      hazeDensity: 0.75,
+      fogDensity: 0.9,
+      environmentIntensity: 0.86,
+      directLight: 0.92,
+      ambientLight: 0.9,
+      volumetricLight: 0.62,
+      fillLight: 0.72,
+      rimLight: 0.85,
+      groundSpecular: 0.72,
+      groundNormal: 1.05,
+      groundPatch: 1.1,
+    },
   },
 
   // ── Icy tundra with frozen pines ──
@@ -137,16 +217,16 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     description: 'A frozen expanse of ice spires, snow-laden pines, and frozen ponds.',
     icon: '❄️',
     primaryBiome: 'tundra',
-    skyColor: 0x4a6480,                   // dark steel blue (was 0x6090b8)
-    fogColor: 0x3a4e64,                   // deep slate (was 0x5c7894)
+    skyColor: 0x435b72,                   // cold overcast blue, not white
+    fogColor: 0x334657,                   // dark slate haze preserves silhouettes
     fogNear: 50,                          // was 40
     fogFar: 480,                          // was 320 — long sightlines
-    ambientLightColor: 0x6080a0,
-    ambientLightIntensity: 0.42,          // was 0.55
-    directionalLightColor: 0xb8c8d8,      // dim cool sun (was bright 0xeeeeff)
-    directionalLightIntensity: 0.75,      // was 0.95
-    groundColor: 0x90a8c0,                // mid-tone snow (was 0xb0c8e0)
-    groundEmissive: 0x506880,
+    ambientLightColor: 0x526a82,
+    ambientLightIntensity: 0.34,          // snow reflects a lot; keep fill modest
+    directionalLightColor: 0x9fb0bd,      // dim cool sun, not pure white
+    directionalLightIntensity: 0.58,
+    groundColor: 0x7f929e,                // blue-gray snow with readable value
+    groundEmissive: 0x2f4352,
     groundSize: 460,
     treeDensityMult: 1.4,
     rockDensityMult: 2.1,
@@ -156,8 +236,35 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     visibilityMult: 1.0,                  // open + readable
     enemySpawnRadiusMult: 1.1,
     // Heavily restrained bloom — was the primary cause of the wash.
-    bloomMultiplier: 0.50,                // was 0.72
-    bloomThresholdBias: 0.18,             // was 0.10 — only true highlights bloom
+    bloomMultiplier: 0.36,                // snow is high-albedo; keep bloom surgical
+    bloomThresholdBias: 0.26,             // only weapon cores / pickups bloom
+    renderProfile: {
+      atmosphereWeight: 0.86,
+      nightAtmosphereWeight: 0.42,
+      exposure: 0.54,
+      saturation: 0.62,
+      contrast: 0.92,
+      bloomStrength: 0.58,
+      godRayStrength: 0.18,
+      aerialPerspective: 0.08,
+      highlightRecovery: 0.92,
+      highlightDesaturation: 0.78,
+      vibrance: 0.58,
+      shadowLift: 0.82,
+      hazeDensity: 0.32,
+      fogDensity: 0.62,
+      environmentIntensity: 0.52,
+      directLight: 0.72,
+      ambientLight: 0.68,
+      volumetricLight: 0.22,
+      fillLight: 0.42,
+      rimLight: 0.45,
+      groundSpecular: 0.25,
+      groundNormal: 0.6,
+      groundPatch: 0.72,
+    },
+    groundRoughness: 0.88,
+    groundMetalness: 0.02,
   },
 
   // ── Arid desert with mesa pillars ──
@@ -170,22 +277,22 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     // Sky pulled away from orange to a sun-bleached pale blue so the
     // scene doesn't read as ALL orange — gives the warm ground
     // something to contrast against.
-    skyColor: 0x8a9eb0,
+    skyColor: 0x738aa0,
     // Fog desaturated — was 0xc4a070 (warm orange/tan) which under the
     // boosted bloom + aerial perspective tinted the entire scene one
     // colour. Pulled to a neutral warm sand that fades distant pillars
     // without erasing them.
-    fogColor: 0xa89478,
+    fogColor: 0x81735f,
     fogNear: 60,                          // was 50 — clear close range
     fogFar: 420,                          // was 280 — long sightlines like a real canyon
     // Ambient lowered — desert ground reflects sun strongly, was
     // double-counting brightness with the directional + ambient combo.
-    ambientLightColor: 0xb89868,
-    ambientLightIntensity: 0.55,          // was 0.65
-    directionalLightColor: 0xffdda0,
-    directionalLightIntensity: 0.95,      // was 1.1
-    groundColor: 0xc89868,                // slightly desaturated from 0xd4a574
-    groundEmissive: 0x8a6840,
+    ambientLightColor: 0x9b8058,
+    ambientLightIntensity: 0.42,          // sand bounces light aggressively
+    directionalLightColor: 0xe7c48b,
+    directionalLightIntensity: 0.72,
+    groundColor: 0xb08155,                // warm but no neon-yellow floor
+    groundEmissive: 0x5a3e27,
     groundSize: 500,
     treeDensityMult: 1.4,
     rockDensityMult: 2.7,
@@ -195,8 +302,35 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     visibilityMult: 1.25,                 // was 1.2 — open sightlines
     enemySpawnRadiusMult: 1.2,
     // Lower bloom — desert is already bright + warm.
-    bloomMultiplier: 0.68,                // was 0.80
-    bloomThresholdBias: 0.12,             // was 0.06
+    bloomMultiplier: 0.44,
+    bloomThresholdBias: 0.24,
+    renderProfile: {
+      atmosphereWeight: 0.84,
+      nightAtmosphereWeight: 0.38,
+      exposure: 0.56,
+      saturation: 0.58,
+      contrast: 0.94,
+      bloomStrength: 0.62,
+      godRayStrength: 0.22,
+      aerialPerspective: 0.06,
+      highlightRecovery: 0.88,
+      highlightDesaturation: 0.82,
+      vibrance: 0.55,
+      shadowLift: 0.78,
+      hazeDensity: 0.28,
+      fogDensity: 0.58,
+      environmentIntensity: 0.5,
+      directLight: 0.68,
+      ambientLight: 0.62,
+      volumetricLight: 0.18,
+      fillLight: 0.38,
+      rimLight: 0.36,
+      groundSpecular: 0.22,
+      groundNormal: 0.8,
+      groundPatch: 0.95,
+    },
+    groundRoughness: 0.94,
+    groundMetalness: 0.01,
   },
 
   // ── Dark swamp with toxic pools ──

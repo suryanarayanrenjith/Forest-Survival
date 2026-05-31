@@ -19,6 +19,12 @@ export interface AtmosphereGrading {
   colorTint: THREE.Color | THREE.Vector3 | { r: number; g: number; b: number };
   sunDirection?: THREE.Vector3;
   isNight?: boolean;
+  godRayStrength?: number;
+  aerialPerspective?: number;
+  highlightRecovery?: number;
+  highlightDesaturation?: number;
+  vibranceScale?: number;
+  shadowLiftScale?: number;
 }
 
 /**
@@ -61,6 +67,9 @@ const CinematicGradeShader = {
     sunIntensity: { value: 0.0 },
     sunColor: { value: new THREE.Color(1.0, 0.92, 0.78) },
     aspect: { value: 1.0 },
+    aerialPerspective: { value: 1.0 },
+    highlightRecovery: { value: 0.18 },
+    highlightDesaturation: { value: 0.18 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -88,6 +97,9 @@ const CinematicGradeShader = {
     uniform float sunIntensity;
     uniform vec3  sunColor;
     uniform float aspect;
+    uniform float aerialPerspective;
+    uniform float highlightRecovery;
+    uniform float highlightDesaturation;
     varying vec2  vUv;
 
     // ACES Filmic tonemap — Narkowicz fit; the curve used by Cyberpunk,
@@ -187,7 +199,7 @@ const CinematicGradeShader = {
         float lumAerial = dot(hdr, vec3(0.2126, 0.7152, 0.0722));
         float aerialMask = smoothstep(0.9, 2.4, lumAerial) * sunIntensity;
         float topBias = smoothstep(0.4, 1.0, vUv.y);
-        hdr = mix(hdr, hdr * sunColor * 1.06, aerialMask * topBias * 0.18);
+        hdr = mix(hdr, hdr * sunColor * 1.06, aerialMask * topBias * 0.18 * aerialPerspective);
       }
 
       // ─── EXPOSURE × ATMOSPHERIC TINT (linear HDR) ──────────────────
@@ -202,6 +214,19 @@ const CinematicGradeShader = {
 
       // ─── CONTRAST (HDR safe — keeps positives positive) ────────────
       hdr = max(vec3(0.0), (hdr - 0.5) * (1.0 + contrast) + 0.5);
+
+      // --- FILMIC HIGHLIGHT RECOVERY (HDR) ----------------------------
+      // Snow, sand, and bright fog can occupy most of the screen above the
+      // bloom/tonemap knee. Compress only those high-luma regions before
+      // ACES so detail survives without flattening dark forest scenes.
+      float recoverLuma = dot(hdr, vec3(0.2126, 0.7152, 0.0722));
+      float recoverMask = smoothstep(0.92, 2.8, recoverLuma) * highlightRecovery;
+      float compressedLuma = 0.92 + log2(max(recoverLuma, 0.92) / 0.92 + 1.0) * 0.62;
+      float recoverScale = compressedLuma / max(recoverLuma, 1e-4);
+      hdr = mix(hdr, hdr * recoverScale, recoverMask);
+
+      float recoveredLuma = dot(hdr, vec3(0.2126, 0.7152, 0.0722));
+      hdr = mix(hdr, mix(vec3(recoveredLuma), hdr, 0.64), recoverMask * highlightDesaturation);
 
       // ─── ACES FILMIC TONEMAP — HDR -> LDR [0,1] ─────────────────────
       // All subsequent operations are in LDR space, safe to use the
@@ -403,6 +428,9 @@ export class PostProcessingPipeline {
     // directional × 1.6 + ambient × 0.8 already give Krunker brightness;
     // adding more pushed warm maps into yellow blowout.
     u.brightness.value = THREE.MathUtils.clamp(g.temperature * 0.04, -0.15, 0.15);
+    u.aerialPerspective.value = THREE.MathUtils.clamp(g.aerialPerspective ?? 1.0, 0.0, 1.35);
+    u.highlightRecovery.value = THREE.MathUtils.clamp(g.highlightRecovery ?? 0.18, 0.0, 1.0);
+    u.highlightDesaturation.value = THREE.MathUtils.clamp(g.highlightDesaturation ?? 0.18, 0.0, 1.0);
 
     if (typeof g.exposure === 'number') {
       const target = THREE.MathUtils.clamp(g.exposure, 0.4, 1.8);
@@ -429,6 +457,7 @@ export class PostProcessingPipeline {
     }
 
     let lowLight = 0;
+    const godRayStrength = THREE.MathUtils.clamp(g.godRayStrength ?? 1.0, 0.0, 1.3);
     if (g.sunDirection) {
       this._tempSun.copy(g.sunDirection).normalize();
       const sunAlt = this._tempSun.y;
@@ -436,17 +465,19 @@ export class PostProcessingPipeline {
     }
 
     this.isNightMode = !!g.isNight;
+    const shadowLiftScale = THREE.MathUtils.clamp(g.shadowLiftScale ?? 1.0, 0.45, 1.25);
+    const vibranceScale = THREE.MathUtils.clamp(g.vibranceScale ?? 1.0, 0.35, 1.2);
     if (this.isNightMode) {
       // Night: meaningful lift so the player can still SEE — moody but
       // playable. Krunker's night vibe, not pitch black.
-      u.shadowLift.value = 0.10 + lowLight * 0.04;
-      u.vibrance.value = 0.56;
+      u.shadowLift.value = (0.10 + lowLight * 0.04) * shadowLiftScale;
+      u.vibrance.value = 0.56 * vibranceScale;
     } else {
       // Day: clean Krunker-bright shadows — visible detail in shaded
       // areas, no crushed blacks. Vibrance bumped for richer foliage
       // greens + sky blues without crushing mids into yellow.
-      u.shadowLift.value = 0.07 + lowLight * 0.02;
-      u.vibrance.value = 0.52;
+      u.shadowLift.value = (0.07 + lowLight * 0.02) * shadowLiftScale;
+      u.vibrance.value = 0.52 * vibranceScale;
     }
 
     // ─── SCREEN-SPACE LIGHT SHAFTS (god rays) ───────────────────────
@@ -475,7 +506,7 @@ export class PostProcessingPipeline {
       if (this.isNightMode) {
         // Moonlight god-rays — cool blue, restrained.
         (u.sunColor.value as THREE.Color).setRGB(0.55, 0.7, 1.0);
-        u.sunIntensity.value = 0.28 * onScreenGate;
+        u.sunIntensity.value = 0.28 * onScreenGate * godRayStrength;
       } else {
         // Warm shift as the sun drops — golden-hour at low altitude,
         // pure white at noon. lowSun ramps as altitude → 0.
@@ -489,7 +520,7 @@ export class PostProcessingPipeline {
         // dominant visual feature of any outdoor map when the sun is up.
         // Extra punch at low-sun angles (golden-hour drama).
         const goldenBoost = 1.0 + lowSun * 0.45;
-        u.sunIntensity.value = 0.55 * onScreenGate * altGate * goldenBoost;
+        u.sunIntensity.value = 0.55 * onScreenGate * altGate * goldenBoost * godRayStrength;
       }
     } else {
       u.sunIntensity.value = 0.0;
