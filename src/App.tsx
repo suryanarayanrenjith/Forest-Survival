@@ -1019,6 +1019,8 @@ const ForestSurvivalGame = () => {
     // Per-run achievement trackers (reset every run since the effect re-runs).
     let headshotsThisRun = 0;
     let powerUpsThisRun = 0;
+    let bossKillsThisRun = 0;     // → goliath / boss_slayer
+    let flawlessWavesThisRun = 0; // → flawless_master (Untouchable)
     let tookDamageThisWave = false;
     const recentKillTimes: number[] = [];
 
@@ -3432,7 +3434,7 @@ const ForestSurvivalGame = () => {
           shieldBreakFlash = 0;
           setPowerUpMessage('Riot Shield · absorbs frontal damage');
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Riot Shield Up!', 'powerup');
-          createParticles(camera.position, 0x66c2ff, 20);
+          // No world flare — the braced shield mesh on the arm is the feedback.
           break;
         case 'infinite_ammo':
           infiniteAmmoActive = true;
@@ -3446,16 +3448,31 @@ const ForestSurvivalGame = () => {
           phantomEndTime = nowMs + phantomDuration;
           setPowerUpMessage('Phantom · enemies lose track of you');
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Phantom Active!', 'powerup');
-          createParticles(camera.position, 0xb388ff, 22);
+          // No world flare — the weapon fading out is the feedback.
           break;
       }
-      // Quick cast flourish + (for the ability-style powers) an activation flare.
+      // Quick cast flourish. Only Overcharge spawns a world flare now — Shield
+      // and Phantom each have their own persistent visual (braced mesh / weapon
+      // fade), so their old blue/purple activation bursts were redundant clutter.
       gunModel.triggerAbility();
       soundManager.play('powerUp', 0.7);
-      if (type === 'shield' || type === 'phantom' || type === 'overcharge') {
+      if (type === 'overcharge') {
         abilitySystem.createAbilityEffect(scene, camera.position, type);
       }
       setTimeout(() => setPowerUpMessage(''), 2000);
+    }
+
+    // ── ANTI-STACK GUARD ──────────────────────────────────────────────────
+    // Powers fall into two classes: instant (ammo — applies once, no timer) and
+    // timed (speed/damage/shield/infinite_ammo/overcharge/phantom — run for a
+    // duration). To stop the player layering several buffs at once, a timed
+    // power can only be activated when NO other timed effect is currently
+    // running. Instant powers are always allowed. `isTimedPower` and
+    // `anyTimedEffectActive` are the single source of truth for that rule.
+    const isTimedPower = (p: HeldPower): boolean => p !== 'ammo';
+    function anyTimedEffectActive(): boolean {
+      return speedBoostActive || damageBoostActive || shieldActive
+        || infiniteAmmoActive || overchargeActive || phantomActive;
     }
 
     let infiniteAmmoActive = false;
@@ -3630,9 +3647,16 @@ const ForestSurvivalGame = () => {
       // (one at a time), so there's no point-unlock gating any more.
       if (e.code === 'KeyE' && !paused) {
         if (heldPower) {
-          const power = heldPower;
-          heldPower = null;
-          applyPower(power);
+          // Anti-stack: a timed power can't start while another timed effect is
+          // still running — the player keeps the held power and is told to wait.
+          if (isTimedPower(heldPower) && anyTimedEffectActive()) {
+            setPowerUpMessage('Wait for your active power to finish');
+            setTimeout(() => setPowerUpMessage(''), 1600);
+          } else {
+            const power = heldPower;
+            heldPower = null;
+            applyPower(power);
+          }
         } else {
           setPowerUpMessage('No power held — defeat enemies to find loot');
           setTimeout(() => setPowerUpMessage(''), 1600);
@@ -4230,19 +4254,33 @@ const ForestSurvivalGame = () => {
         achievementSystem.setProgress('slayer', careerKills);
         achievementSystem.setProgress('massacre', careerKills);
         achievementSystem.setProgress('legend', careerKills);
+        achievementSystem.setProgress('annihilator', careerKills);
         achievementSystem.setProgress('hot_streak', killStreak);
         achievementSystem.setProgress('unstoppable', killStreak);
+        // Combo + score milestones (single run). `combo`/`score` are already
+        // updated for this kill above, so these read the post-kill values.
+        achievementSystem.setProgress('frenzy', combo);
+        achievementSystem.setProgress('berserker', combo);
+        achievementSystem.setProgress('centurion', score);
+        achievementSystem.setProgress('high_roller', score);
+        // Boss kills (single run) — the heaviest enemy type only.
+        if (enemy.type === 'boss') {
+          bossKillsThisRun += 1;
+          achievementSystem.updateProgress('goliath', 1);
+          achievementSystem.setProgress('boss_slayer', bossKillsThisRun);
+        }
         if (isCritical) {
           headshotsThisRun += 1;
           achievementSystem.setProgress('sharpshooter', headshotsThisRun);
           achievementSystem.setProgress('deadeye', headshotsThisRun);
         }
-        // Speed Demon — 5 kills inside a rolling 10-second window.
+        // Speed Demon — 5 kills inside a rolling 10-second window; Blitz — 10.
         recentKillTimes.push(currentTime);
         while (recentKillTimes.length > 0 && currentTime - recentKillTimes[0] > 10000) {
           recentKillTimes.shift();
         }
         if (recentKillTimes.length >= 5) achievementSystem.updateProgress('speed_demon', 1);
+        if (recentKillTimes.length >= 10) achievementSystem.updateProgress('blitz', 1);
         if (isMultiplayer && multiplayerManager) multiplayerManager.incrementKills();
       } else if (mp && enemy.netId !== undefined) {
         // Killing blow came from a guest — hand them the credit.
@@ -4271,8 +4309,13 @@ const ForestSurvivalGame = () => {
       if (!isTutorialMode && waveEnemiesRemaining <= 0 && livingEnemies === 0 && !waveTransitioning) {
         waveTransitioning = true;
         // Flawless — the wave just cleared took no damage. Evaluate before the
-        // tracker resets for the next wave.
-        if (!tookDamageThisWave) achievementSystem.updateProgress('no_damage', 1);
+        // tracker resets for the next wave. Flawless wave count (single run)
+        // drives the Untouchable achievement.
+        if (!tookDamageThisWave) {
+          achievementSystem.updateProgress('no_damage', 1);
+          flawlessWavesThisRun += 1;
+          achievementSystem.setProgress('flawless_master', flawlessWavesThisRun);
+        }
         tookDamageThisWave = false;
         wave++;
         combo = 0;
@@ -4282,6 +4325,7 @@ const ForestSurvivalGame = () => {
         achievementSystem.setProgress('survivor', reachedWave);
         achievementSystem.setProgress('veteran', reachedWave);
         achievementSystem.setProgress('invincible', reachedWave);
+        achievementSystem.setProgress('immortal', reachedWave);
         setShowWaveComplete(true);
         soundManager.play('waveComplete', 1.0);
         if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry(`Wave ${wave - 1} Complete!`, 'wave');

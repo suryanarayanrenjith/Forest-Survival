@@ -33,7 +33,7 @@ const Notifications = ({ showWaveComplete, powerUpMessage, t }: NotificationsPro
       {/* Power-Up Message */}
       {powerUpMessage && (
         <div
-          className="absolute bottom-32 left-1/2 -translate-x-1/2"
+          className="absolute bottom-40 left-1/2 -translate-x-1/2"
           style={{ animation: 'puIn 0.4s cubic-bezier(0.16, 1, 0.3, 1)' }}
         >
           <div className="flex items-center gap-2.5 rounded-full border border-white/15 bg-black/70 backdrop-blur-md px-5 py-2.5">

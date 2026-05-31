@@ -22,6 +22,12 @@ export const ACHIEVEMENT_ORDER = [
   'sharpshooter', 'deadeye',
   'close_call', 'resourceful', 'arsenal', 'speed_demon', 'no_damage',
   'team_player', 'champion',
+  // ── APPENDED (indices 18+) — never reorder the entries above ──
+  'goliath', 'boss_slayer',
+  'frenzy', 'berserker',
+  'centurion', 'high_roller',
+  'blitz', 'flawless_master',
+  'annihilator', 'immortal',
 ] as const;
 
 export class AchievementSystem {
@@ -284,6 +290,126 @@ export class AchievementSystem {
         target: 5,
         reward: 'Epic Badge',
         rarity: 'epic',
+      },
+
+      // ── Boss kills (single run) ──
+      {
+        id: 'goliath',
+        name: 'Goliath Slain',
+        description: 'Defeat a boss enemy',
+        icon: '🪓',
+        unlocked: false,
+        progress: 0,
+        target: 1,
+        reward: 'Rare Badge',
+        rarity: 'rare',
+      },
+      {
+        id: 'boss_slayer',
+        name: 'Boss Slayer',
+        description: 'Defeat 10 boss enemies in one run',
+        icon: '🐲',
+        unlocked: false,
+        progress: 0,
+        target: 10,
+        reward: 'Epic Badge',
+        rarity: 'epic',
+      },
+
+      // ── Combos (single run) ──
+      {
+        id: 'frenzy',
+        name: 'Frenzy',
+        description: 'Reach a 10x combo in one run',
+        icon: '🔥',
+        unlocked: false,
+        progress: 0,
+        target: 10,
+        reward: 'Rare Badge',
+        rarity: 'rare',
+      },
+      {
+        id: 'berserker',
+        name: 'Berserker',
+        description: 'Reach a 20x combo in one run',
+        icon: '😤',
+        unlocked: false,
+        progress: 0,
+        target: 20,
+        reward: 'Epic Badge',
+        rarity: 'epic',
+      },
+
+      // ── Score (single run) ──
+      {
+        id: 'centurion',
+        name: 'Centurion',
+        description: 'Score 10,000 points in one run',
+        icon: '💯',
+        unlocked: false,
+        progress: 0,
+        target: 10000,
+        reward: 'Rare Badge',
+        rarity: 'rare',
+      },
+      {
+        id: 'high_roller',
+        name: 'High Roller',
+        description: 'Score 50,000 points in one run',
+        icon: '🎰',
+        unlocked: false,
+        progress: 0,
+        target: 50000,
+        reward: 'Legendary Title',
+        rarity: 'legendary',
+      },
+
+      // ── Tempo & flawless (single run) ──
+      {
+        id: 'blitz',
+        name: 'Blitz',
+        description: 'Defeat 10 enemies within 10 seconds',
+        icon: '🌪️',
+        unlocked: false,
+        progress: 0,
+        target: 1,
+        reward: 'Epic Badge',
+        rarity: 'epic',
+      },
+      {
+        id: 'flawless_master',
+        name: 'Untouchable',
+        description: 'Clear 5 waves without taking damage in one run',
+        icon: '🛡️',
+        unlocked: false,
+        progress: 0,
+        target: 5,
+        reward: 'Epic Badge',
+        rarity: 'epic',
+      },
+
+      // ── Career milestones ──
+      {
+        id: 'annihilator',
+        name: 'Annihilator',
+        description: 'Defeat 5,000 enemies in total',
+        icon: '☠️',
+        unlocked: false,
+        progress: 0,
+        target: 5000,
+        reward: 'Legendary Title',
+        rarity: 'legendary',
+      },
+      {
+        id: 'immortal',
+        name: 'Immortal',
+        description: 'Reach wave 30',
+        icon: '♾️',
+        unlocked: false,
+        progress: 0,
+        target: 30,
+        reward: 'Legendary Title',
+        rarity: 'legendary',
       },
     ];
 

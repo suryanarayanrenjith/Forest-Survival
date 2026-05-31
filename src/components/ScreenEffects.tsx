@@ -92,7 +92,7 @@ const ScreenEffects = ({ health, maxHealth = 100, isVisible }: ScreenEffectsProp
 
       {/* Critical Health Warning - Small indicator at bottom */}
       {isCriticalHealth && (
-        <div className="fixed bottom-20 left-1/2 transform -translate-x-1/2 pointer-events-none z-30">
+        <div className="fixed bottom-28 left-1/2 transform -translate-x-1/2 pointer-events-none z-30">
           <div
             className="bg-red-900/80 border border-red-500/60 rounded-full px-4 py-1.5 backdrop-blur-sm"
             style={{ animation: 'pulse 0.8s ease-in-out infinite' }}

@@ -47,7 +47,7 @@ const EnemyIntroBanner = ({ intro, onDone }: EnemyIntroBannerProps) => {
   const { accent } = intro;
 
   return (
-    <div className="pointer-events-none fixed inset-x-0 top-24 z-[55] flex justify-center px-4">
+    <div className="pointer-events-none fixed inset-x-0 top-44 z-[55] flex justify-center px-4">
       <div
         key={intro.id}
         className="relative w-full max-w-md overflow-hidden rounded-2xl border bg-black/80 backdrop-blur-md shadow-2xl"

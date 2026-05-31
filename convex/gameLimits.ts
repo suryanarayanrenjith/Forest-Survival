@@ -35,7 +35,7 @@ export const MAX_MP_KILLS = 300;
 export const MAX_MP_DEATHS = 100;
 
 // ── Registry sizes (range validation) ───────────────────────────────────────
-export const ACHIEVEMENT_COUNT = 18;
+export const ACHIEVEMENT_COUNT = 28;
 export const ACHIEVEMENT_MASK = (1 << ACHIEVEMENT_COUNT) - 1;
 export const AVATAR_COUNT = 12;
 
