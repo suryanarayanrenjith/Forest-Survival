@@ -25,6 +25,7 @@
  */
 import * as THREE from 'three';
 import type { PlayerData } from './MultiplayerManager';
+import { SnapshotInterpolator, type TransformSample } from './SnapshotInterpolator';
 import {
   CLASS_IDS, type ClassId, type Palette,
   derivePalette, RIG,
@@ -48,12 +49,19 @@ const MODEL_SCALE = PLAYER_EYE_HEIGHT / MODEL_NATIVE_HEIGHT;
 // read as a single floating "player card" rather than two stray sprites.
 const NAMEPLATE_Y = PLAYER_EYE_HEIGHT + 1.12;      // world units above feet
 const HEALTHBAR_Y = PLAYER_EYE_HEIGHT + 0.60;
-const POSITION_LERP_SPEED = 16;                    // higher = snappier; lower = smoother
-const ROTATION_LERP_SPEED = 14;
 
-// Re-used vectors so the update loop is allocation-free.
+// Snapshot-interpolation render delay. We render every remote avatar
+// `PLAYER_INTERP_DELAY_MS` in the past so there are always two buffered
+// network samples to interpolate between — this is what turns the throttled
+// ~15Hz position stream into perfectly smooth, constant-speed movement
+// instead of the old "ease-to-latest then freeze" stutter. ~110ms comfortably
+// covers the ~66ms send interval plus typical P2P jitter.
+const PLAYER_INTERP_DELAY_MS = 110;
+
+// Re-used vectors / sample slot so the update loop is allocation-free.
 const _tmpVec3 = new THREE.Vector3();
 const _tmpEuler = new THREE.Euler();
+const _interp: TransformSample = { x: 0, y: 0, z: 0, yaw: 0 };
 
 interface RemotePlayerRecord {
   id: string;
@@ -68,9 +76,9 @@ interface RemotePlayerRecord {
   weaponGroup: THREE.Group | null;
   weaponMaterials: THREE.Material[];
   currentWeaponType: WeaponType;
-  // Interpolation
-  targetPosition: THREE.Vector3;
-  targetYaw: number;
+  // Interpolation — a timestamped snapshot buffer (position + yaw) we play
+  // back with a fixed render delay for smooth, jitter-free movement.
+  posBuf: SnapshotInterpolator;
   currentYaw: number;
   // Velocity derived from successive position updates (drives walk anim)
   smoothedSpeed: number;
@@ -195,11 +203,11 @@ export class RemotePlayerManager {
 
     // Seed interpolation to the spawn position so the avatar doesn't
     // streak across the map on first appearance.
-    record.group.position.set(data.position.x, 0, data.position.z);
-    record.targetPosition.copy(record.group.position);
+    const feetY = data.position.y - PLAYER_EYE_HEIGHT;
+    record.group.position.set(data.position.x, feetY, data.position.z);
     record.currentYaw = -data.rotation.y + Math.PI;
-    record.targetYaw = record.currentYaw;
     record.body.rotation.y = record.currentYaw;
+    record.posBuf.push(performance.now(), data.position.x, feetY, data.position.z, record.currentYaw);
   }
 
   /** Apply a freshly-received network snapshot to an already-present player. */
@@ -208,15 +216,20 @@ export class RemotePlayerManager {
     if (!rec) return;
 
     rec.data = data;
-    rec.targetPosition.set(
-      data.position.x,
-      data.position.y - PLAYER_EYE_HEIGHT,    // remote camera y → world feet y
-      data.position.z,
-    );
     // Camera yaw is the player's facing — avatar yaw is the same direction,
     // but the camera/model use opposite sign conventions for "forward".
     _tmpEuler.set(data.rotation.x, data.rotation.y, data.rotation.z, 'YXZ');
-    rec.targetYaw = -_tmpEuler.y + Math.PI;
+    const avatarYaw = -_tmpEuler.y + Math.PI;
+    // Buffer this authoritative snapshot (stamped on arrival). The render
+    // loop plays it back PLAYER_INTERP_DELAY_MS later, interpolating between
+    // samples — so movement stays smooth between throttled network updates.
+    rec.posBuf.push(
+      performance.now(),
+      data.position.x,
+      data.position.y - PLAYER_EYE_HEIGHT,    // remote camera y → world feet y
+      data.position.z,
+      avatarYaw,
+    );
 
     // Weapon swap — rebuild the held mesh + reapply the pose so all 8
     // models hold every weapon correctly.
@@ -308,16 +321,19 @@ export class RemotePlayerManager {
   /** Per-frame update — interpolation, animation, nameplate billboarding. */
   update(delta: number, camera: THREE.Camera): void {
     if (delta <= 0) delta = 1 / 60;
-    const posLerp = 1 - Math.exp(-POSITION_LERP_SPEED * delta);
-    const rotLerp = 1 - Math.exp(-ROTATION_LERP_SPEED * delta);
+    // Render every avatar PLAYER_INTERP_DELAY_MS in the past so there are
+    // always two buffered samples to interpolate between (see SnapshotInterpolator).
+    const renderTime = performance.now() - PLAYER_INTERP_DELAY_MS;
 
     this.players.forEach((rec) => {
-      // ── 1. Position interpolation ──────────────────────────────────────
+      // ── 1. Position + yaw from the snapshot buffer ─────────────────────
       const prevX = rec.group.position.x;
       const prevZ = rec.group.position.z;
-      rec.group.position.x += (rec.targetPosition.x - rec.group.position.x) * posLerp;
-      rec.group.position.y += (rec.targetPosition.y - rec.group.position.y) * posLerp;
-      rec.group.position.z += (rec.targetPosition.z - rec.group.position.z) * posLerp;
+      if (rec.posBuf.sample(renderTime, _interp)) {
+        rec.group.position.set(_interp.x, _interp.y, _interp.z);
+        rec.currentYaw = _interp.yaw;       // already shortest-arc interpolated
+        rec.body.rotation.y = rec.currentYaw;
+      }
 
       // Derived horizontal speed → drives stride length
       const dx = rec.group.position.x - prevX;
@@ -325,13 +341,7 @@ export class RemotePlayerManager {
       const frameSpeed = Math.sqrt(dx * dx + dz * dz) / delta;
       rec.smoothedSpeed += (frameSpeed - rec.smoothedSpeed) * Math.min(1, delta * 6);
 
-      // ── 2. Yaw interpolation (shortest arc) ────────────────────────────
-      let yawDelta = rec.targetYaw - rec.currentYaw;
-      yawDelta = ((yawDelta + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
-      rec.currentYaw += yawDelta * rotLerp;
-      rec.body.rotation.y = rec.currentYaw;
-
-      // ── 3. Walk / idle animation ───────────────────────────────────────
+      // ── 2. Walk / idle animation ───────────────────────────────────────
       if (rec.isAlive) {
         const moveGate = Math.min(1, rec.smoothedSpeed / 7); // 7 u/s ≈ run
         const walkFreq = 4.0 + moveGate * 4.0;
@@ -368,7 +378,7 @@ export class RemotePlayerManager {
         // Subtle head bob (counter-rotation so it stays "level")
         rec.joints.headJoint.rotation.x = Math.sin(rec.walkPhase * 2) * 0.025 * moveGate;
       } else {
-        // ── 4. Death pose — fall forward, then hide nameplate/healthbar ─
+        // ── 3. Death pose — fall forward, then hide nameplate/healthbar ─
         rec.deathT = Math.min(1.4, rec.deathT + delta / 0.65);
         const t = Math.min(1, rec.deathT);
         // Fall forward with a slight roll
@@ -388,7 +398,7 @@ export class RemotePlayerManager {
         if (rec.deathT > 1.2) rec.body.visible = false;
       }
 
-      // ── 5. Nameplate / health bar billboarding ─────────────────────────
+      // ── 4. Nameplate / health bar billboarding ─────────────────────────
       if (rec.isAlive) {
         _tmpVec3.copy(rec.group.position);
         const distSq = camera.position.distanceToSquared(_tmpVec3);
@@ -410,6 +420,25 @@ export class RemotePlayerManager {
   /** Iterate every visible player avatar (for debugging / external systems). */
   getPlayerGroups(): THREE.Group[] {
     return Array.from(this.players.values()).map((p) => p.group);
+  }
+
+  /**
+   * Live blips for the tactical minimap — the smoothly-interpolated world
+   * position (not the raw network snapshot) of every remote ally, plus their
+   * player colour and alive flag. Cheap to call every frame.
+   */
+  getMinimapBlips(): { x: number; z: number; color: number; alive: boolean; name: string }[] {
+    const out: { x: number; z: number; color: number; alive: boolean; name: string }[] = [];
+    this.players.forEach((rec) => {
+      out.push({
+        x: rec.group.position.x,
+        z: rec.group.position.z,
+        color: rec.data.color,
+        alive: rec.isAlive,
+        name: rec.data.name,
+      });
+    });
+    return out;
   }
 
   /** Returns true if any alive player avatar is within `radius` of `pos`. */
@@ -590,8 +619,7 @@ export class RemotePlayerManager {
       weaponGroup: null,
       weaponMaterials: [],
       currentWeaponType: 'pistol', // overwritten by swapWeapon() below
-      targetPosition: new THREE.Vector3(),
-      targetYaw: 0,
+      posBuf: new SnapshotInterpolator({ capacity: 16, maxExtrapolationMs: 140 }),
       currentYaw: 0,
       smoothedSpeed: 0,
       walkPhase: Math.random() * Math.PI * 2,

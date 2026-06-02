@@ -340,6 +340,9 @@ export const getPublicProfile = query({
       displayName: v.string(),
       avatarIndex: v.number(),
       isPrivate: v.boolean(),
+      /** True when the viewer is looking at their OWN profile — the client
+       *  shows full stats in this case even when isPrivate is set. */
+      isOwnProfile: v.boolean(),
       rank: rankValidator,
       skillPoints: v.optional(v.number()),
       skillsCount: v.optional(v.number()),
@@ -377,21 +380,29 @@ export const getPublicProfile = query({
 
     const isPublic = base.statsPublic ?? true;
 
+    // A player can ALWAYS see their own stats — privacy only hides them from
+    // other players. So if the authenticated viewer owns this profile, reveal
+    // the detail fields regardless of the privacy toggle.
+    const viewerId = await getAuthUserId(ctx);
+    const isOwnProfile = viewerId !== null && viewerId === user._id;
+    const canSeeDetails = isPublic || isOwnProfile;
+
     // Always return the same shape (single object type). Detailed fields are
-    // omitted (undefined) when the player keeps their stats private — rank and
-    // avatar always come through.
+    // omitted (undefined) when the player keeps their stats private AND the
+    // viewer isn't the owner — rank and avatar always come through.
     return {
       username: user.username,
       displayName: user.name,
       avatarIndex: base.avatarIndex ?? 0,
       isPrivate: !isPublic,
+      isOwnProfile,
       rank,
-      skillPoints: isPublic ? base.skillPoints : undefined,
-      skillsCount: isPublic ? skillsCount : undefined,
-      achievementsCount: isPublic ? achievementsCount : undefined,
-      achievements: isPublic ? base.achievements : undefined,
-      solo: isPublic ? base.solo : undefined,
-      multiplayer: isPublic ? base.multiplayer : undefined,
+      skillPoints: canSeeDetails ? base.skillPoints : undefined,
+      skillsCount: canSeeDetails ? skillsCount : undefined,
+      achievementsCount: canSeeDetails ? achievementsCount : undefined,
+      achievements: canSeeDetails ? base.achievements : undefined,
+      solo: canSeeDetails ? base.solo : undefined,
+      multiplayer: canSeeDetails ? base.multiplayer : undefined,
     };
   },
 });

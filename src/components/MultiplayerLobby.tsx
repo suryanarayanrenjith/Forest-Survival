@@ -4,7 +4,7 @@ import {
   ChevronDown, Crown, Play, X, Loader2, Wifi, Check, UserRound,
   Trees, Flame, Snowflake, Mountain, Droplet, Shield, Leaf, Landmark,
   Crosshair, Skull, Cpu, Bot, Footprints, ShieldCheck, EyeOff, Flame as FlameIcon,
-  HeartPulse, Wrench, Ghost, Lock, type LucideIcon,
+  HeartPulse, Wrench, Ghost, Lock, Sun, Moon, SunMoon, type LucideIcon,
 } from 'lucide-react';
 import { usePlayerData } from '../hooks/usePlayerData';
 import MenuShell from './MenuShell';
@@ -44,6 +44,7 @@ const CHARACTERS: CharacterDef[] = [
 ];
 
 export type MpDifficulty = 'easy' | 'medium' | 'hard' | 'adaptive';
+export type MpTimeOfDay = 'auto' | 'day' | 'night';
 
 interface MultiplayerLobbyProps {
   onStartGame: (
@@ -52,6 +53,7 @@ interface MultiplayerLobbyProps {
     timeLimit?: number,
     map?: MapType,
     difficulty?: MpDifficulty,
+    timeOfDay?: MpTimeOfDay,
   ) => void;
   onBack: () => void;
   /** When set, the lobby reuses this manager instead of creating a new one
@@ -293,6 +295,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
   const [connectedPlayers, setConnectedPlayers] = useState<PlayerData[]>([]);
   const [gameMode, setGameMode] = useState<'coop' | 'survival'>('coop');
   const [difficulty, setDifficulty] = useState<MpDifficulty>('medium');
+  const [timeOfDay, setTimeOfDay] = useState<MpTimeOfDay>('auto');
   const [timeLimit, setTimeLimit] = useState<number>(300);
   const [hasTimeLimit, setHasTimeLimit] = useState(false);
   const [selectedMap, setSelectedMap] = useState<MapType>('deep_forest');
@@ -404,7 +407,8 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
         const timeLimit = data.gameState.timeLimit;
         const map = data.gameState.map as MapType | undefined;
         const difficulty = (data.gameState.difficulty as MpDifficulty | undefined) || 'medium';
-        onStartGame(manager, gameMode, timeLimit, map, difficulty);
+        const timeOfDay = (data.gameState.timeOfDay as MpTimeOfDay | undefined) || 'auto';
+        onStartGame(manager, gameMode, timeLimit, map, difficulty, timeOfDay);
       }
     });
 
@@ -530,7 +534,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
       setError(`Waiting on a character pick from: ${names}. Everyone must choose a character before the game can start.`);
       return;
     }
-    onStartGame(manager, gameMode, hasTimeLimit ? timeLimit : undefined, selectedMap, difficulty);
+    onStartGame(manager, gameMode, hasTimeLimit ? timeLimit : undefined, selectedMap, difficulty, timeOfDay);
   };
 
   const handleBack = () => {
@@ -781,6 +785,35 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
                       <button
                         key={val}
                         onClick={() => setDifficulty(val)}
+                        className="flex flex-col items-center justify-center py-2.5 px-1 rounded-lg border transition-all duration-200 hover:-translate-y-0.5"
+                        style={{
+                          borderColor: active ? `${color}99` : 'rgba(255,255,255,0.08)',
+                          background: active ? `${color}1f` : 'rgba(255,255,255,0.03)',
+                        }}
+                      >
+                        <Icon className="w-4 h-4 mb-1" style={{ color: active ? color : '#9ca3af' }} strokeWidth={2} />
+                        <span className={`text-[11px] font-bold ${active ? 'text-white' : 'text-gray-300'}`}>{label}</span>
+                        <span className="text-[9px] text-gray-500">{desc}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Time of day */}
+              <div>
+                <label className="block text-[10px] font-semibold tracking-[0.15em] text-gray-500 uppercase mb-1.5">Time of Day</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {([
+                    ['auto', 'Auto', 'Day/Night cycle', SunMoon, '#a78bfa'],
+                    ['day', 'Day', 'Bright', Sun, '#fbbf24'],
+                    ['night', 'Night', 'Dark', Moon, '#60a5fa'],
+                  ] as const).map(([val, label, desc, Icon, color]) => {
+                    const active = timeOfDay === val;
+                    return (
+                      <button
+                        key={val}
+                        onClick={() => setTimeOfDay(val)}
                         className="flex flex-col items-center justify-center py-2.5 px-1 rounded-lg border transition-all duration-200 hover:-translate-y-0.5"
                         style={{
                           borderColor: active ? `${color}99` : 'rgba(255,255,255,0.08)',

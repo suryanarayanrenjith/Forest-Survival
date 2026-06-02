@@ -200,6 +200,12 @@ canvas {
   to { opacity: 0; }
 }
 
+/* Kill/event-feed exit: glide out to the left while fading from full opacity. */
+@keyframes feedOut {
+  from { opacity: 1; transform: translateX(0); }
+  to { opacity: 0; transform: translateX(-14px); }
+}
+
 @keyframes victoryGlow {
   0%, 100% {
     text-shadow: 0 0 20px rgba(251, 191, 36, 0.8), 0 0 40px rgba(251, 191, 36, 0.4);

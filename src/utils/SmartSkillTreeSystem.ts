@@ -99,6 +99,10 @@ export class SmartSkillTreeSystem {
     // effect. Unwireable / placeholder skills (sprint_efficiency, ability_*,
     // tactical_reload, survivor_instinct, ammo_conservation, lucky) were
     // removed so the tree only shows real, working choices.
+    //
+    // NOTE: there is intentionally NO health-regeneration skill. By design HP
+    // never regenerates — Thick Skin only raises the max. So the survival path
+    // is Thick Skin (more HP) → Armor Plating (take less damage).
 
     // === COMBAT ===
     this.addSkill({
@@ -148,7 +152,7 @@ export class SmartSkillTreeSystem {
       currentLevel: 0,
       icon: '⚡',
       effects: [
-        { type: 'stat_boost', stat: 'reloadSpeed', value: 0.2, perLevel: 0.15, description: '+20% reload speed per level' },
+        { type: 'stat_boost', stat: 'reloadSpeed', value: 0.15, perLevel: 0.15, description: '+15% reload speed per level' },
       ],
       requirements: [{ type: 'skill', value: 'improved_accuracy' }],
       synergiesWith: [],
@@ -188,25 +192,7 @@ export class SmartSkillTreeSystem {
         { type: 'stat_boost', stat: 'maxHealth', value: 15, perLevel: 15, description: '+15 max health per level' },
       ],
       requirements: [],
-      synergiesWith: ['regeneration', 'damage_reduction'],
-      recommendedFor: ['defensive', 'balanced'],
-    });
-
-    this.addSkill({
-      id: 'regeneration',
-      name: 'Regeneration',
-      description: 'Slowly heal over time, even in combat.',
-      category: 'survival',
-      tier: 2,
-      cost: 2,
-      maxLevel: 3,
-      currentLevel: 0,
-      icon: '🔄',
-      effects: [
-        { type: 'stat_boost', stat: 'regenRate', value: 2, perLevel: 2, description: '+2 HP/second per level' },
-      ],
-      requirements: [{ type: 'skill', value: 'thick_skin' }],
-      synergiesWith: ['thick_skin'],
+      synergiesWith: ['damage_reduction'],
       recommendedFor: ['defensive', 'balanced'],
     });
 
@@ -221,7 +207,7 @@ export class SmartSkillTreeSystem {
       currentLevel: 0,
       icon: '🛡️',
       effects: [
-        { type: 'stat_boost', stat: 'damageReduction', value: 0.12, perLevel: 0.1, description: '+12% damage reduction per level' },
+        { type: 'stat_boost', stat: 'damageReduction', value: 0.1, perLevel: 0.1, description: '+10% damage reduction per level' },
       ],
       requirements: [{ type: 'skill', value: 'thick_skin' }],
       synergiesWith: ['thick_skin'],
@@ -240,7 +226,7 @@ export class SmartSkillTreeSystem {
       currentLevel: 0,
       icon: '👟',
       effects: [
-        { type: 'stat_boost', stat: 'moveSpeed', value: 0.1, perLevel: 0.08, description: '+10% movement speed per level' },
+        { type: 'stat_boost', stat: 'moveSpeed', value: 0.08, perLevel: 0.08, description: '+8% movement speed per level' },
       ],
       requirements: [],
       synergiesWith: ['dash_mastery'],
@@ -258,7 +244,7 @@ export class SmartSkillTreeSystem {
       currentLevel: 0,
       icon: '💨',
       effects: [
-        { type: 'stat_boost', stat: 'dashCooldown', value: -0.2, perLevel: -0.15, description: '-20% dash cooldown per level' },
+        { type: 'stat_boost', stat: 'dashCooldown', value: -0.15, perLevel: -0.15, description: '-15% dash cooldown per level' },
       ],
       requirements: [{ type: 'skill', value: 'fleet_footed' }],
       synergiesWith: ['fleet_footed'],
@@ -277,7 +263,7 @@ export class SmartSkillTreeSystem {
       currentLevel: 0,
       icon: '📦',
       effects: [
-        { type: 'stat_boost', stat: 'powerupSpawnRate', value: 0.2, perLevel: 0.15, description: '+20% drop chance per level' },
+        { type: 'stat_boost', stat: 'powerupSpawnRate', value: 0.15, perLevel: 0.15, description: '+15% drop chance per level' },
       ],
       requirements: [],
       synergiesWith: [],

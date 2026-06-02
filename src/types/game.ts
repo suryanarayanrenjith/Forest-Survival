@@ -32,7 +32,7 @@ export const WEAPONS: Record<string, Weapon> = {
     spread: 0.02,
     unlockScore: 0,
     weight: 1.0, // Light weapon - full speed
-    canAim: false
+    canAim: true
   },
   rifle: {
     name: 'Rifle',
@@ -43,7 +43,7 @@ export const WEAPONS: Record<string, Weapon> = {
     bulletSpeed: 3,
     bulletColor: 0xff6600,
     spread: 0.01,
-    unlockScore: 300,
+    unlockScore: 200,
     weight: 1.5, // Medium weight
     canAim: true // Rifle can aim
   },
@@ -56,9 +56,9 @@ export const WEAPONS: Record<string, Weapon> = {
     bulletSpeed: 1.5,
     bulletColor: 0xff0000,
     spread: 0.15,
-    unlockScore: 800,
+    unlockScore: 500,
     weight: 1.7, // Heavy weapon
-    canAim: false
+    canAim: true
   },
   smg: {
     name: 'SMG',
@@ -69,10 +69,10 @@ export const WEAPONS: Record<string, Weapon> = {
     bulletSpeed: 2.5,
     bulletColor: 0x00ffff,
     spread: 0.03,
-    unlockScore: 1600,
+    unlockScore: 1000,
     autoFire: true,
     weight: 1.2, // Light-medium weight
-    canAim: false
+    canAim: true
   },
   sniper: {
     name: 'Sniper',
@@ -83,7 +83,7 @@ export const WEAPONS: Record<string, Weapon> = {
     bulletSpeed: 5,
     bulletColor: 0x00ff00,
     spread: 0.005,
-    unlockScore: 3000,
+    unlockScore: 1800,
     autoFire: false,
     weight: 2.0, // Heavy weapon - slower movement
     canAim: true // Sniper can aim
@@ -97,10 +97,10 @@ export const WEAPONS: Record<string, Weapon> = {
     bulletSpeed: 3,
     bulletColor: 0xffaa00, // Realistic yellow-orange fire
     spread: 0.05,
-    unlockScore: 5500,
+    unlockScore: 3000,
     autoFire: true,
     weight: 3.0, // Very heavy - significantly slower
-    canAim: false
+    canAim: true
   },
   launcher: {
     name: 'Launcher',
@@ -111,10 +111,10 @@ export const WEAPONS: Record<string, Weapon> = {
     bulletSpeed: 1.8,
     bulletColor: 0xff4400,
     spread: 0.01,
-    unlockScore: 9000,
+    unlockScore: 4800,
     autoFire: false,
     weight: 2.5, // Very heavy
-    canAim: false
+    canAim: true
   }
 };
 

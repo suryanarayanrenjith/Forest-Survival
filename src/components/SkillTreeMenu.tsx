@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
 import {
   Sparkles, Swords, Heart, Footprints, Package, Check, Lock, X,
-  Sigma, Coins, ChevronRight, type LucideIcon,
+  Sigma, Coins, ChevronRight, ArrowRight, TrendingUp, type LucideIcon,
 } from 'lucide-react';
 import MusicMuteButton from './MusicMuteButton';
-import { type Skill, type SkillCategory, type PlayStyle } from '../utils/SmartSkillTreeSystem';
+import { type Skill, type SkillEffect, type SkillCategory, type PlayStyle } from '../utils/SmartSkillTreeSystem';
 
 interface SkillTreeMenuProps {
   skills: Skill[];
@@ -43,6 +43,28 @@ const TIER_LABEL: Record<number, string> = {
 
 const EMERALD = '#34d399';
 
+/** A skill effect's cumulative bonus at a given level (0 below level 1).
+ *  Mirrors SmartSkillTreeSystem.calculateStatBonuses so the UI preview always
+ *  matches what the game loop actually applies. */
+function effectAtLevel(e: SkillEffect, level: number): number {
+  if (level <= 0) return 0;
+  return e.value + (e.perLevel ?? 0) * (level - 1);
+}
+
+/** Player-facing text for a raw stat-bonus number (e.g. 0.3 → "+30%"). */
+function formatStatBonus(stat: string | undefined, value: number): string {
+  const abs = Math.abs(value);
+  const sign = value < 0 ? '−' : '+';
+  switch (stat) {
+    case 'maxHealth':
+      return `${sign}${Math.round(abs)} HP`;
+    case 'dashCooldown':
+      return `−${Math.round(abs * 100)}% CD`;
+    default:
+      return `${sign}${Math.round(abs * 100)}%`;
+  }
+}
+
 export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
   skills,
   availablePoints,
@@ -76,13 +98,15 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
     return acc;
   }, {} as Record<number, Skill[]>);
 
-  // Summarise live bonuses from unlocked skills for the sidebar.
+  // Summarise live bonuses from unlocked skills for the sidebar — the actual
+  // cumulative value at the current level (e.g. "+30 HP"), not the per-level
+  // description, so the player sees exactly what they've banked.
   const activeBonuses = skills
     .filter((s) => s.currentLevel > 0)
     .flatMap((s) =>
       s.effects.map((e) => ({
         skillName: s.name,
-        text: e.description,
+        value: formatStatBonus(e.stat, effectAtLevel(e, s.currentLevel)),
         category: s.category,
         level: s.currentLevel,
       })),
@@ -118,7 +142,7 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
             <div>
               <h2 className="text-lg font-bold text-white tracking-wide">Skill Tree</h2>
               <p className="text-[11px] text-gray-500 tracking-wide">
-                Spend points earned from kills to make your operator stronger.
+                Spend points earned from your runs to make your operator stronger.
               </p>
             </div>
           </div>
@@ -208,10 +232,13 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
                   {activeBonuses.map((b, i) => (
                     <div
                       key={i}
-                      className="rounded-lg border border-emerald-500/15 bg-emerald-500/[0.05] px-2.5 py-1.5"
+                      className="flex items-center justify-between gap-2 rounded-lg border border-emerald-500/15 bg-emerald-500/[0.05] px-2.5 py-1.5"
                     >
-                      <div className="text-[10px] font-semibold text-emerald-300 truncate">{b.skillName} · Lv {b.level}</div>
-                      <div className="text-[10px] text-gray-400 leading-snug">{b.text}</div>
+                      <div className="min-w-0">
+                        <div className="text-[10px] font-semibold text-emerald-300 truncate">{b.skillName}</div>
+                        <div className="text-[9px] text-gray-500 leading-snug">Level {b.level}</div>
+                      </div>
+                      <div className="flex-shrink-0 text-[11px] font-bold tabular-nums text-emerald-200">{b.value}</div>
                     </div>
                   ))}
                 </div>
@@ -319,7 +346,7 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
         {/* ===== FOOTER ===== */}
         <div className="flex items-center justify-between px-6 py-3.5 border-t border-white/[0.07] bg-gradient-to-t from-white/[0.02] to-transparent">
           <span className="text-[11px] text-gray-500 tracking-wide">
-            Earn skill points by eliminating enemies · Progress resets each run
+            Skill points are earned each run · Unlocks are saved to your account
           </span>
           <button
             onClick={onClose}
@@ -551,18 +578,47 @@ const SkillDetails: React.FC<SkillDetailsProps> = ({ skill, allSkills, canAfford
         <p className="text-sm text-gray-300 leading-relaxed">{skill.description}</p>
       </DetailBlock>
 
-      {/* Effects */}
+      {/* Effects — with a live "current → next level" preview so the player can
+          see exactly what the next point buys before spending it. */}
       <DetailBlock title="Effects">
         <div className="space-y-1.5">
-          {skill.effects.map((effect, idx) => (
-            <div
-              key={idx}
-              className="flex items-center gap-2 rounded-lg border border-emerald-400/20 bg-emerald-500/[0.06] px-3 py-2"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-emerald-300 flex-shrink-0" strokeWidth={2.25} />
-              <span className="text-xs text-emerald-200 leading-tight">{effect.description}</span>
-            </div>
-          ))}
+          {skill.effects.map((effect, idx) => {
+            const cur = effectAtLevel(effect, skill.currentLevel);
+            const nextLevel = Math.min(skill.currentLevel + 1, skill.maxLevel);
+            const next = effectAtLevel(effect, nextLevel);
+            return (
+              <div
+                key={idx}
+                className="rounded-lg border border-emerald-400/20 bg-emerald-500/[0.06] px-3 py-2"
+              >
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-3.5 h-3.5 text-emerald-300 flex-shrink-0" strokeWidth={2.25} />
+                  <span className="text-xs text-emerald-200 leading-tight">{effect.description}</span>
+                </div>
+                <div className="mt-1.5 flex items-center gap-2 pl-[22px] text-[11px]">
+                  {isMaxed ? (
+                    <span className="font-semibold text-emerald-300">
+                      {formatStatBonus(effect.stat, cur)}
+                      <span className="ml-1 font-normal text-emerald-500/70">· maxed</span>
+                    </span>
+                  ) : skill.currentLevel === 0 ? (
+                    <span className="text-gray-400">
+                      At Lv 1:{' '}
+                      <span className="font-bold tabular-nums text-emerald-300">
+                        {formatStatBonus(effect.stat, next)}
+                      </span>
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1.5 text-gray-400">
+                      <span className="font-bold tabular-nums text-gray-300">{formatStatBonus(effect.stat, cur)}</span>
+                      <ArrowRight className="w-3 h-3 text-emerald-400/80" strokeWidth={2.5} />
+                      <span className="font-bold tabular-nums text-emerald-300">{formatStatBonus(effect.stat, next)}</span>
+                    </span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
         </div>
       </DetailBlock>
 
@@ -672,7 +728,8 @@ const SkillDetails: React.FC<SkillDetailsProps> = ({ skill, allSkills, canAfford
             boxShadow: '0 8px 24px -8px rgba(52,211,153,0.6)',
           }}
         >
-          Unlock — {skill.cost} pts
+          {skill.currentLevel === 0 ? <Sparkles className="w-4 h-4" strokeWidth={2.5} /> : <TrendingUp className="w-4 h-4" strokeWidth={2.5} />}
+          {skill.currentLevel === 0 ? 'Unlock' : `Upgrade to Lv ${skill.currentLevel + 1}`} — {skill.cost} pts
           <ChevronRight className="w-4 h-4 group-hover:translate-x-0.5 transition-transform" strokeWidth={2.5} />
         </button>
       ) : (

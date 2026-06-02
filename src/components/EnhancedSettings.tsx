@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { detectIsTouch } from '../hooks/useDeviceInfo';
+import KeyBindingsEditor from './KeyBindingsEditor';
 
 export interface GameSettings {
   // Graphics
@@ -354,39 +355,31 @@ const ControlsSettings: React.FC<{
       />
     )}
 
-    <div className="bg-gray-800/50 p-3 sm:p-4 rounded-lg">
-      <h4 className="text-white font-bold mb-2 text-sm sm:text-base">
-        {isTouch ? 'Touch Controls' : 'Key Bindings'}
-      </h4>
-      <div className="text-xs sm:text-sm text-gray-400 space-y-1 grid grid-cols-2 sm:block gap-x-4">
-        {isTouch ? (
-          <>
-            <div>Left stick - Move</div>
-            <div>Swipe right - Look / Aim</div>
-            <div>Push stick - Sprint</div>
-            <div>FIRE - Shoot</div>
-            <div>Aim - Aim down sights</div>
-            <div>Jump / Dash / Crouch buttons</div>
-            <div>Power - Use power-up</div>
-            <div>Reload - Reload</div>
-            <div>Weapon - Switch weapon</div>
-            <div>Pause - Pause menu</div>
-          </>
-        ) : (
-          <>
-            <div>WASD - Movement</div>
-            <div>Mouse - Look / Aim</div>
-            <div>Left Click - Shoot</div>
-            <div>R - Reload</div>
-            <div>Q - Switch Weapon</div>
-            <div>1-6 - Abilities</div>
-            <div>E - Interact</div>
-            <div>Shift - Sprint</div>
-            <div>ESC - Pause</div>
-          </>
-        )}
+    {isTouch ? (
+      <div className="bg-gray-800/50 p-3 sm:p-4 rounded-lg">
+        <h4 className="text-white font-bold mb-2 text-sm sm:text-base">Touch Controls</h4>
+        <div className="text-xs sm:text-sm text-gray-400 space-y-1 grid grid-cols-2 sm:block gap-x-4">
+          <div>Left stick - Move</div>
+          <div>Swipe right - Look / Aim</div>
+          <div>Push stick - Sprint</div>
+          <div>FIRE - Shoot</div>
+          <div>Aim - Aim down sights</div>
+          <div>Jump / Dash / Crouch buttons</div>
+          <div>Power - Use power-up</div>
+          <div>Reload - Reload</div>
+          <div>Weapon - Switch weapon</div>
+          <div>Map - Tactical map</div>
+          <div>Pause - Pause menu</div>
+        </div>
       </div>
-    </div>
+    ) : (
+      <div>
+        <h4 className="text-white font-bold mb-3 text-sm sm:text-base">Key Bindings</h4>
+        {/* Live rebinder — changes apply to the current run immediately and
+            persist to the account. */}
+        <KeyBindingsEditor accent="#22d3ee" />
+      </div>
+    )}
   </div>
   );
 };

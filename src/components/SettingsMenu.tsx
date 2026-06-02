@@ -1,14 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import {
   Settings, X, Gamepad2, Volume2, SlidersHorizontal, Monitor,
-  ArrowUp, ArrowDown, ArrowLeft, ArrowRight, ChevronsUp, ChevronsDown, ChevronsRight, Wind, Zap,
-  Mouse, Crosshair, Target, RotateCcw, Grid3x3, Pause, Music, MousePointer2,
-  Eye, Activity, Skull, Hash, Check, Headphones, Sparkles, Hand, type LucideIcon,
+  ChevronsUp, ChevronsDown, ChevronsRight, Wind, Zap,
+  Crosshair, Target, RotateCcw, Grid3x3, Pause, Music, MousePointer2,
+  Eye, Activity, Skull, Hash, Check, Headphones, Sparkles, Hand, Radar, type LucideIcon,
 } from 'lucide-react';
 import { soundManager } from '../utils/SoundManager';
 import { gameSettingsManager } from '../utils/GameSettingsManager';
 import { type GraphicsQuality, GRAPHICS_PRESETS } from '../utils/GameSettingsManager';
 import { detectIsTouch } from '../hooks/useDeviceInfo';
+import KeyBindingsEditor from './KeyBindingsEditor';
 
 interface SettingsMenuProps {
   onClose: () => void;
@@ -54,7 +55,12 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
   });
 
   useEffect(() => {
-    gameSettingsManager.updateSettings(settings);
+    // Persist everything EXCEPT keyBindings: the rebinder (KeyBindingsEditor)
+    // owns those and writes them directly. Including the stale copy that rode in
+    // via the localStorage blob would clobber a fresh rebind made in this panel.
+    const toSave = { ...settings } as Record<string, unknown>;
+    delete toSave.keyBindings;
+    gameSettingsManager.updateSettings(toSave);
     soundManager.setVolume((settings.masterVolume / 100) * (settings.sfxVolume / 100));
   }, [settings]);
 
@@ -66,39 +72,21 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
   // reference list shown here swaps to the touch gestures/buttons.
   const isTouch = detectIsTouch();
 
-  const keyboardControls: { key: string; action: string; icon: LucideIcon }[] = [
-    { key: 'W', action: 'Move Forward', icon: ArrowUp },
-    { key: 'S', action: 'Move Backward', icon: ArrowDown },
-    { key: 'A', action: 'Move Left', icon: ArrowLeft },
-    { key: 'D', action: 'Move Right', icon: ArrowRight },
-    { key: 'Space', action: 'Jump', icon: ChevronsUp },
-    { key: 'Shift', action: 'Sprint', icon: Wind },
-    { key: 'Q', action: 'Dash', icon: Zap },
-    { key: 'E', action: 'Use Power-Up', icon: Sparkles },
-    { key: 'Mouse', action: 'Look Around', icon: Mouse },
-    { key: 'LMB', action: 'Shoot', icon: Crosshair },
-    { key: 'RMB', action: 'Aim (Sniper / Rifle)', icon: Target },
-    { key: 'R', action: 'Reload', icon: RotateCcw },
-    { key: '1 – 7', action: 'Switch Weapon', icon: Grid3x3 },
-    { key: 'ESC', action: 'Pause Menu', icon: Pause },
-  ];
-
   const touchControlsList: { key: string; action: string; icon: LucideIcon }[] = [
     { key: 'Left stick', action: 'Move', icon: Gamepad2 },
     { key: 'Swipe right', action: 'Look Around', icon: Hand },
     { key: 'Push stick', action: 'Sprint', icon: Wind },
     { key: 'FIRE', action: 'Shoot', icon: Crosshair },
-    { key: 'Aim', action: 'Aim (Sniper / Rifle)', icon: Target },
+    { key: 'Aim', action: 'Aim Down Sights', icon: Target },
     { key: 'Jump', action: 'Jump', icon: ChevronsUp },
     { key: 'Dash', action: 'Dash', icon: ChevronsRight },
     { key: 'Crouch', action: 'Crouch', icon: ChevronsDown },
     { key: 'Power', action: 'Use Power-Up', icon: Sparkles },
     { key: 'Reload', action: 'Reload', icon: RotateCcw },
     { key: 'Weapon', action: 'Switch Weapon', icon: Grid3x3 },
+    { key: 'Map', action: 'Tactical Map', icon: Radar },
     { key: 'Pause', action: 'Pause Menu', icon: Pause },
   ];
-
-  const controls = isTouch ? touchControlsList : keyboardControls;
 
   const tabs: { id: 'controls' | 'audio' | 'gameplay' | 'display'; label: string; icon: LucideIcon }[] = [
     { id: 'controls', label: 'Controls', icon: Gamepad2 },
@@ -160,27 +148,31 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
         {/* Content */}
         <div className="p-5 overflow-y-auto flex-1 min-h-0">
           {activeTab === 'controls' && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2" style={{ animation: 'smFade 0.2s ease-out' }}>
-              {controls.map((c) => {
-                const Icon = c.icon;
-                return (
-                  <div key={c.action} className="flex items-center justify-between rounded-xl border border-white/[0.07] bg-white/[0.02] px-3.5 py-2.5">
-                    <div className="flex items-center gap-2.5">
-                      <Icon className="w-4 h-4 text-gray-500" strokeWidth={2} />
-                      <span className="text-sm text-gray-300 font-medium">{c.action}</span>
+            isTouch ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2" style={{ animation: 'smFade 0.2s ease-out' }}>
+                {touchControlsList.map((c) => {
+                  const Icon = c.icon;
+                  return (
+                    <div key={c.action} className="flex items-center justify-between rounded-xl border border-white/[0.07] bg-white/[0.02] px-3.5 py-2.5">
+                      <div className="flex items-center gap-2.5">
+                        <Icon className="w-4 h-4 text-gray-500" strokeWidth={2} />
+                        <span className="text-sm text-gray-300 font-medium">{c.action}</span>
+                      </div>
+                      <kbd className="px-2 py-1 rounded-md bg-white/[0.06] border border-white/10 text-gray-300 font-mono text-[11px] font-semibold">
+                        {c.key}
+                      </kbd>
                     </div>
-                    <kbd className="px-2 py-1 rounded-md bg-white/[0.06] border border-white/10 text-gray-300 font-mono text-[11px] font-semibold">
-                      {c.key}
-                    </kbd>
-                  </div>
-                );
-              })}
-              <p className="sm:col-span-2 text-xs text-gray-600 text-center mt-1">
-                {isTouch
-                  ? 'On-screen touch controls are active. Play in landscape.'
-                  : 'Key bindings are fixed in this version.'}
-              </p>
-            </div>
+                  );
+                })}
+                <p className="sm:col-span-2 text-xs text-gray-600 text-center mt-1">
+                  On-screen touch controls are active. Play in landscape.
+                </p>
+              </div>
+            ) : (
+              <div style={{ animation: 'smFade 0.2s ease-out' }}>
+                <KeyBindingsEditor accent="#34d399" />
+              </div>
+            )
           )}
 
           {activeTab === 'audio' && (

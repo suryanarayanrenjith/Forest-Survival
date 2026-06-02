@@ -94,6 +94,46 @@ export const GRAPHICS_PRESETS: Record<GraphicsQuality, GraphicsPreset> = {
   },
 };
 
+// ── Rebindable controls ──────────────────────────────────────────────────────
+// Every action here is read by the game loop (see App.tsx). The stored value is
+// a KeyboardEvent.code (e.g. 'KeyW', 'Space', 'ShiftLeft') so bindings are
+// layout-independent and survive a JSON round-trip to Convex. Mouse look/fire,
+// the weapon-select digits (1–7), the arrow-key movement fallback and Escape
+// (pause) are intentionally NOT rebindable and stay fixed.
+export type GameAction =
+  | 'moveForward' | 'moveBackward' | 'moveLeft' | 'moveRight'
+  | 'jump' | 'sprint' | 'crouch' | 'dash' | 'reload' | 'usePower' | 'toggleMap';
+
+export type KeyBindings = Record<GameAction, string>;
+
+export const defaultKeyBindings: KeyBindings = {
+  moveForward: 'KeyW',
+  moveBackward: 'KeyS',
+  moveLeft: 'KeyA',
+  moveRight: 'KeyD',
+  jump: 'Space',
+  sprint: 'ShiftLeft',
+  crouch: 'KeyC',
+  dash: 'KeyQ',
+  reload: 'KeyR',
+  usePower: 'KeyE',
+  toggleMap: 'KeyM',
+};
+
+// Codes that may never be assigned to a rebindable action — they're owned by
+// fixed systems (pause, weapon switching, the arrow-key movement fallback).
+export const RESERVED_KEY_CODES: ReadonlySet<string> = new Set([
+  'Escape', 'Tab',
+  'Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7',
+  'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+]);
+
+/** Merge a (possibly partial / legacy) binding set onto the full defaults so
+ *  the live bindings always cover every action. */
+export function normalizeKeyBindings(partial?: Partial<KeyBindings> | null): KeyBindings {
+  return { ...defaultKeyBindings, ...(partial ?? {}) };
+}
+
 export interface UserSettings {
   masterVolume: number;
   sfxVolume: number;
@@ -108,6 +148,7 @@ export interface UserSettings {
   crosshairStyle: 'dot' | 'cross' | 'circle' | 'dynamic';
   crosshairColor: string;
   graphicsQuality: GraphicsQuality;
+  keyBindings: KeyBindings;
 }
 
 export const defaultUserSettings: UserSettings = {
@@ -124,6 +165,7 @@ export const defaultUserSettings: UserSettings = {
   crosshairStyle: 'cross',
   crosshairColor: '#22c55e',
   graphicsQuality: 'high', // Default to the high tier
+  keyBindings: { ...defaultKeyBindings },
 };
 
 const STORAGE_KEY = 'gameSettings';
@@ -152,12 +194,18 @@ class GameSettingsManager {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
-        return { ...defaultUserSettings, ...JSON.parse(saved) };
+        const parsed = JSON.parse(saved) as Partial<UserSettings>;
+        return {
+          ...defaultUserSettings,
+          ...parsed,
+          // Deep-merge bindings so a partial/legacy blob can't drop an action.
+          keyBindings: normalizeKeyBindings(parsed.keyBindings),
+        };
       }
     } catch (e) {
       console.warn('Failed to load game settings:', e);
     }
-    return { ...defaultUserSettings };
+    return { ...defaultUserSettings, keyBindings: { ...defaultKeyBindings } };
   }
 
   getSettings(): UserSettings {
@@ -179,6 +227,14 @@ class GameSettingsManager {
 
   updateSettings(updates: Partial<UserSettings>): void {
     this.settings = { ...this.settings, ...updates };
+    // Keep bindings complete whether the update is partial (one rebind) or a
+    // full set restored from the account blob.
+    if (updates.keyBindings) {
+      this.settings.keyBindings = normalizeKeyBindings({
+        ...this.settings.keyBindings,
+        ...updates.keyBindings,
+      });
+    }
     this.saveSettings();
     this.notifyListeners();
   }

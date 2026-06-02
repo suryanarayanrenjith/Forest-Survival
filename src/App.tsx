@@ -1,12 +1,12 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
 import * as THREE from 'three';
-import { GraduationCap, Play, Home } from 'lucide-react';
+import { GraduationCap, Play, Home, MousePointerClick } from 'lucide-react';
 import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
 import { GunModel, type WeaponType as GunWeaponType } from './utils/GunModel';
 import { MuzzleFlash, BulletTracer, ImpactEffect, RobotHitSparks, setMuzzleLightPool } from './utils/Effects';
 import { soundManager } from './utils/SoundManager';
-import { gameSettingsManager, type UserSettings } from './utils/GameSettingsManager';
+import { gameSettingsManager, type UserSettings, type KeyBindings } from './utils/GameSettingsManager';
 import { PostProcessingPipeline } from './utils/PostProcessing';
 import { SpatialGrid } from './utils/SpatialGrid';
 import { AIBehaviorSystem } from './utils/AIBehaviorSystem';
@@ -21,6 +21,8 @@ import { getMapConfig, getRandomMap, DEFAULT_MAP, type MapConfig, type MapType }
 import { getHDRIEnvironmentIntensity, loadHDRIEnvironment, type HDRIEnvironmentProfile } from './utils/HDRIEnvironment';
 import { MultiplayerManager, type PlayerData as MpPlayerData, type NetworkMessage, type EnemyWire } from './utils/MultiplayerManager';
 import { RemotePlayerManager } from './utils/RemotePlayerManager';
+import { SnapshotInterpolator, type TransformSample } from './utils/SnapshotInterpolator';
+import Minimap, { renderMinimapFrame, isMinimapActive, toggleMinimapExpanded, type MinimapBlip } from './components/Minimap';
 import { LocalPlayerShadow } from './utils/LocalPlayerShadow';
 import { EffectIndicators, type EffectKey } from './utils/EffectIndicators';
 import type { ClassId } from './utils/CharacterModels';
@@ -213,7 +215,7 @@ const MENU_MUSIC_URL = '/audio/Beyond_The_Overgrowth.mp3';
 const SYNCED_SETTING_KEYS: (keyof UserSettings)[] = [
   'masterVolume', 'sfxVolume', 'musicVolume', 'sensitivity', 'fov',
   'showFPS', 'screenShake', 'hitMarkers', 'killFeed', 'damageNumbers',
-  'crosshairStyle', 'crosshairColor', 'graphicsQuality',
+  'crosshairStyle', 'crosshairColor', 'graphicsQuality', 'keyBindings',
 ];
 
 function serializeSettings(s: UserSettings): string {
@@ -280,6 +282,10 @@ const ForestSurvivalGame = () => {
   const [enemyIntro, setEnemyIntro] = useState<EnemyIntro | null>(null);
   const [abilityHud, setAbilityHud] = useState<AbilityHudItem[]>([]);
   const [userSettings, setUserSettings] = useState<UserSettings>(() => gameSettingsManager.getSettings());
+  // Live keybindings the game loop reads every frame. Kept in a ref (not state)
+  // so rebinding from the pause-menu settings applies instantly without
+  // re-running the long-lived game effect. Refreshed by the settings subscription.
+  const keyBindingsRef = useRef<KeyBindings>(gameSettingsManager.getSetting('keyBindings'));
   const [currentFPS, setCurrentFPS] = useState(0);
   // Live stamina + exhaustion flags pushed from the per-frame game loop
   // so the HUD can draw the bottom-left pie meter at the correct fill.
@@ -354,6 +360,9 @@ const ForestSurvivalGame = () => {
   const [multiplayerWinner, setMultiplayerWinner] = useState<string | null>(null);
   const [multiplayerGameMode, setMultiplayerGameMode] = useState<'coop' | 'survival'>('coop');
   const [isSpectating, setIsSpectating] = useState(false); // Track if local player is eliminated and spectating
+  // Multiplayer: shown when the cursor is released (Escape) since MP never
+  // pauses — the next click re-locks. Driven by the pointer-lock listener.
+  const [showResumePrompt, setShowResumePrompt] = useState(false);
   const [, setMultiplayerKillFeed] = useState<Array<{ id: string; killerName: string; victimName: string; victimColor: number; weapon: string; timestamp: number }>>([]);
   const [lastKillerInfo, setLastKillerInfo] = useState<{ killerName: string; weapon: string } | null>(null);
   // Guest-only: true between entering the match and the first enemy keyframe
@@ -425,6 +434,7 @@ const ForestSurvivalGame = () => {
       availablePoints: s.availablePoints,
       spentPoints: s.spentPoints,
       totalPoints: s.totalPoints,
+      recommendations: tree.generateRecommendations(),
     }));
   }, [gameStarted, isAuthenticated, playerStats]);
 
@@ -490,6 +500,7 @@ const ForestSurvivalGame = () => {
   useEffect(() => {
     const unsubscribe = gameSettingsManager.subscribe((settings) => {
       setUserSettings(settings);
+      keyBindingsRef.current = settings.keyBindings;
       setGameSettings((currentSettings) => syncEnhancedSettingsWithUserSettings(currentSettings, settings));
     });
 
@@ -731,6 +742,10 @@ const ForestSurvivalGame = () => {
       if (data.gameState?.difficulty) {
         setClassicDifficulty(data.gameState.difficulty);
       }
+      // Pick up the host's time-of-day choice too (defaults to auto).
+      if (data.gameState?.timeOfDay) {
+        setClassicTimeOfDay(data.gameState.timeOfDay);
+      }
       // Bump key to re-run the main game useEffect (fresh scene + fresh state)
       setGameRestartKey(k => k + 1);
     });
@@ -957,6 +972,19 @@ const ForestSurvivalGame = () => {
     // Guest-side lookup from netId → mirrored enemy. Host fills netId on spawn.
     const enemyByNetId = new Map<number, Enemy>();
     let nextEnemyNetId = 1;
+    // Guest-side snapshot-interpolation buffers (netId → buffer). Each host
+    // enemy snapshot is timestamped on arrival and played back ENEMY_INTERP_
+    // DELAY_MS in the past, so mirrored enemies glide at a steady speed between
+    // the ~10Hz syncs instead of stuttering toward the latest packet. See
+    // SnapshotInterpolator. Host/solo never touch these.
+    const enemyInterp = new Map<number, SnapshotInterpolator>();
+    const ENEMY_INTERP_DELAY_MS = 165;         // ~1.6× the 100ms sync interval + jitter
+    const _enemyInterpOut: TransformSample = { x: 0, y: 0, z: 0, yaw: 0 };
+    // Minimap throttle — the tactical radar redraws a few times a second, which
+    // is plenty for blip motion and keeps the per-frame cost negligible.
+    let lastMinimapMs = 0;
+    const MINIMAP_INTERVAL_MS = 60;
+    const _miniDir = new THREE.Vector3();
     // ── Host enemy-sync stream state ──────────────────────────────────────
     let lastEnemySyncMs = 0;
     const ENEMY_SYNC_INTERVAL_MS = 100;        // ~10 snapshots/sec (was 80)
@@ -1109,19 +1137,23 @@ const ForestSurvivalGame = () => {
       }
     }
 
-    // Initialize skill tree data for React
+    // Initialize skill tree data for React. generateRecommendations highlights
+    // the strongest affordable, requirement-met picks so the tree guides the
+    // player toward a sensible next purchase.
     setSkillTreeData({
       skills: skillTree.getAllSkills(),
       availablePoints: skillTree.getState().availablePoints,
       spentPoints: skillTree.getState().spentPoints,
       totalPoints: skillTree.getState().totalPoints,
       detectedPlayStyle: 'balanced',
-      recommendations: [],
+      recommendations: skillTree.generateRecommendations(),
     });
 
     // === ADVANCED DAY-NIGHT CYCLE SYSTEM ===
-    // Initialize with intelligent auto mode for multiplayer, or user-selected mode for classic
-    const actualTimeOfDay = isMultiplayer ? 'auto' : classicTimeOfDay;
+    // Time of day is host-selected in multiplayer (broadcast to guests and
+    // applied via `classicTimeOfDay`) and player-selected in classic; 'auto'
+    // runs the continuous day/night cycle in either mode.
+    const actualTimeOfDay = classicTimeOfDay;
 
     const dayCycleSystem = new DayCycleSystem(12, 1.0); // Start at noon, normal speed
 
@@ -2143,12 +2175,27 @@ const ForestSurvivalGame = () => {
     // a short rock while standing on the ground. Enemy callers pass the
     // default (0), which yields a negative feet height so enemies always
     // collide with terrain.
+    // ── OBSTACLE TRAVERSAL TUNING ──
+    // STEP_OVER: anything this short (pebbles, kerbs, low debris) is simply
+    //   walked over — never blocks movement, no jump needed.
+    // CLIMB_MAX: the tallest obstacle the player can land and stand ON TOP of.
+    //   Rocks/boulders up to this height become platforms you can hop onto and
+    //   stroll across; taller ones stay solid walls. (Trees use height 99.)
+    const STEP_OVER_HEIGHT = 0.7;
+    const CLIMB_MAX_HEIGHT = 2.8;
+
     const checkTerrainCollision = (newX: number, newZ: number, playerY?: number): boolean => {
       const feetY = playerY === undefined ? -1 : playerY - currentCameraHeight;
       for (const obj of terrainObjects) {
         if (!obj.collidable) continue;
-        // If the player's feet clear the object's top, skip collision (jump over)
-        if (obj.height !== undefined && feetY > obj.height) continue;
+        const h = obj.height;
+        if (h !== undefined) {
+          // Tiny obstacle → step straight over it (no collision at all).
+          if (h <= STEP_OVER_HEIGHT) continue;
+          // Feet at/above the top → the player is jumping over it or standing
+          // on it, so let them move freely across.
+          if (feetY > h - 0.05) continue;
+        }
         const dx = newX - obj.x;
         const dz = newZ - obj.z;
         const distance = Math.sqrt(dx * dx + dz * dz);
@@ -2159,6 +2206,25 @@ const ForestSurvivalGame = () => {
       return false;
     };
 
+    // Highest surface the player is standing on at (x,z): 0 = ground, or the top
+    // of a climbable rock/boulder they're above. Lets the player perch on and
+    // walk across low obstacles instead of clipping through them. `feetY` gates
+    // it so brushing the side of a rock at ground level never snaps you upward.
+    const supportHeightAt = (x: number, z: number, feetY: number): number => {
+      let top = 0;
+      for (const obj of terrainObjects) {
+        if (!obj.collidable || obj.height === undefined) continue;
+        if (obj.height <= STEP_OVER_HEIGHT || obj.height > CLIMB_MAX_HEIGHT) continue;
+        if (feetY < obj.height - 0.6) continue; // not high enough to be on top
+        const dx = x - obj.x;
+        const dz = z - obj.z;
+        if (dx * dx + dz * dz <= obj.radius * obj.radius && obj.height > top) {
+          top = obj.height;
+        }
+      }
+      return top;
+    };
+
     // Push the player out of any collidable obstacle they are overlapping at
     // their current feet height. This recovers from edge cases the move-time
     // collision check can't prevent — e.g. landing on top of a rock after
@@ -2167,7 +2233,11 @@ const ForestSurvivalGame = () => {
       const feetY = camera.position.y - currentCameraHeight;
       for (const obj of terrainObjects) {
         if (!obj.collidable) continue;
-        if (obj.height !== undefined && feetY > obj.height) continue;
+        const h = obj.height;
+        if (h !== undefined) {
+          if (h <= STEP_OVER_HEIGHT) continue;       // stepped over — never penetrating
+          if (feetY > h - 0.05) continue;            // on top / cleared — don't shove off
+        }
         const dx = camera.position.x - obj.x;
         const dz = camera.position.z - obj.z;
         const distSq = dx * dx + dz * dz;
@@ -2434,7 +2504,10 @@ const ForestSurvivalGame = () => {
     let skillBonuses: Record<string, number> = skillTree.calculateStatBonuses();
     let skillBonusAccum = 0;
     let playerMaxHealth = 100 + (skillBonuses['maxHealth'] || 0);
-    let regenAccum = 0;
+    // Start every run at FULL health — including the Thick Skin bonus. Without
+    // this, a player who has invested in Thick Skin would spawn at 100/<max>
+    // (e.g. 100/130) instead of full, because `health` was hard-coded to 100.
+    health = playerMaxHealth;
     const skillBonus = (stat: string): number => skillBonuses[stat] || 0;
     let wave = 1;
     let waveTransitioning = false; // Guards wave-complete logic during the inter-wave delay
@@ -3404,9 +3477,21 @@ const ForestSurvivalGame = () => {
 
     // Movement
     const keys: Keys = {};
+    // Live keybindings: read fresh each use so rebinding from the pause menu
+    // applies instantly. `held(action)` polls the bound key; `moving(action)`
+    // additionally honours the fixed arrow-key fallback for the four directions.
+    const kb = (): KeyBindings => keyBindingsRef.current;
+    const held = (action: keyof KeyBindings): boolean => !!keys[kb()[action]];
+    const ARROW_FALLBACK: Partial<Record<keyof KeyBindings, string>> = {
+      moveForward: 'ArrowUp', moveBackward: 'ArrowDown', moveLeft: 'ArrowLeft', moveRight: 'ArrowRight',
+    };
+    const moving = (action: keyof KeyBindings): boolean => {
+      const alt = ARROW_FALLBACK[action];
+      return held(action) || (alt ? !!keys[alt] : false);
+    };
     const moveSpeed = 0.3;
     const sprintMultiplier = 1.8;
-    const baseJumpPower = 0.5; // Prominent jump — clears most rocks/obstacles
+    const baseJumpPower = 0.44; // Prominent but less floaty — reliably clears climbable rocks (<= CLIMB_MAX)
     const gravity = 0.02;
 
     // ── STAMINA SYSTEM ─────────────────────────────────────────────────
@@ -3441,6 +3526,7 @@ const ForestSurvivalGame = () => {
     const JUMP_COOLDOWN_TIME = 150; // ms
     let landingImpact = 0; // Camera dip on landing (0 = none, positive = dipping)
     let wasJumping = false; // Track previous frame jump state for landing detection
+    let jumpCutApplied = false; // variable-jump cut fires once per jump (not every frame)
 
     // CROUCH SYSTEM
     let isCrouching = false;
@@ -3660,8 +3746,14 @@ const ForestSurvivalGame = () => {
       }
 
       // CRITICAL: Always set the key state first to ensure movement works
-      // This ensures keys are registered even if later checks fail
-      const isMovementKey = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'ShiftLeft', 'ShiftRight'].includes(e.code);
+      // This ensures keys are registered even if later checks fail. The set is
+      // derived from the live bindings (+ the fixed arrow-key fallback) so a
+      // rebound movement key still registers before the photo/Escape guards.
+      const b = kb();
+      const isMovementKey = [
+        b.moveForward, b.moveBackward, b.moveLeft, b.moveRight, b.jump, b.sprint,
+        'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+      ].includes(e.code);
       if (isMovementKey) {
         keys[e.code] = true;
       }
@@ -3671,6 +3763,13 @@ const ForestSurvivalGame = () => {
       // is swallowed so the frozen shot can't be disturbed.
       if (photoModeRef.current) {
         if (e.code === 'Escape') exitPhotoMode();
+        return;
+      }
+
+      // Toggle the expanded tactical map (works in solo, tutorial & multiplayer).
+      // No-op when no radar is mounted (e.g. in menus).
+      if (e.code === b.toggleMap) {
+        toggleMinimapExpanded();
         return;
       }
 
@@ -3703,8 +3802,8 @@ const ForestSurvivalGame = () => {
         keys[e.code] = true;
       }
 
-      // DASH - Triggered by Q key (instant dash, separate from ability system)
-      if (e.code === 'KeyQ' && !paused && !isDashing && dashCooldown <= 0) {
+      // DASH - Triggered by the bound dash key (instant dash, separate from ability system)
+      if (e.code === b.dash && !paused && !isDashing && dashCooldown <= 0) {
         isDashing = true;
         dashTimer = dashDuration;
         // Dash Mastery skill shrinks the cooldown (bonus value is negative)
@@ -3719,10 +3818,10 @@ const ForestSurvivalGame = () => {
         right.crossVectors(camera.up, dir).normalize();
 
         dashDirection.set(0, 0, 0);
-        if (keys['KeyW']) dashDirection.add(dir);
-        if (keys['KeyS']) dashDirection.sub(dir);
-        if (keys['KeyA']) dashDirection.add(right);
-        if (keys['KeyD']) dashDirection.sub(right);
+        if (moving('moveForward')) dashDirection.add(dir);
+        if (moving('moveBackward')) dashDirection.sub(dir);
+        if (moving('moveLeft')) dashDirection.add(right);
+        if (moving('moveRight')) dashDirection.sub(right);
 
         // Touch: dash in the joystick's direction when it's being held.
         if (dashDirection.length() === 0 && touchControls.enabled && touchControls.moving) {
@@ -3749,17 +3848,17 @@ const ForestSurvivalGame = () => {
         return; // Don't process other ability actions
       }
 
-      // CROUCH TOGGLE - 'C' key
-      if (e.code === 'KeyC' && !paused) {
+      // CROUCH TOGGLE - bound crouch key
+      if (e.code === b.crouch && !paused) {
         isCrouching = !isCrouching;
         soundManager.play('footstep', 0.3);
         return;
       }
 
-      // USE HELD POWER — 'E' activates whatever loot power is currently held,
-      // then empties the slot. Powers come exclusively from enemy loot now
-      // (one at a time), so there's no point-unlock gating any more.
-      if (e.code === 'KeyE' && !paused) {
+      // USE HELD POWER — the bound power key activates whatever loot power is
+      // currently held, then empties the slot. Powers come exclusively from
+      // enemy loot now (one at a time), so there's no point-unlock gating.
+      if (e.code === b.usePower && !paused) {
         if (heldPower) {
           // Anti-stack: a timed power can't start while another timed effect is
           // still running — the player keeps the held power and is told to wait.
@@ -3807,7 +3906,7 @@ const ForestSurvivalGame = () => {
         }
       }
 
-      if (e.code === 'KeyR') {
+      if (e.code === b.reload) {
         startReload();
       }
     };
@@ -3823,21 +3922,23 @@ const ForestSurvivalGame = () => {
       // Touch devices never acquire pointer lock — skip entirely so the
       // "lost lock → auto-pause" path can't fire on every frame.
       if (touchControls.enabled) return;
+      const locked = document.pointerLockElement === renderer.domElement;
       // Don't auto-pause when losing pointer lock in multiplayer or during tutorial
       const inMultiplayerGame = isMultiplayer || gameMode === 'multiplayer';
-      if (!document.pointerLockElement && !paused && !isGameOver && !inMultiplayerGame && !tutorialActiveRef.current && !photoModeRef.current) {
+      if (!locked && !paused && !isGameOver && !inMultiplayerGame && !tutorialActiveRef.current && !photoModeRef.current) {
         paused = true;
         setIsPaused(true);
       }
 
-      // Auto-request pointer lock again in multiplayer if lost
-      if (!document.pointerLockElement && inMultiplayerGame && !isGameOver && renderer.domElement) {
-        // Request pointer lock again after a short delay
-        setTimeout(() => {
-          if (!document.pointerLockElement && !isGameOver) {
-            renderer.domElement.requestPointerLock();
-          }
-        }, 200);
+      // Multiplayer doesn't pause when the cursor is released (e.g. via Escape).
+      // Browsers REFUSE a programmatic re-lock right after an Escape-exit (it
+      // must come from a fresh user gesture), so instead of silently retrying
+      // on a timer — which never worked — we surface a "click to resume" prompt
+      // and the next click re-locks (see onMouseDown). Cleared once re-locked.
+      if (inMultiplayerGame && !isGameOver) {
+        setShowResumePrompt(!locked);
+      } else if (locked) {
+        setShowResumePrompt(false);
       }
     };
 
@@ -4083,6 +4184,16 @@ const ForestSurvivalGame = () => {
         return;
       }
 
+      // Re-acquire pointer lock on click when it has been released (e.g. after
+      // Escape in multiplayer, which doesn't pause). The first click recaptures
+      // the cursor instead of firing — standard browser-FPS behaviour — so the
+      // player always gets control back with a single click.
+      if (!touchControls.enabled && !isGameOver && !paused && !tutorialActiveRef.current
+          && renderer.domElement && document.pointerLockElement !== renderer.domElement) {
+        renderer.domElement.requestPointerLock();
+        return;
+      }
+
       // Right mouse button for aiming
       if (e.button === 2 && !paused && !isGameOver) {
         const weapon = WEAPONS[currentWeapon];
@@ -4155,8 +4266,10 @@ const ForestSurvivalGame = () => {
         if (document.pointerLockElement === renderer.domElement || mouseDown) {
           // Mouse only updates the BASE aim (`euler`). The render loop
           // composes base aim + recoil into the final camera rotation, so
-          // recoil and mouse input never corrupt each other.
-          const baseSens = 0.002 * sensitivityMultiplier;
+          // recoil and mouse input never corrupt each other. Aiming down
+          // sights drops sensitivity ~35% for a precise, controlled feel.
+          const adsSens = (isAiming && WEAPONS[currentWeapon].canAim) ? 0.65 : 1;
+          const baseSens = 0.002 * sensitivityMultiplier * adsSens;
           euler.y -= e.movementX * baseSens;
           euler.x -= e.movementY * baseSens;
           euler.x = Math.max(-PI_2, Math.min(PI_2, euler.x));
@@ -4207,7 +4320,24 @@ const ForestSurvivalGame = () => {
 
     document.addEventListener('wheel', onMouseWheel, { passive: false });
 
-    const updateGameState = () => {
+    // ── HUD update COALESCING ──────────────────────────────────────────────
+    // The HUD is React state; pushing it via setGameState() reconciles the
+    // (very large) App tree. During combat updateGameState() was called on
+    // every shot, every bullet hit AND every kill — easily 15-30x/sec when
+    // spam-firing into a crowd — which flooded React with full re-renders and
+    // froze the main thread (the "spam-click hang" the player reported).
+    //
+    // Now updateGameState() just flags the HUD dirty; the render loop flushes
+    // it at most ~16x/sec (flushGameState). The HUD is allowed to lag a frame
+    // or two — imperceptible for ammo/score — and React work drops by an order
+    // of magnitude under sustained fire.
+    let hudDirty = false;
+    let lastHudFlushMs = 0;
+    const HUD_MIN_INTERVAL_MS = 60; // ~16Hz cap on HUD reconciliation
+
+    const flushGameState = () => {
+      hudDirty = false;
+      lastHudFlushMs = (typeof performance !== 'undefined' ? performance.now() : Date.now());
       checkWeaponUnlocks();
       setGameState({
         health,
@@ -4226,10 +4356,13 @@ const ForestSurvivalGame = () => {
       });
     };
 
+    // Coalesced request — the loop decides when to actually reconcile.
+    const updateGameState = () => { hudDirty = true; };
+
     // Push the initial state to the HUD immediately so it reflects the real
     // starting values (e.g. all weapons already unlocked in Tutorial mode)
     // instead of waiting for the first shot / weapon switch.
-    updateGameState();
+    flushGameState();
 
     const checkCollision = (pos1: THREE.Vector3, pos2: THREE.Vector3, distance: number) => {
       const dx = pos1.x - pos2.x;
@@ -4544,7 +4677,7 @@ const ForestSurvivalGame = () => {
           updateGameState();
         } else {
           isGameOver = true;
-          updateGameState();
+          flushGameState(); // game over must show immediately, not on the next coalesced tick
         }
       }
     };
@@ -4601,6 +4734,7 @@ const ForestSurvivalGame = () => {
         updateGameState();
       }
 
+      const nowMs = Date.now();
       const seen = new Set<number>();
       for (let s = 0; s < msg.enemies.length; s++) {
         const w = msg.enemies[s];
@@ -4621,6 +4755,13 @@ const ForestSurvivalGame = () => {
         e.netYaw = w.ry;
         e.health = w.hp;
         e.maxHealth = w.mx;
+        // Feed the interpolation buffer (only living enemies move — a dead
+        // one freezes at its last spot and plays its death animation).
+        if (!w.d) {
+          let buf = enemyInterp.get(w.id);
+          if (!buf) { buf = new SnapshotInterpolator({ capacity: 16, maxExtrapolationMs: 180 }); enemyInterp.set(w.id, buf); }
+          buf.push(nowMs, w.x, w.y, w.z, w.ry);
+        }
         if (w.d && !e.dead) {
           e.dead = true;
           e.deathTime = 1.0;
@@ -4795,12 +4936,12 @@ const ForestSurvivalGame = () => {
       let nx = camera.position.x;
       let nz = camera.position.z;
       let ny = camera.position.y;
-      if (keys['KeyW'] || keys['ArrowUp']) { nx += _moveDirection.x * step; nz += _moveDirection.z * step; }
-      if (keys['KeyS'] || keys['ArrowDown']) { nx -= _moveDirection.x * step; nz -= _moveDirection.z * step; }
-      if (keys['KeyA'] || keys['ArrowLeft']) { nx += _moveRight.x * step; nz += _moveRight.z * step; }
-      if (keys['KeyD'] || keys['ArrowRight']) { nx -= _moveRight.x * step; nz -= _moveRight.z * step; }
-      if (keys['Space']) ny += step;
-      if (keys['ShiftLeft'] || keys['ShiftRight']) ny -= step;
+      if (moving('moveForward')) { nx += _moveDirection.x * step; nz += _moveDirection.z * step; }
+      if (moving('moveBackward')) { nx -= _moveDirection.x * step; nz -= _moveDirection.z * step; }
+      if (moving('moveLeft')) { nx += _moveRight.x * step; nz += _moveRight.z * step; }
+      if (moving('moveRight')) { nx -= _moveRight.x * step; nz -= _moveRight.z * step; }
+      if (held('jump')) ny += step;
+      if (held('sprint')) ny -= step;
 
       // Clamp to the perimeter (XZ radius around the anchor) + a height band.
       const dx = nx - photoAnchor.x;
@@ -4831,6 +4972,13 @@ const ForestSurvivalGame = () => {
 
       const rawDelta = clock.getDelta();
       const delta = rawDelta * timeScale; // Apply slow-mo effect
+
+      // Flush any pending HUD update at a capped rate (see flushGameState) so
+      // sustained fire can't trigger a React re-render per shot/hit/kill.
+      if (hudDirty) {
+        const _hudNow = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+        if (_hudNow - lastHudFlushMs >= HUD_MIN_INTERVAL_MS) flushGameState();
+      }
 
       // Update FPS counter
       updateFPS();
@@ -5047,30 +5195,24 @@ const ForestSurvivalGame = () => {
       // Update ability system
       const abilityEffects = abilitySystem.update(delta);
 
-      // === SKILL TREE: refresh bonus snapshot + apply passives ===
+      // === SKILL TREE: refresh bonus snapshot + reconcile max health ===
+      // Re-read the unlocked-skill bonuses a few times a second so a point spent
+      // mid-run applies almost immediately. The only health touch here is the
+      // Thick Skin max-health raise — there is NO health regeneration in the
+      // game; HP only ever goes down (or up via a higher max).
       skillBonusAccum += rawDelta;
       if (skillBonusAccum >= 0.4) {
         skillBonusAccum = 0;
         skillBonuses = skillTree.calculateStatBonuses();
         const newMax = 100 + (skillBonuses['maxHealth'] || 0);
         if (newMax > playerMaxHealth) {
-          // Thick Skin was just upgraded — credit the player with the new HP.
+          // Thick Skin was just upgraded — grant the added max as current HP too
+          // so raising the cap actually fills (the player's reported bug).
           health = Math.min(newMax, health + (newMax - playerMaxHealth));
         }
         playerMaxHealth = newMax;
         if (health > playerMaxHealth) health = playerMaxHealth;
       }
-      // Regeneration — heal HP per second from the regenRate skill bonus
-      const regenRate = skillBonuses['regenRate'] || 0;
-      if (regenRate > 0 && !playerEliminated && health < playerMaxHealth) {
-        regenAccum += rawDelta;
-        if (regenAccum >= 1) {
-          const ticks = Math.floor(regenAccum);
-          regenAccum -= ticks;
-          health = Math.min(playerMaxHealth, health + regenRate * ticks);
-        }
-      }
-
       // Push ability cooldown state to the HUD ability bar (throttled — the
       // CSS transition smooths the gaps between updates).
       abilityHudAccum += rawDelta;
@@ -5142,7 +5284,7 @@ const ForestSurvivalGame = () => {
       if (frameCount % 900 === 0 && gameSettings.showHints) {
         const tip = combatCoach.analyzeAndCoach({
           playerHealth: health,
-          maxHealth: 100,
+          maxHealth: playerMaxHealth,
           currentWeapon,
           ammo,
           maxAmmo: WEAPONS[currentWeapon].maxAmmo,
@@ -5314,6 +5456,12 @@ const ForestSurvivalGame = () => {
         }
       }
 
+      // Right-click ADS is live for every weapon now. `aimingActive` is the
+      // single source of truth for the zoom, gun pose and crosshair — and it's
+      // mutually exclusive with sprinting (see below), so the COD-style flow is
+      // "sprinting drops the sights; aim brings them back up".
+      const aimingActive = isAiming && WEAPONS[currentWeapon].canAim === true;
+
       // Update gun animations - recoil handles its own offset
       gunModel.updateRecoil(delta);
 
@@ -5327,11 +5475,15 @@ const ForestSurvivalGame = () => {
       }
 
       // Aiming zoom — a consistent ~22° zoom relative to the chosen FOV
-      const targetFov = (isAiming && WEAPONS[currentWeapon].canAim)
+      const targetFov = aimingActive
         ? Math.max(40, baseFOV - 22)
         : baseFOV;
       camera.fov = THREE.MathUtils.lerp(camera.fov, targetFov + fovPunch, delta * 8);
       camera.updateProjectionMatrix();
+      // Keep the first-person weapon a constant on-screen size despite the ADS
+      // FOV zoom (it's a camera child, so zoom would otherwise magnify it into
+      // a screen-filling blob).
+      gunModel.setViewmodelFovScale(camera.fov, baseFOV);
       // Decay FOV punch
       fovPunch *= 0.92;
 
@@ -5479,16 +5631,18 @@ const ForestSurvivalGame = () => {
       // On touch, the analog joystick contributes to both "is moving" and the
       // sprint intent (pushed to the outer ring).
       const touchMoving = touchControls.enabled && touchControls.moving;
-      const isMoving = keys['KeyW'] || keys['KeyS'] || keys['KeyA'] || keys['KeyD'] || touchMoving;
+      const isMoving = moving('moveForward') || moving('moveBackward') || moving('moveLeft') || moving('moveRight') || touchMoving;
       if (isTutorialMode && isMoving) tutorial.recordAction('move', 1); // advances the movement step
-      const wantsToSprint = ((keys['ShiftLeft'] || keys['ShiftRight']) || (touchControls.enabled && touchControls.sprinting)) && !isCrouching;
+      const wantsToSprint = (held('sprint') || (touchControls.enabled && touchControls.sprinting)) && !isCrouching;
       // Stamina gates sprinting. Once exhausted, the player must let
       // stamina rebuild past STAMINA_REQUIRED_TO_SPRINT before they
       // can sprint again — prevents 0-stamina stutter-sprint exploit.
       if (staminaExhausted && stamina >= STAMINA_REQUIRED_TO_SPRINT) {
         staminaExhausted = false;
       }
-      const isRunning = wantsToSprint && isMoving && !staminaExhausted;
+      // Aiming down sights cancels the sprint (COD-style) so the two poses
+      // never fight each other — release aim to sprint again.
+      const isRunning = wantsToSprint && isMoving && !staminaExhausted && !aimingActive;
 
       // Tick stamina. While sprinting it depletes; when not, after a
       // short idle delay, it regenerates.
@@ -5554,7 +5708,7 @@ const ForestSurvivalGame = () => {
       // Update gun sway and bobbing based on movement, then apply all animations
       gunModel.updateIdleSway(delta);
       gunModel.updateWalkBob(delta, isMoving, isRunning && isMoving);
-      gunModel.updateAim(delta, isAiming && WEAPONS[currentWeapon].canAim === true);
+      gunModel.updateAim(delta, aimingActive);
       // Lowered "folded" carry pose while sprinting (not while shooting)
       gunModel.updateSprint(delta, isRunning && isMoving && !isCrouching && !mouseDown);
       // Airborne weapon inertia + landing dip
@@ -5584,7 +5738,7 @@ const ForestSurvivalGame = () => {
       }
 
       // Movement with collision detection (skip if dashing)
-      if (!isDashing && (keys['KeyW'] || keys['ArrowUp'])) {
+      if (!isDashing && moving('moveForward')) {
         const newX = camera.position.x + _moveDirection.x * currentSpeed;
         const newZ = camera.position.z + _moveDirection.z * currentSpeed;
         if (!checkTerrainCollision(newX, newZ, camera.position.y)) {
@@ -5592,7 +5746,7 @@ const ForestSurvivalGame = () => {
           camera.position.z = newZ;
         }
       }
-      if (!isDashing && (keys['KeyS'] || keys['ArrowDown'])) {
+      if (!isDashing && moving('moveBackward')) {
         const newX = camera.position.x - _moveDirection.x * currentSpeed;
         const newZ = camera.position.z - _moveDirection.z * currentSpeed;
         if (!checkTerrainCollision(newX, newZ, camera.position.y)) {
@@ -5600,7 +5754,7 @@ const ForestSurvivalGame = () => {
           camera.position.z = newZ;
         }
       }
-      if (!isDashing && (keys['KeyA'] || keys['ArrowLeft'])) {
+      if (!isDashing && moving('moveLeft')) {
         const newX = camera.position.x + _moveRight.x * currentSpeed;
         const newZ = camera.position.z + _moveRight.z * currentSpeed;
         if (!checkTerrainCollision(newX, newZ, camera.position.y)) {
@@ -5608,7 +5762,7 @@ const ForestSurvivalGame = () => {
           camera.position.z = newZ;
         }
       }
-      if (!isDashing && (keys['KeyD'] || keys['ArrowRight'])) {
+      if (!isDashing && moving('moveRight')) {
         const newX = camera.position.x - _moveRight.x * currentSpeed;
         const newZ = camera.position.z - _moveRight.z * currentSpeed;
         if (!checkTerrainCollision(newX, newZ, camera.position.y)) {
@@ -5642,8 +5796,16 @@ const ForestSurvivalGame = () => {
       // Jump cooldown timer
       if (jumpCooldown > 0) jumpCooldown -= delta * 1000;
 
+      // Dynamic floor — ground (0) OR the top of a climbable rock/boulder the
+      // player is currently perched above. Lets you hop ONTO low obstacles and
+      // walk across them instead of being shoved off. Computed before the jump
+      // check so you can also jump again from on top of a rock.
+      const preFeetY = camera.position.y - currentCameraHeight;
+      const supportY = supportHeightAt(camera.position.x, camera.position.z, preFeetY);
+      const floorY = currentCameraHeight + supportY;
+
       // Jump - weight-based jump height (auto-uncrouch when jumping)
-      if (keys['Space'] && !isJumping && jumpCooldown <= 0 && camera.position.y <= currentCameraHeight + 0.1) {
+      if (held('jump') && !isJumping && jumpCooldown <= 0 && camera.position.y <= floorY + 0.1) {
         // Auto-uncrouch when jumping
         if (isCrouching) {
           isCrouching = false;
@@ -5655,19 +5817,24 @@ const ForestSurvivalGame = () => {
         velocityY = baseJumpPower * jumpMultiplier;
         isJumping = true;
         wasJumping = true;
+        jumpCutApplied = false;
       }
 
-      // Variable jump height: release Space early for short hops
-      if (!keys['Space'] && isJumping && velocityY > 0) {
-        velocityY *= 0.5; // Cut upward velocity for a short hop
+      // Variable jump height: releasing Space early shortens the hop. CRITICAL:
+      // apply the cut ONCE — the old code ran it every frame while rising, which
+      // compounded to a near-zero "tap" jump that couldn't clear even a small
+      // rock. A single 0.62× cut still gives a usable short hop.
+      if (!held('jump') && isJumping && velocityY > 0 && !jumpCutApplied) {
+        velocityY *= 0.8; // gentle cut — even a quick tap still clears climbable rocks
+        jumpCutApplied = true;
       }
 
       velocityY -= gravity;
       camera.position.y += velocityY;
 
-      // Use currentCameraHeight (accounts for crouch state)
-      if (camera.position.y <= currentCameraHeight) {
-        camera.position.y = currentCameraHeight;
+      // Land on the dynamic floor (ground or a rock top), accounting for crouch.
+      if (camera.position.y <= floorY) {
+        camera.position.y = floorY;
         velocityY = 0;
         // Landing impact — trigger camera dip when touching ground after a jump
         if (wasJumping) {
@@ -6191,7 +6358,10 @@ const ForestSurvivalGame = () => {
               // Fallback for enemies not using pool (shouldn't happen in normal operation)
               scene.remove(enemy.mesh);
             }
-            if (enemy.netId !== undefined) enemyByNetId.delete(enemy.netId);
+            if (enemy.netId !== undefined) {
+              enemyByNetId.delete(enemy.netId);
+              enemyInterp.delete(enemy.netId);
+            }
             enemies.splice(i, 1);
           }
           continue;
@@ -6208,21 +6378,23 @@ const ForestSurvivalGame = () => {
         // last snapshot, animate the walk cycle from the resulting movement,
         // and run no AI / attack / collision logic at all.
         if (isMpGuest) {
-          const tx = enemy.netTargetX ?? enemy.mesh.position.x;
-          const tz = enemy.netTargetZ ?? enemy.mesh.position.z;
           const px = enemy.mesh.position.x;
           const pz = enemy.mesh.position.z;
-          const posLerp = 1 - Math.exp(-14 * delta);
-          enemy.mesh.position.x = px + (tx - px) * posLerp;
-          enemy.mesh.position.z = pz + (tz - pz) * posLerp;
+          const buf = enemy.netId !== undefined ? enemyInterp.get(enemy.netId) : undefined;
+          if (buf && buf.sample(frameNowMs - ENEMY_INTERP_DELAY_MS, _enemyInterpOut)) {
+            // Play the host's authoritative path a fixed delay in the past,
+            // interpolating between snapshots → smooth, steady-speed motion
+            // instead of stuttering toward whichever packet landed last.
+            enemy.mesh.position.x = _enemyInterpOut.x;
+            enemy.mesh.position.z = _enemyInterpOut.z;
+            enemy.mesh.rotation.y = _enemyInterpOut.yaw;   // already shortest-arc interpolated
+          } else {
+            // No buffer yet (first frame after spawn) — hold the last target.
+            enemy.mesh.position.x = enemy.netTargetX ?? px;
+            enemy.mesh.position.z = enemy.netTargetZ ?? pz;
+            enemy.mesh.rotation.y = enemy.netYaw ?? enemy.mesh.rotation.y;
+          }
           const movedLen = Math.hypot(enemy.mesh.position.x - px, enemy.mesh.position.z - pz);
-
-          // Yaw toward the networked facing (shortest arc).
-          const targetYaw = enemy.netYaw ?? enemy.mesh.rotation.y;
-          let dYaw = targetYaw - enemy.mesh.rotation.y;
-          while (dYaw > Math.PI) dYaw -= Math.PI * 2;
-          while (dYaw < -Math.PI) dYaw += Math.PI * 2;
-          enemy.mesh.rotation.y += dYaw * Math.min(1, delta * 10);
 
           // Stride/arm swing scaled by how far it actually moved this frame.
           enemy.walkTime += movedLen * 2.8 + delta * 0.6;
@@ -6829,6 +7001,39 @@ const ForestSurvivalGame = () => {
         }
       }
 
+      // ── Tactical minimap ──────────────────────────────────────────────
+      // Build a fresh radar frame a few times a second from live positions:
+      // the local camera (you), the surrounding enemies, and — in multiplayer
+      // only — every smoothly-interpolated remote ally. Runs in solo & tutorial
+      // too (enemies only). renderMinimapFrame() is a cheap no-op when no radar
+      // canvas is mounted (e.g. while paused or in menus).
+      if (isMinimapActive() && frameNowMs - lastMinimapMs >= MINIMAP_INTERVAL_MS) {
+        lastMinimapMs = frameNowMs;
+        const toHex = (n: number) => `#${(n >>> 0).toString(16).padStart(6, '0').slice(-6)}`;
+        const blips: MinimapBlip[] = [];
+        if (remotePlayerManager) {
+          const allies = remotePlayerManager.getMinimapBlips();
+          for (let a = 0; a < allies.length; a++) {
+            blips.push({ x: allies[a].x, z: allies[a].z, color: toHex(allies[a].color), alive: allies[a].alive, kind: 'ally' });
+          }
+        }
+        for (let e = 0; e < enemies.length; e++) {
+          const en = enemies[e];
+          if (en.dead) continue;
+          blips.push({ x: en.mesh.position.x, z: en.mesh.position.z, color: '', alive: true, kind: en.type === 'boss' ? 'boss' : 'enemy' });
+        }
+        camera.getWorldDirection(_miniDir);
+        const dl = Math.hypot(_miniDir.x, _miniDir.z) || 1;
+        renderMinimapFrame({
+          selfX: camera.position.x,
+          selfZ: camera.position.z,
+          dirX: _miniDir.x / dl,
+          dirZ: _miniDir.z / dl,
+          selfColor: (isMultiplayer && mp) ? toHex(mp.getLocalPlayer().color) : '#34d399',
+          blips,
+        });
+      }
+
       // === RENDERING — three.js EffectComposer (or direct render on Low) ===
       composePostFX(rawDelta);
     };
@@ -7328,6 +7533,7 @@ const ForestSurvivalGame = () => {
     timeLimit?: number,
     map?: MapType,
     difficulty?: 'easy' | 'medium' | 'hard' | 'adaptive',
+    timeOfDay?: 'day' | 'night' | 'auto',
   ) => {
     if (mpStartHandledRef.current) {
       // Duplicate/late game_start — match is already starting.
@@ -7343,6 +7549,9 @@ const ForestSurvivalGame = () => {
     // Host-selected difficulty applies to every client (the game effect uses
     // `classicDifficulty` for spawn pacing, wave size, enemy aggression).
     setClassicDifficulty(difficulty || 'medium');
+    // Host-selected time of day applies to every client (the game effect reads
+    // `classicTimeOfDay`; 'auto' runs the day/night cycle, as before).
+    setClassicTimeOfDay(timeOfDay || 'auto');
     multiplayerTimeLimitRef.current = timeLimit;
     soundManager.initialize();
     soundManager.unmute();
@@ -7376,7 +7585,7 @@ const ForestSurvivalGame = () => {
     // Host broadcasts game_start to all guests; guests have already
     // transitioned via the state updates above.
     if (manager.isGameHost()) {
-      manager.startGame(gameMode, timeLimit, map, difficulty || 'medium');
+      manager.startGame(gameMode, timeLimit, map, difficulty || 'medium', timeOfDay || 'auto');
     }
   }, [enterImmersiveMode]);
 
@@ -7593,6 +7802,19 @@ const ForestSurvivalGame = () => {
         </div>
       )}
 
+      {/* Multiplayer "click to resume" prompt. MP never pauses, so releasing the
+          cursor (Escape) just shows this; the click passes through (this layer is
+          pointer-events-none) to the canvas, which re-locks (see onMouseDown). */}
+      {showResumePrompt && gameStarted && gameMode === 'multiplayer' && !gameState.isGameOver && !isPaused && !showShaderProcessing && !photoMode && !isTouch && (
+        <div className="pointer-events-none absolute inset-0 z-[80] flex items-center justify-center bg-black/45 backdrop-blur-[2px]">
+          <div className="flex flex-col items-center gap-3 rounded-2xl border border-white/10 bg-[#0b0f15]/85 px-8 py-6">
+            <MousePointerClick className="h-7 w-7 text-emerald-300" strokeWidth={2} />
+            <span className="text-base font-bold tracking-wide text-white">Click to resume</span>
+            <span className="text-[12px] text-gray-400">The match is still live — click to recapture your aim.</span>
+          </div>
+        </div>
+      )}
+
       {!photoMode && (
       <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 10 }}>
         <HUD
@@ -7793,6 +8015,17 @@ const ForestSurvivalGame = () => {
         )
       )}
 
+      {/* Tactical map for Solo & Tutorial — same radar as multiplayer, but it
+          only shows enemies (no other players). Desktop docks a compact radar
+          below the top-right stats panel; touch uses a right-edge toggle. Press
+          M (or the on-screen button) to expand. Hidden while paused. */}
+      {gameStarted && !gameState.isGameOver && !isPaused && !photoMode
+        && (gameMode === 'classic' || gameMode === 'tutorial') && (
+        isTouch
+          ? <Minimap isTouch soloMode />
+          : <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 12 }}><Minimap standalone soloMode /></div>
+      )}
+
       {/* Achievement Notifications - Stacked vertically.
        * Suppressed entirely in tutorial mode — tutorial is a no-stakes
        * sandbox where achievements would be cheap/spammy AND visually
@@ -7818,7 +8051,7 @@ const ForestSurvivalGame = () => {
           <HitMarkers />
           <ScreenEffects
             health={gameState.health}
-            maxHealth={100}
+            maxHealth={gameState.maxHealth}
             isVisible={!isPaused}
           />
           <KillFeed visible={!isPaused} />
@@ -8043,7 +8276,7 @@ const ForestSurvivalGame = () => {
                 spentPoints: s.spentPoints,
                 totalPoints: s.totalPoints,
                 detectedPlayStyle: 'balanced',
-                recommendations: [],
+                recommendations: skillTreeRef.current.generateRecommendations(),
               });
             } catch {
               // Validation failure (not enough points / reqs) — leave UI as-is.

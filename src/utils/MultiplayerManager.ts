@@ -61,6 +61,8 @@ export interface GameState {
   hostId: string;
   map?: string; // Map ID for session persistence
   difficulty?: 'easy' | 'medium' | 'hard' | 'adaptive'; // Host-selected difficulty
+  /** Host-selected time of day for the match. 'auto' runs the day/night cycle. */
+  timeOfDay?: 'day' | 'night' | 'auto';
 }
 
 /**
@@ -939,6 +941,7 @@ export class MultiplayerManager {
     timeLimit?: number,
     map?: string,
     difficulty?: 'easy' | 'medium' | 'hard' | 'adaptive',
+    timeOfDay?: 'day' | 'night' | 'auto',
   ) {
     if (!this.isHost || !this.gameState) {
       console.warn('[MultiplayerManager] Cannot restart - not host or no game state');
@@ -956,6 +959,7 @@ export class MultiplayerManager {
     const tLimit = timeLimit !== undefined ? timeLimit : this.gameState.timeLimit;
     const mapId = map !== undefined ? map : this.gameState.map;
     const diff = difficulty !== undefined ? difficulty : this.gameState.difficulty;
+    const tod = timeOfDay !== undefined ? timeOfDay : this.gameState.timeOfDay;
 
     // Update game state with fresh start time
     this.gameState.gameMode = mode;
@@ -963,6 +967,7 @@ export class MultiplayerManager {
     this.gameState.startTime = Date.now();
     this.gameState.map = mapId;
     this.gameState.difficulty = diff;
+    this.gameState.timeOfDay = tod;
 
     // Make sure local player is in gameState.players
     this.gameState.players.set(this.localPlayer.id, this.localPlayer);
@@ -977,6 +982,7 @@ export class MultiplayerManager {
         hostId: this.gameState.hostId,
         map: this.gameState.map,
         difficulty: this.gameState.difficulty,
+        timeOfDay: this.gameState.timeOfDay,
       }
     };
 
@@ -1012,6 +1018,7 @@ export class MultiplayerManager {
         hostId: this.gameState.hostId,
         map: this.gameState.map,
         difficulty: this.gameState.difficulty,
+        timeOfDay: this.gameState.timeOfDay,
       }
     };
 
@@ -1054,6 +1061,7 @@ export class MultiplayerManager {
     timeLimit?: number,
     map?: string,
     difficulty?: 'easy' | 'medium' | 'hard' | 'adaptive',
+    timeOfDay?: 'day' | 'night' | 'auto',
   ) {
     if (!this.isHost || !this.gameState) {
       console.warn('[MultiplayerManager] Cannot start game - not host or no game state');
@@ -1069,6 +1077,7 @@ export class MultiplayerManager {
     this.gameState.startTime = Date.now();
     this.gameState.map = map;
     this.gameState.difficulty = difficulty;
+    this.gameState.timeOfDay = timeOfDay ?? 'auto';
 
     // Convert Map to array for serialization (cast to any for network transmission)
     const gameStartMessage = {
@@ -1081,6 +1090,7 @@ export class MultiplayerManager {
         hostId: this.gameState.hostId,
         map: this.gameState.map,
         difficulty: this.gameState.difficulty,
+        timeOfDay: this.gameState.timeOfDay,
       }
     };
 

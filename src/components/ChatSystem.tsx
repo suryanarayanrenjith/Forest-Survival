@@ -35,6 +35,10 @@ const EMOTES = [
 const CHAT_COOLDOWN_MS = 500; // 500ms between chat messages
 const EMOTE_COOLDOWN_MS = 1500; // 1.5s between emotes
 
+// How long a kill/join/leave event lingers in the floating feed before it
+// fades out and is removed (keeps the top-left overlay from piling up).
+const FEED_TTL_MS = 6000;
+
 const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState('');
@@ -43,6 +47,9 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
   const [touchOpen, setTouchOpen] = useState(false); // touch overlay visibility
   const [chatCooldown, setChatCooldown] = useState(false);
   const [emoteCooldown, setEmoteCooldown] = useState(false);
+  // Ticks once a second so the floating kill/join/leave feed can auto-collapse
+  // (old events fade out instead of piling up over the vitals forever).
+  const [nowTick, setNowTick] = useState(() => Date.now());
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -153,6 +160,19 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
     // Auto-scroll to bottom
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // Drive the kill-feed TTL — re-filter once a second so expired events drop.
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Recent kill/join/leave events for the floating feed, newest last. Entries
+  // older than FEED_TTL_MS are dropped so the overlay self-collapses instead of
+  // stacking up and colliding with the top-left vitals panel.
+  const recentFeed = messages.filter(
+    (m) => (m.type === 'kill' || m.type === 'join' || m.type === 'leave') && nowTick - m.timestamp < FEED_TTL_MS,
+  );
 
   const sendMessage = () => {
     if (!inputValue.trim() || chatCooldown) return;
@@ -267,10 +287,10 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
   // toggle). Tapping the toggle opens a bottom-sheet chat overlay that sits
   // ABOVE the on-screen controls so the input + emotes are usable.
   if (isTouch) {
-    const feed = messages.filter((m) => m.type === 'kill' || m.type === 'join' || m.type === 'leave').slice(-3);
+    const feed = recentFeed.slice(-3);
     return (
       <>
-        {/* Recent events feed — non-interactive */}
+        {/* Recent events feed — non-interactive, auto-expiring */}
         <div className="touch-safe-pad pointer-events-none fixed left-2 top-[60px] z-[20] space-y-1">
           {feed.map((msg) => {
             const style = getMessageStyle(msg);
@@ -545,33 +565,38 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
         </button>
       )}
 
-      {/* Kill Feed (top-left overlay) - Responsive */}
-      <div className="fixed top-16 sm:top-20 left-2 sm:left-4 space-y-1" style={{ zIndex: 25 }}>
-        {messages
-          .filter(m => m.type === 'kill' || m.type === 'join' || m.type === 'leave')
-          .slice(-5)
-          .map((msg) => {
-            const style = getMessageStyle(msg);
-            const colorHex = formatColor(msg.playerColor);
+      {/* Kill Feed (top-left overlay) - Responsive.
+          Anchored below the top-left vitals panel (which ends ~125px down) so
+          the two never overlap, and each entry auto-expires (FEED_TTL_MS) so
+          the stack stays short instead of growing forever. */}
+      <div className="fixed top-32 sm:top-36 left-2 sm:left-4 space-y-1" style={{ zIndex: 25 }}>
+        {recentFeed.slice(-5).map((msg) => {
+          const style = getMessageStyle(msg);
+          const colorHex = formatColor(msg.playerColor);
+          // Start the fade-out so it finishes right as the TTL filter removes it.
+          const age = nowTick - msg.timestamp;
 
-            return (
-              <div
-                key={msg.id}
-                className={`${style.bg} border ${style.border} rounded-lg px-2 sm:px-3 py-1 sm:py-2 backdrop-blur-sm animate-slideInLeft max-w-[200px] sm:max-w-xs`}
-              >
-                <div className="flex items-center gap-2 text-[10px] sm:text-sm">
-                  <style.icon className="w-3.5 h-3.5 flex-shrink-0" style={{ color: style.iconColor }} strokeWidth={2.25} />
-                  <span
-                    className="font-bold truncate"
-                    style={{ color: colorHex }}
-                  >
-                    {msg.playerName}
-                  </span>
-                  <span className="text-gray-300 truncate">{msg.message}</span>
-                </div>
+          return (
+            <div
+              key={msg.id}
+              className={`${style.bg} border ${style.border} rounded-lg px-2 sm:px-3 py-1 sm:py-2 backdrop-blur-sm max-w-[200px] sm:max-w-xs`}
+              style={{
+                animation: `slideInLeft 0.3s ease-out both${age > FEED_TTL_MS - 900 ? ', feedOut 0.85s ease-in forwards' : ''}`,
+              }}
+            >
+              <div className="flex items-center gap-2 text-[10px] sm:text-sm">
+                <style.icon className="w-3.5 h-3.5 flex-shrink-0" style={{ color: style.iconColor }} strokeWidth={2.25} />
+                <span
+                  className="font-bold truncate"
+                  style={{ color: colorHex }}
+                >
+                  {msg.playerName}
+                </span>
+                <span className="text-gray-300 truncate">{msg.message}</span>
               </div>
-            );
-          })}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

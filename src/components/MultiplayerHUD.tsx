@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Timer, Users, Swords, Crosshair, Skull, Star, ListOrdered, X } from 'lucide-react';
 import type { PlayerData } from '../utils/MultiplayerManager';
 import { RANK_TIERS } from '../utils/rankSystem';
+import Minimap from './Minimap';
 
 interface MultiplayerHUDProps {
   localPlayer: PlayerData;
@@ -118,6 +119,10 @@ const MultiplayerHUD = ({ localPlayer, remotePlayers, remainingTime, gameMode, i
   if (isTouch) {
     return (
       <>
+        {/* Tactical map — compact right-edge toggle (below the chat toggle) that
+            opens the full radar modal, so it never covers the touch controls. */}
+        <Minimap isTouch />
+
         <button
           onClick={() => setBoardOpen((v) => !v)}
           aria-label="Scoreboard"
@@ -170,9 +175,16 @@ const MultiplayerHUD = ({ localPlayer, remotePlayers, remainingTime, gameMode, i
   }
 
   return (
-    <div className="absolute top-4 right-4 w-[280px] space-y-2.5" style={{ zIndex: 20 }}>
+    // The whole HUD column is anchored TOP→just-above-the-loadout (bottom-[176px])
+    // and laid out as a flex column, so the scoreboard fills the leftover space
+    // and scrolls internally instead of growing down into the bottom-right
+    // loadout panel (the overlap bug). Minimap + timer keep their natural height.
+    <div className="absolute top-4 right-4 bottom-[176px] w-[280px] flex flex-col gap-2.5" style={{ zIndex: 20 }}>
+      {/* Live tactical radar — players (you + allies) and nearby enemies. */}
+      <Minimap />
+
       {/* Timer + mode */}
-      <div className="flex items-center gap-2.5">
+      <div className="flex flex-shrink-0 items-center gap-2.5">
         {remainingTime !== null && (
           <div
             className={`flex items-center gap-2 rounded-xl border bg-black/60 backdrop-blur-md px-3 py-2 flex-1 ${
@@ -195,18 +207,18 @@ const MultiplayerHUD = ({ localPlayer, remotePlayers, remainingTime, gameMode, i
         </div>
       </div>
 
-      {/* Scoreboard */}
-      <div className="rounded-xl border border-white/10 bg-black/60 backdrop-blur-md overflow-hidden">
-        <div className="flex items-center justify-between px-3 py-2 border-b border-white/[0.07]">
+      {/* Scoreboard — flex-1 so it takes the remaining height; the rows scroll. */}
+      <div className="flex min-h-0 flex-1 flex-col rounded-xl border border-white/10 bg-black/60 backdrop-blur-md overflow-hidden">
+        <div className="flex flex-shrink-0 items-center justify-between px-3 py-2 border-b border-white/[0.07]">
           <span className="text-[10px] font-semibold tracking-[0.15em] text-gray-400 uppercase">
             Players · {allPlayers.length}
           </span>
           <span className="text-[10px] font-semibold tracking-[0.1em] text-gray-600 uppercase">K / D / Score</span>
         </div>
 
-        <div className="max-h-[320px] overflow-y-auto">{scoreRows}</div>
+        <div className="min-h-0 flex-1 overflow-y-auto">{scoreRows}</div>
 
-        {teamSummary}
+        <div className="flex-shrink-0">{teamSummary}</div>
       </div>
     </div>
   );

@@ -73,7 +73,7 @@ const PlayerStatsModal = ({ username, onClose }: PlayerStatsModalProps) => {
                 </div>
               </div>
 
-              {profile.isPrivate ? (
+              {profile.isPrivate && !profile.isOwnProfile ? (
                 <div className="mt-5 flex flex-col items-center gap-2 rounded-xl border border-white/10 bg-white/[0.02] py-6">
                   <Lock className="w-6 h-6 text-gray-500" strokeWidth={2} />
                   <p className="text-sm font-semibold text-gray-300">Stats are private</p>
@@ -81,6 +81,14 @@ const PlayerStatsModal = ({ username, onClose }: PlayerStatsModalProps) => {
                 </div>
               ) : (
                 <div className="mt-5 space-y-3">
+                  {/* Own profile while private — you can always see your own stats;
+                      this just reminds you other players can't. */}
+                  {profile.isPrivate && profile.isOwnProfile && (
+                    <div className="flex items-center gap-2 rounded-xl border border-amber-400/20 bg-amber-500/[0.06] px-3 py-2">
+                      <Lock className="w-3.5 h-3.5 text-amber-300 flex-shrink-0" strokeWidth={2.25} />
+                      <p className="text-[11px] text-amber-200/90">Your stats are private — only you can see these.</p>
+                    </div>
+                  )}
                   <div className="rounded-xl border border-emerald-400/20 bg-emerald-500/[0.05] p-3">
                     <p className="text-xs font-semibold text-emerald-300 uppercase tracking-wide">Solo</p>
                     <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1.5 text-sm">

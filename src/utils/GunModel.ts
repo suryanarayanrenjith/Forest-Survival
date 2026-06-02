@@ -64,6 +64,11 @@ export class GunModel {
   // Spinning part (minigun barrel cluster)
   private spinningPart: THREE.Group | null = null;
 
+  // Uniform model scale at rest. The gun is parented to the camera, so when
+  // the camera FOV narrows for ADS the gun would magnify and swallow the
+  // screen — setViewmodelFovScale() counter-scales it to a constant size.
+  private readonly baseScale = 0.15;
+
   // Hip-fire base pose and aim-down-sights pose
   private basePosition = { x: 0.3, y: -0.3, z: -0.5 };
   private aimPosition = { x: 0, y: -0.14, z: -0.4 };
@@ -89,6 +94,7 @@ export class GunModel {
   // One-shot action flourishes (1 = just triggered, decays to 0)
   private abilityAnim = 0;
   private dashAnim = 0;
+  private equipAnim = 0; // weapon-swap raise (gun rises from low into the ready pose)
 
   constructor(type: WeaponType) {
     this.group = new THREE.Group();
@@ -211,7 +217,7 @@ export class GunModel {
     this.addArms();
 
     this.group.position.set(this.basePosition.x, this.basePosition.y, this.basePosition.z);
-    this.group.scale.set(0.15, 0.15, 0.15);
+    this.group.scale.setScalar(this.baseScale);
   }
 
   // ====================================================================
@@ -627,6 +633,11 @@ export class GunModel {
   // MINIGUN — rotary cannon
   // ====================================================================
   private createMinigun() {
+    // The minigun is a huge weapon — a centred ADS would shove the barrel
+    // cluster into the player's face. Keep its aim pose low and slightly to the
+    // side so right-click reads as "bracing + zoom" rather than a face-full of
+    // barrels.
+    this.aimPosition = { x: 0.12, y: -0.36, z: -0.52 };
     const steel = this.mat(0x202228, 0.9, 0.25);
     const black = this.mat(0x0b0c0f, 0.95, 0.14);
     const brass = this.mat(0xc8962e, 0.85, 0.3, { emissive: 0x3a2a05, emissiveIntensity: 0.25 });
@@ -888,8 +899,10 @@ export class GunModel {
       this.recoilAnimation -= delta * 12; // snappy decay
       this.recoilAnimation = Math.max(0, this.recoilAnimation);
 
-      this.recoilOffset.z = this.recoilAnimation * 0.12;
-      this.recoilOffset.rotX = -this.recoilAnimation * 0.25;
+      // Punchier kick — the weapon jolts back and muzzle-flips up noticeably
+      // on each shot, then snaps back (snappy decay above).
+      this.recoilOffset.z = this.recoilAnimation * 0.22;
+      this.recoilOffset.rotX = -this.recoilAnimation * 0.5;
 
       // Slide / pump blowback
       if (this.slide) {
@@ -984,11 +997,13 @@ export class GunModel {
     }
   }
 
-  /** Update idle sway — subtle breathing motion. */
+  /** Update idle sway — a gentle figure-8 "breathing" drift so the weapon
+   *  feels alive at rest (still tiny enough not to disturb the aim). */
   updateIdleSway(delta: number) {
     this.idleSwayTime += delta;
-    this.swayOffset.rotX = Math.sin(this.idleSwayTime * 0.5) * 0.0008;
-    this.swayOffset.rotY = Math.cos(this.idleSwayTime * 0.4) * 0.0006;
+    this.swayOffset.rotX = Math.sin(this.idleSwayTime * 0.85) * 0.0016
+      + Math.sin(this.idleSwayTime * 1.9) * 0.0005;
+    this.swayOffset.rotY = Math.cos(this.idleSwayTime * 0.65) * 0.0013;
   }
 
   /**
@@ -1027,6 +1042,30 @@ export class GunModel {
     if (Math.abs(this.aimProgress - target) < 0.002) this.aimProgress = target;
   }
 
+  /**
+   * Counteract the FOV-zoom magnification of the (camera-parented) weapon so it
+   * stays a constant on-screen size while aiming down sights. Without this the
+   * gun balloons up and covers the whole view when ADS narrows the FOV. Call
+   * every frame with the camera's live FOV and the player's base (hip) FOV.
+   */
+  setViewmodelFovScale(currentFov: number, baseFov: number) {
+    // The rifle and sniper have hand-tuned ADS poses designed to read WITH the
+    // zoom magnification (proper iron-sight / scope feel) — counter-scaling
+    // them shrinks the sights and ruins that look, so leave them at rest scale.
+    // Every other weapon gets compensated so the zoom can't balloon it into a
+    // screen-filling blob.
+    if (this.currentWeaponType === 'rifle' || this.currentWeaponType === 'sniper') {
+      this.group.scale.setScalar(this.baseScale);
+      return;
+    }
+    const ratio =
+      Math.tan(THREE.MathUtils.degToRad(baseFov) / 2) /
+      Math.tan(THREE.MathUtils.degToRad(Math.max(1, currentFov)) / 2);
+    // Only shrink when zoomed in (ratio > 1); never enlarge past the rest size.
+    const comp = 1 / Math.max(1, ratio);
+    this.group.scale.setScalar(this.baseScale * comp);
+  }
+
   /** Smoothly transition the weapon into a lowered "sprint" carry pose. */
   updateSprint(delta: number, isSprinting: boolean) {
     const target = isSprinting ? 1 : 0;
@@ -1056,10 +1095,11 @@ export class GunModel {
     this.jumpOffset.rotX += (targetRotX - this.jumpOffset.rotX) * k;
   }
 
-  /** Decay the one-shot action flourishes (abilities, dash). */
+  /** Decay the one-shot action flourishes (abilities, dash, weapon equip). */
   updateActions(delta: number) {
     if (this.abilityAnim > 0) this.abilityAnim = Math.max(0, this.abilityAnim - delta * 3);
     if (this.dashAnim > 0) this.dashAnim = Math.max(0, this.dashAnim - delta * 3.6);
+    if (this.equipAnim > 0) this.equipAnim = Math.max(0, this.equipAnim - delta * 3.4);
   }
 
   /** A quick upward flourish + flick when an ability is cast. */
@@ -1103,18 +1143,22 @@ export class GunModel {
     // Reload pulls the weapon down and in toward the player
     const reload = this.reloadDip;
 
+    // Weapon-equip raise — the gun swings up from below + flips level on swap.
+    const equip = this.equipAnim; // 1 just-swapped → 0 settled
+
     this.group.position.x =
       baseX + this.walkOffset.x * swayMul + SP_X * sprint + runX - reload * 0.07;
     this.group.position.y =
       baseY + this.walkOffset.y * swayMul + SP_Y * sprint + runY
-      + this.jumpOffset.y - land * 0.12 + abil * 0.07 - dash * 0.05 - reload * 0.16;
+      + this.jumpOffset.y - land * 0.12 + abil * 0.07 - dash * 0.05 - reload * 0.16
+      - equip * 0.5;
     this.group.position.z =
       baseZ + this.recoilOffset.z + SP_Z * sprint + dash * 0.16 + reload * 0.12;
 
     this.group.rotation.x =
       (this.swayOffset.rotX + this.walkOffset.rotX) * swayMul
       + this.recoilOffset.rotX + SP_RX * sprint + runRotX
-      + this.jumpOffset.rotX - land * 0.18 - reload * 0.42;
+      + this.jumpOffset.rotX - land * 0.18 - reload * 0.42 + equip * 0.55;
     this.group.rotation.y =
       this.swayOffset.rotY * swayMul + SP_RY * sprint;
     this.group.rotation.z =
@@ -1145,5 +1189,6 @@ export class GunModel {
   switchWeapon(type: WeaponType) {
     this.currentWeaponType = type;
     this.createGunModel(type);
+    this.equipAnim = 1; // play the raise-from-low equip animation
   }
 }
