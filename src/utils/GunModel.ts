@@ -64,6 +64,9 @@ export class GunModel {
   // Spinning part (minigun barrel cluster)
   private spinningPart: THREE.Group | null = null;
 
+  // Phantom (stealth) cloak state — fades the whole held weapon while active.
+  private phantomActive = false;
+
   // Uniform model scale at rest. The gun is parented to the camera, so when
   // the camera FOV narrows for ADS the gun would magnify and swallow the
   // screen — setViewmodelFovScale() counter-scales it to a constant size.
@@ -218,6 +221,54 @@ export class GunModel {
 
     this.group.position.set(this.basePosition.x, this.basePosition.y, this.basePosition.z);
     this.group.scale.setScalar(this.baseScale);
+
+    // Re-sync the freshly-built model to the current cloak state so switching
+    // weapons mid-Phantom never leaves a stale-transparent (or wrongly-solid)
+    // weapon — the previous per-material approach leaked across the shared
+    // material cache and got stuck on. See applyPhantomToCurrent().
+    this.applyPhantomToCurrent();
+  }
+
+  /**
+   * Phantom cloak visual — fade the whole held weapon while stealthed. Records
+   * each material's ORIGINAL opacity/transparency once (in userData) and restores
+   * exactly that on deactivate, so glass optics stay glassy and gunmetal returns
+   * fully opaque. Re-applied on every weapon rebuild (see createGunModel) so the
+   * shared, cached gun materials can never get stuck transparent after a swap.
+   */
+  setPhantom(active: boolean) {
+    if (active === this.phantomActive) return;
+    this.phantomActive = active;
+    this.applyPhantomToCurrent();
+  }
+
+  private applyPhantomToCurrent() {
+    const phantom = this.phantomActive;
+    this.group.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      const mat = mesh.material as THREE.Material | THREE.Material[] | undefined;
+      if (!mat) return;
+      const mats = Array.isArray(mat) ? mat : [mat];
+      for (const m of mats) {
+        const mm = m as THREE.Material & {
+          opacity: number;
+          transparent: boolean;
+          userData: { phantomOrig?: { opacity: number; transparent: boolean } };
+        };
+        if (mm.userData.phantomOrig === undefined) {
+          mm.userData.phantomOrig = { opacity: mm.opacity, transparent: mm.transparent };
+        }
+        const orig = mm.userData.phantomOrig;
+        if (phantom) {
+          mm.transparent = true;
+          mm.opacity = Math.min(orig.opacity, 0.4);
+        } else {
+          mm.transparent = orig.transparent;
+          mm.opacity = orig.opacity;
+        }
+        mm.needsUpdate = true;
+      }
+    });
   }
 
   // ====================================================================

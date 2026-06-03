@@ -1138,7 +1138,12 @@ const ForestSurvivalGame = () => {
       tutorial.start();
       setShowTutorial(true);
       tutorialActiveRef.current = true; // Block pointer lock while tutorial popup shows
-      diffSettings.healthMult *= 0.6;
+      // Tutorial is forgiving via slower, sparser enemies (the player can't be
+      // hurt here anyway). Health is only lightly reduced — the old 0.6 stacked
+      // onto Easy's 0.9 dropped a normal enemy below the rifle's 35 body damage,
+      // letting it be one-shot, which read as a bug. 0.85 + the global floor in
+      // the spawner keeps a normal enemy at ≥2 body shots.
+      diffSettings.healthMult *= 0.85;
       diffSettings.speedMult *= 0.7;
       diffSettings.spawnMult *= 0.5;
       // Set initial tutorial step immediately so overlay renders on first frame
@@ -2448,23 +2453,11 @@ const ForestSurvivalGame = () => {
     const _effectAnchor = new THREE.Vector3();
 
     // Phantom translucency — fade the visible weapon while cloaked so the
-    // local player gets clear feedback. Only re-applied on state change.
-    let _phantomVisualOn = false;
+    // local player gets clear feedback. Delegated to GunModel.setPhantom so the
+    // cloak state survives weapon switches (the gun re-syncs every rebuild) and
+    // never gets stuck transparent on the shared material cache.
     const applyPhantomVisual = (active: boolean) => {
-      if (active === _phantomVisualOn) return;
-      _phantomVisualOn = active;
-      gunModel.group.traverse((o) => {
-        const mesh = o as THREE.Mesh;
-        const mat = mesh.material as THREE.Material | THREE.Material[] | undefined;
-        if (!mat) return;
-        const mats = Array.isArray(mat) ? mat : [mat];
-        for (const m of mats) {
-          const mm = m as THREE.Material & { opacity: number; transparent: boolean };
-          mm.transparent = true;
-          mm.opacity = active ? 0.4 : 1.0;
-          mm.needsUpdate = true;
-        }
-      });
+      gunModel.setPhantom(active);
     };
 
     // PLAYER GROUND SHADOW — driven by LocalPlayerShadow (utils/LocalPlayerShadow.ts)
@@ -2900,10 +2893,18 @@ const ForestSurvivalGame = () => {
         1000 / (1 + wave * 0.1) // Faster cooldown at higher waves
       );
 
+      // Floor the combined health scale so no stacking of multipliers (notably
+      // the tutorial's reductions on top of Easy) can ever drop an enemy low
+      // enough to be one-shot by a standard rifle BODY shot (35 dmg). At 0.8 a
+      // normal enemy (50 base) is ≥40 HP → always needs ≥2 body shots. This is a
+      // no-op in normal play (Easy is 0.9, the lowest, already above the floor),
+      // so it only protects the tutorial / future low-multiplier cases.
+      const effectiveHealth = enemyHealth * Math.max(0.8, diffSettings.healthMult * healthMultiplier);
+
       return {
         mesh: enemyGroup,
-        health: enemyHealth * diffSettings.healthMult * healthMultiplier,
-        maxHealth: enemyHealth * diffSettings.healthMult * healthMultiplier,
+        health: effectiveHealth,
+        maxHealth: effectiveHealth,
         speed: (enemySpeed + Math.random() * 0.02) * diffSettings.speedMult,
         dead: false,
         type,
