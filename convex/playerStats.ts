@@ -15,6 +15,12 @@ import {
   ACHIEVEMENT_BIT,
   AVATAR_COUNT,
   MAX_TOTAL_SKILL_POINTS,
+  normalizeDifficulty,
+  DIFFICULTY_CODE,
+  computeRunRankXp,
+  pushRecentDiff,
+  legacySoloRankXp,
+  MAX_TOTAL_RANK_XP,
 } from "./gameLimits";
 
 function popcount(value: number): number {
@@ -62,6 +68,9 @@ function defaultStats(userId: Id<"users">) {
     achievements: 0,
     avatarIndex: 0,
     statsPublic: true,
+    leaderboardOptIn: true,
+    rankXp: 0,
+    recentDiffs: [] as number[],
     settings: undefined as string | undefined,
     solo: { highScore: 0, highestWave: 0, totalKills: 0, totalRuns: 0 },
     multiplayer: { highScore: 0, wins: 0, gamesPlayed: 0, totalKills: 0, totalDeaths: 0 },
@@ -89,6 +98,8 @@ const statsValidator = v.object({
   achievements: v.number(),
   avatarIndex: v.number(),
   statsPublic: v.boolean(),
+  leaderboardOptIn: v.boolean(),
+  rankXp: v.number(),
   settings: v.union(v.string(), v.null()),
   solo: v.object({
     highScore: v.number(),
@@ -121,6 +132,10 @@ export const getPlayerStats = query({
       achievements: base.achievements,
       avatarIndex: base.avatarIndex ?? 0,
       statsPublic: base.statsPublic ?? true,
+      leaderboardOptIn: base.leaderboardOptIn ?? true,
+      // Lazy migration: legacy docs without a rankXp accumulator fall back to
+      // the old aggregate formula so their rank doesn't reset to zero.
+      rankXp: base.rankXp ?? legacySoloRankXp(base.solo),
       settings: base.settings ?? null,
       solo: base.solo,
       multiplayer: base.multiplayer,
@@ -138,24 +153,42 @@ export const submitSoloRun = mutation({
     score: v.number(),
     wave: v.number(),
     kills: v.number(),
+    // Difficulty the run was played on — drives the difficulty-weighted rank XP
+    // + skill-point payouts. Optional so older clients still submit cleanly.
+    difficulty: v.optional(v.string()),
   },
-  returns: v.object({ skillPointsEarned: v.number(), skillPoints: v.number() }),
-  handler: async (ctx, { score, wave, kills }) => {
+  returns: v.object({
+    skillPointsEarned: v.number(),
+    skillPoints: v.number(),
+    rankXpEarned: v.number(),
+    rankXp: v.number(),
+  }),
+  handler: async (ctx, { score, wave, kills, difficulty }) => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new ConvexError("Sign in to save your progress.");
 
     const stats = await getOrCreateStats(ctx, userId);
+    const prevRankXp = stats.rankXp ?? legacySoloRankXp(stats.solo);
 
     // Throttle scripted farming. On limit, no-op (return current totals) rather
     // than error, so a legit rapid restart never shows a scary message.
     const { ok } = await rateLimiter.limit(ctx, "soloRun", { key: userId });
     if (!ok) {
-      return { skillPointsEarned: 0, skillPoints: stats.skillPoints };
+      return { skillPointsEarned: 0, skillPoints: stats.skillPoints, rankXpEarned: 0, rankXp: prevRankXp };
     }
+
+    const diff = normalizeDifficulty(difficulty ?? "medium");
+    const diffCode = DIFFICULTY_CODE[diff];
 
     // Clamp untrusted client values to plausible bounds before persisting.
     const { score: safeScore, wave: safeWave, kills: safeKills, earned } =
-      sanitizeSoloRun(score, wave, kills);
+      sanitizeSoloRun(score, wave, kills, diff);
+
+    // Difficulty-weighted, anti-grind rank XP for THIS run (uses the rolling
+    // window of prior runs so repeated easy runs decay, switching up boosts).
+    const rankXpEarned = computeRunRankXp(safeScore, safeWave, safeKills, diffCode, stats.recentDiffs);
+    const rankXp = clamp(prevRankXp + rankXpEarned, 0, MAX_TOTAL_RANK_XP);
+    const recentDiffs = pushRecentDiff(stats.recentDiffs, diffCode);
 
     const solo = {
       highScore: Math.max(stats.solo.highScore, safeScore),
@@ -165,8 +198,8 @@ export const submitSoloRun = mutation({
     };
     const skillPoints = clamp(stats.skillPoints + earned, 0, MAX_TOTAL_SKILL_POINTS);
 
-    await ctx.db.patch(stats._id, { solo, skillPoints, updatedAt: Date.now() });
-    return { skillPointsEarned: earned, skillPoints };
+    await ctx.db.patch(stats._id, { solo, skillPoints, rankXp, recentDiffs, updatedAt: Date.now() });
+    return { skillPointsEarned: earned, skillPoints, rankXpEarned, rankXp };
   },
 });
 
@@ -308,6 +341,19 @@ export const setStatsPrivacy = mutation({
   },
 });
 
+/** Toggle whether this player appears on the global leaderboard (opt-out). */
+export const setLeaderboardOptIn = mutation({
+  args: { optIn: v.boolean() },
+  returns: v.null(),
+  handler: async (ctx, { optIn }) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new ConvexError("Sign in to change leaderboard visibility.");
+    const stats = await getOrCreateStats(ctx, userId);
+    await ctx.db.patch(stats._id, { leaderboardOptIn: optIn, updatedAt: Date.now() });
+    return null;
+  },
+});
+
 const MAX_SETTINGS_BYTES = 4000;
 
 /**
@@ -368,7 +414,7 @@ export const getPublicProfile = query({
     const achievementsCount = popcount(base.achievements);
     const skillsCount = Object.keys(base.skills).length;
     const rank = computeRank({
-      solo: base.solo,
+      soloRankXp: base.rankXp ?? legacySoloRankXp(base.solo),
       multiplayer: {
         wins: base.multiplayer.wins,
         gamesPlayed: base.multiplayer.gamesPlayed,

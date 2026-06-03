@@ -10,7 +10,7 @@ import { usePlayerData } from '../hooks/usePlayerData';
 import MenuShell from './MenuShell';
 import UserAvatar from './UserAvatar';
 import PlayerStatsModal from './PlayerStatsModal';
-import { computeRank, RANK_TIERS } from '../utils/rankSystem';
+import { computeRank, legacySoloRankXp, RANK_TIERS } from '../utils/rankSystem';
 import { MultiplayerManager, type ModelClassId, type NetworkMessage } from '../utils/MultiplayerManager';
 import type { PlayerData } from '../utils/MultiplayerManager';
 
@@ -274,7 +274,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
   const localProfileMeta = useMemo(() => {
     if (!playerStats) return { avatarIndex: 0 } as { rankTier?: number; level?: number; avatarIndex: number };
     const r = computeRank({
-      solo: playerStats.solo,
+      soloRankXp: playerStats.rankXp ?? legacySoloRankXp(playerStats.solo),
       multiplayer: {
         wins: playerStats.multiplayer.wins,
         gamesPlayed: playerStats.multiplayer.gamesPlayed,

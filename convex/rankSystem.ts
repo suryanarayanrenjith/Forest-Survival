@@ -6,7 +6,9 @@
  */
 
 export interface RankStatsInput {
-  solo: { highScore: number; highestWave: number; totalKills: number; totalRuns: number };
+  /** Difficulty-weighted SOLO rank accumulator (playerStats.rankXp, or the
+   *  legacySoloRankXp() fallback for accounts predating it). */
+  soloRankXp: number;
   multiplayer: { wins: number; gamesPlayed: number; totalKills: number };
   achievementsCount: number;
   skillsCount: number;
@@ -30,26 +32,24 @@ export const RANK_TIERS: { name: string; color: string; minXp: number }[] = [
   { name: 'Platinum', color: '#5eead4', minXp: 12000 },
   { name: 'Diamond', color: '#67e8f9', minXp: 25000 },
   { name: 'Master', color: '#c084fc', minXp: 50000 },
+  { name: 'Grandmaster', color: '#fb7185', minXp: 90000 },
+  { name: 'Legend', color: '#f59e0b', minXp: 160000 },
 ];
 
 const XP_PER_LEVEL = 400;
 
 export function computeXp(stats: RankStatsInput): number {
-  const { solo, multiplayer: mp, achievementsCount, skillsCount } = stats;
-  // Performance — kills and wins — is what earns rank. Merely *playing* a match
-  // or run is worth only a token amount, so grinding empty (0-kill) games no
-  // longer meaningfully ranks a player up. A single kill is worth more than a
-  // whole no-kill match.
+  const { soloRankXp, multiplayer: mp, achievementsCount, skillsCount } = stats;
+  // Solo rank is now a difficulty-weighted accumulator (rewards harder modes +
+  // variety, decays for grinding easy — see convex/gameLimits.ts). Multiplayer
+  // and meta progression add on top: performance (kills/wins) is what earns
+  // rank, while merely *playing* a match is worth only a token amount.
   const xp =
-    // ── Solo ──
-    solo.highScore * 0.05 +
-    solo.highestWave * 50 +   // surviving deeper waves = skill
-    solo.totalKills * 6 +     // kills heavily prioritized (was 2)
-    solo.totalRuns * 2 +      // participation only (was 10)
+    soloRankXp +
     // ── Multiplayer ──
-    mp.wins * 350 +           // winning is the headline achievement (was 200)
-    mp.totalKills * 12 +      // kills heavily prioritized (was 3)
-    mp.gamesPlayed * 4 +      // participation only (was 25)
+    mp.wins * 350 +           // winning is the headline achievement
+    mp.totalKills * 12 +      // kills heavily prioritized
+    mp.gamesPlayed * 4 +      // participation only
     // ── Meta progression ──
     achievementsCount * 120 +
     skillsCount * 30;

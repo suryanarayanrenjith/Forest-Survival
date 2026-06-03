@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import {
   KeyRound, LogOut, ShieldCheck, X, User, BarChart3, Trophy, Settings as SettingsIcon,
   Lock, Eye, EyeOff, Check, Calendar, Camera, Download, Trash2, ImageOff, Loader2, Maximize2,
+  Crown,
 } from 'lucide-react';
 import { useAction, useMutation, useQuery } from 'convex/react';
 import type { Id } from '../../convex/_generated/dataModel';
@@ -12,19 +13,21 @@ import { usePlayerData } from '../hooks/usePlayerData';
 import MenuShell from './MenuShell';
 import UserAvatar from './UserAvatar';
 import RankBadge from './RankBadge';
+import { LeaderboardList } from './LeaderboardMenu';
 import { AchievementSystem } from '../utils/AchievementSystem';
-import { computeRank } from '../utils/rankSystem';
+import { computeRank, legacySoloRankXp } from '../utils/rankSystem';
 import { AVATARS } from '../utils/avatars';
 
 interface ProfileMenuProps {
   onClose: () => void;
 }
 
-type TabKey = 'overview' | 'stats' | 'achievements' | 'photos' | 'settings';
+type TabKey = 'overview' | 'stats' | 'leaderboard' | 'achievements' | 'photos' | 'settings';
 
 const TABS: { key: TabKey; label: string; Icon: typeof User }[] = [
   { key: 'overview', label: 'Overview', Icon: User },
   { key: 'stats', label: 'Stats', Icon: BarChart3 },
+  { key: 'leaderboard', label: 'Leaderboard', Icon: Crown },
   { key: 'achievements', label: 'Achievements', Icon: Trophy },
   { key: 'photos', label: 'Photos', Icon: Camera },
   { key: 'settings', label: 'Settings', Icon: SettingsIcon },
@@ -60,6 +63,7 @@ const ProfileMenu = ({ onClose }: ProfileMenuProps) => {
   const changePassword = useAction(api.account.changePassword);
   const setAvatar = useMutation(api.playerStats.setAvatar);
   const setStatsPrivacy = useMutation(api.playerStats.setStatsPrivacy);
+  const setLeaderboardOptIn = useMutation(api.playerStats.setLeaderboardOptIn);
 
   const [tab, setTab] = useState<TabKey>('overview');
   const [passwordBusy, setPasswordBusy] = useState(false);
@@ -74,6 +78,7 @@ const ProfileMenu = ({ onClose }: ProfileMenuProps) => {
   const mp = playerStats?.multiplayer;
   const avatarIndex = playerStats?.avatarIndex ?? 0;
   const statsPublic = playerStats?.statsPublic ?? true;
+  const leaderboardOptIn = playerStats?.leaderboardOptIn ?? true;
   const skillsUnlocked = playerStats ? Object.keys(playerStats.skills).length : 0;
   const achievementsUnlocked = playerStats ? popcount(playerStats.achievements) : 0;
   const mpKd = mp ? (mp.totalDeaths > 0 ? (mp.totalKills / mp.totalDeaths).toFixed(2) : `${mp.totalKills}`) : '0';
@@ -82,7 +87,7 @@ const ProfileMenu = ({ onClose }: ProfileMenuProps) => {
   const rank = useMemo(() => {
     if (!playerStats) return null;
     return computeRank({
-      solo: playerStats.solo,
+      soloRankXp: playerStats.rankXp ?? legacySoloRankXp(playerStats.solo),
       multiplayer: {
         wins: playerStats.multiplayer.wins,
         gamesPlayed: playerStats.multiplayer.gamesPlayed,
@@ -113,6 +118,11 @@ const ProfileMenu = ({ onClose }: ProfileMenuProps) => {
   const handlePrivacy = (isPublic: boolean) => {
     if (isPublic === statsPublic) return;
     void setStatsPrivacy({ isPublic }).catch(() => {});
+  };
+
+  const handleLeaderboardOptIn = (optIn: boolean) => {
+    if (optIn === leaderboardOptIn) return;
+    void setLeaderboardOptIn({ optIn }).catch(() => {});
   };
 
   const submitPasswordChange = async (event: FormEvent<HTMLFormElement>) => {
@@ -279,6 +289,21 @@ const ProfileMenu = ({ onClose }: ProfileMenuProps) => {
             </div>
           )}
 
+          {tab === 'leaderboard' && (
+            <div className="space-y-4">
+              <p className="text-[12px] text-gray-400">
+                Best players across the world, ranked by overall account XP. Earn more by
+                surviving longer and playing harder difficulties.
+                {!leaderboardOptIn && (
+                  <span className="mt-1 block text-amber-300/90">
+                    You're currently hidden — enable visibility in the Settings tab.
+                  </span>
+                )}
+              </p>
+              <LeaderboardList />
+            </div>
+          )}
+
           {tab === 'achievements' && (
             <div className="space-y-4">
               <div className="flex items-center justify-between">
@@ -371,6 +396,32 @@ const ProfileMenu = ({ onClose }: ProfileMenuProps) => {
                     }`}
                   >
                     <EyeOff className="w-4 h-4" strokeWidth={2.2} /> Private
+                  </button>
+                </div>
+              </div>
+
+              {/* Leaderboard visibility */}
+              <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
+                <p className="text-sm font-semibold text-gray-200">Leaderboard</p>
+                <p className="mt-0.5 text-[11px] text-gray-500">
+                  Show your name, rank & best wave on the global leaderboard. Turn off to stay hidden.
+                </p>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => handleLeaderboardOptIn(true)}
+                    className={`flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-sm font-semibold transition-colors ${
+                      leaderboardOptIn ? 'border-amber-400/40 bg-amber-500/[0.1] text-amber-200' : 'border-white/10 text-gray-400 hover:bg-white/[0.04]'
+                    }`}
+                  >
+                    <Trophy className="w-4 h-4" strokeWidth={2.2} /> Show me
+                  </button>
+                  <button
+                    onClick={() => handleLeaderboardOptIn(false)}
+                    className={`flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-sm font-semibold transition-colors ${
+                      !leaderboardOptIn ? 'border-white/30 bg-white/[0.06] text-gray-100' : 'border-white/10 text-gray-400 hover:bg-white/[0.04]'
+                    }`}
+                  >
+                    <EyeOff className="w-4 h-4" strokeWidth={2.2} /> Hide me
                   </button>
                 </div>
               </div>

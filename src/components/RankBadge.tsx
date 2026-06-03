@@ -1,7 +1,8 @@
-import { Shield, Medal, Award, Star, Gem, Crown, type LucideIcon } from 'lucide-react';
+import { Shield, Medal, Award, Star, Gem, Crown, Flame, Trophy, type LucideIcon } from 'lucide-react';
 import type { RankInfo } from '../utils/rankSystem';
 
-const TIER_ICON: LucideIcon[] = [Shield, Medal, Award, Star, Gem, Crown];
+// One per RANK_TIERS entry (Bronze…Legend). Keep length in sync with RANK_TIERS.
+const TIER_ICON: LucideIcon[] = [Shield, Medal, Award, Star, Gem, Crown, Flame, Trophy];
 
 interface RankBadgeProps {
   rank: RankInfo;

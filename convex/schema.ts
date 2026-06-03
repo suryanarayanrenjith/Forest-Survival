@@ -51,6 +51,18 @@ export default defineSchema({
     // Identity + preferences (optional so pre-existing docs stay valid).
     avatarIndex: v.optional(v.number()),
     statsPublic: v.optional(v.boolean()),
+    // Whether this player appears on the global leaderboard. Visible unless
+    // explicitly set to false (opt-out), so existing accounts show by default.
+    leaderboardOptIn: v.optional(v.boolean()),
+    // Difficulty-weighted SOLO rank accumulator (the headline progression
+    // value). Grows per finished run by an amount scaled by difficulty +
+    // anti-grind variety. Absent on legacy docs → derived from `solo` aggregates
+    // via legacySoloRankXp() until the next run writes it (lazy migration).
+    rankXp: v.optional(v.number()),
+    // Rolling window (max 8) of recent solo-run difficulty codes
+    // (0=easy,1=medium,2=hard,3=adaptive). Drives the diminishing-returns /
+    // variety math so grinding one difficulty (esp. easy) decays its payout.
+    recentDiffs: v.optional(v.array(v.number())),
     // Legacy single-field graphics pref (superseded by `settings` JSON blob;
     // kept optional so existing docs validate).
     graphicsQuality: v.optional(v.string()),

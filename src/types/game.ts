@@ -131,6 +131,15 @@ export interface Enemy {
   walkTime: number;
   damageFlashTime: number;
   deathTime: number;
+  // ── Lightweight physics (ragdoll-lite) ──
+  // On death the enemy is launched as a simple rigid body: deathVel is metres/s
+  // (gravity-integrated, bounces off the ground), deathSpin is rad/s tumble.
+  // hitImpulse is a short-lived positional knockback applied while still alive
+  // (decays each frame). All optional + reset on (re)spawn for pooled meshes.
+  deathVel?: THREE.Vector3;
+  deathSpin?: THREE.Vector3;
+  deathStarted?: boolean;
+  hitImpulse?: THREE.Vector3;
   leftLeg?: THREE.Mesh;
   rightLeg?: THREE.Mesh;
   leftArm?: THREE.Mesh;

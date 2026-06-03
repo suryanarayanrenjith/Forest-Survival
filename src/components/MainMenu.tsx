@@ -18,8 +18,9 @@ import SettingsMenu from './SettingsMenu';
 import CreditsMenu from './CreditsMenu';
 import AuthMenu from './AuthMenu';
 import ProfileMenu from './ProfileMenu';
+import LeaderboardMenu from './LeaderboardMenu';
 import UserAvatar from './UserAvatar';
-import { computeRank } from '../utils/rankSystem';
+import { computeRank, legacySoloRankXp } from '../utils/rankSystem';
 
 function countBits(value: number): number {
   let count = 0;
@@ -37,6 +38,7 @@ interface MainMenuProps {
 
 const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode }: MainMenuProps) => {
   const [showSettings, setShowSettings] = useState(false);
+  const [showLeaderboard, setShowLeaderboard] = useState(false);
   const [showCredits, setShowCredits] = useState(false);
   const [showAuth, setShowAuth] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
@@ -51,7 +53,7 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode }: MainMenu
   const avatarIndex = playerStats?.avatarIndex ?? 0;
   const menuRank = playerStats
     ? computeRank({
-        solo: playerStats.solo,
+        soloRankXp: playerStats.rankXp ?? legacySoloRankXp(playerStats.solo),
         multiplayer: {
           wins: playerStats.multiplayer.wins,
           gamesPlayed: playerStats.multiplayer.gamesPlayed,
@@ -393,6 +395,15 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode }: MainMenu
                 Credits
               </button>
               <button
+                onClick={() => setShowLeaderboard(true)}
+                className="group flex items-center justify-center gap-2 rounded-xl px-5 py-2.5
+                  text-sm font-semibold text-gray-400 border border-white/10 bg-white/[0.02]
+                  transition-all duration-300 hover:text-amber-300 hover:bg-amber-500/[0.06] hover:border-amber-400/30"
+              >
+                <Trophy className="w-4 h-4 transition-transform duration-500 group-hover:scale-110" strokeWidth={2} />
+                Leaderboard
+              </button>
+              <button
                 onClick={isAuthenticated ? openProfile : () => openAuth('signIn')}
                 className={`group flex items-center justify-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold border transition-all duration-300 ${
                   isAuthenticated
@@ -428,6 +439,9 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode }: MainMenu
 
       {/* Settings Menu */}
       {showSettings && <SettingsMenu onClose={() => setShowSettings(false)} />}
+
+      {/* Leaderboard */}
+      {showLeaderboard && <LeaderboardMenu onClose={() => setShowLeaderboard(false)} />}
 
       {/* Credits Menu */}
       {showCredits && <CreditsMenu onClose={() => setShowCredits(false)} />}

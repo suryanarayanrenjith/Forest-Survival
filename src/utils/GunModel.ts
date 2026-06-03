@@ -899,10 +899,11 @@ export class GunModel {
       this.recoilAnimation -= delta * 12; // snappy decay
       this.recoilAnimation = Math.max(0, this.recoilAnimation);
 
-      // Punchier kick — the weapon jolts back and muzzle-flips up noticeably
-      // on each shot, then snaps back (snappy decay above).
-      this.recoilOffset.z = this.recoilAnimation * 0.22;
-      this.recoilOffset.rotX = -this.recoilAnimation * 0.5;
+      // Prominent kick — the weapon jolts back hard and muzzle-flips up sharply
+      // on each shot, then snaps back (snappy decay above). Tuned heavier for a
+      // weightier, more realistic feel across all weapons.
+      this.recoilOffset.z = this.recoilAnimation * 0.34;
+      this.recoilOffset.rotX = -this.recoilAnimation * 0.8;
 
       // Slide / pump blowback
       if (this.slide) {
@@ -1177,7 +1178,7 @@ export class GunModel {
    * separately in App.tsx) carries the heavier-feeling impact.
    */
   triggerRecoil(strength: number = 1.0) {
-    const kick = THREE.MathUtils.clamp(0.55 * strength, 0.2, 1.0);
+    const kick = THREE.MathUtils.clamp(0.78 * strength, 0.32, 1.0);
     this.recoilAnimation = Math.min(1.0, this.recoilAnimation + kick);
   }
 

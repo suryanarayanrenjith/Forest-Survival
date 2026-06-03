@@ -864,12 +864,13 @@ const ForestSurvivalGame = () => {
           score: gameState.score,
           wave: gameState.wave,
           kills: gameState.enemiesKilled,
+          difficulty: classicDifficulty,
         }).catch(() => {});
       }
     } else if (!gameState.isGameOver) {
       soloRunSubmittedRef.current = false;
     }
-  }, [gameState.isGameOver, gameState.score, gameState.wave, gameState.enemiesKilled, gameMode, isAuthenticated, submitSoloRun]);
+  }, [gameState.isGameOver, gameState.score, gameState.wave, gameState.enemiesKilled, gameMode, isAuthenticated, submitSoloRun, classicDifficulty]);
 
   // Persist a finished Multiplayer match for signed-in players. Fires once.
   const mpResultSubmittedRef = useRef(false);
@@ -947,6 +948,15 @@ const ForestSurvivalGame = () => {
       adaptive: { healthMult: 1.4, speedMult: 0.95, damageMult: 1.3, spawnMult: 1.0, regenRate: 0.05, aggroMult: 0.95, reactionMult: 1.0, chaseMult: 1.0 } // Starts gentle, AI ramps up
     };
     const diffSettings = { ...classicSettings[classicDifficulty], progressive: classicDifficulty === 'adaptive', rampRate: classicDifficulty === 'adaptive' ? 0.05 : 0 };
+
+    // Difficulty-weighted SCORE multiplier — the on-screen score (and therefore
+    // the submitted run) scales with difficulty, mirroring the server-side rank
+    // economy (convex/gameLimits.ts DIFFICULTY_MULT). Playing harder is worth
+    // more points; easy is worth less. Solo only — multiplayer uses its own
+    // scoring. KEEP IN SYNC with DIFFICULTY_MULT.
+    const scoreDiffMult = gameMode === 'classic'
+      ? ({ easy: 0.6, medium: 1.0, hard: 1.7, adaptive: 1.3 } as const)[classicDifficulty]
+      : 1;
 
     // === MULTIPLAYER & ENHANCED SYSTEMS ===
     const isMultiplayer = gameMode === 'multiplayer' && multiplayerManager !== null;
@@ -2570,6 +2580,45 @@ const ForestSurvivalGame = () => {
     const powerUps: PowerUp[] = [];
     const particles: Particle[] = [];
 
+    // ── Shell casings (lightweight physics debris) ──
+    // Tiny brass cylinders flung from the gun on each shot. They arc under
+    // gravity, bounce off the ground with friction + tumble, then shrink away.
+    // A hard cap (oldest removed first) keeps rapid fire from spawning unbounded
+    // meshes. One shared geo+material so the whole effect costs almost nothing.
+    interface ShellCasing { mesh: THREE.Mesh; vel: THREE.Vector3; spin: THREE.Vector3; life: number; }
+    const shellCasings: ShellCasing[] = [];
+    const MAX_CASINGS = 40;
+    const casingGeo = new THREE.CylinderGeometry(0.022, 0.026, 0.12, 6);
+    const casingMat = new THREE.MeshStandardMaterial({
+      color: 0xd9a441, metalness: 0.95, roughness: 0.3, emissive: 0x2a1a00, emissiveIntensity: 0.35,
+    });
+    const _casRight = new THREE.Vector3();
+    const _casFwd = new THREE.Vector3();
+    const ejectShellCasing = () => {
+      if (shellCasings.length >= MAX_CASINGS) {
+        const old = shellCasings.shift();
+        if (old) scene.remove(old.mesh);
+      }
+      _casRight.set(1, 0, 0).applyQuaternion(camera.quaternion);
+      _casFwd.set(0, 0, -1).applyQuaternion(camera.quaternion);
+      const m = new THREE.Mesh(casingGeo, casingMat);
+      m.position.copy(camera.position)
+        .addScaledVector(_casRight, 0.32)
+        .addScaledVector(_casFwd, 0.55);
+      m.position.y -= 0.22;
+      m.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+      scene.add(m);
+      const vel = _casRight.clone().multiplyScalar(1.7 + Math.random() * 0.9);
+      vel.y = 2.1 + Math.random() * 1.1;
+      vel.addScaledVector(_casFwd, (Math.random() - 0.5) * 0.7);
+      shellCasings.push({
+        mesh: m,
+        vel,
+        spin: new THREE.Vector3((Math.random() - 0.5) * 20, (Math.random() - 0.5) * 20, (Math.random() - 0.5) * 20),
+        life: 2.4,
+      });
+    };
+
     // Temporary explosion craters left by the rocket launcher
     interface Crater { mesh: THREE.Object3D; life: number; maxLife: number; }
     const craters: Crater[] = [];
@@ -4059,11 +4108,14 @@ const ForestSurvivalGame = () => {
         if (!infiniteAmmoActive) {
           ammo--;
         }
-        // Per-weapon recoil scaled by weight — pistol kicks gently,
+        // Per-weapon recoil scaled by weight — pistol kicks firmly,
         // shotgun/sniper kick HARD, minigun/launcher are bone-shakers.
-        // Strength curve: weight 1.0 → 0.6, 1.5 → 0.95, 2.0 → 1.4, 3.0 → 2.3.
-        const recoilStrength = Math.pow(weapon.weight, 1.45) * 0.6;
+        // Strength curve (heavier for a more realistic feel): weight 1.0 → 0.85,
+        // 1.5 → 1.35, 2.0 → 1.95, 3.0 → 3.2 (the model clamps its own visual).
+        const recoilStrength = Math.pow(weapon.weight, 1.45) * 0.85;
         gunModel.triggerRecoil(recoilStrength);
+        // Eject a brass casing per trigger pull (the launcher fires rockets, no casing).
+        if (!weapon.name.includes('Launcher')) ejectShellCasing();
         updateGameState();
 
         // 🤖 Record shot for AI systems (will check for hit later)
@@ -4146,26 +4198,28 @@ const ForestSurvivalGame = () => {
           }
         }
 
-        // WEAPON RECOIL - Visual feedback only (NO camera rotation modifications!)
-        // Use gun model animation and screen shake for realistic recoil feel
-        const recoilAmount = weapon.name.includes('Minigun') ? 0.012 :
-                             weapon.name.includes('Shotgun') ? 0.035 :
-                             weapon.name.includes('Sniper') ? 0.045 :
-                             weapon.name.includes('Launcher') ? 0.055 :
-                             weapon.name.includes('Rifle') ? 0.018 : 0.01;
+        // WEAPON RECOIL — prominent, weighty kick (camera pitch climb + shake +
+        // FOV punch). Per-weapon base scaled up ~1.6× over the old values for a
+        // far more impactful, realistic feel. The render loop recovers the kick
+        // smoothly so it stays rideable for skilled players.
+        const recoilAmount = weapon.name.includes('Minigun') ? 0.020 :
+                             weapon.name.includes('Shotgun') ? 0.058 :
+                             weapon.name.includes('Sniper') ? 0.075 :
+                             weapon.name.includes('Launcher') ? 0.090 :
+                             weapon.name.includes('Rifle') ? 0.030 : 0.018;
 
         // ENHANCED SCREEN SHAKE for recoil feedback
-        cameraShakeIntensity = Math.min(cameraShakeIntensity + recoilAmount * 3.5, 0.2);
+        cameraShakeIntensity = Math.min(cameraShakeIntensity + recoilAmount * 4.2, 0.32);
 
-        // FOV punch — subtle widening on each shot
-        fovPunch = Math.min(fovPunch + recoilAmount * 60, 3);
+        // FOV punch — noticeable widening on each shot
+        fovPunch = Math.min(fovPunch + recoilAmount * 75, 4.5);
 
         // CAMERA RECOIL — a real kick up the player has to ride and control.
-        // Pitch climbs each shot (capped), with a small random horizontal
-        // sway so sustained fire walks the aim like a real weapon.
-        recoilPitch = Math.min(recoilPitch + recoilAmount * 2.7, 0.34);
-        recoilYaw += (Math.random() - 0.5) * recoilAmount * 1.6;
-        recoilYaw = Math.max(-0.12, Math.min(0.12, recoilYaw));
+        // Pitch climbs each shot (capped higher now), with a stronger random
+        // horizontal sway so sustained fire walks the aim like a real weapon.
+        recoilPitch = Math.min(recoilPitch + recoilAmount * 3.4, 0.5);
+        recoilYaw += (Math.random() - 0.5) * recoilAmount * 2.2;
+        recoilYaw = Math.max(-0.18, Math.min(0.18, recoilYaw));
       }
     };
 
@@ -4450,6 +4504,33 @@ const ForestSurvivalGame = () => {
       soundManager.play('enemyDeath', 0.6);
       createParticles(enemy.mesh.position, 0x00ff00, 8);
 
+      // ── Ragdoll launch (lightweight physics) ──
+      // Fling the corpse along the shot direction (or away from the player when
+      // no hit direction is known, e.g. melee/AOE kills), up and tumbling. The
+      // death loop integrates gravity + ground bounce. Heavier types launch less.
+      const massScale = enemy.type === 'boss' ? 0.32 : enemy.type === 'tank' ? 0.6 : enemy.type === 'fast' ? 1.3 : 1.0;
+      const launchDir = (enemy.hitImpulse && enemy.hitImpulse.lengthSq() > 1e-4)
+        ? enemy.hitImpulse.clone().setY(0).normalize()
+        : new THREE.Vector3(
+            enemy.mesh.position.x - camera.position.x,
+            0,
+            enemy.mesh.position.z - camera.position.z,
+          );
+      if (launchDir.lengthSq() < 1e-4) launchDir.set(0, 0, 1);
+      launchDir.normalize();
+      const launchSpeed = (4 + Math.random() * 2.5) * massScale * (isCritical ? 1.5 : 1);
+      enemy.deathVel = new THREE.Vector3(
+        launchDir.x * launchSpeed,
+        (5.5 + Math.random() * 1.6) * massScale,
+        launchDir.z * launchSpeed,
+      );
+      enemy.deathSpin = new THREE.Vector3(
+        (Math.random() - 0.5) * 9,
+        (Math.random() - 0.5) * 7,
+        (Math.random() - 0.5) * 11,
+      ).multiplyScalar(massScale);
+      enemy.deathStarted = true;
+
       // Who gets the kill? In solo — and for the host's OWN kills — it's the
       // local player. In multiplayer, when a guest's reported hit lands the
       // killing blow, the host credits that guest's client instead so its
@@ -4458,7 +4539,8 @@ const ForestSurvivalGame = () => {
       const localGetsCredit = !isMultiplayer || killerId === undefined || killerId === localId;
 
       if (localGetsCredit) {
-        score += enemy.scoreValue;
+        // Difficulty-weighted score: harder modes pay out more per kill.
+        score += Math.round(enemy.scoreValue * scoreDiffMult);
         enemiesKilled++;
         if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
         if (isCritical) {
@@ -4470,7 +4552,7 @@ const ForestSurvivalGame = () => {
         if (currentTime - lastKillTime < 2000) {
           combo++;
           killStreak++;
-          score += combo * 5;
+          score += Math.round(combo * 5 * scoreDiffMult);
           // Rising combo chime at each 5x milestone — pitch climbs with the
           // combo so a hot streak audibly escalates. Independent of the kill
           // feed setting (it's reward feedback, not a log entry).
@@ -5490,7 +5572,7 @@ const ForestSurvivalGame = () => {
       // === CAMERA RECOIL ===
       // Recover the recoil kick smoothly, then compose (base aim + recoil)
       // into the final camera rotation. Aiming down sights tightens recoil.
-      const recoilRecover = Math.min(1, rawDelta * 8.5);
+      const recoilRecover = Math.min(1, rawDelta * 9.5);
       recoilPitch += (0 - recoilPitch) * recoilRecover;
       recoilYaw += (0 - recoilYaw) * recoilRecover;
       _recoilEuler.set(
@@ -5932,6 +6014,33 @@ const ForestSurvivalGame = () => {
         }
       }
 
+      // Update shell casings — gravity, ground bounce + friction, tumble, fade.
+      for (let i = shellCasings.length - 1; i >= 0; i--) {
+        const c = shellCasings[i];
+        c.life -= delta;
+        c.vel.y -= 13 * delta;
+        c.mesh.position.addScaledVector(c.vel, delta);
+        if (c.mesh.position.y <= 0.03) {
+          c.mesh.position.y = 0.03;
+          if (c.vel.y < 0) {
+            c.vel.y *= -0.36;
+            c.vel.x *= 0.55;
+            c.vel.z *= 0.55;
+            c.spin.multiplyScalar(0.5);
+            if (Math.abs(c.vel.y) < 0.35) c.vel.y = 0;
+          }
+        }
+        c.mesh.rotation.x += c.spin.x * delta;
+        c.mesh.rotation.y += c.spin.y * delta;
+        c.mesh.rotation.z += c.spin.z * delta;
+        // Shrink away in the final 0.4s (shared material → no per-mesh opacity).
+        if (c.life < 0.4) c.mesh.scale.setScalar(Math.max(0.02, c.life / 0.4));
+        if (c.life <= 0) {
+          scene.remove(c.mesh);
+          shellCasings.splice(i, 1);
+        }
+      }
+
       // Update robot hit sparks
       for (let i = robotSparks.length - 1; i >= 0; i--) {
         if (robotSparks[i].update(delta)) {
@@ -6230,6 +6339,27 @@ const ForestSurvivalGame = () => {
             // Trigger damage flash animation
             enemy.damageFlashTime = isCritical ? 0.5 : 0.3;
 
+            // ── Hit knockback (lightweight physics) ──
+            // Shove the enemy a touch along the shot direction so bullets feel
+            // like they land with weight; heavier enemies barely budge. Also
+            // records the shot direction so the death ragdoll launches the right
+            // way. Magnitude is small + horizontal so it never trivialises the
+            // fight or pushes enemies through terrain.
+            {
+              const kdx = bullet.velocity.x;
+              const kdz = bullet.velocity.z;
+              const klen = Math.hypot(kdx, kdz);
+              if (klen > 1e-4) {
+                const inv = 1 / klen;
+                const massResist = enemy.type === 'boss' ? 0.05 : enemy.type === 'tank' ? 0.16 : enemy.type === 'fast' ? 0.42 : 0.3;
+                const shove = (isCritical ? 0.34 : 0.22) * massResist;
+                enemy.mesh.position.x += kdx * inv * shove;
+                enemy.mesh.position.z += kdz * inv * shove;
+                if (!enemy.hitImpulse) enemy.hitImpulse = new THREE.Vector3();
+                enemy.hitImpulse.set(kdx * inv, 0, kdz * inv);
+              }
+            }
+
             // Add hit marker and damage number (if enabled in settings)
             if (gameSettingsManager.getSetting('hitMarkers')) {
               addHitMarker(isCritical);
@@ -6315,40 +6445,50 @@ const ForestSurvivalGame = () => {
       for (let i = enemies.length - 1; i >= 0; i--) {
         const enemy = enemies[i];
 
-        // Death animation (unchanged)
+        // Death — ragdoll-lite physics: the corpse flies along its launch
+        // impulse (set in handleEnemyKilled), falls under gravity, bounces off
+        // the ground with friction + tumble, settles, then shrinks away.
         if (enemy.dead && enemy.deathTime > 0) {
           enemy.deathTime -= delta;
-          const deathProgress = 1.0 - (enemy.deathTime / 1.0);
 
-          // Get the base scale for this enemy type (pooled enemies use type-based scaling)
+          // Base scale for this enemy type (pooled enemies use type-based scaling)
           const baseScale = enemy.type === 'fast' ? 0.7 : enemy.type === 'tank' ? 1.5 : enemy.type === 'boss' ? 2.0 : 1.0;
+          const restY = 0.22 * baseScale; // height the tumbling corpse rests at
 
-          // Death animation using rotation and scale (NO material changes - materials are shared!)
-          enemy.mesh.rotation.x = deathProgress * Math.PI / 2;
-          enemy.mesh.position.y = (1.0 * baseScale) - deathProgress * (1.0 * baseScale);
-
-          // Scale down as enemy dies, multiplied by base scale to maintain relative size
-          const deathScale = Math.max(0.01, 1.0 - deathProgress * 0.8) * baseScale;
-          enemy.mesh.scale.setScalar(deathScale);
-
-          // Arm/leg animations still work (these are rotations, not material changes)
-          if (enemy.leftArm) {
-            enemy.leftArm.rotation.z = deathProgress * Math.PI / 3;
-            enemy.leftArm.rotation.x = deathProgress * Math.PI / 4;
-          }
-          if (enemy.rightArm) {
-            enemy.rightArm.rotation.z = -deathProgress * Math.PI / 3;
-            enemy.rightArm.rotation.x = deathProgress * Math.PI / 4;
-          }
-          if (enemy.leftLeg) {
-            enemy.leftLeg.rotation.x = deathProgress * Math.PI / 6;
-          }
-          if (enemy.rightLeg) {
-            enemy.rightLeg.rotation.x = -deathProgress * Math.PI / 6;
+          // Splay the limbs out into a slack ragdoll pose on the first frame.
+          if (enemy.deathStarted) {
+            enemy.deathStarted = false;
+            if (enemy.leftArm) { enemy.leftArm.rotation.z = Math.PI / 2.4; enemy.leftArm.rotation.x = Math.PI / 5; }
+            if (enemy.rightArm) { enemy.rightArm.rotation.z = -Math.PI / 2.4; enemy.rightArm.rotation.x = Math.PI / 5; }
+            if (enemy.leftLeg) enemy.leftLeg.rotation.x = Math.PI / 7;
+            if (enemy.rightLeg) enemy.rightLeg.rotation.x = -Math.PI / 7;
           }
 
-          // NOTE: Do NOT modify materials here - they are SHARED across all enemies!
-          // The scale animation provides a visual death effect without affecting other enemies.
+          // Integrate the rigid-body launch (gravity + bounce + spin).
+          if (enemy.deathVel) {
+            enemy.deathVel.y -= 17 * delta; // gravity
+            enemy.mesh.position.addScaledVector(enemy.deathVel, delta);
+            if (enemy.mesh.position.y <= restY) {
+              enemy.mesh.position.y = restY;
+              if (enemy.deathVel.y < 0) {
+                enemy.deathVel.y *= -0.42;            // bounce restitution
+                enemy.deathVel.x *= 0.6;              // ground friction
+                enemy.deathVel.z *= 0.6;
+                if (enemy.deathSpin) enemy.deathSpin.multiplyScalar(0.5);
+                if (Math.abs(enemy.deathVel.y) < 1.3) enemy.deathVel.y = 0; // settle
+              }
+            }
+          }
+          if (enemy.deathSpin) {
+            enemy.mesh.rotation.x += enemy.deathSpin.x * delta;
+            enemy.mesh.rotation.y += enemy.deathSpin.y * delta;
+            enemy.mesh.rotation.z += enemy.deathSpin.z * delta;
+          }
+
+          // Hold full size while it tumbles, then shrink away in the last 0.3s.
+          // (NO material changes here — materials are SHARED across all enemies.)
+          const fade = enemy.deathTime < 0.3 ? Math.max(0.02, enemy.deathTime / 0.3) : 1;
+          enemy.mesh.scale.setScalar(baseScale * fade);
 
           if (enemy.deathTime <= 0) {
             // Release mesh back to pool for reuse (SmartEnemyManager handles scene removal)
@@ -7446,6 +7586,12 @@ const ForestSurvivalGame = () => {
       sharedCraterScorchGeo.dispose();
       sharedCraterRingGeo.dispose();
       sharedCraterDebrisGeo.dispose();
+
+      // Cleanup shell-casing debris (shared geo + material across all casings).
+      for (const c of shellCasings) scene.remove(c.mesh);
+      shellCasings.length = 0;
+      casingGeo.dispose();
+      casingMat.dispose();
 
       if (environmentRenderTarget) {
         scene.environment = null;

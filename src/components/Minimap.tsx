@@ -307,17 +307,20 @@ const Minimap = ({ isTouch = false, standalone = false, soloMode = false }: { is
   }, []);
 
   // ── Touch: a single toggle button (right-edge stack) → modal radar ──
+  // While the big map is open the toggle is hidden, so only ONE map shows.
   if (isTouch) {
     return (
       <>
-        <button
-          onClick={() => setExpanded((v) => !v)}
-          aria-label="Open tactical map"
-          className="touch-control fixed right-2 top-[162px] z-[46] flex h-12 w-12 items-center justify-center rounded-2xl border border-white/15 bg-black/60 backdrop-blur-md active:scale-95"
-          style={{ pointerEvents: 'auto' }}
-        >
-          <Radar className="h-5 w-5 text-emerald-300" strokeWidth={2.25} />
-        </button>
+        {!expanded && (
+          <button
+            onClick={() => setExpanded(true)}
+            aria-label="Open tactical map"
+            className="touch-control fixed right-2 top-[162px] z-[46] flex h-12 w-12 items-center justify-center rounded-2xl border border-white/15 bg-black/60 backdrop-blur-md active:scale-95"
+            style={{ pointerEvents: 'auto' }}
+          >
+            <Radar className="h-5 w-5 text-emerald-300" strokeWidth={2.25} />
+          </button>
+        )}
         {expanded && <ExpandedRadar onClose={() => setExpanded(false)} soloMode={soloMode} />}
       </>
     );
@@ -352,13 +355,15 @@ const Minimap = ({ isTouch = false, standalone = false, soloMode = false }: { is
     </div>
   );
 
+  // While the expanded map is open we HIDE the compact radar entirely so the
+  // big map is the only one on screen (no redundant duplicate in the corner).
   return (
     <>
-      {standalone
+      {!expanded && (standalone
         // Solo / tutorial: self-position below the top-right stats panel so it
         // never overlaps the vitals (top-left) or loadout (bottom-right).
         ? <div className="pointer-events-none absolute right-4 top-[132px] z-[12] w-[208px]">{panel}</div>
-        : panel}
+        : panel)}
       {expanded && <ExpandedRadar onClose={() => setExpanded(false)} soloMode={soloMode} />}
     </>
   );

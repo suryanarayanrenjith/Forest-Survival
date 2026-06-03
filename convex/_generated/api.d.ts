@@ -13,6 +13,7 @@ import type * as auth from "../auth.js";
 import type * as authValidation from "../authValidation.js";
 import type * as gameLimits from "../gameLimits.js";
 import type * as http from "../http.js";
+import type * as leaderboard from "../leaderboard.js";
 import type * as photos from "../photos.js";
 import type * as playerStats from "../playerStats.js";
 import type * as profile from "../profile.js";
@@ -33,6 +34,7 @@ declare const fullApi: ApiFromModules<{
   authValidation: typeof authValidation;
   gameLimits: typeof gameLimits;
   http: typeof http;
+  leaderboard: typeof leaderboard;
   photos: typeof photos;
   playerStats: typeof playerStats;
   profile: typeof profile;
