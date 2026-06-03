@@ -145,6 +145,9 @@ export interface UserSettings {
   hitMarkers: boolean;
   killFeed: boolean;
   damageNumbers: boolean;
+  /** Enemy death ragdoll physics (launch + gravity + bounce + tumble). When
+   *  off, enemies use a lightweight shrink-out death instead. */
+  ragdollPhysics: boolean;
   crosshairStyle: 'dot' | 'cross' | 'circle' | 'dynamic';
   crosshairColor: string;
   graphicsQuality: GraphicsQuality;
@@ -162,6 +165,7 @@ export const defaultUserSettings: UserSettings = {
   hitMarkers: true,
   killFeed: true,
   damageNumbers: true,
+  ragdollPhysics: true,
   crosshairStyle: 'cross',
   crosshairColor: '#22c55e',
   graphicsQuality: 'high', // Default to the high tier

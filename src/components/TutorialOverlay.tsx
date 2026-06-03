@@ -238,13 +238,6 @@ export const CoachTip: React.FC<CoachTipProps> = ({
   priority,
   onDismiss
 }) => {
-  const priorityStyles = {
-    low: 'border-blue-400 bg-blue-900/80',
-    medium: 'border-yellow-400 bg-yellow-900/80',
-    high: 'border-orange-400 bg-orange-900/80',
-    critical: 'border-red-400 bg-red-900/80 animate-pulse'
-  };
-
   const priorityIcon: Record<string, LucideIcon> = {
     low: Lightbulb,
     medium: AlertTriangle,
@@ -261,7 +254,10 @@ export const CoachTip: React.FC<CoachTipProps> = ({
 
   return (
     <div className={`fixed bottom-56 left-1/2 -translate-x-1/2 z-40 animate-slide-up`}>
-      <div className={`${priorityStyles[priority]} border-2 rounded-lg p-4 shadow-2xl backdrop-blur-sm max-w-md`}>
+      <div
+        className={`rounded-2xl border bg-black/70 p-4 shadow-2xl backdrop-blur-md max-w-md ${priority === 'critical' ? 'animate-pulse' : ''}`}
+        style={{ borderColor: `${iconColor}88`, boxShadow: `0 0 30px ${iconColor}33` }}
+      >
         <div className="flex items-start gap-3">
           <div className="flex items-center justify-center w-9 h-9 rounded-lg bg-white/10 flex-shrink-0">
             <PriorityIcon className="w-5 h-5" style={{ color: iconColor }} strokeWidth={2} />

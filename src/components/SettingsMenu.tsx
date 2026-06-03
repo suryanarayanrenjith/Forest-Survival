@@ -3,7 +3,7 @@ import {
   Settings, X, Gamepad2, Volume2, SlidersHorizontal, Monitor,
   ChevronsUp, ChevronsDown, ChevronsRight, Wind, Zap,
   Crosshair, Target, RotateCcw, Grid3x3, Pause, Music, MousePointer2,
-  Eye, Activity, Skull, Hash, Check, Headphones, Sparkles, Hand, Radar, type LucideIcon,
+  Eye, Activity, Skull, Hash, Check, Headphones, Sparkles, Hand, Radar, Bone, type LucideIcon,
 } from 'lucide-react';
 import { soundManager } from '../utils/SoundManager';
 import { gameSettingsManager } from '../utils/GameSettingsManager';
@@ -26,6 +26,7 @@ interface GameSettings {
   hitMarkers: boolean;
   killFeed: boolean;
   damageNumbers: boolean;
+  ragdollPhysics: boolean;
   crosshairStyle: 'dot' | 'cross' | 'circle' | 'dynamic';
   crosshairColor: string;
   graphicsQuality: GraphicsQuality;
@@ -42,6 +43,7 @@ const defaultSettings: GameSettings = {
   hitMarkers: true,
   killFeed: true,
   damageNumbers: true,
+  ragdollPhysics: true,
   crosshairStyle: 'cross',
   crosshairColor: '#22c55e',
   graphicsQuality: 'high',
@@ -214,6 +216,7 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
                 <Toggle label="Hit Markers" desc="Feedback when you land hits" icon={Crosshair} value={settings.hitMarkers} onChange={(v) => updateSetting('hitMarkers', v)} />
                 <Toggle label="Kill Feed" desc="Elimination notifications" icon={Skull} value={settings.killFeed} onChange={(v) => updateSetting('killFeed', v)} />
                 <Toggle label="Damage Numbers" desc="Show damage dealt" icon={Hash} value={settings.damageNumbers} onChange={(v) => updateSetting('damageNumbers', v)} />
+                <Toggle label="Ragdoll Physics" desc="Enemies fly & tumble on death" icon={Bone} value={settings.ragdollPhysics} onChange={(v) => updateSetting('ragdollPhysics', v)} />
               </div>
               <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-4">
                 <div className="flex items-center gap-2 mb-3">

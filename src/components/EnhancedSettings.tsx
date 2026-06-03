@@ -22,6 +22,7 @@ export interface GameSettings {
   showHints: boolean;
   showDamageNumbers: boolean;
   screenShake: boolean;
+  ragdollPhysics: boolean;
   autoReload: boolean;
   adaptiveDifficulty: boolean;
 
@@ -308,6 +309,13 @@ const GameplaySettings: React.FC<{
       description="Camera shake on weapon fire and damage"
       value={settings.screenShake}
       onChange={(v) => onChange('screenShake', v)}
+    />
+
+    <ToggleSetting
+      label="Ragdoll Physics"
+      description="Enemies fly, tumble and bounce on death"
+      value={settings.ragdollPhysics}
+      onChange={(v) => onChange('ragdollPhysics', v)}
     />
 
     <ToggleSetting

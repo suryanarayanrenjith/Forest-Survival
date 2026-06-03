@@ -18,7 +18,7 @@ import { WeatherSystem } from './utils/WeatherSystem';
 import { BiomeSystem } from './utils/BiomeSystem';
 import { createAtmosphericHazeMaterial, createSkyDomeMaterial, updateShaderTime } from './utils/Shaders';
 import { getMapConfig, getRandomMap, DEFAULT_MAP, type MapConfig, type MapType } from './utils/MapSystem';
-import { getHDRIEnvironmentIntensity, loadHDRIEnvironment, type HDRIEnvironmentProfile } from './utils/HDRIEnvironment';
+import { getHDRIEnvironmentIntensity, getHDRIEnvironmentProfile, loadHDRIEnvironment, type HDRIEnvironmentProfile } from './utils/HDRIEnvironment';
 import { MultiplayerManager, type PlayerData as MpPlayerData, type NetworkMessage, type EnemyWire } from './utils/MultiplayerManager';
 import { RemotePlayerManager } from './utils/RemotePlayerManager';
 import { SnapshotInterpolator, type TransformSample } from './utils/SnapshotInterpolator';
@@ -174,6 +174,7 @@ const createEnhancedSettingsDefaults = (userSettings: UserSettings): GameSetting
   showHints: true,
   showDamageNumbers: userSettings.damageNumbers,
   screenShake: userSettings.screenShake,
+  ragdollPhysics: userSettings.ragdollPhysics,
   autoReload: false,
   adaptiveDifficulty: true,
   mouseSensitivity: userSettings.sensitivity,
@@ -195,6 +196,7 @@ const syncEnhancedSettingsWithUserSettings = (currentSettings: GameSettings, use
   showFPS: userSettings.showFPS,
   screenShake: userSettings.screenShake,
   showDamageNumbers: userSettings.damageNumbers,
+  ragdollPhysics: userSettings.ragdollPhysics,
 });
 
 const enhancedSettingsToUserSettings = (settings: GameSettings): Partial<UserSettings> => ({
@@ -206,6 +208,7 @@ const enhancedSettingsToUserSettings = (settings: GameSettings): Partial<UserSet
   showFPS: settings.showFPS,
   screenShake: settings.screenShake,
   damageNumbers: settings.showDamageNumbers,
+  ragdollPhysics: settings.ragdollPhysics,
 });
 
 const MENU_MUSIC_URL = '/audio/Beyond_The_Overgrowth.mp3';
@@ -215,7 +218,7 @@ const MENU_MUSIC_URL = '/audio/Beyond_The_Overgrowth.mp3';
 const SYNCED_SETTING_KEYS: (keyof UserSettings)[] = [
   'masterVolume', 'sfxVolume', 'musicVolume', 'sensitivity', 'fov',
   'showFPS', 'screenShake', 'hitMarkers', 'killFeed', 'damageNumbers',
-  'crosshairStyle', 'crosshairColor', 'graphicsQuality', 'keyBindings',
+  'ragdollPhysics', 'crosshairStyle', 'crosshairColor', 'graphicsQuality', 'keyBindings',
 ];
 
 function serializeSettings(s: UserSettings): string {
@@ -1985,15 +1988,30 @@ const ForestSurvivalGame = () => {
     // Generate a fast local PMREM first, then replace it with Poly Haven HDRI
     // lighting when the async HDR loader resolves. The visible sky remains
     // the authored shader dome; the HDRI drives reflections and material IBL.
+    //
+    // IMPORTANT: the local PMREM (captured from the already-built sky dome +
+    // lights above) is lit at the SAME map-specific intensity the HDRI will use,
+    // and we adopt the map's profile immediately. That way the very first visible
+    // frame is already at final brightness AND tracks the day cycle — the async
+    // HDRI swap below then only refines reflection detail at the same intensity,
+    // so the lighting no longer visibly "pops in" a few seconds into the game.
+    // The network fetch stays fire-and-forget, so load time is unchanged.
     let isSceneDisposed = false;
     let environmentRenderTarget: THREE.WebGLRenderTarget | null = null;
     let hdriEnvironmentProfile: HDRIEnvironmentProfile | null = null;
+    const fallbackEnvProfile = getHDRIEnvironmentProfile(selectedMap);
     try {
       const pmrem = new THREE.PMREMGenerator(renderer);
       pmrem.compileEquirectangularShader();
       environmentRenderTarget = pmrem.fromScene(scene, 0.04);
       scene.environment = environmentRenderTarget.texture;
-      scene.environmentIntensity = 0.72 * (renderProfile.environmentIntensity ?? 1.0);
+      hdriEnvironmentProfile = fallbackEnvProfile;
+      scene.environmentRotation.y = fallbackEnvProfile.rotationY;
+      scene.environmentIntensity = getHDRIEnvironmentIntensity(
+        fallbackEnvProfile,
+        renderAtmosphere.sunVisible,
+        renderAtmosphere.ambientIntensity,
+      ) * (renderProfile.environmentIntensity ?? 1.0);
       pmrem.dispose();
     } catch (err) {
       console.warn('[App] Environment map generation failed:', err);
@@ -4504,32 +4522,36 @@ const ForestSurvivalGame = () => {
       soundManager.play('enemyDeath', 0.6);
       createParticles(enemy.mesh.position, 0x00ff00, 8);
 
-      // ── Ragdoll launch (lightweight physics) ──
+      // ── Ragdoll launch (lightweight physics, toggleable in Settings) ──
       // Fling the corpse along the shot direction (or away from the player when
       // no hit direction is known, e.g. melee/AOE kills), up and tumbling. The
       // death loop integrates gravity + ground bounce. Heavier types launch less.
-      const massScale = enemy.type === 'boss' ? 0.32 : enemy.type === 'tank' ? 0.6 : enemy.type === 'fast' ? 1.3 : 1.0;
-      const launchDir = (enemy.hitImpulse && enemy.hitImpulse.lengthSq() > 1e-4)
-        ? enemy.hitImpulse.clone().setY(0).normalize()
-        : new THREE.Vector3(
-            enemy.mesh.position.x - camera.position.x,
-            0,
-            enemy.mesh.position.z - camera.position.z,
-          );
-      if (launchDir.lengthSq() < 1e-4) launchDir.set(0, 0, 1);
-      launchDir.normalize();
-      const launchSpeed = (4 + Math.random() * 2.5) * massScale * (isCritical ? 1.5 : 1);
-      enemy.deathVel = new THREE.Vector3(
-        launchDir.x * launchSpeed,
-        (5.5 + Math.random() * 1.6) * massScale,
-        launchDir.z * launchSpeed,
-      );
-      enemy.deathSpin = new THREE.Vector3(
-        (Math.random() - 0.5) * 9,
-        (Math.random() - 0.5) * 7,
-        (Math.random() - 0.5) * 11,
-      ).multiplyScalar(massScale);
-      enemy.deathStarted = true;
+      // When the player disables ragdolls, we leave deathVel/deathSpin unset and
+      // the death loop falls back to a clean topple-and-shrink animation.
+      if (gameSettingsManager.getSetting('ragdollPhysics')) {
+        const massScale = enemy.type === 'boss' ? 0.32 : enemy.type === 'tank' ? 0.6 : enemy.type === 'fast' ? 1.3 : 1.0;
+        const launchDir = (enemy.hitImpulse && enemy.hitImpulse.lengthSq() > 1e-4)
+          ? enemy.hitImpulse.clone().setY(0).normalize()
+          : new THREE.Vector3(
+              enemy.mesh.position.x - camera.position.x,
+              0,
+              enemy.mesh.position.z - camera.position.z,
+            );
+        if (launchDir.lengthSq() < 1e-4) launchDir.set(0, 0, 1);
+        launchDir.normalize();
+        const launchSpeed = (4 + Math.random() * 2.5) * massScale * (isCritical ? 1.5 : 1);
+        enemy.deathVel = new THREE.Vector3(
+          launchDir.x * launchSpeed,
+          (5.5 + Math.random() * 1.6) * massScale,
+          launchDir.z * launchSpeed,
+        );
+        enemy.deathSpin = new THREE.Vector3(
+          (Math.random() - 0.5) * 9,
+          (Math.random() - 0.5) * 7,
+          (Math.random() - 0.5) * 11,
+        ).multiplyScalar(massScale);
+        enemy.deathStarted = true;
+      }
 
       // Who gets the kill? In solo — and for the host's OWN kills — it's the
       // local player. In multiplayer, when a guest's reported hit lands the
@@ -5052,7 +5074,13 @@ const ForestSurvivalGame = () => {
         return;
       }
 
-      const rawDelta = clock.getDelta();
+      // Clamp the frame delta to a ~10 FPS floor. After a hidden/inactive tab or
+      // a GC/stutter, clock.getDelta() can return a huge value that would make
+      // bullets tunnel through enemies, teleport AI, and explode the death
+      // ragdoll / casing physics. Normal frames (16–33 ms) are far below the cap,
+      // so steady-state gameplay is byte-for-byte unaffected — this only tames the
+      // spike frame. (See also the isTabVisible early-return above.)
+      const rawDelta = Math.min(clock.getDelta(), 0.1);
       const delta = rawDelta * timeScale; // Apply slow-mo effect
 
       // Flush any pending HUD update at a capped rate (see flushGameState) so
@@ -6445,27 +6473,33 @@ const ForestSurvivalGame = () => {
       for (let i = enemies.length - 1; i >= 0; i--) {
         const enemy = enemies[i];
 
-        // Death — ragdoll-lite physics: the corpse flies along its launch
-        // impulse (set in handleEnemyKilled), falls under gravity, bounces off
-        // the ground with friction + tumble, settles, then shrinks away.
+        // Death animation. Two modes (toggled by the "Ragdoll Physics" setting,
+        // and used as the fallback for multiplayer-mirrored deaths):
+        //   • RAGDOLL (enemy.deathVel set) — the corpse flies along its launch
+        //     impulse, falls under gravity, bounces off the ground with friction
+        //     + tumble, settles, then shrinks away.
+        //   • SIMPLE (no deathVel) — a clean topple-forward + progressive
+        //     shrink/sink in place (the classic death anim).
         if (enemy.dead && enemy.deathTime > 0) {
           enemy.deathTime -= delta;
 
           // Base scale for this enemy type (pooled enemies use type-based scaling)
           const baseScale = enemy.type === 'fast' ? 0.7 : enemy.type === 'tank' ? 1.5 : enemy.type === 'boss' ? 2.0 : 1.0;
-          const restY = 0.22 * baseScale; // height the tumbling corpse rests at
 
-          // Splay the limbs out into a slack ragdoll pose on the first frame.
-          if (enemy.deathStarted) {
-            enemy.deathStarted = false;
-            if (enemy.leftArm) { enemy.leftArm.rotation.z = Math.PI / 2.4; enemy.leftArm.rotation.x = Math.PI / 5; }
-            if (enemy.rightArm) { enemy.rightArm.rotation.z = -Math.PI / 2.4; enemy.rightArm.rotation.x = Math.PI / 5; }
-            if (enemy.leftLeg) enemy.leftLeg.rotation.x = Math.PI / 7;
-            if (enemy.rightLeg) enemy.rightLeg.rotation.x = -Math.PI / 7;
-          }
-
-          // Integrate the rigid-body launch (gravity + bounce + spin).
           if (enemy.deathVel) {
+            // ── RAGDOLL ──
+            const restY = 0.22 * baseScale; // height the tumbling corpse rests at
+
+            // Splay the limbs into a slack ragdoll pose on the first frame.
+            if (enemy.deathStarted) {
+              enemy.deathStarted = false;
+              if (enemy.leftArm) { enemy.leftArm.rotation.z = Math.PI / 2.4; enemy.leftArm.rotation.x = Math.PI / 5; }
+              if (enemy.rightArm) { enemy.rightArm.rotation.z = -Math.PI / 2.4; enemy.rightArm.rotation.x = Math.PI / 5; }
+              if (enemy.leftLeg) enemy.leftLeg.rotation.x = Math.PI / 7;
+              if (enemy.rightLeg) enemy.rightLeg.rotation.x = -Math.PI / 7;
+            }
+
+            // Integrate the rigid-body launch (gravity + bounce + spin).
             enemy.deathVel.y -= 17 * delta; // gravity
             enemy.mesh.position.addScaledVector(enemy.deathVel, delta);
             if (enemy.mesh.position.y <= restY) {
@@ -6478,17 +6512,26 @@ const ForestSurvivalGame = () => {
                 if (Math.abs(enemy.deathVel.y) < 1.3) enemy.deathVel.y = 0; // settle
               }
             }
-          }
-          if (enemy.deathSpin) {
-            enemy.mesh.rotation.x += enemy.deathSpin.x * delta;
-            enemy.mesh.rotation.y += enemy.deathSpin.y * delta;
-            enemy.mesh.rotation.z += enemy.deathSpin.z * delta;
-          }
+            if (enemy.deathSpin) {
+              enemy.mesh.rotation.x += enemy.deathSpin.x * delta;
+              enemy.mesh.rotation.y += enemy.deathSpin.y * delta;
+              enemy.mesh.rotation.z += enemy.deathSpin.z * delta;
+            }
 
-          // Hold full size while it tumbles, then shrink away in the last 0.3s.
-          // (NO material changes here — materials are SHARED across all enemies.)
-          const fade = enemy.deathTime < 0.3 ? Math.max(0.02, enemy.deathTime / 0.3) : 1;
-          enemy.mesh.scale.setScalar(baseScale * fade);
+            // Hold full size while it tumbles, then shrink away in the last 0.3s.
+            const fade = enemy.deathTime < 0.3 ? Math.max(0.02, enemy.deathTime / 0.3) : 1;
+            enemy.mesh.scale.setScalar(baseScale * fade);
+          } else {
+            // ── SIMPLE (ragdoll off / MP mirror) — topple forward + shrink ──
+            const p = 1.0 - enemy.deathTime; // 0 → 1 over the 1s death window
+            enemy.mesh.rotation.x = p * (Math.PI / 2);
+            enemy.mesh.position.y = baseScale * (1.0 - p);
+            enemy.mesh.scale.setScalar(Math.max(0.02, 1.0 - p * 0.8) * baseScale);
+            if (enemy.leftArm) { enemy.leftArm.rotation.z = p * (Math.PI / 3); enemy.leftArm.rotation.x = p * (Math.PI / 4); }
+            if (enemy.rightArm) { enemy.rightArm.rotation.z = -p * (Math.PI / 3); enemy.rightArm.rotation.x = p * (Math.PI / 4); }
+            if (enemy.leftLeg) enemy.leftLeg.rotation.x = p * (Math.PI / 6);
+            if (enemy.rightLeg) enemy.rightLeg.rotation.x = -p * (Math.PI / 6);
+          }
 
           if (enemy.deathTime <= 0) {
             // Release mesh back to pool for reuse (SmartEnemyManager handles scene removal)
@@ -8200,7 +8243,14 @@ const ForestSurvivalGame = () => {
             maxHealth={gameState.maxHealth}
             isVisible={!isPaused}
           />
-          <KillFeed visible={!isPaused} />
+          <KillFeed
+            visible={!isPaused}
+            /* Solo & Tutorial dock the tactical radar under the score panel on
+               desktop, so the feed drops below it (~radar bottom) to never
+               overlap. Touch (radar = small toggle button) and Multiplayer
+               (no docked radar) keep the default high position. */
+            anchorClass={!isTouch && (gameMode === 'classic' || gameMode === 'tutorial') ? 'top-[384px] right-4' : 'top-36 right-4'}
+          />
           <ComboDisplay
             combo={gameState.combo}
             killStreak={gameState.killStreak}

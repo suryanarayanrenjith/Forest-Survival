@@ -10,6 +10,10 @@ interface KillFeedEntry {
 
 interface KillFeedProps {
   visible: boolean;
+  /** Top-right anchor classes for the feed container. Solo/Tutorial dock the
+   *  tactical radar directly under the score panel, so the feed is pushed below
+   *  it (default sits high, used by multiplayer where that corner is free). */
+  anchorClass?: string;
 }
 
 let killFeedEntries: KillFeedEntry[] = [];
@@ -43,7 +47,7 @@ const TYPE_META: Record<KillFeedEntry['type'], { icon: LucideIcon; color: string
   wave: { icon: Waves, color: '#38bdf8' },
 };
 
-const KillFeed = ({ visible }: KillFeedProps) => {
+const KillFeed = ({ visible, anchorClass = 'top-36 right-4' }: KillFeedProps) => {
   const [entries, setEntries] = useState<KillFeedEntry[]>([]);
 
   useEffect(() => {
@@ -71,7 +75,7 @@ const KillFeed = ({ visible }: KillFeedProps) => {
   if (!visible || entries.length === 0) return null;
 
   return (
-    <div className="fixed top-36 right-4 z-40 flex flex-col items-end gap-1.5 pointer-events-none">
+    <div className={`fixed ${anchorClass} z-40 flex flex-col items-end gap-1.5 pointer-events-none`}>
       {entries.map((entry, index) => {
         const meta = TYPE_META[entry.type];
         const Icon = meta.icon;

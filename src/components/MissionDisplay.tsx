@@ -49,12 +49,12 @@ const MissionCard: React.FC<MissionCardProps> = ({ mission, onDismiss }) => {
   }[mission.difficulty];
 
   return (
-    <div className="bg-black/90 backdrop-blur-sm border-2 border-cyan-400/50 rounded-lg p-3 shadow-2xl hover:border-cyan-300 transition-all">
+    <div className="rounded-2xl border border-white/10 bg-black/55 backdrop-blur-md p-3.5 shadow-2xl transition-colors hover:border-cyan-400/40">
       {/* Header */}
       <div className="flex items-start justify-between mb-2">
         <div className="flex-1">
           <div className="flex items-center gap-2 mb-1">
-            <span className={`text-xs font-bold uppercase tracking-wider ${difficultyColor}`}>
+            <span className={`text-xs font-bold uppercase tracking-[0.15em] ${difficultyColor}`}>
               {mission.difficulty}
             </span>
             {mission.timeLimit && (
@@ -92,7 +92,7 @@ const MissionCard: React.FC<MissionCardProps> = ({ mission, onDismiss }) => {
 
       {/* Progress Bar */}
       <div className="mb-2">
-        <div className="h-1.5 bg-gray-700 rounded-full overflow-hidden">
+        <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
           <div
             className={`h-full ${difficultyBg} transition-all duration-300`}
             style={{ width: `${progress}%` }}
@@ -143,7 +143,7 @@ const ObjectiveItem: React.FC<ObjectiveItemProps> = ({ objective }) => {
           )}
         </div>
         {!isComplete && (
-          <div className="h-1 bg-gray-700 rounded-full overflow-hidden">
+          <div className="h-1 bg-white/10 rounded-full overflow-hidden">
             <div
               className="h-full bg-cyan-500 transition-all duration-300"
               style={{ width: `${progress}%` }}
