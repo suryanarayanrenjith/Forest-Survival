@@ -45,6 +45,13 @@ interface HUDProps {
   t: (key: string) => string;
   unlockedWeapons: string[];
   currentWeapon: string;
+  /** Weapon Mastery snapshot for the EQUIPPED weapon. When undefined the
+   *  mastery sliver is hidden (guests, tutorial, locked weapon). */
+  weaponMastery?: {
+    level: number;       // 0..10
+    intoLevel: number;   // XP into current level
+    nextLevelXp: number; // total XP needed to reach next level (0 at max)
+  };
   /** Hide the top-right score/stats panel — used in multiplayer where the
    *  MultiplayerHUD occupies that corner and would otherwise overlap. */
   hideStatsPanel?: boolean;
@@ -75,7 +82,7 @@ const HUD = ({
   unlockedWeapons, currentWeapon, hideStatsPanel = false, unlimitedHealth = false,
   hideWave = false, abilities = [],
   staminaRatio = 1, staminaExhausted = false, unlimitedStamina = false,
-  isTouch = false, fpsVisible = false,
+  isTouch = false, fpsVisible = false, weaponMastery,
 }: HUDProps) => {
   const [scorePopup, setScorePopup] = useState(false);
   const [prevScore, setPrevScore] = useState(score);
@@ -223,6 +230,39 @@ const HUD = ({
               <span className="text-xs text-gray-500 font-medium">/ {maxAmmo}</span>
             </div>
           </div>
+
+          {/* Weapon Mastery — sliver below ammo. Hidden on guest / tutorial. */}
+          {weaponMastery && (
+            <div className="mt-2">
+              <div className="flex items-baseline justify-between mb-1">
+                <span className="text-[9px] font-bold tracking-[0.15em] text-amber-300/85 uppercase">
+                  Mastery
+                </span>
+                <span className="text-[10px] font-bold tabular-nums text-amber-200/90">
+                  L{weaponMastery.level}
+                  {weaponMastery.nextLevelXp > 0 && (
+                    <span className="ml-1 text-[9px] font-medium text-gray-500">
+                      {weaponMastery.intoLevel}/{weaponMastery.nextLevelXp}
+                    </span>
+                  )}
+                </span>
+              </div>
+              <div className="h-0.5 rounded-full bg-white/10 overflow-hidden">
+                <div
+                  className="h-full rounded-full transition-all duration-300"
+                  style={{
+                    width: `${
+                      weaponMastery.nextLevelXp > 0
+                        ? Math.min(100, (weaponMastery.intoLevel / weaponMastery.nextLevelXp) * 100)
+                        : 100
+                    }%`,
+                    background: 'linear-gradient(90deg, #b45309, #fbbf24)',
+                    boxShadow: '0 0 6px rgba(251,191,36,0.55)',
+                  }}
+                />
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

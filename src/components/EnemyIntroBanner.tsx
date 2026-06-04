@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { Skull, Wind, Shield, Crown, type LucideIcon } from 'lucide-react';
+import { Skull, Wind, Shield, Crown, Crosshair, type LucideIcon } from 'lucide-react';
 
 /** Payload describing a newly-unlocked tutorial enemy. Mirrors the `EnemyIntro`
  *  interface in App.tsx so the Tutorial Enemy Director can hand it straight in. */
@@ -9,7 +9,7 @@ export interface EnemyIntroData {
   blurb: string;
   tag: string;
   accent: string;
-  icon: 'skull' | 'wind' | 'shield' | 'crown';
+  icon: 'skull' | 'wind' | 'shield' | 'crown' | 'crosshair';
 }
 
 interface EnemyIntroBannerProps {
@@ -23,6 +23,7 @@ const ICONS: Record<EnemyIntroData['icon'], LucideIcon> = {
   wind: Wind,
   shield: Shield,
   crown: Crown,
+  crosshair: Crosshair,
 };
 
 /**

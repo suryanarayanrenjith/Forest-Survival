@@ -19,6 +19,7 @@ import CreditsMenu from './CreditsMenu';
 import AuthMenu from './AuthMenu';
 import ProfileMenu from './ProfileMenu';
 import UserAvatar from './UserAvatar';
+import DailyChallengeCard from './DailyChallengeCard';
 import { computeRank, legacySoloRankXp } from '../utils/rankSystem';
 
 function countBits(value: number): number {
@@ -327,6 +328,13 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode }: MainMenu
                   )}
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* Daily Challenge — signed-in only, today's rolled goal + claim. */}
+          {isAuthenticated && (
+            <div className="mb-3 w-full max-w-md">
+              <DailyChallengeCard />
             </div>
           )}
 

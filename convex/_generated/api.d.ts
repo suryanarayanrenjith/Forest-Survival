@@ -11,6 +11,7 @@
 import type * as account from "../account.js";
 import type * as auth from "../auth.js";
 import type * as authValidation from "../authValidation.js";
+import type * as daily from "../daily.js";
 import type * as gameLimits from "../gameLimits.js";
 import type * as http from "../http.js";
 import type * as leaderboard from "../leaderboard.js";
@@ -32,6 +33,7 @@ declare const fullApi: ApiFromModules<{
   account: typeof account;
   auth: typeof auth;
   authValidation: typeof authValidation;
+  daily: typeof daily;
   gameLimits: typeof gameLimits;
   http: typeof http;
   leaderboard: typeof leaderboard;

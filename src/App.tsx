@@ -60,6 +60,16 @@ import { MissionDisplay } from './components/MissionDisplay';
 import { SkillTreeMenu } from './components/SkillTreeMenu';
 import { TutorialOverlay, CoachTipsDisplay } from './components/TutorialOverlay';
 import EnemyIntroBanner from './components/EnemyIntroBanner';
+import WavePerkPicker from './components/WavePerkPicker';
+import { aggregatePerkBonuses, NEUTRAL_PERK_BONUSES, rollMysteryBox, isPerkPoolExhausted, WAVE_PERKS, type WavePerkId, type PerkBonuses } from './utils/WavePerkRegistry';
+import RunModifierPicker from './components/RunModifierPicker';
+import { RUN_MODIFIERS, getDailyTrio, type RunModifierId } from './utils/RunModifierSystem';
+import { spawnBarrels, type ExplosiveBarrel } from './utils/HazardSystem';
+import { spawnRangedSentinels, updateSentinelGlow, type RangedSentinel } from './utils/RangedSentinelSystem';
+import { CHARACTER_PASSIVES } from './utils/CharacterPassiveRegistry';
+import { DAILY_CHALLENGES, getTodayChallengeId } from './utils/DailyChallengeRegistry';
+import { bonusForLevel, levelFromXp, xpPerKill, xpProgressAtLevel, type MasteryBonus } from './utils/WeaponMasterySystem';
+import { TITLE_FOR_ACHIEVEMENT } from './utils/CosmeticTitles';
 import { EnhancedSettings, type GameSettings } from './components/EnhancedSettings';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import ShaderProcessingScreen, { type WarmupErrorInfo } from './components/ShaderProcessingScreen';
@@ -156,7 +166,7 @@ interface EnemyIntro {
   blurb: string;
   tag: string;       // short threat descriptor, e.g. "FAST · FRAGILE"
   accent: string;    // hex accent colour matching the enemy's vibe
-  icon: 'skull' | 'wind' | 'shield' | 'crown';
+  icon: 'skull' | 'wind' | 'shield' | 'crown' | 'crosshair';
 }
 
 const createEnhancedSettingsDefaults = (userSettings: UserSettings): GameSettings => ({
@@ -243,6 +253,15 @@ const ForestSurvivalGame = () => {
   const unlockSkillMutation = useMutation(api.playerStats.unlockSkill);
   const mergeAchievementsMutation = useMutation(api.playerStats.mergeAchievements);
   const setSettingsDb = useMutation(api.playerStats.setSettings);
+  // Daily Challenge — progress is recorded as a CUMULATIVE total, throttled
+  // client-side. The mutation idempotently `max()`s on the server side so a
+  // duplicate write can't double-count.
+  const recordDailyProgressMutation = useMutation(api.daily.recordProgress);
+  // Weapon Mastery — XP grants are sent per weapon as bounded deltas. The
+  // server reconciles + caps at MAX_XP_PER_WEAPON.
+  const addWeaponMasteryXpMutation = useMutation(api.playerStats.addWeaponMasteryXp);
+  const equipTitleMutation = useMutation(api.playerStats.equipTitle);
+  useEffect(() => { equipTitleRef.current = equipTitleMutation; }, [equipTitleMutation]);
   // Full settings cross-device sync: the account is source of truth at sign-in,
   // then local changes (from either settings panel) are pushed back to the DB,
   // debounced so slider drags don't spam mutations.
@@ -279,6 +298,44 @@ const ForestSurvivalGame = () => {
   const [isClassicRandomSession, setIsClassicRandomSession] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [showWaveComplete, setShowWaveComplete] = useState(false);
+  // Wave-End perk picker offer. When non-null, the picker overlay shows
+  // 3 cards and gameplay is frozen until the player picks one. Resolved
+  // through `wavePerkResolverRef` so the closure inside the game loop can
+  // call back to the picker's "pick" handler without a stale reference.
+  const [wavePerkOffer, setWavePerkOffer] = useState<{
+    wave: number;
+    slots: (WavePerkId | null)[];
+    prizeSlotIndex: number;
+    autoPickAfterMs?: number;
+  } | null>(null);
+  const wavePerkActiveRef = useRef(false);
+  // Resolver consumes the final pick result — `WavePerkId` on a winning
+  // guess, `null` when the player picked an empty box.
+  const wavePerkResolverRef = useRef<((picked: WavePerkId | null) => void) | null>(null);
+  // Picked perks for the active run — surfaces as a small chip in the HUD
+  // so the player can see at a glance what's stacked.
+  const [activeRunPerks, setActiveRunPerks] = useState<WavePerkId[]>([]);
+  // Run-Modifier picker step — sits between ClassicMenu and the shader loader
+  // so the player gets one last "raise the stakes" choice before the world
+  // initialises. Selected modifier is stored as a ref so the game loop's
+  // closure can read it once on init without forcing a re-render dependency.
+  const [runModifierPickerOptions, setRunModifierPickerOptions] = useState<RunModifierId[] | null>(null);
+  const pendingClassicStartRef = useRef<{ difficulty: 'easy' | 'medium' | 'hard' | 'adaptive'; timeOfDay: 'day' | 'night' | 'auto'; map: MapType; isRandom: boolean } | null>(null);
+  const activeRunModifierRef = useRef<RunModifierId | null>(null);
+  // Per-weapon mastery XP snapshot, read out of player stats once before
+  // the scene useEffect mounts. The scene loop only sees this REF (so a
+  // refetch on the way in is fine); the persisted total is updated by the
+  // throttled XP-flush mutation.
+  const persistedWeaponMasteryRef = useRef<Record<string, number>>({});
+  // Currently equipped cosmetic title (auto-equipped from the first
+  // unlocked title-granting achievement; future iterations let players
+  // pick via Profile). Stored as a ref so the scene loop can read without
+  // taking a hook dependency.
+  const equippedTitleRef = useRef<string | null>(null);
+  // Stable ref to the equipTitle mutation so the scene useEffect doesn't
+  // have to take the mutation function as a dep (which would re-mount the
+  // scene on every render).
+  const equipTitleRef = useRef<(args: { title: string | null }) => Promise<unknown>>(async () => null);
   const [powerUpMessage, setPowerUpMessage] = useState<string>('');
   // Tutorial-only "New Threat" banner — announces each enemy species the moment
   // the Tutorial Enemy Director unlocks it, turning the tutorial into a bestiary.
@@ -430,6 +487,11 @@ const ForestSurvivalGame = () => {
     const tree = skillTreeRef.current ?? new SmartSkillTreeSystem();
     tree.hydrate(playerStats.skills, playerStats.skillPoints);
     skillTreeRef.current = tree;
+    // Mirror persisted weapon mastery XP into the scene-loop ref so the
+    // game starts each run with the correct level snapshot for every
+    // weapon. The ref is read once on scene init.
+    persistedWeaponMasteryRef.current = { ...(playerStats.weaponMastery ?? {}) };
+    equippedTitleRef.current = playerStats.equippedTitle ?? null;
     const s = tree.getState();
     setSkillTreeData((prev) => ({
       ...prev,
@@ -1081,6 +1143,14 @@ const ForestSurvivalGame = () => {
         const mask = achievementSystem.getUnlockedMask();
         if (mask) {
           void mergeAchievementsRef.current({ mask }).catch(() => {});
+        }
+        // Cosmetic Title — auto-equip the first available title the player
+        // hasn't equipped yet. Future iterations let the player pick via
+        // Profile; this MVP cut just surfaces SOMETHING in the kill feed.
+        const earnedTitle = TITLE_FOR_ACHIEVEMENT[achievement.id];
+        if (earnedTitle && !equippedTitleRef.current) {
+          equippedTitleRef.current = earnedTitle;
+          void equipTitleRef.current({ title: earnedTitle }).catch(() => { /* best-effort */ });
         }
       });
     }
@@ -2292,6 +2362,34 @@ const ForestSurvivalGame = () => {
     generateChunk(0, -1);
     generateChunk(-1, -1);
 
+    // === EXPLOSIVE BARRELS ===
+    // Scatter red barrels across the map. Density per-map (MapConfig).
+    // Bullet hit → AOE damage to everything within blastRadius (player +
+    // enemies). Tactical pop: kite a tank into one for a free wipe.
+    const barrelDensity = mapConfig.barrelDensity ?? 0.35;
+    const barrelCount = Math.round(barrelDensity * 30); // 0–30 across the world
+    const barrels: ExplosiveBarrel[] = barrelCount > 0
+      ? spawnBarrels(scene, barrelCount, overlapsTerrain, 240)
+      : [];
+
+    // === RANGED SENTINELS (NEW ENEMY ARCHETYPE — TURRETS) ===
+    // Stationary laser turrets sprinkled across the map. After a brief
+    // charge-up they shoot the player from afar — adds pressure to keep
+    // moving, rewards prioritising distant threats. Skipped in tutorial
+    // mode AND easy mode (players are still learning the basics). Count
+    // scales with difficulty so the harder presets actually feel harder.
+    // Multiplayer guests mirror the host's sentinels visually but the host
+    // owns the firing.
+    const sentinelCount = isTutorialMode ? 0
+      : classicDifficulty === 'easy' ? 0
+      : classicDifficulty === 'medium' ? 2
+      : classicDifficulty === 'hard' ? 4
+      : 3; // adaptive
+    const sentinels: RangedSentinel[] = sentinelCount > 0
+      ? spawnRangedSentinels(scene, sentinelCount, overlapsTerrain, 220)
+      : [];
+    let sentinelIntroFired = false; // First-encounter intro banner fires once.
+
     // === SPAWN SAFE ZONE ===
     // Random terrain generation can place a tree/rock/wall right on top of the
     // player's start position. Because collision is radius-based, the player
@@ -2510,9 +2608,87 @@ const ForestSurvivalGame = () => {
       scene.add(ambientParticles);
     }
 
-    // Game state
+    // === RUN MODIFIER (single-run mutator) ===
+    // Read once on scene init. The modifier is locked for the whole run so
+    // the per-frame loop doesn't have to keep checking. `runModifier` may be
+    // null (the player picked "Play without").
+    const runModifierId = activeRunModifierRef.current;
+    const runModifier = runModifierId ? RUN_MODIFIERS[runModifierId] : null;
+    const runMods = runModifier?.mods ?? {};
+    const runModifierScoreMult = runModifier?.scoreMult ?? 1.0;
+
+    // === WEAPON MASTERY (per-run XP tracker → throttled flush to convex) ===
+    // Keeps an accumulator per weapon. The accumulator counts kills made
+    // with each weapon during the run; we periodically flush the delta to
+    // convex/addWeaponMasteryXp (server caps deltas + total). The current
+    // weapon's level + bonus snapshot are cached in `masteryBonus` and
+    // refreshed when XP changes or weapon switches.
+    const masteryRunXp: Record<string, number> = {};
+    const masteryLastSentXp: Record<string, number> = {};
+    let masteryFlushAccum = 0;
+    let masteryBonus: MasteryBonus = bonusForLevel(0);
+    // Initial XP comes from the persisted record on the convex side. We
+    // read it once via the React profile data outside the useEffect; the
+    // initial bonus snapshot is taken below once `currentWeapon` is set.
+    const masteryPersistedXpRef = persistedWeaponMasteryRef.current;
+    const masteryTotalXp = (weapon: string): number =>
+      (masteryPersistedXpRef[weapon] ?? 0) + (masteryRunXp[weapon] ?? 0);
+    const refreshMasteryBonus = () => {
+      masteryBonus = bonusForLevel(levelFromXp(masteryTotalXp(currentWeapon)));
+    };
+    const flushMasteryXp = () => {
+      for (const weapon in masteryRunXp) {
+        const accumulated = masteryRunXp[weapon];
+        const previouslySent = masteryLastSentXp[weapon] ?? 0;
+        const delta = accumulated - previouslySent;
+        if (delta <= 0) continue;
+        masteryLastSentXp[weapon] = accumulated;
+        void addWeaponMasteryXpMutation({ weaponId: weapon, xpDelta: delta })
+          .catch(() => { /* best-effort */ });
+      }
+    };
+
+    // === DAILY CHALLENGE TRACKER ===
+    // Per-run cumulative counts for every challenge event channel. Flushed
+    // to convex every ~3 s for the relevant channel — the server stores the
+    // max so a duplicate flush can't double-count. Disabled in tutorial
+    // mode (no chargeable kills) and in multiplayer (multiplayer kills go
+    // through a separate scoring path).
+    const dailyEnabled = !isTutorialMode && !isMultiplayer && isAuthenticated;
+    const dailyChallengeId = dailyEnabled ? getTodayChallengeId() : null;
+    const dailyChannel = dailyChallengeId ? DAILY_CHALLENGES[dailyChallengeId].event : null;
+    const dailyCounts = { kill: 0, wave: 0, headshot: 0, flawless_wave: 0, pistol_kill: 0 };
+    let dailyFlushAccum = 0;
+    let dailyLastSentValue = 0;
+    const dailyFlush = () => {
+      if (!dailyChallengeId || !dailyChannel) return;
+      const value = dailyCounts[dailyChannel];
+      if (value === dailyLastSentValue) return;
+      dailyLastSentValue = value;
+      // Fire-and-forget; the mutation handles auth + reconciliation.
+      void recordDailyProgressMutation({
+        challengeId: dailyChallengeId,
+        progress: value,
+      }).catch(() => { /* best-effort — local play is unaffected */ });
+    };
+
+    // === MULTIPLAYER CHARACTER PASSIVE ===
+    // Lobby characters now ship with mechanical perks (Heavy → +20% HP,
+    // Medic → 0.5 HP/s regen, etc.). Read the local class once and snapshot
+    // its modifiers so the per-frame loop can stack them on top of the
+    // skill-tree + wave-perk + run-modifier bonuses. Read directly off the
+    // multiplayer manager because `localClassPick` is declared later in the
+    // scene init below.
+    const mpClassEarly = (isMultiplayer && multiplayerManager
+      ? multiplayerManager.getLocalPlayer().modelClass
+      : undefined) as keyof typeof CHARACTER_PASSIVES | undefined;
+    const mpPassive = mpClassEarly ? CHARACTER_PASSIVES[mpClassEarly] : null;
+    const mpMods = mpPassive?.mods ?? {};
+
+    // Game state. Ammo starts at the pistol's max-ammo cap, with the
+    // One-in-the-Chamber modifier (if active) clamping it to 1.
     let health = 100;
-    let ammo = 12;
+    let ammo = runMods.startAmmoMax ?? 12;
     let score = 0;
     let enemiesKilled = 0;
     // Once the local player is eliminated (multiplayer spectate / single-player
@@ -2524,7 +2700,34 @@ const ForestSurvivalGame = () => {
     // so newly-spent points show up in gameplay within a fraction of a second.
     let skillBonuses: Record<string, number> = skillTree.calculateStatBonuses();
     let skillBonusAccum = 0;
-    let playerMaxHealth = 100 + (skillBonuses['maxHealth'] || 0);
+    // === WAVE-END CHOICE CARD PERKS (single-run, additive) ===
+    // The player banks a perk after every wave-clear (see the picker logic
+    // around `setPerkOffer`). `runPerks` is the ordered stack; `perkBonuses`
+    // is the per-frame snapshot read by every hot call-site (fire rate,
+    // damage, dash CD, pickup radius, etc.) — recomputed only when picks
+    // change so the RAF loop pays one struct read, not 15.
+    const runPerks: WavePerkId[] = [];
+    let perkBonuses: PerkBonuses = { ...NEUTRAL_PERK_BONUSES };
+    let perkRegenAccum = 0; // partial-HP carry for the regen-per-second perk
+    // Some perks have a one-shot moment-of-pick effect (max HP grant) on top
+    // of their ongoing snapshot contribution. Run them once when picked.
+    const applyPerkInstantEffects = (picked: WavePerkId) => {
+      if (picked === 'max_hp_25') {
+        playerMaxHealth += 25;
+        health = Math.min(playerMaxHealth, health + 25);
+      }
+      if (picked === 'max_ammo_50') {
+        // Top off the current mag immediately so the pick feels live.
+        ammo = Math.min(Math.round(WEAPONS[currentWeapon].maxAmmo * perkBonuses.maxAmmoMult), ammo + 30);
+      }
+    };
+    // Skill maxHealth + Run-Modifier max-HP multiplier (Berserker halves,
+    // Glass Cannon quarters) + MP character passive (Heavy → +20%). Floor at
+    // 10 HP so we never spawn with zero.
+    let playerMaxHealth = Math.max(
+      10,
+      Math.floor((100 + (skillBonuses['maxHealth'] || 0)) * (runMods.playerMaxHpMult ?? 1) * (mpMods.maxHpMult ?? 1)),
+    );
     // Start every run at FULL health — including the Thick Skin bonus. Without
     // this, a player who has invested in Thick Skin would spawn at 100/<max>
     // (e.g. 100/130) instead of full, because `health` was hard-coded to 100.
@@ -2877,7 +3080,7 @@ const ForestSurvivalGame = () => {
         1.5 // Hearing sensitivity - increased
       );
       const attackSystemInstance = new AttackSystem(
-        AttackSystem.createConfigForType(type, enemyDamage * diffSettings.damageMult)
+        AttackSystem.createConfigForType(type, enemyDamage * diffSettings.damageMult * (runMods.enemyDamageMult ?? 1))
       );
 
       // NEW: Obstacle avoidance system - prevents getting stuck in trees
@@ -2899,16 +3102,16 @@ const ForestSurvivalGame = () => {
       // normal enemy (50 base) is ≥40 HP → always needs ≥2 body shots. This is a
       // no-op in normal play (Easy is 0.9, the lowest, already above the floor),
       // so it only protects the tutorial / future low-multiplier cases.
-      const effectiveHealth = enemyHealth * Math.max(0.8, diffSettings.healthMult * healthMultiplier);
+      const effectiveHealth = enemyHealth * Math.max(0.8, diffSettings.healthMult * healthMultiplier) * (runMods.enemyHealthMult ?? 1);
 
       return {
         mesh: enemyGroup,
         health: effectiveHealth,
         maxHealth: effectiveHealth,
-        speed: (enemySpeed + Math.random() * 0.02) * diffSettings.speedMult,
+        speed: (enemySpeed + Math.random() * 0.02) * diffSettings.speedMult * (runMods.enemySpeedMult ?? 1),
         dead: false,
         type,
-        damage: enemyDamage * diffSettings.damageMult,
+        damage: enemyDamage * diffSettings.damageMult * (runMods.enemyDamageMult ?? 1),
         scoreValue: enemyScore,
         // Animation state
         walkTime: Math.random() * Math.PI * 2,
@@ -3409,21 +3612,23 @@ const ForestSurvivalGame = () => {
       }
     };
 
-    const spawnEnemyBatch = (count: number): number => {
+    const spawnEnemyBatch = (count: number, typeOverride?: 'normal' | 'fast' | 'tank' | 'boss', miniBoss = false): number => {
       const adaptiveMax = smartEnemyManager.getCurrentMaxEnemies();
       const hardish = classicDifficulty === 'hard' || classicDifficulty === 'adaptive';
       let spawned = 0;
       for (let i = 0; i < count; i++) {
         if (enemies.length >= adaptiveMax || !smartEnemyManager.canSpawnMore()) break;
-        let type: 'normal' | 'fast' | 'tank' | 'boss' = 'normal';
-        if (isTutorialMode) {
-          // Tutorial draws from the director's progressively-unlocked roster.
-          type = pickTutorialEnemyType();
-        } else {
-          const rand = Math.random();
-          if (wave >= 5 && rand < (hardish ? 0.12 : 0.08)) type = 'boss';
-          else if (wave >= 3 && rand < (hardish ? 0.32 : 0.24)) type = 'tank';
-          else if (wave >= 2 && rand < (hardish ? 0.5 : 0.42)) type = 'fast';
+        let type: 'normal' | 'fast' | 'tank' | 'boss' = typeOverride ?? 'normal';
+        if (!typeOverride) {
+          if (isTutorialMode) {
+            // Tutorial draws from the director's progressively-unlocked roster.
+            type = pickTutorialEnemyType();
+          } else {
+            const rand = Math.random();
+            if (wave >= 5 && rand < (hardish ? 0.12 : 0.08)) type = 'boss';
+            else if (wave >= 3 && rand < (hardish ? 0.32 : 0.24)) type = 'tank';
+            else if (wave >= 2 && rand < (hardish ? 0.5 : 0.42)) type = 'fast';
+          }
         }
         // Bosses are bigger (scale 2.0) so they need a wider clearance.
         const enemyRadius = type === 'boss' ? 2.0 : type === 'tank' ? 1.6 : 1.2;
@@ -3431,6 +3636,24 @@ const ForestSurvivalGame = () => {
         const spot = findEnemySpawnSpot(baseDist, enemyRadius);
         const enemy = createEnemy(spot.x, spot.z, type);
         if (enemy) {
+          // Mini-Boss elevation: quadruple HP, mark the flag, and slap a
+          // bright yellow "crown" emissive sphere above the head so the
+          // player can pick it out of the wave at a glance.
+          if (miniBoss) {
+            enemy.isMiniBoss = true;
+            enemy.health *= 4;
+            enemy.maxHealth *= 4;
+            const crownGeo = new THREE.SphereGeometry(0.45, 12, 10);
+            const crownMat = new THREE.MeshBasicMaterial({
+              color: 0xfbbf24,
+              toneMapped: false,
+              fog: false,
+            });
+            const crown = new THREE.Mesh(crownGeo, crownMat);
+            crown.position.y = (enemy.head?.position.y ?? 1.9) + 0.9;
+            crown.userData.cannotReceiveAO = true;
+            enemy.mesh.add(crown);
+          }
           // Host stamps a stable network id so guests can track this enemy.
           if (isMpHost) {
             enemy.netId = nextEnemyNetId++;
@@ -3484,9 +3707,30 @@ const ForestSurvivalGame = () => {
       // burst spawns now; continuousSpawn() trickles in the rest.
       // Wave size: 7 + wave*3 (was 10 + wave*5) — smaller waves so the
       // pace stays manageable, especially on Easy.
-      waveEnemiesRemaining = Math.max(4, Math.floor((7 + wave * 3) * diffSettings.spawnMult));
+      waveEnemiesRemaining = Math.max(4, Math.floor((7 + wave * 3) * diffSettings.spawnMult * (runMods.enemySpawnMult ?? 1)));
       const opening = Math.min(5, waveEnemiesRemaining);
       waveEnemiesRemaining -= spawnEnemyBatch(opening);
+      // ── MINI-BOSS every 5 waves ─────────────────────────────────────
+      // Wave % 5 spawns a beefed-up tank flagged isMiniBoss. The mini-boss
+      // is treated like a regular kill for wave-clear math (counts toward
+      // waveEnemiesRemaining via spawnEnemyBatch's pool slot). Skipped on
+      // wave 10/20/etc. when a full boss is already in the mix.
+      if (wave > 0 && wave % 5 === 0 && wave % 10 !== 0) {
+        const spawned = spawnEnemyBatch(1, 'tank', true);
+        if (spawned > 0) {
+          setEnemyIntro({
+            id: Date.now(),
+            name: 'Crowned Elite',
+            tag: 'MINI-BOSS · 4× HP',
+            blurb: 'A reinforced tank wearing a crown. Stack damage; it can take a beating.',
+            accent: '#fbbf24',
+            icon: 'crown',
+          });
+          // Audio cue so the player KNOWS something has changed even if
+          // they're not looking at the banner spot.
+          soundManager.play('powerUp', 0.85, false, 0.85);
+        }
+      }
       // Slowed wave spawn frequency from every 2nd wave → every 3rd wave.
       // Combined with the per-spawn count cut (2 → 1) and the reduced
       // enemy-kill drop rate, powerups are now a real reward rather than
@@ -3661,7 +3905,7 @@ const ForestSurvivalGame = () => {
           createParticles(camera.position, 0xffcc33, 22);
           break;
         case 'ammo':
-          ammo = WEAPONS[currentWeapon].maxAmmo;
+          ammo = effectiveMaxAmmo(currentWeapon);
           setPowerUpMessage('Ammo Refilled');
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Ammo Refilled', 'powerup');
           createParticles(camera.position, 0xffd54a, 12);
@@ -3698,7 +3942,7 @@ const ForestSurvivalGame = () => {
           break;
         case 'phantom':
           phantomActive = true;
-          phantomEndTime = nowMs + phantomDuration;
+          phantomEndTime = nowMs + phantomDuration * (mpMods.phantomDurationMult ?? 1);
           setPowerUpMessage('Phantom · enemies lose track of you');
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Phantom Active!', 'powerup');
           // No world flare — the weapon fading out is the feedback.
@@ -3728,6 +3972,76 @@ const ForestSurvivalGame = () => {
         || infiniteAmmoActive || overchargeActive || phantomActive;
     }
 
+    // ── KILLSTREAK REWARDS ────────────────────────────────────────────────
+    // Applied IMMEDIATELY on airdrop pickup. Unlike the held-power slot
+    // these bypass `anyTimedEffectActive` — they're a skill payout and the
+    // player intentionally earned the right to stack them.
+    function applyKillstreakReward(type: import('./utils/EnhancedPowerUps').PowerUpType) {
+      const nowMs = Date.now();
+      gunModel.triggerAbility();
+      soundManager.play('powerUp', 0.85);
+      switch (type) {
+        case 'rapid_fire':
+          rapidFireActive = true;
+          rapidFireEndTime = nowMs + rapidFireDuration;
+          setPowerUpMessage('Rapid Fire · 3× fire rate · 15s');
+          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Rapid Fire!', 'powerup');
+          createParticles(camera.position, 0xffaa33, 26);
+          break;
+        case 'invincible':
+          invincibleActive = true;
+          invincibleEndTime = nowMs + invincibleDuration;
+          setPowerUpMessage('Invincible · 5s');
+          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Invincible!', 'powerup');
+          createParticles(camera.position, 0xffff33, 32);
+          break;
+        case 'random_weapon': {
+          // Mystery Box — pick a random weapon, unlock & equip it, full mag.
+          const keys = Object.keys(WEAPONS);
+          let pick = keys[(Math.random() * keys.length) | 0];
+          // Try a few more rolls to avoid handing back the weapon already held.
+          for (let i = 0; i < 4 && pick === currentWeapon; i++) {
+            pick = keys[(Math.random() * keys.length) | 0];
+          }
+          if (!unlockedWeapons.includes(pick)) unlockedWeapons.push(pick);
+          currentWeapon = pick;
+          ammo = effectiveMaxAmmo(pick);
+          gunModel.switchWeapon(pick as GunWeaponType);
+          setGunFillForWeapon(pick);
+          setPowerUpMessage(`Mystery Box · ${WEAPONS[pick].name}`);
+          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry(`Mystery: ${WEAPONS[pick].name}`, 'powerup');
+          createParticles(camera.position, 0xbb33ff, 22);
+          updateGameState();
+          break;
+        }
+        case 'nuke': {
+          // Tactical nuke — vaporise everything alive. Credit each kill so
+          // the player's score / streak / mission progress all tick up.
+          let nuked = 0;
+          for (let i = 0; i < enemies.length; i++) {
+            const e = enemies[i];
+            if (e.dead || e.health <= 0) continue;
+            e.health = 0;
+            handleEnemyKilled(e, false);
+            nuked++;
+          }
+          setPowerUpMessage(`Tactical Nuke · ${nuked} eliminated`);
+          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry(`Tactical Nuke · ${nuked} kills`, 'powerup');
+          triggerScreenShake();
+          // A bright burst on the player + the kill flash for the payoff.
+          createParticles(camera.position, 0x33ff33, 50);
+          triggerKillFlash();
+          break;
+        }
+        default:
+          // The other PowerUpType values (health/ammo/speed/damage/shield/
+          // infinite_ammo) are handled via the held-power slot; not reachable
+          // from the killstreak airdrop pool today.
+          break;
+      }
+      setTimeout(() => setPowerUpMessage(''), 2200);
+    }
+
     let infiniteAmmoActive = false;
     let infiniteAmmoEndTime = 0;
     const infiniteAmmoDuration = 10000; // 10 seconds
@@ -3743,6 +4057,24 @@ const ForestSurvivalGame = () => {
     let phantomActive = false;
     let phantomEndTime = 0;
     const phantomDuration = 5000; // 5 seconds
+
+    // ── KILLSTREAK AIRDROP REWARDS ───────────────────────────────────────
+    // Earned by chaining kills without dying. Effects are INSTANT (no held
+    // slot) and INTENTIONALLY stack with the regular timed powers — they're
+    // a skill payout, not a regular loot drop.
+    let invincibleActive = false;
+    let invincibleEndTime = 0;
+    const invincibleDuration = 5000; // 5 seconds — short, punchy "god moment"
+
+    let rapidFireActive = false;
+    let rapidFireEndTime = 0;
+    const rapidFireMultiplier = 3.0; // 3× the weapon's natural fire rate
+    const rapidFireDuration = 15000; // 15 seconds
+
+    // Highest streak value we've already awarded an airdrop for. Reset with
+    // killStreak (on wave end) so a hot streak across multiple waves still
+    // earns every reward tier.
+    let lastStreakAwarded = 0;
 
     // DASH ABILITY - Quick burst of speed
     let isDashing = false;
@@ -3782,21 +4114,39 @@ const ForestSurvivalGame = () => {
     // that fires when the trigger is pulled on an empty mag. Returns false when
     // a reload can't start (already reloading, paused/over, or mag already full).
     let reloadTimeoutId: number | null = null;
+    // Wave-perk Drum Magazine + Weapon Mastery magazine bonus boost the
+    // effective magazine cap. Wrapped so every site (HUD, reload, refills)
+    // reads the same source-of-truth size. The One-in-the-Chamber run
+    // modifier overrides everything with an absolute cap — a single round
+    // per weapon, all run long.
+    const effectiveMaxAmmo = (key: string): number => {
+      if (runMods.startAmmoMax !== undefined) return runMods.startAmmoMax;
+      // Mastery bonus only applies to the CURRENT weapon — we don't track
+      // per-weapon snapshots, just the active one. Other weapons use the
+      // baseline; they'll get their bonus when switched to.
+      const masteryMag = (key === currentWeapon) ? masteryBonus.magazineBonus : 0;
+      return Math.round(WEAPONS[key].maxAmmo * perkBonuses.maxAmmoMult * (1 + masteryMag));
+    };
     const startReload = (): boolean => {
       if (isReloading || paused || isGameOver || tutorialActiveRef.current) return false;
       const weapon = WEAPONS[currentWeapon];
-      if (ammo >= weapon.maxAmmo) return false;
+      const maxAmmoNow = effectiveMaxAmmo(currentWeapon);
+      if (ammo >= maxAmmoNow) return false;
       isReloading = true;
       soundManager.play('reload', 0.5);
       gunModel.triggerReload();
       tutorial.recordAction('reload', 1);
-      // Quickdraw skill speeds up the reload.
-      const reloadMs = weapon.reloadTime / (1 + skillBonus('reloadSpeed'));
+      // Quickdraw skill + Engineer MP passive + Weapon Mastery all speed up
+      // the reload. Mastery's `reloadSpeedup` is a percentage REDUCTION (0.10
+      // → 10% off) so we subtract it from 1 in the multiplier chain.
+      const reloadMs = (weapon.reloadTime / (1 + skillBonus('reloadSpeed')))
+        * (mpMods.reloadSpeedMult ?? 1)
+        * (1 - masteryBonus.reloadSpeedup);
       setReloadDurationUI(reloadMs); // drives the crosshair reload indicator
       if (reloadTimeoutId !== null) window.clearTimeout(reloadTimeoutId);
       reloadTimeoutId = window.setTimeout(() => {
         reloadTimeoutId = null;
-        ammo = weapon.maxAmmo;
+        ammo = maxAmmoNow;
         isReloading = false;
         setReloadDurationUI(null);
         updateGameState();
@@ -3812,6 +4162,10 @@ const ForestSurvivalGame = () => {
       if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) {
         return;
       }
+      // Wave-perk picker owns the keyboard while it's open (1/2/3 select a
+      // perk; ←/→/Enter browse). Block ALL gameplay handlers so the player
+      // can't accidentally swap weapons or jump while picking.
+      if (wavePerkActiveRef.current) return;
 
       // CRITICAL: Always set the key state first to ensure movement works
       // This ensures keys are registered even if later checks fail. The set is
@@ -3875,7 +4229,7 @@ const ForestSurvivalGame = () => {
         isDashing = true;
         dashTimer = dashDuration;
         // Dash Mastery skill shrinks the cooldown (bonus value is negative)
-        dashCooldown = dashCooldownTime * Math.max(0.15, 1 + skillBonus('dashCooldown'));
+        dashCooldown = dashCooldownTime * Math.max(0.15, 1 + skillBonus('dashCooldown')) * perkBonuses.dashCooldownMult * (mpMods.dashCooldownMult ?? 1);
 
         // Get dash direction based on movement keys or forward if standing still
         const dir = new THREE.Vector3();
@@ -3961,7 +4315,8 @@ const ForestSurvivalGame = () => {
           // Guard against re-selecting the current weapon — that path used to
           // silently refill the mag (a free instant reload) on every keypress.
           currentWeapon = weaponName;
-          ammo = WEAPONS[weaponName].maxAmmo;
+          refreshMasteryBonus();
+          ammo = effectiveMaxAmmo(weaponName);
           gunModel.switchWeapon(weaponName as GunWeaponType);
           setGunFillForWeapon(weaponName);
           soundManager.play('weaponSwitch', 0.5);
@@ -3991,9 +4346,15 @@ const ForestSurvivalGame = () => {
       // "lost lock → auto-pause" path can't fire on every frame.
       if (touchControls.enabled) return;
       const locked = document.pointerLockElement === renderer.domElement;
-      // Don't auto-pause when losing pointer lock in multiplayer or during tutorial
+      // Don't auto-pause when losing pointer lock in multiplayer, tutorial,
+      // photo mode, OR while the wave-perk picker is up (the picker releases
+      // the lock on purpose so 1/2/3 can pick a perk; auto-pausing under it
+      // dropped the pause menu over the picker, soft-locked the player and
+      // was the source of the "wave 1 picker → glitched" report).
       const inMultiplayerGame = isMultiplayer || gameMode === 'multiplayer';
-      if (!locked && !paused && !isGameOver && !inMultiplayerGame && !tutorialActiveRef.current && !photoModeRef.current) {
+      if (!locked && !paused && !isGameOver && !inMultiplayerGame
+          && !tutorialActiveRef.current && !photoModeRef.current
+          && !wavePerkActiveRef.current) {
         paused = true;
         setIsPaused(true);
       }
@@ -4119,8 +4480,12 @@ const ForestSurvivalGame = () => {
       if (ammo > 0 && !isGameOver && !paused && canShoot && !isReloading && !tutorialActiveRef.current) {
         const weapon = WEAPONS[currentWeapon];
         canShoot = false;
-        // Overcharge shortens the inter-shot delay (faster fire rate).
-        const fireDelay = overchargeActive ? weapon.fireRate / overchargeFireRateMult : weapon.fireRate;
+        // Overcharge × Rapid-Fire (killstreak airdrop) × Wave perks compound on
+        // top of the weapon's base fire rate — earn them all, fire blisteringly fast.
+        let fireRateMult = perkBonuses.fireRateMult;
+        if (overchargeActive) fireRateMult *= overchargeFireRateMult;
+        if (rapidFireActive) fireRateMult *= rapidFireMultiplier;
+        const fireDelay = weapon.fireRate / fireRateMult;
         setTimeout(() => { canShoot = true; }, fireDelay);
 
         // Only consume ammo if infinite ammo powerup is not active
@@ -4131,7 +4496,7 @@ const ForestSurvivalGame = () => {
         // shotgun/sniper kick HARD, minigun/launcher are bone-shakers.
         // Strength curve (heavier for a more realistic feel): weight 1.0 → 0.85,
         // 1.5 → 1.35, 2.0 → 1.95, 3.0 → 3.2 (the model clamps its own visual).
-        const recoilStrength = Math.pow(weapon.weight, 1.45) * 0.85;
+        const recoilStrength = Math.pow(weapon.weight, 1.45) * 0.85 * (1 - masteryBonus.recoilReduction);
         gunModel.triggerRecoil(recoilStrength);
         // Eject a brass casing per trigger pull (the launcher fires rockets, no casing).
         if (!weapon.name.includes('Launcher')) ejectShellCasing();
@@ -4183,10 +4548,16 @@ const ForestSurvivalGame = () => {
           }
           scene.add(bullet);
 
-          // Apply damage boost + overcharge powerups AND the Heavy Hitter skill bonus
+          // Apply damage boost + overcharge powerups + Heavy Hitter skill + wave-perk + run-modifier.
+          // Pyro's "Burning Bullets" passive adds a small flat per-shot bonus on top
+          // (read as a fire DOT in player-facing copy; mechanically just extra damage).
           let baseWeaponDamage = damageBoostActive ? weapon.damage * damageBoostMultiplier : weapon.damage;
           if (overchargeActive) baseWeaponDamage *= overchargeDamageMult;
-          const bulletDamage = baseWeaponDamage * (1 + skillBonus('weaponDamage'));
+          let bulletDamage = baseWeaponDamage
+            * (1 + skillBonus('weaponDamage'))
+            * perkBonuses.damageMult
+            * (runMods.playerDamageMult ?? 1);
+          if (mpMods.burningBullets) bulletDamage += 6;
 
           bullets.push({
             mesh: bullet,
@@ -4246,6 +4617,11 @@ const ForestSurvivalGame = () => {
     let autoFireInterval: number | null = null;
 
     const onMouseDown = (e: MouseEvent) => {
+      // Wave-perk picker owns the input while it's up (mystery box flow).
+      // Block aim / shoot / pointer-re-lock so a stray click can't fire a
+      // shot through the overlay or grab the cursor back mid-pick.
+      if (wavePerkActiveRef.current) return;
+
       // Photo Mode: dragging on the canvas free-looks (no pointer lock so the
       // adjustment panel stays clickable). Clicks on the panel have a different
       // target, so they never start a look-drag.
@@ -4412,11 +4788,17 @@ const ForestSurvivalGame = () => {
       hudDirty = false;
       lastHudFlushMs = (typeof performance !== 'undefined' ? performance.now() : Date.now());
       checkWeaponUnlocks();
+      // Weapon Mastery sliver — only published when the player is signed in
+      // and not in tutorial (tutorial doesn't grant XP). Snapshot the
+      // current weapon's level + XP into-level / next-level for the HUD.
+      const masteryHud = (isAuthenticated && !isTutorialMode)
+        ? xpProgressAtLevel(masteryTotalXp(currentWeapon))
+        : undefined;
       setGameState({
         health,
         maxHealth: playerMaxHealth,
         ammo,
-        maxAmmo: WEAPONS[currentWeapon].maxAmmo,
+        maxAmmo: effectiveMaxAmmo(currentWeapon),
         score,
         enemiesKilled,
         wave,
@@ -4425,13 +4807,18 @@ const ForestSurvivalGame = () => {
         combo,
         killStreak,
         currentWeapon,
-        unlockedWeapons: [...unlockedWeapons]
+        unlockedWeapons: [...unlockedWeapons],
+        weaponMastery: masteryHud,
       });
     };
 
     // Coalesced request — the loop decides when to actually reconcile.
     const updateGameState = () => { hudDirty = true; };
 
+    // Hydrate the mastery bonus snapshot from persisted XP so a returning
+    // player's L7 pistol starts the run already reload-buffed instead of
+    // re-snapshotting on their first kill.
+    refreshMasteryBonus();
     // Push the initial state to the HUD immediately so it reflects the real
     // starting values (e.g. all weapons already unlocked in Tutorial mode)
     // instead of waiting for the first shot / weapon switch.
@@ -4562,9 +4949,46 @@ const ForestSurvivalGame = () => {
       const localGetsCredit = !isMultiplayer || killerId === undefined || killerId === localId;
 
       if (localGetsCredit) {
-        // Difficulty-weighted score: harder modes pay out more per kill.
-        score += Math.round(enemy.scoreValue * scoreDiffMult);
+        // Difficulty-weighted score × Run-Modifier score multiplier (the
+        // carrot for picking a punishing mutator like Glass Cannon). Mini
+        // bosses earn 3× the kill payout for their staying power.
+        const miniBossMult = enemy.isMiniBoss ? 3 : 1;
+        score += Math.round(enemy.scoreValue * scoreDiffMult * runModifierScoreMult * miniBossMult);
         enemiesKilled++;
+        // Daily Challenge channels — tick cumulative counts.
+        if (dailyEnabled) {
+          dailyCounts.kill += 1;
+          if (isCritical) dailyCounts.headshot += 1;
+          if (currentWeapon === 'pistol') dailyCounts.pistol_kill += 1;
+        }
+        // Weapon Mastery — grant XP on the equipped weapon. Bigger payouts
+        // for bigger fights (bosses are a real grind reward).
+        const xpGrant = xpPerKill(enemy.type, enemy.isMiniBoss);
+        const masteryLevelBefore = levelFromXp(masteryTotalXp(currentWeapon));
+        masteryRunXp[currentWeapon] = (masteryRunXp[currentWeapon] ?? 0) + xpGrant;
+        const masteryLevelAfter = levelFromXp(masteryTotalXp(currentWeapon));
+        if (masteryLevelAfter > masteryLevelBefore) {
+          // Crossed a level boundary — feedback for the player.
+          soundManager.play('powerUp', 0.55, false, 1.4);
+          if (gameSettingsManager.getSetting('killFeed')) {
+            addKillFeedEntry(`${WEAPONS[currentWeapon].name} · Mastery L${masteryLevelAfter}`, 'powerup');
+          }
+          setPowerUpMessage(`Mastery Unlocked · ${WEAPONS[currentWeapon].name} L${masteryLevelAfter}`);
+          setTimeout(() => setPowerUpMessage(''), 2200);
+        }
+        // Re-snapshot the bonus for the active weapon so a level-up that
+        // happens mid-kill applies on the next reload / recoil instead of
+        // waiting for the throttled flush.
+        refreshMasteryBonus();
+        // Wave-perk healing on kill: Bloodletting (every kill) and Vampiric
+        // Edge (headshot kills only). Both cap at playerMaxHealth so they
+        // can't over-heal past the Thick-Skin / Iron-Lung max.
+        if (perkBonuses.lifestealPerKill > 0 || (isCritical && perkBonuses.vampiricKillHeal > 0)) {
+          const heal = perkBonuses.lifestealPerKill + (isCritical ? perkBonuses.vampiricKillHeal : 0);
+          if (heal > 0 && health < playerMaxHealth) {
+            health = Math.min(playerMaxHealth, health + heal);
+          }
+        }
         if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
         if (isCritical) {
           timeScale = 0.3;
@@ -4575,7 +4999,45 @@ const ForestSurvivalGame = () => {
         if (currentTime - lastKillTime < 2000) {
           combo++;
           killStreak++;
-          score += Math.round(combo * 5 * scoreDiffMult);
+          score += Math.round(combo * 5 * scoreDiffMult * runModifierScoreMult);
+          // ── KILLSTREAK AIRDROP DROPS ─────────────────────────────────
+          // 5/10/15/20 unbroken kills each spawn an escalating airdrop.
+          // `lastStreakAwarded` prevents the threshold from re-firing if the
+          // player happens to cross it twice within one wave (shouldn't be
+          // possible since killStreak only resets on wave end, but cheap to
+          // guard).
+          const streakReward = (
+            killStreak === 5  ? 'rapid_fire' :
+            killStreak === 10 ? 'invincible' :
+            killStreak === 15 ? 'random_weapon' :
+            killStreak === 20 ? 'nuke' :
+            null
+          );
+          if (streakReward && killStreak > lastStreakAwarded) {
+            lastStreakAwarded = killStreak;
+            // Drop the crate ~10m in front of the player so they don't have
+            // to leave the fight, but far enough that the parachute reads.
+            camera.getWorldDirection(_assistFwd);
+            const dropX = camera.position.x + _assistFwd.x * 10;
+            const dropZ = camera.position.z + _assistFwd.z * 10;
+            enhancedPowerUps.createAirdrop(scene, dropX, dropZ, streakReward);
+            // Layered feedback: kill feed pings the streak, a centred banner
+            // tells them WHICH reward incoming, and the power-up chime is
+            // pitched up so it reads as a "delivery inbound" alert.
+            soundManager.play('powerUp', 0.7, false, 1.25);
+            const rewardLabel = (
+              streakReward === 'rapid_fire'    ? 'Rapid Fire' :
+              streakReward === 'invincible'    ? 'Invincibility' :
+              streakReward === 'random_weapon' ? 'Mystery Box' :
+              streakReward === 'nuke'          ? 'Tactical Nuke' :
+              'Airdrop'
+            );
+            if (gameSettingsManager.getSetting('killFeed')) {
+              addKillFeedEntry(`${killStreak} Streak · ${rewardLabel} Inbound`, 'powerup');
+            }
+            setPowerUpMessage(`AIRDROP INBOUND · ${rewardLabel}`);
+            setTimeout(() => setPowerUpMessage(''), 2400);
+          }
           // Rising combo chime at each 5x milestone — pitch climbs with the
           // combo so a hot streak audibly escalates. Independent of the kill
           // feed setting (it's reward feedback, not a log entry).
@@ -4601,8 +5063,10 @@ const ForestSurvivalGame = () => {
         // Skill points are no longer earned per kill — they're awarded at the end
         // of a Solo run (server-side) so the tree is a real, competitive grind.
         if (gameSettingsManager.getSetting('killFeed')) {
-          if (isCritical) addKillFeedEntry('HEADSHOT!', 'headshot');
-          else addKillFeedEntry('Enemy Eliminated', 'kill');
+          // Cosmetic title prefix — gives equipped earners a flex moment.
+          const titlePrefix = equippedTitleRef.current ? `[${equippedTitleRef.current}] ` : '';
+          if (isCritical) addKillFeedEntry(`${titlePrefix}HEADSHOT!`, 'headshot');
+          else addKillFeedEntry(`${titlePrefix}Enemy Eliminated`, 'kill');
           if (combo >= 5 && combo % 5 === 0) addKillFeedEntry(`${combo}x COMBO!`, 'combo');
           if (killStreak === 10) addKillFeedEntry('10 Kill Streak!', 'combo');
           else if (killStreak === 20) addKillFeedEntry('20 Kill Streak!', 'combo');
@@ -4668,7 +5132,8 @@ const ForestSurvivalGame = () => {
       // Wave complete — only once the whole wave budget has spawned AND
       // every living enemy is dead. Tutorial mode has no wave progression.
       const livingEnemies = enemies.reduce((n, e) => n + (e.dead ? 0 : 1), 0);
-      if (!isTutorialMode && waveEnemiesRemaining <= 0 && livingEnemies === 0 && !waveTransitioning) {
+      if (!isTutorialMode && !isGameOver && !playerEliminated
+          && waveEnemiesRemaining <= 0 && livingEnemies === 0 && !waveTransitioning) {
         waveTransitioning = true;
         // Flawless — the wave just cleared took no damage. Evaluate before the
         // tracker resets for the next wave. Flawless wave count (single run)
@@ -4677,11 +5142,22 @@ const ForestSurvivalGame = () => {
           achievementSystem.updateProgress('no_damage', 1);
           flawlessWavesThisRun += 1;
           achievementSystem.setProgress('flawless_master', flawlessWavesThisRun);
+          if (dailyEnabled) dailyCounts.flawless_wave += 1;
+        }
+        if (dailyEnabled) {
+          // Daily Long-Watch tracks the highest wave reached this RUN, so we
+          // keep MAX across all kills/runs today (server-side max reconciliation).
+          dailyCounts.wave = Math.max(dailyCounts.wave, wave);
         }
         tookDamageThisWave = false;
         wave++;
+        // Snapshot the kill streak BEFORE we reset it so the Streak Keeper
+        // perk (applied a few lines down) can restore it.
+        const streakBeforeWaveReset = killStreak;
+        const lastAwardedBeforeWaveReset = lastStreakAwarded;
         combo = 0;
         killStreak = 0;
+        lastStreakAwarded = 0;
         // Survival tiers track the best wave reached across the player's career.
         const reachedWave = Math.max(baseBestWave, wave);
         achievementSystem.setProgress('survivor', reachedWave);
@@ -4691,12 +5167,88 @@ const ForestSurvivalGame = () => {
         setShowWaveComplete(true);
         soundManager.play('waveComplete', 1.0);
         if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry(`Wave ${wave - 1} Complete!`, 'wave');
-        waveTimeoutId = window.setTimeout(() => {
-          waveTimeoutId = null;
-          setShowWaveComplete(false);
-          spawnWave();
-          waveTransitioning = false;
-        }, 3000);
+        // Streak Keeper perk preserves the streak across waves so a god-tier
+        // run can keep climbing toward the 20-kill nuke airdrop.
+        if (perkBonuses.streakKeeper) {
+          killStreak = streakBeforeWaveReset;
+          lastStreakAwarded = lastAwardedBeforeWaveReset;
+        }
+        // Pool exhausted (every perk already picked) → skip the picker and
+        // just wait out the celebration banner before spawning the next
+        // wave. Same in solo and MP.
+        if (isPerkPoolExhausted(runPerks)) {
+          waveTimeoutId = window.setTimeout(() => {
+            waveTimeoutId = null;
+            if (isGameOver || playerEliminated) return;
+            setShowWaveComplete(false);
+            spawnWave();
+            waveTransitioning = false;
+          }, 2200);
+        } else {
+          // Mystery-box flow — shared between solo and multiplayer:
+          //   t=0      Wave-complete banner + kill-flash fade. In SOLO the
+          //            game-loop freezes (wavePerkActiveRef = true) so the
+          //            celebration lands on a still scene; in MP the loop
+          //            keeps running so remote players don't appear to
+          //            stall (input is still blocked by onKeyDown).
+          //   t=2.0s   Pointer lock released. Mystery-box overlay slides in
+          //            on a clean dark scrim. MP also gets an 8 s auto-pick
+          //            countdown so a distracted player can't stall the
+          //            match indefinitely.
+          //   resolve  Picker reveals the boxes for ~2.4 s, then this
+          //            callback applies the perk (if won), spawns the next
+          //            wave and re-locks the pointer.
+          const clearedWave = wave - 1;
+          const roll = rollMysteryBox(runPerks);
+          // SOLO freezes the loop during the celebration AND during the
+          // picker. MP keeps the loop running (network heartbeats / remote
+          // player updates can't pause), and uses the auto-pick countdown.
+          if (!isMultiplayer) wavePerkActiveRef.current = true;
+          wavePerkResolverRef.current = (picked: WavePerkId | null) => {
+            if (picked) {
+              runPerks.push(picked);
+              perkBonuses = aggregatePerkBonuses(runPerks);
+              applyPerkInstantEffects(picked);
+              setActiveRunPerks([...runPerks]);
+            }
+            wavePerkActiveRef.current = false;
+            wavePerkResolverRef.current = null;
+            setWavePerkOffer(null);
+            setShowWaveComplete(false);
+            spawnWave();
+            waveTransitioning = false;
+            updateGameState();
+            if (!touchControls.enabled) {
+              try {
+                const lock = (renderer.domElement as HTMLCanvasElement & {
+                  requestPointerLock?: (opts?: { unadjustedMovement?: boolean }) => Promise<void> | void;
+                }).requestPointerLock?.();
+                if (lock && typeof (lock as Promise<void>).catch === 'function') {
+                  (lock as Promise<void>).catch(() => { /* user gesture required — ignore */ });
+                }
+              } catch { /* ignore */ }
+            }
+          };
+          waveTimeoutId = window.setTimeout(() => {
+            waveTimeoutId = null;
+            if (isGameOver || playerEliminated) return; // raced with death
+            // MP freezes input only at picker reveal — until now the loop
+            // has been running and the player could still see / be seen.
+            if (isMultiplayer) wavePerkActiveRef.current = true;
+            try {
+              if (typeof document.exitPointerLock === 'function') document.exitPointerLock();
+            } catch { /* iOS Safari / unsupported — ignore */ }
+            setShowWaveComplete(false);
+            setWavePerkOffer({
+              wave: clearedWave,
+              slots: roll.slots,
+              prizeSlotIndex: roll.prizeSlotIndex,
+              // MP needs an auto-pick deadline so a distracted player can't
+              // hold up the match. Solo can take as long as it wants.
+              autoPickAfterMs: isMultiplayer ? 8000 : undefined,
+            });
+          }, 2000);
+        }
         updateGameState();
       }
     };
@@ -4718,7 +5270,7 @@ const ForestSurvivalGame = () => {
     // remote player. `enemyPos` enables the directional riot-shield check for
     // local hits; network damage passes null (non-directional block).
     const takeEnemyDamage = (incoming: number, enemyLabel: string, enemyPos: THREE.Vector3 | null) => {
-      if (phantomActive || isTutorialMode || playerEliminated) return;
+      if (phantomActive || invincibleActive || isTutorialMode || playerEliminated) return;
 
       let damage = incoming * Math.max(0, 1 - skillBonus('damageReduction'));
 
@@ -4773,7 +5325,11 @@ const ForestSurvivalGame = () => {
       if (health <= 0) {
         health = 0;
         playerEliminated = true;
-        document.exitPointerLock();
+        // Commit the game-over / spectate state BEFORE the pointer-lock release.
+        // `document.exitPointerLock` is undefined on iOS Safari (Pointer Lock
+        // isn't supported on iOS), so calling it unguarded throws a TypeError
+        // — which used to leave `isGameOver` false and let the player keep
+        // playing with the health bar visibly at zero.
         if (isMultiplayer && multiplayerManager) {
           multiplayerManager.updatePlayerHealth(0);
           const victim = multiplayerManager.getLocalPlayer();
@@ -4784,6 +5340,11 @@ const ForestSurvivalGame = () => {
           isGameOver = true;
           flushGameState(); // game over must show immediately, not on the next coalesced tick
         }
+        try {
+          if (typeof document.exitPointerLock === 'function') {
+            document.exitPointerLock();
+          }
+        } catch { /* iOS Safari / unsupported — ignore */ }
       }
     };
 
@@ -4997,6 +5558,70 @@ const ForestSurvivalGame = () => {
     };
 
     // Detonates a rocket — area-of-effect damage with distance falloff.
+    // ── EXPLOSIVE BARREL DETONATION ──────────────────────────────────────
+    // A barrel that just took fatal damage. Removes it from the scene,
+    // bursts an FX flash, then deals radius damage to every nearby entity
+    // — including the player. Falloff matches rocket-explosion math.
+    // Chains: any other barrel inside the blast radius gets queued for
+    // detonation on the next frame, so clustered barrels read as a
+    // satisfying chain-reaction without recursion stack overflow risk.
+    const pendingBarrelDetonations: ExplosiveBarrel[] = [];
+    const detonateBarrel = (barrel: ExplosiveBarrel) => {
+      if (barrel.detonated) return;
+      barrel.detonated = true;
+      const epos = barrel.mesh.position.clone();
+      spawnExplosionFX(epos);
+      if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
+      soundManager.play('powerUp', 0.9, false, 0.7); // dirty low-pitched boom
+      // Enemies
+      for (let j = enemies.length - 1; j >= 0; j--) {
+        const e = enemies[j];
+        if (e.dead) continue;
+        const dist = e.mesh.position.distanceTo(epos);
+        if (dist > barrel.blastRadius) continue;
+        const falloff = 1 - (dist / barrel.blastRadius) * 0.75;
+        const dmg = barrel.blastDamage * falloff;
+        if (isMpGuest && mp) {
+          if (e.netId !== undefined) mp.sendEnemyHit(e.netId, dmg, false);
+        } else {
+          e.health -= dmg;
+        }
+        e.damageFlashTime = 0.45;
+        if (!isMpGuest && e.health <= 0) handleEnemyKilled(e, false);
+      }
+      // Other barrels — chain reaction.
+      for (let b = 0; b < barrels.length; b++) {
+        const other = barrels[b];
+        if (other === barrel || other.detonated) continue;
+        if (other.mesh.position.distanceTo(epos) <= barrel.blastRadius * 0.9) {
+          pendingBarrelDetonations.push(other);
+        }
+      }
+      // Player — barrels are friendly fire too. Standing next to one when
+      // it pops is on you.
+      const playerDist = Math.hypot(camera.position.x - epos.x, camera.position.z - epos.z);
+      if (playerDist <= barrel.blastRadius) {
+        const falloff = 1 - (playerDist / barrel.blastRadius) * 0.75;
+        takeEnemyDamage(barrel.blastDamage * falloff, 'Explosive Barrel', null);
+      }
+      // Yank from world + free up the slot.
+      scene.remove(barrel.mesh);
+      const idx = barrels.indexOf(barrel);
+      if (idx !== -1) barrels.splice(idx, 1);
+    };
+
+    // Pump the chain-reaction queue. Called once per frame so a single
+    // detonation cascades over several frames (reads as a "boom boom boom"
+    // rather than a single instant disappearance), and never blows the call
+    // stack even on a cluster of dozens of barrels.
+    const processBarrelChain = () => {
+      if (pendingBarrelDetonations.length === 0) return;
+      // Take a snapshot — anything detonated here that chains AGAIN will
+      // be queued for the NEXT frame.
+      const queue = pendingBarrelDetonations.splice(0, pendingBarrelDetonations.length);
+      for (const b of queue) detonateBarrel(b);
+    };
+
     const explodeRocket = (pos: THREE.Vector3, baseDamage: number) => {
       const RADIUS = 9;
       spawnExplosionFX(pos);
@@ -5025,6 +5650,14 @@ const ForestSurvivalGame = () => {
         _tempVec3.subVectors(e.mesh.position, pos).normalize();
         robotSparks.push(new RobotHitSparks(scene, e.mesh.position.clone(), _tempVec3, 10));
         if (!isMpGuest && e.health <= 0) handleEnemyKilled(e, false);
+      }
+      // Chain-detonate any barrels inside the rocket's blast.
+      for (let b = 0; b < barrels.length; b++) {
+        const barrel = barrels[b];
+        if (barrel.detonated) continue;
+        if (barrel.mesh.position.distanceTo(pos) <= RADIUS) {
+          pendingBarrelDetonations.push(barrel);
+        }
       }
     };
 
@@ -5315,14 +5948,51 @@ const ForestSurvivalGame = () => {
       if (skillBonusAccum >= 0.4) {
         skillBonusAccum = 0;
         skillBonuses = skillTree.calculateStatBonuses();
-        const newMax = 100 + (skillBonuses['maxHealth'] || 0);
+        // Combine skill maxHealth + Iron Lung perk's maxHpBonus + the Run
+        // Modifier's multiplier (Berserker / Glass Cannon) + MP character
+        // passive (Heavy +20%) — single source-of-truth cap.
+        const newMax = Math.max(
+          10,
+          Math.floor((100 + (skillBonuses['maxHealth'] || 0)) * (runMods.playerMaxHpMult ?? 1) * (mpMods.maxHpMult ?? 1)) + perkBonuses.maxHpBonus,
+        );
         if (newMax > playerMaxHealth) {
-          // Thick Skin was just upgraded — grant the added max as current HP too
-          // so raising the cap actually fills (the player's reported bug).
+          // Thick Skin (skill) or Iron Lung (perk) was just upgraded — grant
+          // the added max as current HP too so raising the cap actually fills.
           health = Math.min(newMax, health + (newMax - playerMaxHealth));
         }
         playerMaxHealth = newMax;
         if (health > playerMaxHealth) health = playerMaxHealth;
+      }
+      // Daily Challenge — flush cumulative progress to convex every ~3 s.
+      // Throttled so a hot streak doesn't spam mutations.
+      if (dailyEnabled) {
+        dailyFlushAccum += rawDelta;
+        if (dailyFlushAccum >= 3) {
+          dailyFlushAccum = 0;
+          dailyFlush();
+        }
+      }
+      // Weapon Mastery — flush per-weapon XP deltas every ~8 s (less
+      // frequent than the daily flush; mastery XP is high-volume + the
+      // server caps grant size anyway).
+      if (isAuthenticated && !isTutorialMode) {
+        masteryFlushAccum += rawDelta;
+        if (masteryFlushAccum >= 8) {
+          masteryFlushAccum = 0;
+          flushMasteryXp();
+        }
+      }
+      // Per-second HP regen — sum of wave-perk Adrenaline + MP Medic passive.
+      // Done here (not inside the throttle) so the rate is stable at any FPS;
+      // `perkRegenAccum` carries fractional HP between frames.
+      const totalRegen = perkBonuses.regenPerSec + (mpMods.regenPerSec ?? 0);
+      if (totalRegen > 0 && health > 0 && health < playerMaxHealth) {
+        perkRegenAccum += totalRegen * rawDelta;
+        if (perkRegenAccum >= 1) {
+          const gained = Math.floor(perkRegenAccum);
+          perkRegenAccum -= gained;
+          health = Math.min(playerMaxHealth, health + gained);
+        }
       }
       // Push ability cooldown state to the HUD ability bar (throttled — the
       // CSS transition smooths the gaps between updates).
@@ -5362,8 +6032,126 @@ const ForestSurvivalGame = () => {
         ]);
       }
 
-      // Update enhanced power-ups (airdrops)
+      // Process queued explosive-barrel chain reactions. Done once per frame
+      // so a cluster pops as a satisfying staccato instead of one instant
+      // multi-explosion vanishing trick.
+      processBarrelChain();
+
+      // === RANGED SENTINEL TURRETS ===
+      // Each turret idles until the player is within range, then telegraphs
+      // a shot (head glows brighter) for ~1s before firing. Dormant until
+      // wave 3 so the first two waves are pure "learn the basics" before
+      // the player has to factor in long-range pressure.
+      if (sentinels.length > 0 && wave >= 3 && !playerEliminated && !isGameOver) {
+        const dtMs = rawDelta * 1000;
+        for (let s = 0; s < sentinels.length; s++) {
+          const sentinel = sentinels[s];
+          if (sentinel.destroyed) continue;
+          const dxS = camera.position.x - sentinel.mesh.position.x;
+          const dzS = camera.position.z - sentinel.mesh.position.z;
+          const distSq = dxS * dxS + dzS * dzS;
+          if (distSq > sentinel.range * sentinel.range) {
+            // Out of range — drop any in-progress charge silently.
+            sentinel.isCharging = false;
+            sentinel.chargeMs = 0;
+            continue;
+          }
+          // First-encounter banner — fires the moment a sentinel first
+          // pings the player.
+          if (!sentinelIntroFired) {
+            sentinelIntroFired = true;
+            setEnemyIntro({
+              id: Date.now(),
+              name: 'Ranged Sentinel',
+              tag: 'TURRET · TELEGRAPHED LASER',
+              blurb: 'Glowing head means it\'s aimed at you. Move before it fires.',
+              accent: '#f87171',
+              icon: 'crosshair',
+            });
+          }
+          if (sentinel.isCharging) {
+            sentinel.chargeMs += dtMs;
+            updateSentinelGlow(sentinel);
+            if (sentinel.chargeMs >= sentinel.chargeDurationMs) {
+              // Fire — hitscan check with a line-of-sight test against
+              // terrain so a tree between us and the sentinel saves the
+              // player. Without LOS the sentinels read as unfair sniper
+              // turrets shooting through walls.
+              const distNow = Math.hypot(dxS, dzS);
+              let lineOfSight = distNow <= sentinel.range;
+              if (lineOfSight) {
+                const nearby = terrainGrid.queryRadius(
+                  (sentinel.mesh.position.x + camera.position.x) * 0.5,
+                  (sentinel.mesh.position.z + camera.position.z) * 0.5,
+                  distNow * 0.5 + 2,
+                );
+                for (let nn = 0; nn < nearby.length; nn++) {
+                  const obj = terrainObjects[nearby[nn]];
+                  if (!obj || !obj.collidable) continue;
+                  // Quick segment-vs-circle test in 2D.
+                  const px = obj.x - sentinel.mesh.position.x;
+                  const pz = obj.z - sentinel.mesh.position.z;
+                  const lx = camera.position.x - sentinel.mesh.position.x;
+                  const lz = camera.position.z - sentinel.mesh.position.z;
+                  const lenSq = lx * lx + lz * lz;
+                  const t = Math.max(0, Math.min(1, (px * lx + pz * lz) / lenSq));
+                  const cx = lx * t - px;
+                  const cz = lz * t - pz;
+                  if (cx * cx + cz * cz < obj.radius * obj.radius) {
+                    lineOfSight = false;
+                    break;
+                  }
+                }
+              }
+              if (lineOfSight) {
+                takeEnemyDamage(sentinel.damage, 'Sentinel Laser', sentinel.mesh.position);
+              }
+              // Visible tracer for feedback — always rendered so the player
+              // sees the shot even when terrain blocked it.
+              bulletTracers.push(new BulletTracer(
+                scene,
+                new THREE.Vector3(sentinel.mesh.position.x, sentinel.mesh.position.y + 1.6, sentinel.mesh.position.z),
+                camera.position.clone(),
+                0xff3322,
+              ));
+              soundManager.play('shoot_pistol', 0.55, false, 0.6);
+              sentinel.isCharging = false;
+              sentinel.chargeMs = 0;
+              sentinel.cooldownMs = sentinel.cooldownDurationMs;
+              // Reset head glow to idle.
+              (sentinel.head.material as THREE.MeshStandardMaterial).emissiveIntensity = 0.6;
+            }
+          } else if (sentinel.cooldownMs > 0) {
+            sentinel.cooldownMs -= dtMs;
+          } else {
+            // Just transitioned from cooldown → charging. Audio warning so
+            // the player can react even when not looking. Pitch scales by
+            // distance so close turrets sound louder/lower.
+            sentinel.isCharging = true;
+            sentinel.chargeMs = 0;
+            const proximity = 1 - Math.min(1, Math.sqrt(distSq) / sentinel.range);
+            soundManager.play('powerUp', 0.25 + proximity * 0.25, false, 1.6 - proximity * 0.4);
+          }
+        }
+      }
+
+      // Update enhanced power-ups (airdrops). Killstreak rewards descend
+      // under a parachute and land near the player; on touch we apply the
+      // effect IMMEDIATELY (these aren't held / queued like loot crates).
       enhancedPowerUps.updateAirdrops(delta, scene);
+      if (!playerEliminated && !isGameOver) {
+        const playerX = camera.position.x;
+        const playerZ = camera.position.z;
+        for (const drop of enhancedPowerUps.getAirdrops()) {
+          if (!drop.landed || drop.collected) continue;
+          const ddx = drop.mesh.position.x - playerX;
+          const ddz = drop.mesh.position.z - playerZ;
+          if (ddx * ddx + ddz * ddz < 6) { // ~2.5m pickup radius
+            const type = enhancedPowerUps.collectAirdrop(drop);
+            applyKillstreakReward(type);
+          }
+        }
+      }
 
       // === UPDATE AI SYSTEMS ===
       // Update adaptive difficulty every 5 seconds
@@ -5398,7 +6186,7 @@ const ForestSurvivalGame = () => {
           maxHealth: playerMaxHealth,
           currentWeapon,
           ammo,
-          maxAmmo: WEAPONS[currentWeapon].maxAmmo,
+          maxAmmo: effectiveMaxAmmo(currentWeapon),
           enemiesNearby: enemies.filter(e => !e.dead && e.mesh.position.distanceTo(camera.position) < 20).length,
           enemyTypes: enemies.filter(e => !e.dead).map(e => e.type),
           powerupsNearby: powerUps.length,
@@ -5505,7 +6293,12 @@ const ForestSurvivalGame = () => {
       // Freeze the whole simulation while a tutorial overlay card is on screen
       // — the scene still renders, but nothing moves and enemies cannot attack.
       // `orientationBlockedRef` adds the touch-portrait freeze (rotate prompt).
-      if (isGameOver || paused || tutorialActiveRef.current || orientationBlockedRef.current) {
+      // Wave-perk picker freezes the simulation in SOLO (and tutorial) so the
+      // celebration moment lands on a still scene. In multiplayer the loop
+      // KEEPS RUNNING — remote-player updates and host enemy snapshots must
+      // not stall — and `onKeyDown` blocks the local player's input instead.
+      const perkFreezesSim = wavePerkActiveRef.current && !isMultiplayer;
+      if (isGameOver || paused || tutorialActiveRef.current || orientationBlockedRef.current || perkFreezesSim) {
         composePostFX(rawDelta);
         return;
       }
@@ -5679,6 +6472,14 @@ const ForestSurvivalGame = () => {
         phantomActive = false;
         if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Phantom Faded', 'powerup');
       }
+      if (rapidFireActive && now >= rapidFireEndTime) {
+        rapidFireActive = false;
+        if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Rapid Fire Expired', 'powerup');
+      }
+      if (invincibleActive && now >= invincibleEndTime) {
+        invincibleActive = false;
+        if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Invincibility Expired', 'powerup');
+      }
       // ── Animate the held shield ──────────────────────────────────────
       // Ease it up when active, drop it when not, sway gently while braced,
       // and react to blocked hits (flash/kick) and shatter (break flash).
@@ -5804,7 +6605,7 @@ const ForestSurvivalGame = () => {
       // Apply crouch speed reduction
       const crouchMult = isCrouching ? crouchSpeedMultiplier : 1.0;
 
-      const baseSpeed = moveSpeed * weightSpeedMultiplier * abilityEffects.speedMultiplier * powerupSpeedMult * crouchMult * (1 + skillBonus('moveSpeed'));
+      const baseSpeed = moveSpeed * weightSpeedMultiplier * abilityEffects.speedMultiplier * powerupSpeedMult * crouchMult * (1 + skillBonus('moveSpeed')) * (mpMods.speedMult ?? 1);
       let currentSpeed = isRunning ? baseSpeed * sprintMultiplier : baseSpeed;
 
       // Apply dash speed if dashing
@@ -6196,7 +6997,7 @@ const ForestSurvivalGame = () => {
             haloMat.uniforms.uTime.value = _puNow;
           }
 
-          if (checkCollision(camera.position, powerUp.position, 2)) {
+          if (checkCollision(camera.position, powerUp.position, 2 * perkBonuses.pickupRadiusMult)) {
             // ── ONE LOOTED POWER AT A TIME ──────────────────────────────
             // If the player already holds a power, the crate stays put —
             // they must spend the current power (E) before looting another.
@@ -6293,6 +7094,76 @@ const ForestSurvivalGame = () => {
           continue;
         }
 
+        // Ranged sentinel collision — bullets damage the turret. Done first
+        // because a sentinel is a small target and we don't want a bullet
+        // grazing a sentinel and then hitting an enemy behind it.
+        let bulletHitSentinel = false;
+        for (let s = 0; s < sentinels.length; s++) {
+          const sentinel = sentinels[s];
+          if (sentinel.destroyed) continue;
+          const dxS = bullet.mesh.position.x - sentinel.mesh.position.x;
+          const dyS = bullet.mesh.position.y - 1.6 - sentinel.mesh.position.y;
+          const dzS = bullet.mesh.position.z - sentinel.mesh.position.z;
+          if (dxS * dxS + dzS * dzS < sentinel.hitRadius * sentinel.hitRadius && Math.abs(dyS) < 1.2) {
+            sentinel.hp -= bullet.damage;
+            createParticles(bullet.mesh.position, 0xff6633, 8);
+            if (sentinel.hp <= 0) {
+              sentinel.destroyed = true;
+              spawnExplosionFX(sentinel.mesh.position.clone());
+              scene.remove(sentinel.mesh);
+              // Reward — meaningful score bump + advance elimination mission,
+              // plus a "+150" floating number so the destruction feels earned.
+              const sentinelReward = Math.round(150 * scoreDiffMult * runModifierScoreMult);
+              score += sentinelReward;
+              missionSystem.updateProgress('elimination', 1);
+              if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry(`Sentinel Down · +${sentinelReward}`, 'kill');
+              triggerKillFlash();
+              if (gameSettingsManager.getSetting('damageNumbers')) {
+                _tempVec3_2.copy(sentinel.mesh.position).project(camera);
+                const sxp = (_tempVec3_2.x * 0.5 + 0.5) * 100;
+                const syp = (-_tempVec3_2.y * 0.5 + 0.5) * 100;
+                addDamageNumber(sentinelReward, sxp, syp, true, true);
+              }
+              updateGameState();
+            }
+            scene.remove(bullet.mesh);
+            bullets.splice(i, 1);
+            bulletHitSentinel = true;
+            break;
+          }
+        }
+        if (bulletHitSentinel) continue;
+
+        // Explosive barrel collision check — done BEFORE enemy collision so
+        // a bullet hitting a barrel detonates it without also tagging an
+        // enemy behind it twice. Cheap linear scan because barrels are
+        // capped at ~30 per map.
+        let bulletHitBarrel = false;
+        for (let b = 0; b < barrels.length; b++) {
+          const barrel = barrels[b];
+          if (barrel.detonated) continue;
+          const dxB = bullet.mesh.position.x - barrel.mesh.position.x;
+          const dyB = bullet.mesh.position.y - barrel.mesh.position.y;
+          const dzB = bullet.mesh.position.z - barrel.mesh.position.z;
+          if (dxB * dxB + dzB * dzB < barrel.hitRadius * barrel.hitRadius && Math.abs(dyB) < 1.0) {
+            barrel.hp -= bullet.damage;
+            if (barrel.hp <= 0) {
+              detonateBarrel(barrel);
+            } else {
+              // Glancing hit — sparks + the bullet stops here either way.
+              createParticles(bullet.mesh.position, 0xffaa33, 6);
+            }
+            // Rockets still trigger their own AOE in addition to the barrel
+            // detonation (a rocket landing on a barrel should feel huge).
+            if (bullet.isRocket) explodeRocket(bullet.mesh.position.clone(), bullet.damage);
+            scene.remove(bullet.mesh);
+            bullets.splice(i, 1);
+            bulletHitBarrel = true;
+            break;
+          }
+        }
+        if (bulletHitBarrel) continue;
+
         // Grid lookup — only test enemies within a small radius of the bullet
         // instead of every enemy in the world (was the worst N×M offender).
         const bpx = bullet.mesh.position.x;
@@ -6333,12 +7204,24 @@ const ForestSurvivalGame = () => {
             const distanceToHead = bullet.mesh.position.distanceTo(_tempVec3);
 
             if (distanceToHead < 0.8 * hsScale) {
-              // HEADSHOT! 2x damage, boosted further by the Headshot Mastery skill
-              damage *= 2 + skillBonus('headshotDamage');
+              // HEADSHOT! 2x damage, boosted further by Headshot Mastery (skill),
+              // Skull Splitter (wave perk) AND the Operative MP passive.
+              damage *= (2 + skillBonus('headshotDamage')) * perkBonuses.headshotDmgMult * (mpMods.headshotDmgMult ?? 1);
               isCritical = true;
               soundManager.play('enemyHit', 0.8); // Louder hit sound
               createParticles(_tempVec3, 0xffff00, 8); // Yellow particles for crit
+            } else if (perkBonuses.critChanceBonus > 0 && Math.random() < perkBonuses.critChanceBonus) {
+              // Eagle Eye perk — body shots can still crit. Reads as a "lucky"
+              // headshot graphic; awards the same damage bump.
+              damage *= (2 + skillBonus('headshotDamage')) * perkBonuses.headshotDmgMult * (mpMods.headshotDmgMult ?? 1);
+              isCritical = true;
+              soundManager.play('enemyHit', 0.8);
+              createParticles(_tempVec3, 0xffff00, 8);
             } else {
+              // "Skull Hunter" run modifier — body shots tickle, headshots only.
+              // 10% damage is enough that the player sees feedback but won't
+              // grind a tank by spraying centre-mass.
+              if (runMods.headshotsOnly) damage *= 0.1;
               soundManager.play('hit', 0.4);
               createParticles(enemy.mesh.position, 0xff9933, 3); // orange sparks (robot), not red blood
             }
@@ -6350,6 +7233,28 @@ const ForestSurvivalGame = () => {
               if (enemy.netId !== undefined) mp.sendEnemyHit(enemy.netId, damage, isCritical);
             } else {
               enemy.health -= damage;
+              // ── BOSS PHASE 2 ─────────────────────────────────────────
+              // When a full boss drops below half HP for the first time it
+              // enrages: gains +35% speed and +30% damage. Latched so the
+              // trigger fires exactly once per boss. Multi-layer feedback
+              // so the moment LANDS: kill feed, centred banner, screen
+              // shake, red damage flash, sparks on the boss + a low-pitched
+              // boom from the powerUp sample (cheap roar).
+              if (enemy.type === 'boss' && (enemy.bossPhase ?? 1) === 1
+                  && enemy.health > 0 && enemy.health < enemy.maxHealth * 0.5) {
+                enemy.bossPhase = 2;
+                enemy.speed *= 1.35;
+                enemy.damage *= 1.3;
+                if (gameSettingsManager.getSetting('killFeed')) {
+                  addKillFeedEntry('Boss Enraged!', 'combo');
+                }
+                if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
+                triggerDamageFlash();
+                createParticles(enemy.mesh.position, 0xff3322, 50);
+                soundManager.play('powerUp', 1.0, false, 0.5);
+                setPowerUpMessage('BOSS ENRAGED');
+                setTimeout(() => setPowerUpMessage(''), 2400);
+              }
             }
             scene.remove(bullet.mesh);
             bullets.splice(i, 1);
@@ -6415,6 +7320,31 @@ const ForestSurvivalGame = () => {
 
             if (!isMpGuest && enemy.health <= 0) {
               handleEnemyKilled(enemy, isCritical);
+            }
+            // Detonators perk — bullets explode on hit. Splash 40% of the
+            // bullet's damage to enemies within a small radius. The just-hit
+            // enemy is excluded so we don't double-tap (it already took the
+            // direct hit above).
+            if (perkBonuses.explosiveBullets) {
+              const splashOrigin = bullet.mesh.position.clone();
+              const splashDmg = damage * 0.4;
+              const SPLASH_R = 3.5;
+              spawnExplosionFX(splashOrigin);
+              for (let s = 0; s < enemies.length; s++) {
+                const e = enemies[s];
+                if (e === enemy || e.dead) continue;
+                const d = e.mesh.position.distanceTo(splashOrigin);
+                if (d > SPLASH_R) continue;
+                const falloff = 1 - (d / SPLASH_R) * 0.5;
+                const dmgS = splashDmg * falloff;
+                if (isMpGuest && mp) {
+                  if (e.netId !== undefined) mp.sendEnemyHit(e.netId, dmgS, false);
+                } else {
+                  e.health -= dmgS;
+                }
+                e.damageFlashTime = 0.3;
+                if (!isMpGuest && e.health <= 0) handleEnemyKilled(e, false);
+              }
             }
             break;
           }
@@ -7305,6 +8235,13 @@ const ForestSurvivalGame = () => {
       wp.z -= 4; // just in front of the camera
       const warm: THREE.Object3D[] = [];
       const warmPowerUps: PowerUp[] = [];
+      // Ability flares spawned in Stage 3 to pre-compile their materials.
+      // Tracked here so teardown can remove them immediately — their built-in
+      // setTimeout cleanup runs after 2s, but the loader hides at ~900ms,
+      // which used to leave the purple phantom aura + yellow/orange
+      // overcharge motes + blue shield ring visibly hanging in front of the
+      // player for the first second of gameplay.
+      const warmAbilityFlares: THREE.Object3D[] = [];
       // Effect references kept on an object so the async stage closures
       // can assign and the teardown can read them. Plain `let` confuses
       // TS's flow analysis across the async callback boundary.
@@ -7357,9 +8294,11 @@ const ForestSurvivalGame = () => {
         // briefly made visible (restored in teardown) so the compile stage
         // picks up its materials; the ability flares auto-remove after 2s.
         shieldMesh.visible = true;
-        abilitySystem.createAbilityEffect(scene, wp, 'shield');
-        abilitySystem.createAbilityEffect(scene, wp, 'overcharge');
-        abilitySystem.createAbilityEffect(scene, wp, 'phantom');
+        warmAbilityFlares.push(
+          abilitySystem.createAbilityEffect(scene, wp, 'shield'),
+          abilitySystem.createAbilityEffect(scene, wp, 'overcharge'),
+          abilitySystem.createAbilityEffect(scene, wp, 'phantom'),
+        );
       });
       await yieldFrame();
 
@@ -7432,6 +8371,16 @@ const ForestSurvivalGame = () => {
           root.userData.light = null;
           root.parent?.remove(root);
         });
+        // Ability flares — proactively dispose before their built-in 2s
+        // setTimeout fires so they never overlap with first-frame gameplay.
+        warmAbilityFlares.forEach((flare) => {
+          flare.parent?.remove(flare);
+          flare.traverse((child) => {
+            if (child instanceof THREE.Mesh && child.material instanceof THREE.Material) {
+              child.material.dispose();
+            }
+          });
+        });
         refs.flash?.dispose(scene);
         refs.tracer?.dispose(scene);
         refs.impact?.dispose(scene);
@@ -7447,6 +8396,14 @@ const ForestSurvivalGame = () => {
       } catch (err) {
         console.warn('[Warmup] teardown failed (non-fatal):', err);
       }
+
+      // Render one more composed frame AFTER teardown so the canvas's last
+      // frame is the clean, pickup-free scene. Without this the canvas
+      // retains the previous warmup frame (with the colour pickup spheres
+      // spawned for shader pre-compile) and shows it for a moment when the
+      // loader hides — readable as a quick flash of blue/yellow balls at
+      // the player's position. composePostFX is null-safe on Low preset.
+      try { composePostFX(0); } catch { /* best-effort — animate() will fix it next frame */ }
 
       // Minimum visible loader time so the user actually sees the
       // ShaderProcessingScreen animation. Without this, fast machines
@@ -7779,19 +8736,37 @@ const ForestSurvivalGame = () => {
     }
   }, [enterImmersiveMode]);
 
-  // Handle classic mode start
+  // Handle classic mode start. Now routes through the Run-Modifier picker:
+  // the player gets one last "raise the stakes" choice before the shader
+  // loader; their pick is stored on a ref the scene useEffect reads on init.
   const handleClassicGameStart = (difficulty: 'easy' | 'medium' | 'hard' | 'adaptive', timeOfDay: 'day' | 'night' | 'auto', map: MapType, isRandom: boolean = false) => {
-    setClassicDifficulty(difficulty);
-    setClassicTimeOfDay(timeOfDay);
-    setSelectedMap(map);
-    setIsClassicRandomSession(isRandom);
-    // Enable adaptive difficulty setting when adaptive mode is selected
-    if (difficulty === 'adaptive') {
+    pendingClassicStartRef.current = { difficulty, timeOfDay, map, isRandom };
+    setShowClassicMenu(false);
+    setRunModifierPickerOptions(getDailyTrio());
+  };
+
+  // Called by the RunModifierPicker once the player picks a modifier (or
+  // skips). Picks up the pending classic-start params and launches the run.
+  const beginClassicWithModifier = (modifier: RunModifierId | null) => {
+    const pending = pendingClassicStartRef.current;
+    if (!pending) {
+      // Defensive — shouldn't be reachable from the picker UI, but if it
+      // happens just close the picker so the user isn't stuck.
+      setRunModifierPickerOptions(null);
+      return;
+    }
+    activeRunModifierRef.current = modifier;
+    setClassicDifficulty(pending.difficulty);
+    setClassicTimeOfDay(pending.timeOfDay);
+    setSelectedMap(pending.map);
+    setIsClassicRandomSession(pending.isRandom);
+    if (pending.difficulty === 'adaptive') {
       setGameSettings(prev => ({ ...prev, adaptiveDifficulty: true }));
     }
     soundManager.initialize();
     enterImmersiveMode();
-    setShowClassicMenu(false);
+    pendingClassicStartRef.current = null;
+    setRunModifierPickerOptions(null);
     setShowShaderProcessing(true);
     setGameStarted(true);
   };
@@ -7845,6 +8820,13 @@ const ForestSurvivalGame = () => {
     });
     setIsPaused(false);
     setShowWaveComplete(false);
+    setWavePerkOffer(null);
+    wavePerkActiveRef.current = false;
+    wavePerkResolverRef.current = null;
+    setActiveRunPerks([]);
+    // Modifier carries across restarts so the player can "rematch" the same
+    // mutator without re-picking. The picker handles a fresh choice via the
+    // ClassicMenu flow. (No reset of activeRunModifierRef here on purpose.)
     setPowerUpMessage('');
     setAbilityHud([]);
     setAchievementQueue([]);
@@ -7908,6 +8890,19 @@ const ForestSurvivalGame = () => {
         )}
         {showClassicMenu && (
           <ClassicMenu onStartGame={handleClassicGameStart} onBack={() => { setShowClassicMenu(false); setGameMode('none'); }} t={t} />
+        )}
+        {runModifierPickerOptions && !showClassicMenu && !gameStarted && (
+          <RunModifierPicker
+            options={runModifierPickerOptions}
+            onChoose={beginClassicWithModifier}
+            onBack={() => {
+              // Cancel the modifier step and return to ClassicMenu with the
+              // same params so the player doesn't have to re-pick map/etc.
+              pendingClassicStartRef.current = null;
+              setRunModifierPickerOptions(null);
+              setShowClassicMenu(true);
+            }}
+          />
         )}
         {showTutorialMenu && (
           <TutorialMenu onStartTutorial={handleTutorialStart} onBack={() => { setShowTutorialMenu(false); setGameMode('none'); }} t={t} />
@@ -8029,6 +9024,7 @@ const ForestSurvivalGame = () => {
           unlimitedStamina={gameMode === 'tutorial'}
           isTouch={isTouch}
           fpsVisible={userSettings.showFPS}
+          weaponMastery={gameState.weaponMastery}
         />
       </div>
       )}
@@ -8166,6 +9162,54 @@ const ForestSurvivalGame = () => {
           powerUpMessage={powerUpMessage}
           t={t}
         />
+
+        {/* Active Run-Modifier badge — discreet rose chip that lives
+            top-centre under the FPS pill, so the player has a constant
+            visual reminder of the mutator they're playing under. Hidden in
+            multiplayer (no per-run modifiers there). */}
+        {gameMode === 'classic' && activeRunModifierRef.current && !gameState.isGameOver && (
+          <div
+            className="pointer-events-none absolute left-1/2 z-30 -translate-x-1/2"
+            style={{ top: userSettings.showFPS ? 38 : 6 }}
+          >
+            <div className="flex items-center gap-2 rounded-full border border-rose-400/40 bg-rose-500/15 px-3 py-1 backdrop-blur-md">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-rose-300" />
+              <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-rose-200">
+                {RUN_MODIFIERS[activeRunModifierRef.current].name} · ×{RUN_MODIFIERS[activeRunModifierRef.current].scoreMult.toFixed(2)}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* Active Wave Perks chip — vertical stack below the vitals panel
+            (top-left). Each picked perk gets a thin rounded pill. Hidden
+            when no perks are picked yet. Solo / Tutorial / MP all show it
+            since perks are run-scoped. */}
+        {gameMode !== 'multiplayer' && activeRunPerks.length > 0 && !gameState.isGameOver && (
+          <div
+            className="pointer-events-none absolute z-30 flex flex-col gap-1"
+            style={{ left: 16, top: 184 }}
+          >
+            <p className="mb-0.5 text-[9px] font-bold uppercase tracking-[0.2em] text-emerald-300/80">
+              Run Perks · {activeRunPerks.length}
+            </p>
+            {activeRunPerks.map((id, idx) => {
+              const perk = WAVE_PERKS[id];
+              if (!perk) return null;
+              const color = perk.rarity === 'epic' ? 'border-purple-400/45 bg-purple-500/12 text-purple-200'
+                : perk.rarity === 'rare' ? 'border-cyan-400/40 bg-cyan-500/10 text-cyan-200'
+                : 'border-white/15 bg-white/[0.04] text-gray-200';
+              return (
+                <span
+                  key={`${id}-${idx}`}
+                  className={`rounded-full border px-2 py-0.5 text-[10px] font-bold backdrop-blur-md ${color}`}
+                >
+                  {perk.name}
+                </span>
+              );
+            })}
+          </div>
+        )}
       </div>
       )}
 
@@ -8295,6 +9339,22 @@ const ForestSurvivalGame = () => {
           onFilterChange={handlePhotoFilterChange}
           onCapture={handlePhotoCapture}
           onExit={exitPhotoMode}
+        />
+      )}
+
+      {wavePerkOffer && gameStarted && !gameState.isGameOver && !isPaused && (
+        <WavePerkPicker
+          waveCleared={wavePerkOffer.wave}
+          slots={wavePerkOffer.slots}
+          prizeSlotIndex={wavePerkOffer.prizeSlotIndex}
+          autoPickAfterMs={wavePerkOffer.autoPickAfterMs}
+          // Skill-tree nudge: only when signed in AND there's something to
+          // spend. Guests / freshly-spent players don't see the chip.
+          skillPointsAvailable={isAuthenticated ? (playerStats?.skillPoints ?? 0) : 0}
+          onPick={(picked) => {
+            const resolve = wavePerkResolverRef.current;
+            if (resolve) resolve(picked);
+          }}
         />
       )}
 

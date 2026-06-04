@@ -69,6 +69,13 @@ export default defineSchema({
     // Full user settings synced for cross-device use, stored as a compact JSON
     // string (one field instead of ~13 columns — storage-efficient).
     settings: v.optional(v.string()),
+    // Per-weapon cumulative XP (weaponId → xp). Levels are derived client-side
+    // from XP via WeaponMasterySystem. Optional so legacy docs still validate.
+    weaponMastery: v.optional(v.record(v.string(), v.number())),
+    // Cosmetic title displayed in the kill feed. Equipped automatically the
+    // first time the player unlocks a title-granting achievement, or chosen
+    // explicitly via Profile in a future iteration.
+    equippedTitle: v.optional(v.string()),
     solo: v.object({
       highScore: v.number(),
       highestWave: v.number(),
@@ -93,4 +100,21 @@ export default defineSchema({
     storageId: v.id("_storage"),
     createdAt: v.number(),
   }).index("by_user", ["userId"]),
+
+  // Daily Challenges — one row per (user, utcDay). Tracks progress against the
+  // day's auto-rolled challenge and whether the +1 skill point reward has been
+  // claimed yet. Rows older than 7 days are safe to GC (no read flows depend
+  // on history; the "today" lookup uses `by_user_day`).
+  dailyProgress: defineTable({
+    userId: v.id("users"),
+    /** UTC calendar day in "YYYY-MM-DD" form (deterministic seed for the day's roll). */
+    utcDay: v.string(),
+    /** Rolled challenge id (matches DailyChallengeRegistry on the client). */
+    challengeId: v.string(),
+    progress: v.number(),
+    claimed: v.boolean(),
+    updatedAt: v.number(),
+  })
+    .index("by_user", ["userId"])
+    .index("by_user_day", ["userId", "utcDay"]),
 });

@@ -55,6 +55,10 @@ export interface MapConfig {
   // Gameplay modifiers
   visibilityMult: number;
   enemySpawnRadiusMult: number;
+  // Explosive barrels per map. Optional — maps that don't set it get a
+  // sensible default in HazardSystem. Range loosely 0.0 (none) — 1.0
+  // (densely littered). Most maps sit around 0.3–0.5.
+  barrelDensity?: number;
   // ── Post-FX tuning ─────────────────────────────────────────────────
   // Multipliers applied to the global bloom intensity for this map.
   // 1.0 = baseline; >1 = more dramatic bloom; <1 = restrained.
@@ -173,6 +177,7 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     weatherType: 'ash',
     visibilityMult: 0.85,
     enemySpawnRadiusMult: 1.1,
+    barrelDensity: 0.55, // Plenty of barrels — fits the warzone vibe.
     // Warm bloom — embers glowing, lava-lit but not overwhelming with
     // the new boosted global baseline.
     bloomMultiplier: 1.25,                // was 1.55
@@ -388,6 +393,7 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     hasSpecialWeather: false,
     visibilityMult: 1.05,
     enemySpawnRadiusMult: 0.95,
+    barrelDensity: 0.75, // Mil-sim site — dense barrel cache.
     // Industrial / mil-sim — minimal bloom for a grounded look.
     bloomMultiplier: 0.70,
     bloomThresholdBias: 0.06,

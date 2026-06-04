@@ -29,18 +29,20 @@ interface CharacterDef {
   id: ModelClassId;
   name: string;
   blurb: string;
+  /** Mechanical passive blurb (must match CharacterPassiveRegistry). */
+  perk: string;
   Icon: LucideIcon;
   color: string;
 }
 const CHARACTERS: CharacterDef[] = [
-  { id: 'ranger',    name: 'Ranger',    blurb: 'Hooded scout',         Icon: Bot,         color: '#3f7a2a' },
-  { id: 'scout',     name: 'Scout',     blurb: 'Cap + pack',           Icon: Footprints,  color: '#f6b53b' },
-  { id: 'heavy',     name: 'Heavy',     blurb: 'Plated visor',         Icon: ShieldCheck, color: '#b02b2b' },
-  { id: 'operative', name: 'Operative', blurb: 'Quad-tube NVGs',       Icon: EyeOff,      color: '#3a3f4a' },
-  { id: 'pyro',      name: 'Pyro',      blurb: 'Gas mask + tanks',     Icon: FlameIcon,   color: '#d96528' },
-  { id: 'medic',     name: 'Medic',     blurb: 'Coat + red cross',     Icon: HeartPulse,  color: '#c91a1a' },
-  { id: 'engineer',  name: 'Engineer',  blurb: 'Hard hat + exo',       Icon: Wrench,      color: '#c78a2a' },
-  { id: 'phantom',   name: 'Phantom',   blurb: 'Visor + cloak',        Icon: Ghost,       color: '#7c33ff' },
+  { id: 'ranger',    name: 'Ranger',    blurb: 'Hooded scout',         perk: '−10% dash CD',        Icon: Bot,         color: '#3f7a2a' },
+  { id: 'scout',     name: 'Scout',     blurb: 'Cap + pack',           perk: '+12% speed',          Icon: Footprints,  color: '#f6b53b' },
+  { id: 'heavy',     name: 'Heavy',     blurb: 'Plated visor',         perk: '+20% HP / −8% spd',   Icon: ShieldCheck, color: '#b02b2b' },
+  { id: 'operative', name: 'Operative', blurb: 'Quad-tube NVGs',       perk: '+10% headshot dmg',   Icon: EyeOff,      color: '#3a3f4a' },
+  { id: 'pyro',      name: 'Pyro',      blurb: 'Gas mask + tanks',     perk: 'Burning bullets',     Icon: FlameIcon,   color: '#d96528' },
+  { id: 'medic',     name: 'Medic',     blurb: 'Coat + red cross',     perk: '0.5 HP / s regen',    Icon: HeartPulse,  color: '#c91a1a' },
+  { id: 'engineer',  name: 'Engineer',  blurb: 'Hard hat + exo',       perk: '−15% reload time',    Icon: Wrench,      color: '#c78a2a' },
+  { id: 'phantom',   name: 'Phantom',   blurb: 'Visor + cloak',        perk: '+15% Phantom dur.',   Icon: Ghost,       color: '#7c33ff' },
 ];
 
 export type MpDifficulty = 'easy' | 'medium' | 'hard' | 'adaptive';
@@ -196,7 +198,7 @@ const CharacterPicker = ({
             type="button"
             onClick={() => { if (!locked) onPick(c.id); }}
             disabled={locked}
-            title={locked ? `Taken by ${owner}` : c.blurb}
+            title={locked ? `Taken by ${owner}` : `${c.blurb} · ${c.perk}`}
             className="relative flex flex-col items-center justify-center gap-1 py-2 px-1 rounded-lg border transition-all duration-150"
             style={{
               borderColor: isMine ? `${c.color}cc` : locked ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.08)',
@@ -212,6 +214,11 @@ const CharacterPicker = ({
             />
             <span className={`text-[10px] font-bold leading-tight text-center truncate w-full ${isMine ? 'text-white' : 'text-gray-300'}`}>
               {c.name}
+            </span>
+            <span
+              className={`text-[8px] font-semibold leading-tight text-center truncate w-full ${isMine ? 'text-white/80' : 'text-gray-500'}`}
+            >
+              {c.perk}
             </span>
             {locked && (
               <span className="absolute top-1 right-1 flex items-center justify-center w-3.5 h-3.5 rounded-full bg-black/55">

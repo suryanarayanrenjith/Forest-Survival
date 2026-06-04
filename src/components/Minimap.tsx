@@ -360,9 +360,11 @@ const Minimap = ({ isTouch = false, standalone = false, soloMode = false }: { is
   return (
     <>
       {!expanded && (standalone
-        // Solo / tutorial: self-position below the top-right stats panel so it
-        // never overlaps the vitals (top-left) or loadout (bottom-right).
-        ? <div className="pointer-events-none absolute right-4 top-[132px] z-[12] w-[208px]">{panel}</div>
+        // Solo / tutorial: self-position below the top-right stats panel
+        // (HUD.tsx Score panel, also right-4 top-4 w-44 + ~92px tall →
+        // bottom edge ~116px). We sit 8px below at top-[124px] with the
+        // SAME w-44 width so the two panels read as one vertical column.
+        ? <div className="pointer-events-none absolute right-4 top-[124px] z-[12] w-44">{panel}</div>
         : panel)}
       {expanded && <ExpandedRadar onClose={() => setExpanded(false)} soloMode={soloMode} />}
     </>

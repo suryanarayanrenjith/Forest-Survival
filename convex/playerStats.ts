@@ -72,6 +72,8 @@ function defaultStats(userId: Id<"users">) {
     rankXp: 0,
     recentDiffs: [] as number[],
     settings: undefined as string | undefined,
+    weaponMastery: {} as Record<string, number>,
+    equippedTitle: undefined as string | undefined,
     solo: { highScore: 0, highestWave: 0, totalKills: 0, totalRuns: 0 },
     multiplayer: { highScore: 0, wins: 0, gamesPlayed: 0, totalKills: 0, totalDeaths: 0 },
     updatedAt: now,
@@ -101,6 +103,8 @@ const statsValidator = v.object({
   leaderboardOptIn: v.boolean(),
   rankXp: v.number(),
   settings: v.union(v.string(), v.null()),
+  weaponMastery: v.record(v.string(), v.number()),
+  equippedTitle: v.union(v.string(), v.null()),
   solo: v.object({
     highScore: v.number(),
     highestWave: v.number(),
@@ -137,6 +141,8 @@ export const getPlayerStats = query({
       // the old aggregate formula so their rank doesn't reset to zero.
       rankXp: base.rankXp ?? legacySoloRankXp(base.solo),
       settings: base.settings ?? null,
+      weaponMastery: base.weaponMastery ?? {},
+      equippedTitle: base.equippedTitle ?? null,
       solo: base.solo,
       multiplayer: base.multiplayer,
     };
@@ -370,6 +376,63 @@ export const setSettings = mutation({
     const stats = await getOrCreateStats(ctx, userId);
     await ctx.db.patch(stats._id, { settings, updatedAt: Date.now() });
     return null;
+  },
+});
+
+// === WEAPON MASTERY ===
+// Per-weapon XP grant. Clients send a bounded XP delta with the kill so the
+// server can sanity-check (no negative, no jumbo grants). Mastery XP caps at
+// the max-level threshold per weapon so the record never bloats.
+const VALID_WEAPON_IDS = new Set([
+  "pistol", "rifle", "shotgun", "smg", "sniper", "minigun", "launcher",
+]);
+const MASTERY_MAX_XP_PER_WEAPON = 4000;
+const MASTERY_MAX_XP_DELTA = 200; // single mutation can grant at most 200 XP
+
+// === COSMETIC TITLES ===
+// The actual list of available titles is derived client-side from the
+// player's achievement bitmask (kept lean — no per-row server query). The
+// server just persists whichever title the player has equipped.
+const MAX_TITLE_LENGTH = 40;
+export const equipTitle = mutation({
+  args: { title: v.union(v.string(), v.null()) },
+  returns: v.null(),
+  handler: async (ctx, { title }) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return null;
+    if (title !== null && title.length > MAX_TITLE_LENGTH) return null;
+    const stats = await getOrCreateStats(ctx, userId);
+    if ((stats.equippedTitle ?? null) === title) return null;
+    await ctx.db.patch(stats._id, {
+      equippedTitle: title ?? undefined,
+      updatedAt: Date.now(),
+    });
+    return null;
+  },
+});
+
+export const addWeaponMasteryXp = mutation({
+  args: {
+    weaponId: v.string(),
+    xpDelta: v.number(),
+  },
+  returns: v.number(),
+  handler: async (ctx, { weaponId, xpDelta }) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return 0; // preference only — never hard-fail
+    if (!VALID_WEAPON_IDS.has(weaponId)) return 0;
+    if (!Number.isFinite(xpDelta) || xpDelta <= 0) return 0;
+    const delta = Math.min(MASTERY_MAX_XP_DELTA, Math.floor(xpDelta));
+    const stats = await getOrCreateStats(ctx, userId);
+    const current = stats.weaponMastery ?? {};
+    const before = current[weaponId] ?? 0;
+    const after = Math.min(MASTERY_MAX_XP_PER_WEAPON, before + delta);
+    if (after === before) return after;
+    await ctx.db.patch(stats._id, {
+      weaponMastery: { ...current, [weaponId]: after },
+      updatedAt: Date.now(),
+    });
+    return after;
   },
 });
 

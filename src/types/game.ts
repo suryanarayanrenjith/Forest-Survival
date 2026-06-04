@@ -202,6 +202,13 @@ export interface Enemy {
   cachedAiDecision?: AIDecision;
   cachedPerception?: PerceptionResult;
   cachedDodge?: DodgeResult;
+  // ── Mini-Boss / Boss Phases ─────────────────────────────────────────
+  // Mini-bosses are elite tank enemies (4× HP + crown visual) spawned on
+  // waves divisible by 5. Bosses transition into a faster, more aggressive
+  // "phase 2" when HP drops below half — `bossPhase` is the latched phase
+  // so the trigger only fires once.
+  isMiniBoss?: boolean;
+  bossPhase?: 1 | 2;
 }
 
 export interface Bullet {
@@ -265,4 +272,8 @@ export interface GameState {
   killStreak: number;
   currentWeapon: string;
   unlockedWeapons: string[];
+  /** Weapon Mastery snapshot for the EQUIPPED weapon — drives the small
+   *  XP sliver under the ammo counter. Omitted when the player isn't
+   *  signed in / in tutorial / on guest play. */
+  weaponMastery?: { level: number; intoLevel: number; nextLevelXp: number };
 }

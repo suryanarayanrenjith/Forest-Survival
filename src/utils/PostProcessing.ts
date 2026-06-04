@@ -309,7 +309,11 @@ export class PostProcessingPipeline {
   private readonly hdrTarget: THREE.WebGLRenderTarget;
   private readonly _tempSun = new THREE.Vector3();
   private readonly _tempNdc = new THREE.Vector3();
-  private currentExposure = 1.0;
+  // Sentinel: -1 means "no atmosphere pushed yet". The first updateAtmosphere
+  // call sets the target exposure DIRECTLY (no smoothing) so the very first
+  // rendered frame already shows the correct EV — preventing the dim "raw"
+  // look that used to linger after the shader-warmup loader hid.
+  private currentExposure = -1;
   private isNightMode = false;
 
   constructor(
@@ -434,7 +438,15 @@ export class PostProcessingPipeline {
 
     if (typeof g.exposure === 'number') {
       const target = THREE.MathUtils.clamp(g.exposure, 0.4, 1.8);
-      this.currentExposure += (target - this.currentExposure) * 0.08;
+      // First push: snap directly to the target so the loader hands the
+      // canvas to gameplay with the correct exposure already baked in.
+      // Subsequent pushes use the eased follower so dusk/dawn/bloodmoon
+      // colour shifts still ramp in smoothly during play.
+      if (this.currentExposure < 0) {
+        this.currentExposure = target;
+      } else {
+        this.currentExposure += (target - this.currentExposure) * 0.08;
+      }
       u.exposure.value = this.currentExposure;
     }
 
