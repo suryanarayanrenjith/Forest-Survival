@@ -142,6 +142,9 @@ export interface UserSettings {
   fov: number;
   showFPS: boolean;
   screenShake: boolean;
+  /** Vibration feedback on touch devices (fire, hits, damage, button taps).
+   *  No-ops on hardware without the Vibration API (e.g. desktop, iOS Safari). */
+  haptics: boolean;
   hitMarkers: boolean;
   killFeed: boolean;
   damageNumbers: boolean;
@@ -162,6 +165,7 @@ export const defaultUserSettings: UserSettings = {
   fov: 75,
   showFPS: false,
   screenShake: true,
+  haptics: true,
   hitMarkers: true,
   killFeed: true,
   damageNumbers: true,
@@ -213,13 +217,18 @@ class GameSettingsManager {
   }
 
   getSettings(): UserSettings {
-    // Always read fresh from localStorage to stay in sync
-    this.settings = this.loadSettings();
+    // Return the in-memory snapshot. This used to re-read + JSON.parse the
+    // whole settings blob (incl. keyBindings) from localStorage on EVERY call —
+    // and the game loop calls getSetting() per shot / per kill / per pickup /
+    // per frame, so during combat that was dozens of synchronous localStorage
+    // parses a frame, which is exactly the main-thread hitch the player felt
+    // when interacting. The in-memory copy is authoritative because every write
+    // path (updateSetting/updateSettings/resetToDefaults) keeps it current, and
+    // cross-tab edits are folded back in via the `storage` event listener.
     return { ...this.settings };
   }
 
   getSetting<K extends keyof UserSettings>(key: K): UserSettings[K] {
-    this.settings = this.loadSettings();
     return this.settings[key];
   }
 

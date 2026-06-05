@@ -23,6 +23,7 @@ interface GameSettings {
   fov: number;
   showFPS: boolean;
   screenShake: boolean;
+  haptics: boolean;
   hitMarkers: boolean;
   killFeed: boolean;
   damageNumbers: boolean;
@@ -40,6 +41,7 @@ const defaultSettings: GameSettings = {
   fov: 75,
   showFPS: false,
   screenShake: true,
+  haptics: true,
   hitMarkers: true,
   killFeed: true,
   damageNumbers: true,
@@ -217,6 +219,9 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
                 <Toggle label="Kill Feed" desc="Elimination notifications" icon={Skull} value={settings.killFeed} onChange={(v) => updateSetting('killFeed', v)} />
                 <Toggle label="Damage Numbers" desc="Show damage dealt" icon={Hash} value={settings.damageNumbers} onChange={(v) => updateSetting('damageNumbers', v)} />
                 <Toggle label="Ragdoll Physics" desc="Enemies fly & tumble on death" icon={Bone} value={settings.ragdollPhysics} onChange={(v) => updateSetting('ragdollPhysics', v)} />
+                {isTouch && (
+                  <Toggle label="Haptics" desc="Vibration on fire, hits & damage" icon={Hand} value={settings.haptics} onChange={(v) => updateSetting('haptics', v)} />
+                )}
               </div>
               <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-4">
                 <div className="flex items-center gap-2 mb-3">

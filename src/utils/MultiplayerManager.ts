@@ -109,8 +109,13 @@ export type NetworkMessage =
   | { type: 'chat_message'; playerId: string; playerName: string; playerColor: number; message: string; messageType: 'chat' | 'emote'; timestamp: number }
   | { type: 'heartbeat'; playerId: string; timestamp: number };
 
-// Throttle configuration - reduces network load significantly
-const POSITION_UPDATE_INTERVAL = 66; // ~15 updates per second (down from 60)
+// Throttle configuration - reduces network load significantly.
+// 50ms = 20 updates/sec. Paired with the 100ms snapshot-interpolation delay in
+// RemotePlayerManager (= 2× this interval) so remote avatars always have two
+// buffered samples to interpolate between AND tolerate one dropped packet —
+// snappier (lower latency) and smoother than the old 66ms/110ms pairing. P2P
+// payload is tiny (a position + rotation), so 20Hz stays well within budget.
+const POSITION_UPDATE_INTERVAL = 50; // ~20 updates per second
 const HEARTBEAT_INTERVAL = 2000; // Send heartbeat every 2 seconds
 const CONNECTION_TIMEOUT = 10000; // Consider connection dead after 10 seconds without heartbeat
 

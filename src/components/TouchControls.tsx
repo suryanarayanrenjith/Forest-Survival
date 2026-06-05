@@ -4,6 +4,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { touchControls } from '../utils/touchControls';
+import { haptic } from '../utils/haptics';
 import { WEAPONS } from '../types/game';
 import type { AbilityHudItem } from './HUD';
 
@@ -26,6 +27,7 @@ const dispatchKey = (type: 'keydown' | 'keyup', code: string) => {
   document.dispatchEvent(new KeyboardEvent(type, { code, key: code, bubbles: true }));
 };
 const tapKey = (code: string) => {
+  haptic('tap'); // tactile confirmation for the on-screen button
   dispatchKey('keydown', code);
   // Release a beat later so per-frame "is held" reads see at least one press.
   window.setTimeout(() => dispatchKey('keyup', code), 60);
@@ -74,6 +76,7 @@ const TouchControls = ({
   const onAimDown = useCallback((e: React.PointerEvent) => {
     e.preventDefault();
     (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    haptic('tap');
     touchControls.aiming = true;
   }, []);
   const onAimUp = useCallback((e: React.PointerEvent) => {
@@ -85,6 +88,7 @@ const TouchControls = ({
   const onJumpDown = useCallback((e: React.PointerEvent) => {
     e.preventDefault();
     (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    haptic('tap');
     dispatchKey('keydown', 'Space');
   }, []);
   const onJumpUp = useCallback((e: React.PointerEvent) => {

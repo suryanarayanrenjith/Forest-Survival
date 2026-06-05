@@ -360,11 +360,13 @@ const Minimap = ({ isTouch = false, standalone = false, soloMode = false }: { is
   return (
     <>
       {!expanded && (standalone
-        // Solo / tutorial: self-position below the top-right stats panel
-        // (HUD.tsx Score panel, also right-4 top-4 w-44 + ~92px tall →
-        // bottom edge ~116px). We sit 8px below at top-[124px] with the
-        // SAME w-44 width so the two panels read as one vertical column.
-        ? <div className="pointer-events-none absolute right-4 top-[124px] z-[12] w-44">{panel}</div>
+        // Solo / tutorial: self-position below the top-right stats panel.
+        // The HUD.tsx Score panel (right-4 top-4 w-44) is taller than it looks —
+        // label + 3xl score + kills/wave row + py-3 padding put its bottom edge
+        // at ~129px, so the old top-[124px] actually OVERLAPPED it. Sit at
+        // top-[152px] for a clean ~24px breathing gap, same w-44 width so the
+        // two panels still read as one tidy vertical column.
+        ? <div className="pointer-events-none absolute right-4 top-[152px] z-[12] w-44">{panel}</div>
         : panel)}
       {expanded && <ExpandedRadar onClose={() => setExpanded(false)} soloMode={soloMode} />}
     </>

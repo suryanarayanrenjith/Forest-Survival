@@ -53,10 +53,12 @@ const HEALTHBAR_Y = PLAYER_EYE_HEIGHT + 0.60;
 // Snapshot-interpolation render delay. We render every remote avatar
 // `PLAYER_INTERP_DELAY_MS` in the past so there are always two buffered
 // network samples to interpolate between — this is what turns the throttled
-// ~15Hz position stream into perfectly smooth, constant-speed movement
-// instead of the old "ease-to-latest then freeze" stutter. ~110ms comfortably
-// covers the ~66ms send interval plus typical P2P jitter.
-const PLAYER_INTERP_DELAY_MS = 110;
+// ~20Hz position stream into perfectly smooth, constant-speed movement
+// instead of the old "ease-to-latest then freeze" stutter. 100ms = 2× the
+// 50ms send interval (see POSITION_UPDATE_INTERVAL): always two samples to
+// bracket the render instant AND a full dropped packet of slack, while being
+// 10ms snappier than the old 110ms delay.
+const PLAYER_INTERP_DELAY_MS = 100;
 
 // Re-used vectors / sample slot so the update loop is allocation-free.
 const _tmpVec3 = new THREE.Vector3();

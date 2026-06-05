@@ -46,6 +46,7 @@ import ChatSystem from './components/ChatSystem';
 import AchievementNotification from './components/AchievementNotification';
 import KillFeed, { addKillFeedEntry } from './components/KillFeed';
 import HitMarkers, { addHitMarker, addDamageNumber, clearHitMarkers } from './components/HitMarkers';
+import DamageDirectionIndicator, { triggerDamageDirection, clearDamageDirections } from './components/DamageDirectionIndicator';
 import ScreenEffects, { triggerDamageFlash, triggerScreenShake, triggerKillFlash, triggerHeadshotFlash } from './components/ScreenEffects';
 import ComboDisplay from './components/ComboDisplay';
 import { WEAPONS, type Enemy, type Bullet, type PowerUp, type Particle, type TerrainObject, type Keys, type GameState } from './types/game';
@@ -82,6 +83,7 @@ import { api } from '../convex/_generated/api';
 import { usePlayerData } from './hooks/usePlayerData';
 import { useDeviceInfo } from './hooks/useDeviceInfo';
 import { touchControls } from './utils/touchControls';
+import { haptic } from './utils/haptics';
 import TouchControls from './components/TouchControls';
 import OrientationGate from './components/OrientationGate';
 import MobileNotice from './components/MobileNotice';
@@ -227,7 +229,7 @@ const MENU_MUSIC_URL = '/audio/Beyond_The_Overgrowth.mp3';
 // (avoids spurious DB writes when the object identity changes but values don't).
 const SYNCED_SETTING_KEYS: (keyof UserSettings)[] = [
   'masterVolume', 'sfxVolume', 'musicVolume', 'sensitivity', 'fov',
-  'showFPS', 'screenShake', 'hitMarkers', 'killFeed', 'damageNumbers',
+  'showFPS', 'screenShake', 'haptics', 'hitMarkers', 'killFeed', 'damageNumbers',
   'ragdollPhysics', 'crosshairStyle', 'crosshairColor', 'graphicsQuality', 'keyBindings',
 ];
 
@@ -985,6 +987,11 @@ const ForestSurvivalGame = () => {
     // `let` so the render loop can pick up live FOV changes from the
     // settings menu (e.g. opened mid-game from the pause menu).
     let baseFOV = currentUserSettings.fov;
+    // `let` so the render loop can honour the Screen Shake toggle live —
+    // refreshed alongside FOV in the throttled settings re-read below. When
+    // off, the camera-shake offset is never applied (accessibility / motion
+    // sickness), while recoil pitch-climb + FOV punch still read as weapon kick.
+    let screenShakeOn = currentUserSettings.screenShake;
     const sensitivityMultiplier = gameSettingsManager.getSensitivityMultiplier();
 
     // Determine configuration based on difficulty and mode
@@ -4685,6 +4692,10 @@ const ForestSurvivalGame = () => {
         // ENHANCED SCREEN SHAKE for recoil feedback
         cameraShakeIntensity = Math.min(cameraShakeIntensity + recoilAmount * 4.2, 0.32);
 
+        // Per-shot haptic kick on touch (rate-limited internally; no-op on
+        // desktop / when haptics are off).
+        haptic('fire');
+
         // FOV punch — noticeable widening on each shot
         fovPunch = Math.min(fovPunch + recoilAmount * 75, 4.5);
 
@@ -5426,6 +5437,22 @@ const ForestSurvivalGame = () => {
         soundManager.play('playerHurt', 0.5);
         cameraShakeIntensity = Math.min(cameraShakeIntensity + 0.2, 0.25);
         triggerDamageFlash();
+        haptic('hurt');
+        // Directional threat arc — camera-relative bearing of the attacker
+        // (0 = ahead, +right). Only local hits carry an attacker position;
+        // networked / environmental damage passes null and is non-directional.
+        if (enemyPos) {
+          camera.getWorldDirection(_shieldFwd);
+          _shieldFwd.y = 0;
+          _shieldFwd.normalize();
+          _shieldToEnemy.subVectors(enemyPos, camera.position);
+          _shieldToEnemy.y = 0;
+          _shieldToEnemy.normalize();
+          const fwdDot = _shieldFwd.dot(_shieldToEnemy);
+          // Horizontal camera-right = forward × up = (-fz, 0, fx).
+          const rightDot = -_shieldFwd.z * _shieldToEnemy.x + _shieldFwd.x * _shieldToEnemy.z;
+          triggerDamageDirection(Math.atan2(rightDot, fwdDot));
+        }
         if (damage >= 15 && gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
         if (combo > 0) combo = Math.max(0, combo - 1);
         tookDamageThisWave = true;
@@ -6483,13 +6510,16 @@ const ForestSurvivalGame = () => {
       // Update gun animations - recoil handles its own offset
       gunModel.updateRecoil(delta);
 
-      // Re-read the FOV setting a few times a second so changes made in the
-      // settings menu (even mid-game from the pause screen) apply live.
+      // Re-read live-tunable settings a few times a second so changes made in
+      // the settings menu (even mid-game from the pause screen) apply live.
+      // One getSettings() parse covers FOV + Screen Shake (was a getSetting per
+      // value), so this is no costlier than the old FOV-only re-read.
       fovCheckAccum += rawDelta;
       if (fovCheckAccum >= 0.4) {
         fovCheckAccum = 0;
-        const liveFov = gameSettingsManager.getSetting('fov');
-        if (typeof liveFov === 'number' && liveFov > 0) baseFOV = liveFov;
+        const liveSettings = gameSettingsManager.getSettings();
+        if (typeof liveSettings.fov === 'number' && liveSettings.fov > 0) baseFOV = liveSettings.fov;
+        screenShakeOn = liveSettings.screenShake;
       }
 
       // Aiming zoom — a consistent ~22° zoom relative to the chosen FOV
@@ -7020,8 +7050,11 @@ const ForestSurvivalGame = () => {
         });
       }
 
-      // Apply camera shake effect
-      if (cameraShakeIntensity > 0.001) {
+      // Apply camera shake effect — honours the Screen Shake setting. When the
+      // toggle is off we skip the positional jitter entirely (and zero the
+      // accumulator so it can't build up while disabled), so the setting now
+      // actually does something. Recoil pitch + FOV punch are unaffected.
+      if (screenShakeOn && cameraShakeIntensity > 0.001) {
         const shakeX = (Math.random() - 0.5) * cameraShakeIntensity;
         const shakeY = (Math.random() - 0.5) * cameraShakeIntensity;
         const shakeZ = (Math.random() - 0.5) * cameraShakeIntensity;
@@ -7445,6 +7478,8 @@ const ForestSurvivalGame = () => {
             if (gameSettingsManager.getSetting('hitMarkers')) {
               addHitMarker(isCritical);
             }
+            // Tactile confirmation on touch (no-op on desktop / haptics off).
+            haptic(isCritical ? 'headshot' : 'hit');
 
             // Calculate screen position for damage number
             if (gameSettingsManager.getSetting('damageNumbers')) {
@@ -8562,6 +8597,7 @@ const ForestSurvivalGame = () => {
         addHitMarker(false);
         addDamageNumber(0, 50, 50, false, false);
         clearHitMarkers();
+        clearDamageDirections();
       });
 
       // ── STAGE 6: commit a couple of composed frames ────────────────
@@ -8677,6 +8713,11 @@ const ForestSurvivalGame = () => {
           if (!isSceneDisposed) {
             setWarmupError(null);
             setShowShaderProcessing(false);
+            // Snap the post-FX exposure to its final value on the very first
+            // gameplay frame so the graded look lands instantly when the loader
+            // hides — no frame-rate-dependent ease-in (the "post-processing
+            // applied after a delay" artifact).
+            postFX?.primeExposureSnap();
             // Guest is now fully in the match → tell the host it can begin
             // streaming enemies (the host holds the stream until this lands).
             if (isMpGuest && mp) {
@@ -9507,6 +9548,7 @@ const ForestSurvivalGame = () => {
             maxHealth={gameState.maxHealth}
             isVisible={!isPaused}
           />
+          <DamageDirectionIndicator isVisible={!isPaused} />
           <KillFeed
             visible={!isPaused}
             /* Solo & Tutorial dock the tactical radar under the score panel on

@@ -414,6 +414,18 @@ export class PostProcessingPipeline {
   }
 
   /**
+   * Force the NEXT {@link updateAtmosphere} call to set exposure DIRECTLY
+   * (no easing). Call this immediately before the first gameplay frame after
+   * the shader-warmup loader hides, so the fully-graded look is on screen
+   * instantly instead of easing in over ~12 frames. The ease is frame-rate
+   * dependent, so on a stuttery startup that ramp was visible as
+   * "post-processing applied a moment after the loader" — this kills it.
+   */
+  primeExposureSnap() {
+    this.currentExposure = -1;
+  }
+
+  /**
    * Push live atmospheric grading uniforms. Called once per frame so
    * dusk/dawn/bloodmoon colour shifts read on screen.
    */
