@@ -283,18 +283,30 @@ const WavePerkPicker = ({
           })}
         </div>
 
-        {/* Outcome line — appears only after reveal */}
+        {/* Outcome line — appears only after reveal. On a miss we also show
+            the consolation prize (mastery XP) so the player knows the
+            gamble wasn't fully empty. The actual XP is granted by the
+            resolver in App.tsx. */}
         {revealed && (
-          <p
-            className={`mt-6 text-center text-sm font-bold uppercase tracking-[0.3em] ${
-              pickedIdx === prizeSlotIndex ? 'text-emerald-200' : 'text-rose-300/85'
-            }`}
+          <div
+            className="mt-6 text-center"
             style={{ animation: 'perkBoxReveal 0.5s ease-out 0.4s both' }}
           >
-            {pickedIdx === prizeSlotIndex
-              ? `Perk Unlocked · ${WAVE_PERKS[slots[prizeSlotIndex]!].name}`
-              : 'Better Luck Next Wave'}
-          </p>
+            <p
+              className={`text-sm font-bold uppercase tracking-[0.3em] ${
+                pickedIdx === prizeSlotIndex ? 'text-emerald-200' : 'text-rose-300/85'
+              }`}
+            >
+              {pickedIdx === prizeSlotIndex
+                ? `Perk Unlocked · ${WAVE_PERKS[slots[prizeSlotIndex]!].name}`
+                : 'Better Luck Next Wave'}
+            </p>
+            {pickedIdx !== prizeSlotIndex && (
+              <p className="mt-2 text-[11px] font-bold uppercase tracking-[0.22em] text-amber-300/85">
+                Consolation · Weapon Mastery XP awarded
+              </p>
+            )}
+          </div>
         )}
 
         {/* Soft auto-pick countdown (MP only) — hidden once chosen */}

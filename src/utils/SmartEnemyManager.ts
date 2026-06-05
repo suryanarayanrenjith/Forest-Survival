@@ -10,7 +10,7 @@
 import * as THREE from 'three';
 import { type GraphicsPreset } from './GameSettingsManager';
 
-export type EnemyType = 'normal' | 'fast' | 'tank' | 'boss';
+export type EnemyType = 'normal' | 'fast' | 'tank' | 'boss' | 'ranged';
 
 // Result type for mesh acquisition - used by App.tsx createEnemy
 export interface AcquiredMesh {
@@ -90,6 +90,22 @@ const ENEMY_CONFIGS: Record<EnemyType, EnemyVisualConfig> = {
     emissiveIntensity: 0.28,
     scale: 2.0,
   },
+  // Ranged "Sniper" archetype — tall, slender, cyan-trimmed. Visually
+  // distinct so the player IDs the threat (must close to break LOS) at a
+  // glance, even on busy maps. Slightly above normal height for an
+  // unmistakable silhouette. Emissive intensity is INTENTIONALLY low —
+  // the cyan palette already reads as bright on the ACES tonemap; the
+  // new belt + jet glow + rifle muzzle stack tipped the original 0.24
+  // value over the edge into "glowstick", so we hold it back to ~0.12.
+  ranged: {
+    baseColor: 0x1e6f7a,
+    accentColor: 0x144c55,
+    brightColor: 0x55c5d6,
+    darkColor: 0x153a42,
+    glowColor: 0x4ad4e6,
+    emissiveIntensity: 0.12,
+    scale: 1.05,
+  },
 };
 
 // Shared geometry cache - created once, reused for all enemies
@@ -109,6 +125,16 @@ interface SharedGeometries {
   handHigh: THREE.BoxGeometry;
   crestHigh: THREE.ConeGeometry;
   hipHigh: THREE.BoxGeometry;
+  // NEW detail pieces — small dressing that adds visual interest without
+  // exploding mesh count. All ride on the existing animated parts.
+  beltHigh: THREE.BoxGeometry;       // glowing waist strip (on body)
+  kneePadHigh: THREE.BoxGeometry;    // small dark plate halfway down the leg
+  elbowPadHigh: THREE.BoxGeometry;   // matching elbow plate on the arm
+  antennaHigh: THREE.ConeGeometry;   // thin spike on the head
+  jetVentHigh: THREE.BoxGeometry;    // back panel (glow vent)
+  // Ranged-specific rifle barrel — long thin box clipped onto the right arm.
+  rifleBarrelHigh: THREE.BoxGeometry;
+  rifleStockHigh: THREE.BoxGeometry;
 
   // Medium detail - simplified
   bodyMedium: THREE.BoxGeometry;
@@ -271,6 +297,15 @@ class SmartEnemyManager {
       handHigh: new THREE.BoxGeometry(0.34, 0.34, 0.34),
       crestHigh: new THREE.ConeGeometry(0.16, 0.55, 4),
       hipHigh: new THREE.BoxGeometry(0.92, 0.4, 0.56),
+      // Dressing pieces (NEW)
+      beltHigh:      new THREE.BoxGeometry(1.06, 0.12, 0.62),
+      kneePadHigh:   new THREE.BoxGeometry(0.42, 0.18, 0.42),
+      elbowPadHigh:  new THREE.BoxGeometry(0.36, 0.16, 0.36),
+      antennaHigh:   new THREE.ConeGeometry(0.04, 0.42, 6),
+      jetVentHigh:   new THREE.BoxGeometry(0.62, 0.6, 0.14),
+      // Ranged-archetype rifle pieces
+      rifleBarrelHigh: new THREE.BoxGeometry(0.08, 0.08, 1.4),
+      rifleStockHigh:  new THREE.BoxGeometry(0.18, 0.22, 0.46),
 
       // Medium detail - simplified (fewer segments)
       bodyMedium: new THREE.BoxGeometry(1, 1.5, 0.6, 1, 1, 1),
@@ -510,7 +545,28 @@ class SmartEnemyManager {
     hips.position.set(0, -0.8, 0);
     body.add(hips);
 
-    // ── Arms (+ fists) ──
+    // Glowing waist belt — thin slab across the torso just above the hips.
+    // Reads as a power tell at distance; uses the per-type glow material so
+    // each archetype keeps its colour identity (red / cyan / green / etc).
+    const belt = new THREE.Mesh(G.beltHigh, glowMat);
+    belt.position.set(0, -0.50, 0);
+    belt.userData.cannotReceiveAO = true;
+    body.add(belt);
+
+    // Backpack vent — dark plate with a glow stripe peeking out, parented
+    // to the body so it sways with the torso animation.
+    const jet = new THREE.Mesh(G.jetVentHigh, darkMat);
+    jet.position.set(0, 0.05, -0.36);
+    body.add(jet);
+    const jetGlow = new THREE.Mesh(
+      new THREE.BoxGeometry(0.46, 0.08, 0.04),
+      glowMat,
+    );
+    jetGlow.position.set(0, -0.18, -0.43);
+    jetGlow.userData.cannotReceiveAO = true;
+    body.add(jetGlow);
+
+    // ── Arms (+ fists + elbow pads) ──
     const leftArm = new THREE.Mesh(G.armHigh, accentMat);
     leftArm.castShadow = shadows;
     leftArm.position.set(-0.65, 0.6, 0);
@@ -519,6 +575,9 @@ class SmartEnemyManager {
     const lHand = new THREE.Mesh(G.handHigh, darkMat);
     lHand.position.set(0, -0.62, 0);
     leftArm.add(lHand);
+    const lElbow = new THREE.Mesh(G.elbowPadHigh, darkMat);
+    lElbow.position.set(0, -0.10, 0);
+    leftArm.add(lElbow);
 
     const rightArm = new THREE.Mesh(G.armHigh, accentMat);
     rightArm.castShadow = shadows;
@@ -528,8 +587,31 @@ class SmartEnemyManager {
     const rHand = new THREE.Mesh(G.handHigh, darkMat);
     rHand.position.set(0, -0.62, 0);
     rightArm.add(rHand);
+    const rElbow = new THREE.Mesh(G.elbowPadHigh, darkMat);
+    rElbow.position.set(0, -0.10, 0);
+    rightArm.add(rElbow);
 
-    // ── Legs (+ feet) ──
+    // ── RANGED ARCHETYPE — clip a rifle onto the right hand. Reads as
+    // unmistakable from afar so the player IDs the long-range threat.
+    if (type === 'ranged') {
+      const rifleStock = new THREE.Mesh(G.rifleStockHigh, darkMat);
+      rifleStock.position.set(0.06, -0.65, 0.12);
+      rightArm.add(rifleStock);
+      const rifleBarrel = new THREE.Mesh(G.rifleBarrelHigh, darkMat);
+      rifleBarrel.position.set(0.06, -0.65, 0.78);
+      rightArm.add(rifleBarrel);
+      // Glowing muzzle tip — same colour as the eye bar / belt so all
+      // emissive bits read as one "energy weapon" set.
+      const muzzle = new THREE.Mesh(
+        new THREE.SphereGeometry(0.08, 10, 8),
+        glowMat,
+      );
+      muzzle.position.set(0.06, -0.65, 1.46);
+      muzzle.userData.cannotReceiveAO = true;
+      rightArm.add(muzzle);
+    }
+
+    // ── Legs (+ feet + knee pads) ──
     const leftLeg = new THREE.Mesh(G.legHigh, accentMat);
     leftLeg.castShadow = shadows;
     leftLeg.position.set(-0.25, -0.5, 0);
@@ -538,6 +620,9 @@ class SmartEnemyManager {
     const lFoot = new THREE.Mesh(G.footHigh, darkMat);
     lFoot.position.set(0, -0.56, 0.12);
     leftLeg.add(lFoot);
+    const lKnee = new THREE.Mesh(G.kneePadHigh, darkMat);
+    lKnee.position.set(0, -0.05, 0.06);
+    leftLeg.add(lKnee);
 
     const rightLeg = new THREE.Mesh(G.legHigh, accentMat);
     rightLeg.castShadow = shadows;
@@ -547,8 +632,11 @@ class SmartEnemyManager {
     const rFoot = new THREE.Mesh(G.footHigh, darkMat);
     rFoot.position.set(0, -0.56, 0.12);
     rightLeg.add(rFoot);
+    const rKnee = new THREE.Mesh(G.kneePadHigh, darkMat);
+    rKnee.position.set(0, -0.05, 0.06);
+    rightLeg.add(rKnee);
 
-    // ── Head (+ visor, glowing eye bar, crest) ──
+    // ── Head (+ visor, glowing eye bar, crest, antenna) ──
     const head = new THREE.Mesh(G.headHigh, brightMat);
     head.castShadow = shadows;
     head.position.y = 1.9;
@@ -567,6 +655,8 @@ class SmartEnemyManager {
     crest.position.set(0, 0.62, -0.04);
     crest.rotation.x = -0.32;
     head.add(crest);
+    // (Previously had a second antenna cone here — it visually clashed with
+    // the tilted crest, reading as a misaligned duplicate. Removed.)
 
     // MEDIUM LOD - Simplified (no separate arms/legs, just body + head)
     const mediumGroup = pooledEnemy.lodGroups.medium;

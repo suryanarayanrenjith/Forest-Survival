@@ -1007,10 +1007,18 @@ const ForestSurvivalGame = () => {
     //                 range, instead of falling into the "dumb seek" mode
     //                 that was letting the player out-snipe them.
     const classicSettings = {
-      easy:     { healthMult: 0.9, speedMult: 0.6,  damageMult: 0.8, spawnMult: 0.7, regenRate: 0,    aggroMult: 0.7, reactionMult: 1.5, chaseMult: 0.8 },
-      medium:   { healthMult: 1.6, speedMult: 1.1,  damageMult: 1.4, spawnMult: 1.1, regenRate: 0.1,  aggroMult: 1.0, reactionMult: 1.0, chaseMult: 1.0 },
-      hard:     { healthMult: 2.6, speedMult: 1.6,  damageMult: 2.1, spawnMult: 1.6, regenRate: 0.25, aggroMult: 1.6, reactionMult: 0.55, chaseMult: 1.4 },
-      adaptive: { healthMult: 1.4, speedMult: 0.95, damageMult: 1.3, spawnMult: 1.0, regenRate: 0.05, aggroMult: 0.95, reactionMult: 1.0, chaseMult: 1.0 } // Starts gentle, AI ramps up
+      // Tuning re-baselined to account for the new ranged "Sniper" threat
+      // (wave 4+) and the existing explosive barrels + ranged turrets:
+      //   Medium — was tuned around "no ranged threats". Dropped HP / dmg
+      //            ~10-15% so a typical 5-wave run feels punchy without
+      //            being overwhelming once snipers start firing.
+      //   Hard   — same scaling cut by ~15%; still meaningfully harder
+      //            than Medium but the ranged + sentinel pressure makes
+      //            the old 2.6 HP / 2.1 dmg feel grindy.
+      easy:     { healthMult: 0.9, speedMult: 0.6,  damageMult: 0.8,  spawnMult: 0.7, regenRate: 0,    aggroMult: 0.7,  reactionMult: 1.5,  chaseMult: 0.8 },
+      medium:   { healthMult: 1.4, speedMult: 1.05, damageMult: 1.25, spawnMult: 1.0, regenRate: 0.1,  aggroMult: 1.0,  reactionMult: 1.05, chaseMult: 1.0 },
+      hard:     { healthMult: 2.2, speedMult: 1.5,  damageMult: 1.85, spawnMult: 1.4, regenRate: 0.2,  aggroMult: 1.55, reactionMult: 0.6,  chaseMult: 1.35 },
+      adaptive: { healthMult: 1.3, speedMult: 0.95, damageMult: 1.2,  spawnMult: 1.0, regenRate: 0.05, aggroMult: 0.95, reactionMult: 1.0,  chaseMult: 1.0 }, // Starts gentle, AI ramps up
     };
     const diffSettings = { ...classicSettings[classicDifficulty], progressive: classicDifficulty === 'adaptive', rampRate: classicDifficulty === 'adaptive' ? 0.05 : 0 };
 
@@ -1040,10 +1048,13 @@ const ForestSurvivalGame = () => {
     mpWaitingForHostRef.current = isMpGuest;
     setMpWaitingForHost(isMpGuest);
     // Enemy type ⇄ compact wire code.
-    const ENEMY_TYPE_CODE: Record<'normal' | 'fast' | 'tank' | 'boss', number> = {
-      normal: 0, fast: 1, tank: 2, boss: 3,
+    // Wire encoding for the host→guest enemy snapshot. APPEND-ONLY — older
+    // clients will fall back to 'normal' on an unknown code via the
+    // ENEMY_TYPE_FROM_CODE bounds check at the read site.
+    const ENEMY_TYPE_CODE: Record<'normal' | 'fast' | 'tank' | 'boss' | 'ranged', number> = {
+      normal: 0, fast: 1, tank: 2, boss: 3, ranged: 4,
     };
-    const ENEMY_TYPE_FROM_CODE: Array<'normal' | 'fast' | 'tank' | 'boss'> = ['normal', 'fast', 'tank', 'boss'];
+    const ENEMY_TYPE_FROM_CODE: Array<'normal' | 'fast' | 'tank' | 'boss' | 'ranged'> = ['normal', 'fast', 'tank', 'boss', 'ranged'];
     // Guest-side lookup from netId → mirrored enemy. Host fills netId on spawn.
     const enemyByNetId = new Map<number, Enemy>();
     let nextEnemyNetId = 1;
@@ -1320,7 +1331,12 @@ const ForestSurvivalGame = () => {
         ...atmosphericSettings,
         skyColor: blendHexColor(atmosphericSettings.skyColor, mapConfig.skyColor, skyWeight),
         fogColor: blendHexColor(atmosphericSettings.fogColor, mapConfig.fogColor, fogWeight),
-        fogDensity: mapConfig.hasSpecialWeather ? getSpecialFogDensity() : atmosphericSettings.fogDensity,
+        // Bump non-special-weather fog density 1.7× so distant chunk edges
+        // blend smoothly into the sky tone instead of showing as a visible
+        // "world ends here" band. The new 5×5 chunk grid loads further out
+        // (~350m corner) and this density gives ~30% visibility at 350m —
+        // far enough to read action, dense enough to hide pop-in.
+        fogDensity: mapConfig.hasSpecialWeather ? getSpecialFogDensity() : atmosphericSettings.fogDensity * 1.7,
         ambientColor: blendHexColor(atmosphericSettings.ambientColor, mapConfig.ambientLightColor, mapWeight),
         ambientIntensity: THREE.MathUtils.lerp(
           atmosphericSettings.ambientIntensity,
@@ -2251,20 +2267,27 @@ const ForestSurvivalGame = () => {
       const chunkX = Math.floor(playerX / CHUNK_SIZE);
       const chunkZ = Math.floor(playerZ / CHUNK_SIZE);
 
-      // Load chunks around player (3x3 grid)
-      for (let dx = -1; dx <= 1; dx++) {
-        for (let dz = -1; dz <= 1; dz++) {
+      // Load chunks around player. 5×5 grid (was 3×3) so the visible world
+      // extends ~2.5 chunks in every direction instead of 1.5 — combined
+      // with the tightened fog below, the player can never see the edge
+      // of the streamed terrain. The fog density was bumped 25 % in
+      // getRenderAtmosphere so the new far chunks blend smoothly into the
+      // sky tone instead of revealing the missing 6th-chunk band.
+      for (let dx = -2; dx <= 2; dx++) {
+        for (let dz = -2; dz <= 2; dz++) {
           generateChunk(chunkX + dx, chunkZ + dz);
         }
       }
 
-      // Remove distant terrain objects to save memory
+      // Remove distant terrain objects to save memory. Cull radius scaled
+      // with the wider load grid so we don't pay the streaming cost of
+      // re-generating chunks the player has only just walked past.
+      const cullRadius = CHUNK_SIZE * 6;
       for (let i = terrainObjects.length - 1; i >= 0; i--) {
         const obj = terrainObjects[i];
-        const distance = Math.sqrt(
-          Math.pow(obj.x - playerX, 2) + Math.pow(obj.z - playerZ, 2)
-        );
-        if (distance > CHUNK_SIZE * 4) {
+        const dxC = obj.x - playerX;
+        const dzC = obj.z - playerZ;
+        if (dxC * dxC + dzC * dzC > cullRadius * cullRadius) {
           scene.remove(obj.mesh);
           terrainObjects.splice(i, 1);
         }
@@ -2389,6 +2412,7 @@ const ForestSurvivalGame = () => {
       ? spawnRangedSentinels(scene, sentinelCount, overlapsTerrain, 220)
       : [];
     let sentinelIntroFired = false; // First-encounter intro banner fires once.
+    let rangedEnemyIntroFired = false;
 
     // === SPAWN SAFE ZONE ===
     // Random terrain generation can place a tree/rock/wall right on top of the
@@ -2791,6 +2815,32 @@ const ForestSurvivalGame = () => {
     // Game objects
     const enemies: Enemy[] = [];
     const bullets: Bullet[] = [];
+    // Enemy projectiles — fired by ranged "sniper" enemies. Distinct from
+    // player bullets so the bullet-vs-enemy collision path can't accidentally
+    // tag them and the bullet-vs-player path is local-only (no MP sync).
+    interface EnemyBullet {
+      mesh: THREE.Mesh;
+      velocity: THREE.Vector3;
+      damage: number;
+      life: number; // frames until auto-cull
+    }
+    const enemyBullets: EnemyBullet[] = [];
+    const _enemyBulletGeo = new THREE.SphereGeometry(0.12, 10, 8);
+    const _enemyBulletMat = new THREE.MeshBasicMaterial({
+      color: 0x6effff,
+      toneMapped: false,
+      fog: false,
+    });
+    const _enemyBulletGlowGeo = new THREE.SphereGeometry(0.28, 10, 8);
+    const _enemyBulletGlowMat = new THREE.MeshBasicMaterial({
+      color: 0x55c5d6,
+      transparent: true,
+      opacity: 0.4,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      toneMapped: false,
+      fog: false,
+    });
     const powerUps: PowerUp[] = [];
     const particles: Particle[] = [];
 
@@ -3015,12 +3065,12 @@ const ForestSurvivalGame = () => {
 
 // Create enemy with OPTIMIZED pooled meshes from SmartEnemyManager
     // Returns null if enemy limit reached (adaptive performance management)
-    const createEnemy = (x: number, z: number, type: 'normal' | 'fast' | 'tank' | 'boss' = 'normal'): Enemy | null => {
+    const createEnemy = (x: number, z: number, type: 'normal' | 'fast' | 'tank' | 'boss' | 'ranged' = 'normal'): Enemy | null => {
       // === SMART ENEMY MANAGER: Acquire pooled mesh ===
       // This uses shared geometries/materials and object pooling for optimal performance
 
       // Get the scale for this enemy type (must match SmartEnemyManager ENEMY_CONFIGS)
-      const bodyScale = type === 'fast' ? 0.7 : type === 'tank' ? 1.5 : type === 'boss' ? 2.0 : 1.0;
+      const bodyScale = type === 'fast' ? 0.7 : type === 'tank' ? 1.5 : type === 'boss' ? 2.0 : type === 'ranged' ? 1.05 : 1.0;
       const position = new THREE.Vector3(x, 1.0 * bodyScale, z);
       const acquiredMesh = smartEnemyManager.acquireMeshForEnemy(type as PooledEnemyType, position);
 
@@ -3057,6 +3107,15 @@ const ForestSurvivalGame = () => {
           enemyDamage = 25;
           enemyScore = 100;
           break;
+        case 'ranged':
+          // Sniper — moves slowly, shoots from range. Lower HP than a
+          // normal so the player is rewarded for prioritising them; score
+          // is bumped because they're a real threat.
+          enemyHealth = 40;
+          enemySpeed = 0.05;
+          enemyDamage = 14;   // per energy bolt
+          enemyScore = 28;
+          break;
       }
 
       // Wave-based AI advancement. Reaction & dodge scaled by difficulty —
@@ -3070,6 +3129,7 @@ const ForestSurvivalGame = () => {
       if (type === 'fast') personality = 'tactical';
       else if (type === 'tank') personality = 'defensive';
       else if (type === 'boss') personality = 'aggressive';
+      else if (type === 'ranged') personality = 'support'; // hangs back, kites
 
       // Create AI systems
       const aiBehavior = new AIBehaviorSystem(personality);
@@ -3079,8 +3139,13 @@ const ForestSurvivalGame = () => {
         type === 'boss' ? 100 : 80, // Hearing range
         1.5 // Hearing sensitivity - increased
       );
+      // AttackSystem only knows the melee archetypes; ranged enemies don't
+      // actually use this melee path (their bolt-firing logic is per-frame
+      // in animate). Map 'ranged' onto 'normal' here so the type checks out
+      // and the instance is constructed; the runtime call sites skip it.
+      const attackArchetype: 'normal' | 'fast' | 'tank' | 'boss' = type === 'ranged' ? 'normal' : type;
       const attackSystemInstance = new AttackSystem(
-        AttackSystem.createConfigForType(type, enemyDamage * diffSettings.damageMult * (runMods.enemyDamageMult ?? 1))
+        AttackSystem.createConfigForType(attackArchetype, enemyDamage * diffSettings.damageMult * (runMods.enemyDamageMult ?? 1))
       );
 
       // NEW: Obstacle avoidance system - prevents getting stuck in trees
@@ -3612,20 +3677,39 @@ const ForestSurvivalGame = () => {
       }
     };
 
-    const spawnEnemyBatch = (count: number, typeOverride?: 'normal' | 'fast' | 'tank' | 'boss', miniBoss = false): number => {
+    const spawnEnemyBatch = (count: number, typeOverride?: 'normal' | 'fast' | 'tank' | 'boss' | 'ranged', miniBoss = false): number => {
       const adaptiveMax = smartEnemyManager.getCurrentMaxEnemies();
       const hardish = classicDifficulty === 'hard' || classicDifficulty === 'adaptive';
       let spawned = 0;
       for (let i = 0; i < count; i++) {
         if (enemies.length >= adaptiveMax || !smartEnemyManager.canSpawnMore()) break;
-        let type: 'normal' | 'fast' | 'tank' | 'boss' = typeOverride ?? 'normal';
+        let type: 'normal' | 'fast' | 'tank' | 'boss' | 'ranged' = typeOverride ?? 'normal';
         if (!typeOverride) {
           if (isTutorialMode) {
             // Tutorial draws from the director's progressively-unlocked roster.
             type = pickTutorialEnemyType();
           } else {
             const rand = Math.random();
-            if (wave >= 5 && rand < (hardish ? 0.12 : 0.08)) type = 'boss';
+            // Ranged sniper joins from wave 4. Probability ramps with wave
+            // so by wave 10 ~20% of spawns are ranged on Hard, ~14% on
+            // Easy/Medium. Counts BEFORE the other archetype rolls so the
+            // ranged threat is felt even when tanks/bosses are in the mix.
+            if (wave >= 4 && rand < (hardish ? 0.20 : 0.14)) {
+              type = 'ranged';
+              if (!rangedEnemyIntroFired && !isTutorialMode) {
+                rangedEnemyIntroFired = true;
+                setEnemyIntro({
+                  id: Date.now(),
+                  name: 'Sniper',
+                  tag: 'RANGED · TELEGRAPHED BOLT',
+                  blurb: 'Cyan crystal rifle. Strafe before the muzzle blooms — block their LOS with cover.',
+                  accent: '#6effff',
+                  icon: 'crosshair',
+                });
+                soundManager.play('powerUp', 0.6, false, 1.4);
+              }
+            }
+            else if (wave >= 5 && rand < (hardish ? 0.12 : 0.08)) type = 'boss';
             else if (wave >= 3 && rand < (hardish ? 0.32 : 0.24)) type = 'tank';
             else if (wave >= 2 && rand < (hardish ? 0.5 : 0.42)) type = 'fast';
           }
@@ -4917,7 +5001,11 @@ const ForestSurvivalGame = () => {
       // When the player disables ragdolls, we leave deathVel/deathSpin unset and
       // the death loop falls back to a clean topple-and-shrink animation.
       if (gameSettingsManager.getSetting('ragdollPhysics')) {
-        const massScale = enemy.type === 'boss' ? 0.32 : enemy.type === 'tank' ? 0.6 : enemy.type === 'fast' ? 1.3 : 1.0;
+        const massScale = enemy.type === 'boss' ? 0.32
+          : enemy.type === 'tank' ? 0.6
+          : enemy.type === 'fast' ? 1.3
+          : enemy.type === 'ranged' ? 1.0
+          : 1.0;
         const launchDir = (enemy.hitImpulse && enemy.hitImpulse.lengthSq() > 1e-4)
           ? enemy.hitImpulse.clone().setY(0).normalize()
           : new THREE.Vector3(
@@ -5210,6 +5298,28 @@ const ForestSurvivalGame = () => {
               perkBonuses = aggregatePerkBonuses(runPerks);
               applyPerkInstantEffects(picked);
               setActiveRunPerks([...runPerks]);
+            } else {
+              // CONSOLATION REWARD — empty box pays out a mastery XP bonus
+              // so the gamble isn't fully punishing. Scales with the wave
+              // cleared (higher waves = bigger consolation) and pipes into
+              // the existing weapon-mastery flush. The player also sees
+              // a short banner so the moment doesn't feel like nothing.
+              const masteryBonus = 25 + clearedWave * 6;
+              masteryRunXp[currentWeapon] = (masteryRunXp[currentWeapon] ?? 0) + masteryBonus;
+              const lvlBefore = levelFromXp(masteryTotalXp(currentWeapon) - masteryBonus);
+              const lvlAfter = levelFromXp(masteryTotalXp(currentWeapon));
+              refreshMasteryBonus();
+              setPowerUpMessage(`Consolation · +${masteryBonus} ${WEAPONS[currentWeapon].name} Mastery XP`);
+              setTimeout(() => setPowerUpMessage(''), 2200);
+              if (gameSettingsManager.getSetting('killFeed')) {
+                addKillFeedEntry(`+${masteryBonus} ${WEAPONS[currentWeapon].name} XP`, 'powerup');
+              }
+              soundManager.play('powerUp', 0.45, false, 1.1);
+              // If the consolation crossed a mastery level boundary, also
+              // surface the level-up so the player sees the milestone.
+              if (lvlAfter > lvlBefore && gameSettingsManager.getSetting('killFeed')) {
+                addKillFeedEntry(`${WEAPONS[currentWeapon].name} · Mastery L${lvlAfter}`, 'powerup');
+              }
             }
             wavePerkActiveRef.current = false;
             wavePerkResolverRef.current = null;
@@ -5262,7 +5372,11 @@ const ForestSurvivalGame = () => {
     // glue; they are no-ops in solo.
 
     const enemyLabelOf = (type: Enemy['type']): string =>
-      type === 'boss' ? 'Boss' : type === 'tank' ? 'Tank' : type === 'fast' ? 'Stalker' : 'Forest Creature';
+      type === 'boss' ? 'Boss'
+      : type === 'tank' ? 'Tank'
+      : type === 'fast' ? 'Stalker'
+      : type === 'ranged' ? 'Sniper'
+      : 'Forest Creature';
 
     // Apply incoming enemy damage to the LOCAL player. Shared by the local
     // enemy-attack path (solo + the host's own hits) and, in multiplayer, by
@@ -7051,6 +7165,35 @@ const ForestSurvivalGame = () => {
         if (!e.dead) enemyGrid.insert(k, e.mesh.position.x, e.mesh.position.z);
       }
 
+      // === ENEMY BULLET UPDATE (ranged sniper bolts) ===
+      // Cheap linear scan — there are at most a handful of bolts in the
+      // air. Each tick: advance position, expire by life, test against the
+      // player's bounding sphere. Terrain blocks are not checked per-frame
+      // (the LOS check at fire time already filters out shots that would
+      // hit a wall a few metres away) so the bolt reliably reaches the
+      // player it was aimed at.
+      for (let eb = enemyBullets.length - 1; eb >= 0; eb--) {
+        const bolt = enemyBullets[eb];
+        bolt.mesh.position.add(bolt.velocity);
+        bolt.life--;
+        const dxpb = bolt.mesh.position.x - camera.position.x;
+        const dypb = bolt.mesh.position.y - camera.position.y;
+        const dzpb = bolt.mesh.position.z - camera.position.z;
+        const playerHit = dxpb * dxpb + dypb * dypb + dzpb * dzpb < 0.72; // ~0.85m
+        if (playerHit) {
+          takeEnemyDamage(bolt.damage, 'Sniper Bolt', bolt.mesh.position);
+          // Small impact burst at the player so the hit reads visually.
+          createParticles(bolt.mesh.position, 0x6effff, 9);
+          scene.remove(bolt.mesh);
+          enemyBullets.splice(eb, 1);
+          continue;
+        }
+        if (bolt.life <= 0 || bolt.mesh.position.y < 0.1) {
+          scene.remove(bolt.mesh);
+          enemyBullets.splice(eb, 1);
+        }
+      }
+
       // Update bullets
       for (let i = bullets.length - 1; i >= 0; i--) {
         const bullet = bullets[i];
@@ -7195,7 +7338,11 @@ const ForestSurvivalGame = () => {
             // scaled by its type scale, so the head's true world height is
             // position.y + 1.9 * scale. Using a flat +1.0 made the crit zone
             // land on the chest and miss the visible head entirely.
-            const hsScale = enemy.type === 'fast' ? 0.7 : enemy.type === 'tank' ? 1.5 : enemy.type === 'boss' ? 2.0 : 1.0;
+            const hsScale = enemy.type === 'fast' ? 0.7
+              : enemy.type === 'tank' ? 1.5
+              : enemy.type === 'boss' ? 2.0
+              : enemy.type === 'ranged' ? 1.05
+              : 1.0;
             _tempVec3.set(
               enemy.mesh.position.x,
               enemy.mesh.position.y + 1.9 * hsScale,
@@ -7957,8 +8104,80 @@ const ForestSurvivalGame = () => {
           }
         }
 
+        // === RANGED SNIPER FIRING ===
+        // The 'ranged' archetype skips melee entirely. It charges up for
+        // ~750ms when the player is in its sweet spot AND has line of
+        // sight (no tree in the way), then launches a cyan energy bolt
+        // travelling at moderate speed so the player can side-step it.
+        if (enemy.type === 'ranged' && !enemy.dead && enemy.health > 0) {
+          const RANGED_MIN = 6;   // back off in the player's face
+          const RANGED_MAX = 50;  // can't see past this in dense maps
+          const dxR = focusPos.x - enemy.mesh.position.x;
+          const dzR = focusPos.z - enemy.mesh.position.z;
+          const distR = Math.hypot(dxR, dzR);
+          const inRange = distR >= RANGED_MIN && distR <= RANGED_MAX;
+          // Line-of-sight: cheap grid query against terrain. We sample the
+          // midpoint between the enemy and the player and check for any
+          // collidable within ~half the distance — same trick the ranged
+          // sentinels use, kept lean here.
+          let los = inRange;
+          if (los && distR > 4) {
+            const midX = (enemy.mesh.position.x + focusPos.x) * 0.5;
+            const midZ = (enemy.mesh.position.z + focusPos.z) * 0.5;
+            const nearby = terrainGrid.queryRadius(midX, midZ, distR * 0.5 + 1);
+            for (let nn = 0; nn < nearby.length; nn++) {
+              const obj = terrainObjects[nearby[nn]];
+              if (!obj || !obj.collidable) continue;
+              const px2 = obj.x - enemy.mesh.position.x;
+              const pz2 = obj.z - enemy.mesh.position.z;
+              const lx = focusPos.x - enemy.mesh.position.x;
+              const lz = focusPos.z - enemy.mesh.position.z;
+              const lsq = lx * lx + lz * lz;
+              const t = Math.max(0, Math.min(1, (px2 * lx + pz2 * lz) / lsq));
+              const cx = lx * t - px2;
+              const cz = lz * t - pz2;
+              if (cx * cx + cz * cz < obj.radius * obj.radius) { los = false; break; }
+            }
+          }
+          const COOLDOWN_MS = 2400;
+          const CHARGE_MS   = 750;
+          if (los) {
+            if ((enemy.rangedNextShotAt ?? 0) <= frameNowMs) {
+              enemy.rangedChargeMs = (enemy.rangedChargeMs ?? 0) + delta * 1000;
+              if (enemy.rangedChargeMs >= CHARGE_MS) {
+                // Launch bolt from the rifle muzzle (rough offset).
+                const origin = new THREE.Vector3(
+                  enemy.mesh.position.x,
+                  enemy.mesh.position.y + 1.2,
+                  enemy.mesh.position.z,
+                );
+                const target = new THREE.Vector3(focusPos.x, camera.position.y - 0.2, focusPos.z);
+                const dir = target.clone().sub(origin).normalize();
+                const speed = 0.55;
+                const bulletGroup = new THREE.Mesh(_enemyBulletGeo, _enemyBulletMat);
+                bulletGroup.position.copy(origin);
+                bulletGroup.add(new THREE.Mesh(_enemyBulletGlowGeo, _enemyBulletGlowMat));
+                scene.add(bulletGroup);
+                enemyBullets.push({
+                  mesh: bulletGroup,
+                  velocity: dir.multiplyScalar(speed),
+                  damage: enemy.damage,
+                  life: 240,
+                });
+                soundManager.play('shoot_pistol', 0.55, false, 1.3);
+                enemy.rangedChargeMs = 0;
+                enemy.rangedNextShotAt = frameNowMs + COOLDOWN_MS;
+              }
+            }
+          } else {
+            // Lost LOS or out of range — drop any in-progress charge.
+            enemy.rangedChargeMs = 0;
+          }
+        }
+
         // === ATTACK SYSTEM ===
-        if (enemy.attackSystem) {
+        // Skipped for 'ranged' — they don't melee, they shoot above.
+        if (enemy.type !== 'ranged' && enemy.attackSystem) {
           enemy.attackSystem.update(delta);
 
           // Try to attack if in range (increased range)

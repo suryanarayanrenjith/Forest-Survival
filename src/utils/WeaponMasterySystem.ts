@@ -74,12 +74,15 @@ export function bonusForLevel(level: number): MasteryBonus {
 }
 
 /** XP granted per kill — modest so reaching L10 is a meaningful grind. */
-export function xpPerKill(enemyType: 'normal' | 'fast' | 'tank' | 'boss', isMiniBoss?: boolean): number {
+export function xpPerKill(enemyType: 'normal' | 'fast' | 'tank' | 'boss' | 'ranged', isMiniBoss?: boolean): number {
   let base: number;
   switch (enemyType) {
     case 'fast':   base = 4;  break;
     case 'tank':   base = 12; break;
     case 'boss':   base = 60; break;
+    // Sniper kills feel meaningful — they pressure the player from afar
+    // and are tougher to land than a charging stalker.
+    case 'ranged': base = 9;  break;
     case 'normal':
     default:       base = 5;
   }

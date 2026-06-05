@@ -172,50 +172,203 @@ export class EnhancedPowerUpSystem {
 
     const config = POWER_UP_CONFIGS[powerUpType];
     const group = new THREE.Group();
+    const tintHex = new THREE.Color(config.color);
+    const tintBright = new THREE.Color(config.emissiveColor).multiplyScalar(1.4);
 
-    // Crate
-    const crateGeometry = new THREE.BoxGeometry(2, 2, 2);
+    // ── CRATE BODY ─────────────────────────────────────────────────────
+    // Weathered hardwood — slightly desaturated so the corner braces +
+    // emissive panel pop instead of getting drowned by warm bloom.
+    const CRATE_SIZE = 2.0;
+    const crateGeometry = new THREE.BoxGeometry(CRATE_SIZE, CRATE_SIZE, CRATE_SIZE);
     const crateMaterial = new THREE.MeshStandardMaterial({
-      color: 0x9a5b22,
-      emissive: 0x3b1d0d,
-      emissiveIntensity: 0.35,
-      roughness: 0.78,
+      color: 0x6b4220,
+      emissive: 0x1f0e05,
+      emissiveIntensity: 0.25,
+      roughness: 0.82,
       metalness: 0.08,
-      toneMapped: false,
-      fog: false,
     });
     const crate = new THREE.Mesh(crateGeometry, crateMaterial);
     crate.castShadow = true;
     group.add(crate);
 
-    // Power-up indicator
-    const indicatorGeometry = new THREE.BoxGeometry(1.5, 1.5, 1.5);
-    const indicatorMaterial = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(config.color).multiplyScalar(2.4),
-      toneMapped: false,
-      fog: false,
-      depthWrite: false,
-      depthTest: true,
+    // Reused materials for the metal bands + brackets + studs.
+    const bandMat = new THREE.MeshStandardMaterial({
+      color: 0x42413d,
+      emissive: 0x1c1b18,
+      emissiveIntensity: 0.4,
+      roughness: 0.42,
+      metalness: 0.85,
     });
-    const indicator = new THREE.Mesh(indicatorGeometry, indicatorMaterial);
-    indicator.position.y = 0.5;
-    indicator.userData.cannotReceiveAO = true;
-    group.add(indicator);
+    const studMat = new THREE.MeshStandardMaterial({
+      color: 0xb3a982,
+      emissive: 0x3a3520,
+      emissiveIntensity: 0.7,
+      roughness: 0.38,
+      metalness: 0.9,
+    });
 
-    // Parachute
-    const parachuteGeometry = new THREE.ConeGeometry(3, 2, 8);
-    const parachuteMaterial = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
+    // ── METAL BANDS — top + bottom + middle rail. Thin boxes with the
+    // y-axis short, hugging the wood. Three rails per face for a "shipping
+    // crate" silhouette readable from 30+ metres.
+    const bandThickness = 0.06;
+    const bandWidth = 0.14;
+    const bandY = [0.92, 0.0, -0.92]; // top / middle / bottom
+    const halfSize = CRATE_SIZE / 2;
+    for (const y of bandY) {
+      // Two bands per axis (X and Z) so the crate has horizontal rails
+      // visible from every side.
+      const xBand = new THREE.Mesh(
+        new THREE.BoxGeometry(CRATE_SIZE + bandThickness, bandWidth, CRATE_SIZE + bandThickness),
+        bandMat,
+      );
+      xBand.position.y = y;
+      group.add(xBand);
+    }
+
+    // ── CORNER REINFORCEMENTS — 4 vertical metal strips on the side edges.
+    const cornerGeo = new THREE.BoxGeometry(0.12, CRATE_SIZE + bandThickness, 0.12);
+    const cornerOffsets: [number, number][] = [
+      [-halfSize, -halfSize],
+      [-halfSize,  halfSize],
+      [ halfSize, -halfSize],
+      [ halfSize,  halfSize],
+    ];
+    for (const [cx, cz] of cornerOffsets) {
+      const post = new THREE.Mesh(cornerGeo, bandMat);
+      post.position.set(cx, 0, cz);
+      group.add(post);
+    }
+
+    // ── CORNER STUDS — small bronze rivets at the 8 box corners.
+    const studGeo = new THREE.SphereGeometry(0.08, 8, 6);
+    const studCornerOffsets: [number, number, number][] = [
+      [-halfSize,  halfSize, -halfSize],
+      [ halfSize,  halfSize, -halfSize],
+      [-halfSize,  halfSize,  halfSize],
+      [ halfSize,  halfSize,  halfSize],
+      [-halfSize, -halfSize, -halfSize],
+      [ halfSize, -halfSize, -halfSize],
+      [-halfSize, -halfSize,  halfSize],
+      [ halfSize, -halfSize,  halfSize],
+    ];
+    for (const [sx, sy, sz] of studCornerOffsets) {
+      const stud = new THREE.Mesh(studGeo, studMat);
+      stud.position.set(sx, sy, sz);
+      group.add(stud);
+    }
+
+    // ── EMISSIVE TOP PANEL — the power-up's signature colour, like a
+    // priority sticker on a Half-Life crate. Acts as the "what's inside"
+    // tell at distance and is the main bloom catcher.
+    const panelGeo = new THREE.BoxGeometry(1.35, 0.04, 1.35);
+    const panelMat = new THREE.MeshStandardMaterial({
+      color: tintHex,
+      emissive: tintBright,
+      emissiveIntensity: 3.2,
+      roughness: 0.35,
+      metalness: 0.2,
+      toneMapped: true,
+    });
+    const topPanel = new THREE.Mesh(panelGeo, panelMat);
+    topPanel.position.y = halfSize + 0.02;
+    topPanel.userData.cannotReceiveAO = true;
+    group.add(topPanel);
+
+    // ── FRONT LABEL STRIPE — a thinner horizontal band across the front
+    // face. Reinforces the readable "package" silhouette.
+    const labelGeo = new THREE.BoxGeometry(1.05, 0.32, 0.02);
+    const labelMat = new THREE.MeshStandardMaterial({
+      color: tintHex,
+      emissive: tintBright,
+      emissiveIntensity: 1.8,
+      roughness: 0.5,
+      metalness: 0.15,
+      toneMapped: true,
+    });
+    const frontLabel = new THREE.Mesh(labelGeo, labelMat);
+    frontLabel.position.set(0, 0.05, halfSize + 0.012);
+    frontLabel.userData.cannotReceiveAO = true;
+    group.add(frontLabel);
+
+    // ── STROBE BEACON — small red blinker on top so you can pick out a
+    // landed crate in a crowded forest. Pulses via animated emissive in
+    // the per-frame update; baseline is dim so it doesn't compete with
+    // the colour panel.
+    const beaconGeo = new THREE.SphereGeometry(0.13, 12, 10);
+    const beaconMat = new THREE.MeshStandardMaterial({
+      color: 0xff4030,
+      emissive: 0xff4030,
+      emissiveIntensity: 2.5,
+      roughness: 0.3,
+      metalness: 0.0,
+      toneMapped: true,
+    });
+    const beacon = new THREE.Mesh(beaconGeo, beaconMat);
+    beacon.position.set(halfSize - 0.18, halfSize + 0.05, halfSize - 0.18);
+    beacon.userData.cannotReceiveAO = true;
+    beacon.userData.airdropBeacon = true; // tag for the strobe animation
+    group.add(beacon);
+
+    // ── PARACHUTE — alternating white + tinted sectors built from a single
+    // ConeGeometry whose face colours we paint. Reads as a real chute, not
+    // a featureless cone.
+    const parachuteGeometry = new THREE.ConeGeometry(3, 1.8, 12);
+    parachuteGeometry.translate(0, 0.9, 0); // pivot at base for swing
+    const positionAttr = parachuteGeometry.getAttribute('position');
+    const colorArr = new Float32Array(positionAttr.count * 3);
+    const colorAttr = new THREE.BufferAttribute(colorArr, 3);
+    parachuteGeometry.setAttribute('color', colorAttr);
+    const whiteCol = new THREE.Color(0xf5f5f5);
+    const sectorCol = new THREE.Color(config.color).lerp(new THREE.Color(0xffffff), 0.25);
+    // The cone has tri faces: tip + 12 base verts. Alternate sectors by
+    // looking at the angle of each base vertex.
+    for (let i = 0; i < positionAttr.count; i++) {
+      const vx = positionAttr.getX(i);
+      const vz = positionAttr.getZ(i);
+      const ang = Math.atan2(vz, vx);
+      const sector = Math.floor((ang + Math.PI) / (Math.PI / 6));
+      const tinted = sector % 2 === 0;
+      const c = tinted ? sectorCol : whiteCol;
+      colorArr[i * 3] = c.r;
+      colorArr[i * 3 + 1] = c.g;
+      colorArr[i * 3 + 2] = c.b;
+    }
+    const parachuteMaterial = new THREE.MeshStandardMaterial({
+      vertexColors: true,
       side: THREE.DoubleSide,
-      toneMapped: false,
-      fog: false,
+      roughness: 0.65,
+      metalness: 0.0,
+      emissive: 0x080808,
+      emissiveIntensity: 0.35,
     });
     const parachute = new THREE.Mesh(parachuteGeometry, parachuteMaterial);
-    parachute.position.y = 4;
-    parachute.rotation.x = Math.PI;
+    parachute.position.y = 3.7;
+    parachute.rotation.x = Math.PI; // dome opens downward
     group.add(parachute);
 
-    const glowLight = new THREE.PointLight(config.emissiveColor, 1.75, 11);
+    // ── SUSPENSION LINES — 4 thin black tethers from parachute to crate
+    // corners. Sells the "package is suspended" idea.
+    const lineMat = new THREE.MeshBasicMaterial({ color: 0x111111, toneMapped: true });
+    const lineGeo = new THREE.CylinderGeometry(0.015, 0.015, 2.2, 4, 1);
+    const lineOffsets: [number, number][] = [
+      [-halfSize, -halfSize],
+      [ halfSize, -halfSize],
+      [-halfSize,  halfSize],
+      [ halfSize,  halfSize],
+    ];
+    for (const [lx, lz] of lineOffsets) {
+      const line = new THREE.Mesh(lineGeo, lineMat);
+      // Halfway between crate top and parachute base, rotated to lean
+      // outward to the parachute rim.
+      line.position.set(lx * 0.55, 2.4, lz * 0.55);
+      line.rotation.x = -lx * 0 - 0.18; // tiny tilt for visual life
+      line.rotation.z =  lx * 0.18;
+      group.add(line);
+    }
+
+    // Coloured key light underneath the panel — bathes the surrounding
+    // ground in the perk's signature hue so it stands out at night.
+    const glowLight = new THREE.PointLight(config.emissiveColor, 2.0, 13);
     glowLight.position.y = 1.5;
     group.add(glowLight);
 
@@ -295,12 +448,23 @@ export class EnhancedPowerUpSystem {
           airdrop.mesh.position.y = 1;
           airdrop.landed = true;
 
-          // Remove parachute
-          const parachute = airdrop.mesh.children.find(
-            c => c instanceof THREE.Mesh && c.geometry instanceof THREE.ConeGeometry
-          );
-          if (parachute) {
-            airdrop.mesh.remove(parachute);
+          // Remove parachute (cone geometry) AND its suspension lines
+          // (thin cylinders). Iterate from the end so splicing children
+          // while looping doesn't skip entries.
+          for (let c = airdrop.mesh.children.length - 1; c >= 0; c--) {
+            const child = airdrop.mesh.children[c];
+            if (!(child instanceof THREE.Mesh)) continue;
+            const g = child.geometry;
+            if (g instanceof THREE.ConeGeometry) {
+              airdrop.mesh.remove(child);
+              g.dispose();
+              if (child.material instanceof THREE.Material) child.material.dispose();
+            } else if (g instanceof THREE.CylinderGeometry && g.parameters.height > 1) {
+              // Suspension tethers — short cylinders > 1 unit tall.
+              airdrop.mesh.remove(child);
+              g.dispose();
+              if (child.material instanceof THREE.Material) child.material.dispose();
+            }
           }
 
           // Add smoke
@@ -312,17 +476,22 @@ export class EnhancedPowerUpSystem {
           landedAirdrops.push(airdrop);
         }
       } else {
-        // Rotate landed crate
-        const crate = airdrop.mesh.children[0];
-        if (crate) {
-          crate.rotation.y += deltaTime * 2;
-        }
+        // Slow Y-rotation for the WHOLE crate group so the priority panel
+        // and label sweep into view for any nearby player.
+        airdrop.mesh.rotation.y += deltaTime * 0.55;
 
-        // Animate indicator
-        const indicator = airdrop.mesh.children[1];
-        if (indicator) {
-          indicator.position.y = 0.5 + Math.sin(Date.now() * 0.003) * 0.3;
-          indicator.rotation.y += deltaTime * 3;
+        // Strobe beacon — pulse the red blinker so a landed crate is easy
+        // to spot in a forest. Cheap traversal because the group has only
+        // ~30 children and we early-exit on the tagged mesh.
+        const tNow = Date.now() * 0.005;
+        const strobe = 0.6 + Math.abs(Math.sin(tNow)) * 3.2;
+        for (let c = 0; c < airdrop.mesh.children.length; c++) {
+          const child = airdrop.mesh.children[c];
+          if (child instanceof THREE.Mesh && child.userData.airdropBeacon
+              && child.material instanceof THREE.MeshStandardMaterial) {
+            child.material.emissiveIntensity = strobe;
+            break;
+          }
         }
 
         // Animate smoke

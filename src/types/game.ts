@@ -124,7 +124,7 @@ export interface Enemy {
   maxHealth: number;
   speed: number;
   dead: boolean;
-  type: 'normal' | 'fast' | 'tank' | 'boss';
+  type: 'normal' | 'fast' | 'tank' | 'boss' | 'ranged';
   damage: number;
   scoreValue: number;
   // Animation state
@@ -209,6 +209,13 @@ export interface Enemy {
   // so the trigger only fires once.
   isMiniBoss?: boolean;
   bossPhase?: 1 | 2;
+  // ── Ranged archetype state ──────────────────────────────────────────
+  // Ranged enemies fire a slow telegraphed energy bolt at the player when
+  // they have line of sight and the cooldown has elapsed. The cooldown is
+  // milliseconds since the last shot; chargeMs tracks the pre-fire wind-up
+  // so the player sees a glowing muzzle build before the bolt launches.
+  rangedNextShotAt?: number;
+  rangedChargeMs?: number;
 }
 
 export interface Bullet {
