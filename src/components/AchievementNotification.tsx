@@ -6,6 +6,9 @@ interface AchievementNotificationProps {
   achievement: Achievement;
   index: number; // For stacking multiple achievements
   onClose: () => void;
+  /** Touch: dock top-centre (the right edge holds the control toggle rail) and
+   *  slide in from the top instead of the right. */
+  isTouch?: boolean;
 }
 
 const RARITY: Record<string, string> = {
@@ -15,7 +18,7 @@ const RARITY: Record<string, string> = {
   common: '#9ca3af',
 };
 
-const AchievementNotification = ({ achievement, index, onClose }: AchievementNotificationProps) => {
+const AchievementNotification = ({ achievement, index, onClose, isTouch = false }: AchievementNotificationProps) => {
   const [visible, setVisible] = useState(false);
 
   useEffect(() => {
@@ -29,16 +32,27 @@ const AchievementNotification = ({ achievement, index, onClose }: AchievementNot
   }, [achievement.id]);
 
   const accent = RARITY[achievement.rarity] || RARITY.common;
-  // Base offset clears the top-right score panel so they never overlap it.
-  const topPosition = 150 + index * 156;
+  // Desktop: down the right edge, clearing the top-right score panel. Touch:
+  // top-centre (the right edge holds the control toggles) with a tighter stack.
+  const topPosition = isTouch ? 54 + index * 92 : 150 + index * 156;
+
+  // Hidden/entry transforms differ per layout so the slide direction matches the
+  // dock edge (top-centre slides down; right edge slides in from the right).
+  const hiddenTransform = isTouch ? 'translate(-50%, -120%)' : 'translateX(120%)';
+  const shownTransform = isTouch ? 'translate(-50%, 0)' : 'translateX(0)';
 
   return (
     <div
-      className={`fixed right-4 transition-all duration-300 ${visible ? 'translate-x-0 opacity-100' : 'translate-x-[120%] opacity-0'}`}
-      style={{ zIndex: 100 + index, top: `${topPosition}px` }}
+      className={`fixed transition-all duration-300 ${isTouch ? 'left-1/2' : 'right-4'}`}
+      style={{
+        zIndex: 100 + index,
+        top: `${topPosition}px`,
+        transform: visible ? shownTransform : hiddenTransform,
+        opacity: visible ? 1 : 0,
+      }}
     >
       <div
-        className="w-[330px] rounded-xl border bg-[#0b0f15]/95 backdrop-blur-md overflow-hidden"
+        className={`rounded-xl border bg-[#0b0f15]/95 backdrop-blur-md overflow-hidden ${isTouch ? 'w-[min(90vw,340px)]' : 'w-[330px]'}`}
         style={{ borderColor: `${accent}55`, boxShadow: `0 10px 30px -10px ${accent}55` }}
       >
         {/* accent edge */}

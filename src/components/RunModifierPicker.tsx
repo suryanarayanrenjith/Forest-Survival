@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Skull, Flame, ShieldOff, Users, Crosshair, Zap, ArrowRight, type LucideIcon } from 'lucide-react';
 import { RUN_MODIFIERS, type RunModifierId } from '../utils/RunModifierSystem';
+import { detectIsTouch } from '../hooks/useDeviceInfo';
+
+const IS_TOUCH = detectIsTouch();
 
 interface RunModifierPickerProps {
   /** Three modifier ids rolled for today by App.tsx. */
@@ -161,8 +164,9 @@ const RunModifierPicker = ({ options, onChoose, onBack }: RunModifierPickerProps
           </button>
         </div>
 
-        {/* Keyboard legend — number highlights, Enter confirms. */}
-        <div className="mt-5 flex items-center justify-center gap-4 text-[11px] text-gray-500">
+        {/* Keyboard legend — number highlights, Enter confirms. Desktop only;
+            on touch the cards/buttons are tapped directly. */}
+        <div className={`mt-5 flex items-center justify-center gap-4 text-[11px] text-gray-500 ${IS_TOUCH ? 'hidden' : ''}`}>
           <span className="flex items-center gap-1.5">
             <kbd className="rounded border border-white/15 bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-bold text-gray-300">1</kbd>
             <kbd className="rounded border border-white/15 bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-bold text-gray-300">2</kbd>

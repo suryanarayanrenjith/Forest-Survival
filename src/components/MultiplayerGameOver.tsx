@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Crown, Skull, Crosshair, Star, Medal, RotateCcw, Home, Hourglass } from 'lucide-react';
+import { Crown, Skull, Crosshair, Star, Medal, RotateCcw, Home, Hourglass, Smartphone } from 'lucide-react';
 import type { PlayerData } from '../utils/MultiplayerManager';
 import { RANK_TIERS } from '../utils/rankSystem';
 import PlayerStatsModal from './PlayerStatsModal';
@@ -121,6 +121,11 @@ const MultiplayerGameOver = ({
                         style={{ color: tier.color, background: `${tier.color}22` }}
                       >
                         {tier.name}
+                      </span>
+                    )}
+                    {player.isMobile && (
+                      <span className="ml-1.5 inline-flex align-middle" title="Played on mobile">
+                        <Smartphone className="w-3 h-3 text-teal-300 inline" strokeWidth={2.5} />
                       </span>
                     )}
                   </span>

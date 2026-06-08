@@ -50,15 +50,32 @@ const MODEL_SCALE = PLAYER_EYE_HEIGHT / MODEL_NATIVE_HEIGHT;
 const NAMEPLATE_Y = PLAYER_EYE_HEIGHT + 1.12;      // world units above feet
 const HEALTHBAR_Y = PLAYER_EYE_HEIGHT + 0.60;
 
-// Snapshot-interpolation render delay. We render every remote avatar
-// `PLAYER_INTERP_DELAY_MS` in the past so there are always two buffered
-// network samples to interpolate between — this is what turns the throttled
-// ~20Hz position stream into perfectly smooth, constant-speed movement
-// instead of the old "ease-to-latest then freeze" stutter. 100ms = 2× the
-// 50ms send interval (see POSITION_UPDATE_INTERVAL): always two samples to
-// bracket the render instant AND a full dropped packet of slack, while being
-// 10ms snappier than the old 110ms delay.
-const PLAYER_INTERP_DELAY_MS = 100;
+// Snapshot-interpolation render delay. We render every remote avatar a short
+// time `in the past` so there are always two buffered network samples to
+// interpolate between — this is what turns the throttled ~20Hz position stream
+// into perfectly smooth, constant-speed movement instead of the old
+// "ease-to-latest then freeze" stutter.
+//
+// The delay is now ADAPTIVE per peer (see `update()`): it grows with the
+// measured network jitter so a noisy mobile/relayed link never starves the
+// buffer (which used to cause the extrapolation overshoot + snap-back that
+// read as "players teleporting around"), and shrinks back toward the floor on
+// a clean link so movement stays responsive. These bound that adaptation.
+const SEND_INTERVAL_MS = 50;          // matches POSITION_UPDATE_INTERVAL on the sender
+const MIN_RENDER_DELAY_MS = 60;       // floor — just over one send interval
+const MAX_RENDER_DELAY_MS = 280;      // ceiling for very jittery links
+const DEFAULT_RENDER_DELAY_MS = 100;  // used for legacy peers that send no timestamp
+// How fast the per-peer clock-offset estimate is allowed to drift upward (ms
+// per accepted packet) to track real wall-clock drift between machines.
+const CLOCK_DRIFT_UP_MS = 0.5;
+// A silence longer than this means the stream paused (tab backgrounded, big lag
+// spike, teleport) — we resync the clock + clear stale history rather than
+// interpolate across the gap.
+const STREAM_GAP_RESET_MS = 1500;
+// If a snapshot lands this far (world units) from where we're currently
+// rendering the avatar, it's a teleport/respawn, not movement — hard-snap
+// instead of interpolating (which would slide the avatar across the map).
+const TELEPORT_DIST_SQ = 12 * 12;
 
 // Re-used vectors / sample slot so the update loop is allocation-free.
 const _tmpVec3 = new THREE.Vector3();
@@ -79,9 +96,20 @@ interface RemotePlayerRecord {
   weaponMaterials: THREE.Material[];
   currentWeaponType: WeaponType;
   // Interpolation — a timestamped snapshot buffer (position + yaw) we play
-  // back with a fixed render delay for smooth, jitter-free movement.
+  // back with an adaptive render delay for smooth, jitter-free movement.
   posBuf: SnapshotInterpolator;
   currentYaw: number;
+  // ── Network de-jitter (per-peer clock reconstruction) ──
+  // We map each remote player's send-time onto OUR clock via a slowly-adapting
+  // offset, so the buffered snapshot spacing reflects the *sender's* steady
+  // send cadence instead of our noisy receive times. This is the core fix for
+  // warped/erratic remote motion.
+  clockOffset: number;   // localTime ≈ senderSendTime + clockOffset
+  clockReady: boolean;   // offset seeded from a timestamped packet yet?
+  netJitter: number;     // decaying peak-hold of timing jitter (ms)
+  renderDelay: number;   // current interpolation delay (ms), adapts to jitter
+  lastSeq: number;       // highest accepted sequence — drop anything ≤ this
+  lastPacketAt: number;  // local time of the last accepted packet (gap detect)
   // Velocity derived from successive position updates (drives walk anim)
   smoothedSpeed: number;
   walkPhase: number;
@@ -93,6 +121,9 @@ interface RemotePlayerRecord {
   lastRenderedHealth: number;
   // Nameplate cache
   lastNameplateName: string;
+  // Whether the last-drawn nameplate included the mobile (phone) glyph, so we
+  // only redraw the canvas when the device flag actually changes.
+  lastNameplateMobile: boolean;
   // Lifecycle
   isAlive: boolean;
   deathT: number;
@@ -204,12 +235,14 @@ export class RemotePlayerManager {
     this.root.add(record.group);
 
     // Seed interpolation to the spawn position so the avatar doesn't
-    // streak across the map on first appearance.
+    // streak across the map on first appearance. Route the seed through the
+    // timeline mapper so the per-peer clock offset is primed from packet #1.
     const feetY = data.position.y - PLAYER_EYE_HEIGHT;
     record.group.position.set(data.position.x, feetY, data.position.z);
     record.currentYaw = -data.rotation.y + Math.PI;
     record.body.rotation.y = record.currentYaw;
-    record.posBuf.push(performance.now(), data.position.x, feetY, data.position.z, record.currentYaw);
+    const seedTime = this.mapToLocalTimeline(record, data);
+    record.posBuf.push(seedTime, data.position.x, feetY, data.position.z, record.currentYaw);
   }
 
   /** Apply a freshly-received network snapshot to an already-present player. */
@@ -217,18 +250,44 @@ export class RemotePlayerManager {
     const rec = this.players.get(data.id);
     if (!rec) return;
 
+    // ── Drop stale / reordered position packets ──
+    // PeerJS datachannels (and the host's star-topology relay hop) can deliver
+    // packets out of order; applying an older one snaps the avatar backward and
+    // corrupts the clock estimate. Sequence numbers make ordering authoritative.
+    if (typeof data.seq === 'number') {
+      if (data.seq <= rec.lastSeq) return;
+      rec.lastSeq = data.seq;
+    }
+
     rec.data = data;
     // Camera yaw is the player's facing — avatar yaw is the same direction,
     // but the camera/model use opposite sign conventions for "forward".
     _tmpEuler.set(data.rotation.x, data.rotation.y, data.rotation.z, 'YXZ');
     const avatarYaw = -_tmpEuler.y + Math.PI;
-    // Buffer this authoritative snapshot (stamped on arrival). The render
-    // loop plays it back PLAYER_INTERP_DELAY_MS later, interpolating between
-    // samples — so movement stays smooth between throttled network updates.
+    const feetY = data.position.y - PLAYER_EYE_HEIGHT;
+
+    // ── Teleport / respawn hard-snap ──
+    // If the snapshot lands implausibly far from where we're rendering, the
+    // stale buffer samples would make the avatar visibly *slide* there (the
+    // classic "respawn fly-in"). Clear the timeline and snap instead.
+    const dxT = data.position.x - rec.group.position.x;
+    const dzT = data.position.z - rec.group.position.z;
+    if (dxT * dxT + dzT * dzT > TELEPORT_DIST_SQ) {
+      rec.posBuf.reset();
+      rec.group.position.set(data.position.x, feetY, data.position.z);
+      rec.currentYaw = avatarYaw;
+      rec.body.rotation.y = avatarYaw;
+    }
+
+    // Map the sender's send-time onto our local clock and buffer the snapshot
+    // there. The render loop plays it back rec.renderDelay later, interpolating
+    // between samples — so movement stays smooth and constant-speed regardless
+    // of when the packet physically arrived (jitter / relay delay absorbed).
+    const bufferTime = this.mapToLocalTimeline(rec, data);
     rec.posBuf.push(
-      performance.now(),
+      bufferTime,
       data.position.x,
-      data.position.y - PLAYER_EYE_HEIGHT,    // remote camera y → world feet y
+      feetY,    // remote camera y → world feet y
       data.position.z,
       avatarYaw,
     );
@@ -323,11 +382,23 @@ export class RemotePlayerManager {
   /** Per-frame update — interpolation, animation, nameplate billboarding. */
   update(delta: number, camera: THREE.Camera): void {
     if (delta <= 0) delta = 1 / 60;
-    // Render every avatar PLAYER_INTERP_DELAY_MS in the past so there are
-    // always two buffered samples to interpolate between (see SnapshotInterpolator).
-    const renderTime = performance.now() - PLAYER_INTERP_DELAY_MS;
+    const now = performance.now();
 
     this.players.forEach((rec) => {
+      // ── 0. Adapt this peer's interpolation delay to its link jitter ────
+      // Grow fast (stay ahead of starvation when the link gets noisy), shrink
+      // slow (reclaim latency gently once it settles) — the classic adaptive
+      // jitter-buffer behaviour. Legacy peers (no timestamps) hold the default.
+      const target = rec.clockReady
+        ? THREE.MathUtils.clamp(
+            SEND_INTERVAL_MS + 12 + rec.netJitter * 1.6,
+            MIN_RENDER_DELAY_MS,
+            MAX_RENDER_DELAY_MS,
+          )
+        : DEFAULT_RENDER_DELAY_MS;
+      rec.renderDelay += (target - rec.renderDelay) * (target > rec.renderDelay ? 0.2 : 0.01);
+      const renderTime = now - rec.renderDelay;
+
       // ── 1. Position + yaw from the snapshot buffer ─────────────────────
       const prevX = rec.group.position.x;
       const prevZ = rec.group.position.z;
@@ -463,6 +534,60 @@ export class RemotePlayerManager {
 
   // ─── INTERNAL ─────────────────────────────────────────────────────────────
 
+  /**
+   * Convert a remote player's send-time (`data.t`) into a timestamp on OUR
+   * clock for the snapshot buffer, maintaining a per-peer clock-offset estimate.
+   *
+   * The offset tracks the *floor* of (receiveTime − sendTime) — i.e. the
+   * lowest-latency, least-queued packets — so the reconstructed snapshot spacing
+   * matches the sender's steady send cadence rather than our noisy arrival
+   * times. It snaps toward a faster path quickly (network improved) and drifts
+   * upward slowly (real clock drift), and records the timing jitter so the
+   * render delay can size its buffer to the link quality.
+   *
+   * Falls back to receive-time stamping for legacy peers that send no `t`.
+   */
+  private mapToLocalTimeline(rec: RemotePlayerRecord, data: PlayerData): number {
+    const nowLocal = performance.now();
+
+    // Stream resumed after a long silence (backgrounded tab, lag spike,
+    // teleport) → resync rather than interpolate across the gap.
+    if (nowLocal - rec.lastPacketAt > STREAM_GAP_RESET_MS) {
+      rec.clockReady = false;
+      rec.netJitter = 0;
+      rec.posBuf.reset();
+    }
+    rec.lastPacketAt = nowLocal;
+
+    if (typeof data.t !== 'number') {
+      // Legacy peer — no send-time. Stamp on arrival and ease the delay back
+      // toward the safe default (handled in update()).
+      return nowLocal;
+    }
+
+    const offsetSample = nowLocal - data.t;
+    if (!rec.clockReady) {
+      rec.clockOffset = offsetSample;
+      rec.clockReady = true;
+    } else if (offsetSample < rec.clockOffset) {
+      // Faster path than our current floor → move toward it promptly (but not
+      // instantly, so a single freak-fast packet can't yank the whole timeline).
+      rec.clockOffset += (offsetSample - rec.clockOffset) * 0.5;
+    } else {
+      // Slow upward follow for genuine clock drift, never above this packet's
+      // own offset (keeps clockOffset a true floor → bufferTime ≤ now).
+      rec.clockOffset = Math.min(rec.clockOffset + CLOCK_DRIFT_UP_MS, offsetSample);
+    }
+
+    // Jitter = how far above the floor this packet landed. Peak-hold with slow
+    // decay so the render buffer is sized to the recent worst case, not the
+    // average (a single late packet is what causes a visible hitch).
+    const dev = offsetSample - rec.clockOffset;
+    rec.netJitter = Math.max(dev, rec.netJitter * 0.97);
+
+    return data.t + rec.clockOffset;
+  }
+
   private disposeRecord(rec: RemotePlayerRecord): void {
     rec.healthTexture.dispose();
     const npMat = rec.nameplate.material as THREE.SpriteMaterial;
@@ -477,9 +602,11 @@ export class RemotePlayerManager {
   }
 
   private refreshNameplateIfNeeded(rec: RemotePlayerRecord): void {
-    if (rec.data.name === rec.lastNameplateName) return;
+    const isMobile = !!rec.data.isMobile;
+    if (rec.data.name === rec.lastNameplateName && isMobile === rec.lastNameplateMobile) return;
     rec.lastNameplateName = rec.data.name;
-    const sprite = this.makeNameplateSprite(rec.data.name, rec.data.color);
+    rec.lastNameplateMobile = isMobile;
+    const sprite = this.makeNameplateSprite(rec.data.name, rec.data.color, isMobile);
     const oldMat = rec.nameplate.material as THREE.SpriteMaterial;
     rec.nameplate.material = sprite.material;
     rec.nameplate.scale.copy(sprite.scale);
@@ -598,7 +725,7 @@ export class RemotePlayerManager {
     group.add(healthBar);
 
     // ── Nameplate sprite ────────────────────────────────────────────────
-    const nameplate = this.makeNameplateSprite(data.name, data.color);
+    const nameplate = this.makeNameplateSprite(data.name, data.color, !!data.isMobile);
     nameplate.position.set(0, NAMEPLATE_Y, 0);
     group.add(nameplate);
 
@@ -621,8 +748,19 @@ export class RemotePlayerManager {
       weaponGroup: null,
       weaponMaterials: [],
       currentWeaponType: 'pistol', // overwritten by swapWeapon() below
-      posBuf: new SnapshotInterpolator({ capacity: 16, maxExtrapolationMs: 140 }),
+      // Tighter extrapolation cap than before: with the adaptive jitter buffer
+      // sized to the link, the buffer rarely starves, so we only ever
+      // extrapolate to smooth a single dropped packet — never far enough to
+      // overshoot a direction change and snap back (the old "teleport" glitch).
+      posBuf: new SnapshotInterpolator({ capacity: 16, maxExtrapolationMs: 90 }),
       currentYaw: 0,
+      // Network de-jitter state (see mapToLocalTimeline / update).
+      clockOffset: 0,
+      clockReady: false,
+      netJitter: 0,
+      renderDelay: DEFAULT_RENDER_DELAY_MS,
+      lastSeq: typeof data.seq === 'number' ? data.seq : -1,
+      lastPacketAt: performance.now(),
       smoothedSpeed: 0,
       walkPhase: Math.random() * Math.PI * 2,
       bobPhase: Math.random() * Math.PI * 2,
@@ -631,6 +769,7 @@ export class RemotePlayerManager {
       healthTexture,
       lastRenderedHealth: -1,
       lastNameplateName: data.name, // nameplate canvas is already drawn → skip first redraw
+      lastNameplateMobile: !!data.isMobile,
       isAlive: data.isAlive,
       deathT: 0,
       materials,
@@ -653,7 +792,7 @@ export class RemotePlayerManager {
 
   // ─── NAMEPLATE BUILDER ───────────────────────────────────────────────────
 
-  private makeNameplateSprite(name: string, color: number): THREE.Sprite {
+  private makeNameplateSprite(name: string, color: number, isMobile = false): THREE.Sprite {
     const canvas = document.createElement('canvas');
     canvas.width = 320;
     canvas.height = 84;
@@ -663,6 +802,9 @@ export class RemotePlayerManager {
     const cardX = 6, cardY = 12;
     const cardW = canvas.width - 12, cardH = canvas.height - 24;
     const cardR = 16;
+    // When the player is on a touch device we reserve a slot on the right of
+    // the card for a small phone glyph so PC teammates can tell at a glance.
+    const glyphReserve = isMobile ? 40 : 0;
 
     // Soft drop shadow beneath the card for separation from the world.
     ctx.save();
@@ -693,7 +835,9 @@ export class RemotePlayerManager {
     ctx.stroke();
 
     let text = name || 'Player';
-    if (text.length > 16) text = text.slice(0, 15) + '…';
+    // Shorter cap when the phone glyph is shown so a long name never runs into it.
+    const maxChars = isMobile ? 13 : 16;
+    if (text.length > maxChars) text = text.slice(0, maxChars - 1) + '…';
     ctx.fillStyle = '#ffffff';
     ctx.font = '700 34px "Inter", "Segoe UI", system-ui, sans-serif';
     ctx.textBaseline = 'middle';
@@ -702,6 +846,11 @@ export class RemotePlayerManager {
     ctx.shadowBlur = 5;
     ctx.fillText(text, cardX + 24, canvas.height / 2 + 1);
     ctx.shadowBlur = 0;
+
+    // ── Mobile indicator — a small smartphone glyph on the right edge ──
+    if (isMobile) {
+      this.drawPhoneGlyph(ctx, cardX + cardW - glyphReserve + 4, canvas.height / 2);
+    }
 
     const tex = new THREE.CanvasTexture(canvas);
     tex.minFilter = THREE.LinearFilter;
@@ -723,5 +872,38 @@ export class RemotePlayerManager {
     ctx.arcTo(x, y + h, x, y, r);
     ctx.arcTo(x, y, x + w, y, r);
     ctx.closePath();
+  }
+
+  /**
+   * Draw a small smartphone glyph centred on (cx, cy). Used on the nameplate to
+   * mark players on a touch device. Hand-drawn (canvas paths) so it stays crisp
+   * without bundling an SVG/icon font into the texture pipeline.
+   */
+  private drawPhoneGlyph(ctx: CanvasRenderingContext2D, cx: number, cy: number): void {
+    const w = 20, h = 32, r = 4;
+    const x = cx - w / 2, y = cy - h / 2;
+    const accent = '#5eead4'; // teal — reads as a distinct "device" tint
+    ctx.save();
+    // Soft glow + body outline.
+    ctx.shadowColor = 'rgba(94,234,212,0.55)';
+    ctx.shadowBlur = 6;
+    this.roundRect(ctx, x, y, w, h, r);
+    ctx.fillStyle = 'rgba(8,12,18,0.92)';
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    this.roundRect(ctx, x, y, w, h, r);
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    // Screen.
+    this.roundRect(ctx, x + 3, y + 5, w - 6, h - 11, 1.5);
+    ctx.fillStyle = 'rgba(94,234,212,0.35)';
+    ctx.fill();
+    // Home indicator / button.
+    ctx.beginPath();
+    ctx.arc(cx, y + h - 3.5, 1.5, 0, Math.PI * 2);
+    ctx.fillStyle = accent;
+    ctx.fill();
+    ctx.restore();
   }
 }

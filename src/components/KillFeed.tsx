@@ -14,6 +14,9 @@ interface KillFeedProps {
    *  tactical radar directly under the score panel, so the feed is pushed below
    *  it (default sits high, used by multiplayer where that corner is free). */
   anchorClass?: string;
+  /** Touch: centre the entries (the feed moves to the top-centre safe lane,
+   *  not the right edge, which is occupied by the control toggle rail). */
+  isTouch?: boolean;
 }
 
 let killFeedEntries: KillFeedEntry[] = [];
@@ -47,7 +50,7 @@ const TYPE_META: Record<KillFeedEntry['type'], { icon: LucideIcon; color: string
   wave: { icon: Waves, color: '#38bdf8' },
 };
 
-const KillFeed = ({ visible, anchorClass = 'top-36 right-4' }: KillFeedProps) => {
+const KillFeed = ({ visible, anchorClass = 'top-36 right-4', isTouch = false }: KillFeedProps) => {
   const [entries, setEntries] = useState<KillFeedEntry[]>([]);
 
   useEffect(() => {
@@ -75,7 +78,7 @@ const KillFeed = ({ visible, anchorClass = 'top-36 right-4' }: KillFeedProps) =>
   if (!visible || entries.length === 0) return null;
 
   return (
-    <div className={`fixed ${anchorClass} z-40 flex flex-col items-end gap-1.5 pointer-events-none`}>
+    <div className={`fixed ${anchorClass} z-40 flex flex-col ${isTouch ? 'items-center' : 'items-end'} gap-1.5 pointer-events-none`}>
       {entries.map((entry, index) => {
         const meta = TYPE_META[entry.type];
         const Icon = meta.icon;

@@ -4,6 +4,7 @@ import Peer from 'peerjs';
 type DataConnection = ReturnType<Peer['connect']>;
 import * as THREE from 'three';
 import { clamp, MAX_MP_KILLS, MAX_MP_DEATHS, MAX_MP_SCORE, AVATAR_COUNT } from '../../convex/gameLimits';
+import { detectIsTouch } from '../hooks/useDeviceInfo';
 
 /** 8 unique player-model classes the lobby allows picking from. */
 export type ModelClassId =
@@ -32,6 +33,20 @@ export interface PlayerData {
   level?: number;
   /** Predefined avatar index, broadcast so peers render the right avatar. */
   avatarIndex?: number;
+  /** True when this client is playing on a touch device (phone/tablet). Broadcast
+   *  so peers can show a "mobile" indicator on the nameplate / scoreboard. */
+  isMobile?: boolean;
+  /**
+   * Motion-timeline metadata stamped on every broadcast:
+   *   t   = sender's `performance.now()` at send time
+   *   seq = monotonic per-sender sequence number
+   * Receivers reconstruct our movement on OUR clock (jitter-free) via a
+   * clock-offset estimate, and drop out-of-order packets by `seq`. This is
+   * what eliminates the warped/erratic remote movement. The host relays both
+   * fields untouched, so the timeline survives the star-topology relay hop.
+   */
+  t?: number;
+  seq?: number;
 }
 
 /**
@@ -91,7 +106,7 @@ export type NetworkMessage =
   // anything absent); `full=false` is a DELTA carrying only the enemies that
   // changed since the last send (guests patch, never cull). Deltas slash
   // bandwidth; a keyframe ~1×/sec self-heals any drift.
-  | { type: 'enemy_sync'; enemies: EnemyWire[]; wave: number; full: boolean }
+  | { type: 'enemy_sync'; enemies: EnemyWire[]; wave: number; full: boolean; t?: number }
   // Guest → host: "I've finished warming up and I'm in the match." The host
   // withholds the enemy stream until a guest is ready so it never floods a
   // peer that's still on the loading screen.
@@ -108,6 +123,13 @@ export type NetworkMessage =
   | { type: 'player_killed'; victimId: string; victimName: string; victimColor: number; killerId: string; killerName: string; weapon: string; timestamp: number }
   | { type: 'chat_message'; playerId: string; playerName: string; playerColor: number; message: string; messageType: 'chat' | 'emote'; timestamp: number }
   | { type: 'heartbeat'; playerId: string; timestamp: number };
+
+// Wire quantisers — trim float noise off broadcast transforms so every packet
+// (and every relayed copy) is smaller. 2 decimals = 1cm position precision and
+// 3 decimals ≈ 0.06° rotation; snapshot interpolation on the receiver smooths
+// the rounding away entirely. Mirrors the enemy-sync stream's existing rounding.
+const q2 = (n: number): number => Math.round(n * 100) / 100;
+const q3 = (n: number): number => Math.round(n * 1000) / 1000;
 
 // Throttle configuration - reduces network load significantly.
 // 50ms = 20 updates/sec. Paired with the 100ms snapshot-interpolation delay in
@@ -138,6 +160,7 @@ function sanitizeRemotePlayer(data: PlayerData): PlayerData {
     rankTier: data.rankTier === undefined ? undefined : clamp(data.rankTier, 0, 5),
     level: data.level === undefined ? undefined : clamp(data.level, 1, 100000),
     avatarIndex: data.avatarIndex === undefined ? undefined : clamp(data.avatarIndex, 0, AVATAR_COUNT - 1),
+    isMobile: data.isMobile === undefined ? undefined : !!data.isMobile,
   };
 }
 
@@ -160,6 +183,10 @@ export class MultiplayerManager {
   private pendingPositionUpdate: { position: THREE.Vector3; rotation: THREE.Euler } | null = null;
   private positionUpdateTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // Monotonic sequence stamped on every outgoing player_update so receivers can
+  // drop reordered packets and reconstruct our motion on their own clock.
+  private positionSeq: number = 0;
+
   // Connection health monitoring
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private connectionCheckInterval: ReturnType<typeof setInterval> | null = null;
@@ -181,6 +208,9 @@ export class MultiplayerManager {
       currentWeapon: 'pistol',
       isAlive: true,
       color: this.getRandomPlayerColor(),
+      // Device type is intrinsic to this client — broadcast it so peers render
+      // a phone glyph on this player's nameplate / scoreboard when on mobile.
+      isMobile: detectIsTouch(),
       lastHeartbeat: Date.now()
     };
   }
@@ -718,6 +748,14 @@ export class MultiplayerManager {
   updateLocalPlayer(updates: Partial<PlayerData>) {
     Object.assign(this.localPlayer, updates);
 
+    // Stamp the motion timeline (send-time + sequence) so receivers can
+    // reconstruct our movement on their own clock instead of the jittery
+    // wall-clock they happened to receive the packet at. performance.now()
+    // is monotonic; the receiver only needs the *spacing* between our stamps,
+    // so the differing time origins between peers don't matter.
+    this.localPlayer.t = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    this.localPlayer.seq = ++this.positionSeq;
+
     // Keep game-state players map synced with local player snapshot
     if (this.gameState) {
       this.gameState.players.set(this.localPlayer.id, this.localPlayer);
@@ -764,8 +802,8 @@ export class MultiplayerManager {
     if (this.pendingPositionUpdate) {
       const { position, rotation } = this.pendingPositionUpdate;
       this.updateLocalPlayer({
-        position: { x: position.x, y: position.y, z: position.z },
-        rotation: { x: rotation.x, y: rotation.y, z: rotation.z }
+        position: { x: q2(position.x), y: q2(position.y), z: q2(position.z) },
+        rotation: { x: q3(rotation.x), y: q3(rotation.y), z: q3(rotation.z) },
       });
       this.lastPositionUpdate = Date.now();
       this.pendingPositionUpdate = null;
@@ -782,8 +820,8 @@ export class MultiplayerManager {
     }
 
     this.updateLocalPlayer({
-      position: { x: position.x, y: position.y, z: position.z },
-      rotation: { x: rotation.x, y: rotation.y, z: rotation.z }
+      position: { x: q2(position.x), y: q2(position.y), z: q2(position.z) },
+      rotation: { x: q3(rotation.x), y: q3(rotation.y), z: q3(rotation.z) },
     });
     this.lastPositionUpdate = Date.now();
     this.pendingPositionUpdate = null;
@@ -824,8 +862,8 @@ export class MultiplayerManager {
    * set, guests cull anything missing); `full=false` is a delta (changed
    * enemies only, guests patch without culling).
    */
-  broadcastEnemySync(enemies: EnemyWire[], wave: number, full: boolean): void {
-    this.broadcastMessage({ type: 'enemy_sync', enemies, wave, full });
+  broadcastEnemySync(enemies: EnemyWire[], wave: number, full: boolean, t?: number): void {
+    this.broadcastMessage({ type: 'enemy_sync', enemies, wave, full, t });
   }
 
   /** Guest → host: signal that this client has finished warming up. */

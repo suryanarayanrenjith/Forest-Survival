@@ -5,6 +5,9 @@ import {
 } from 'lucide-react';
 import { WAVE_PERKS, type WavePerkId } from '../utils/WavePerkRegistry';
 import { soundManager } from '../utils/SoundManager';
+import { detectIsTouch } from '../hooks/useDeviceInfo';
+
+const IS_TOUCH = detectIsTouch();
 
 interface WavePerkPickerProps {
   /** Wave that was just cleared (shown in the header). */
@@ -155,16 +158,19 @@ const WavePerkPicker = ({
 
   return (
     <div
-      className="fixed inset-0 z-[85] flex items-center justify-center backdrop-blur-md"
+      className="fixed inset-0 z-[85] overflow-y-auto backdrop-blur-md"
       style={{ background: '#05080adb' }}
     >
       {/* Subtle vignette so the boxes pop without being overwhelming */}
       <div
-        className="pointer-events-none absolute inset-0"
+        className="pointer-events-none fixed inset-0"
         style={{ background: 'radial-gradient(ellipse 55% 45% at center, rgba(52,211,153,0.10) 0%, transparent 65%)' }}
       />
 
-      <div className="relative w-full max-w-3xl px-6">
+      {/* min-h-full + centering so it sits centred on tall screens but scrolls
+          (instead of clipping the boxes / footer) on short landscape phones. */}
+      <div className="relative flex min-h-full w-full items-center justify-center py-5">
+      <div className="relative w-full max-w-3xl px-4 sm:px-6">
         {/* Header */}
         <div className="mb-6 text-center">
           <p className="text-[10px] font-bold uppercase tracking-[0.45em] text-emerald-300/80">
@@ -225,7 +231,7 @@ const WavePerkPicker = ({
               return (
                 <div
                   key={idx}
-                  className={`relative flex flex-col items-center justify-center gap-2 rounded-2xl border border-white/8 bg-black/35 p-8 backdrop-blur-md transition-all duration-300 ${
+                  className={`relative flex flex-col items-center justify-center gap-2 rounded-2xl border border-white/8 bg-black/35 p-6 sm:p-8 backdrop-blur-md transition-all duration-300 ${
                     isPicked ? 'scale-[1.04] border-rose-400/35' : 'scale-100'
                   }`}
                   style={{ animation: isPicked ? 'perkBoxPop 0.45s ease-out' : 'perkBoxReveal 0.4s ease-out' }}
@@ -248,7 +254,7 @@ const WavePerkPicker = ({
                 type="button"
                 onClick={() => { setFocusedIdx(idx); setPickedIdx(idx); }}
                 onMouseEnter={() => setFocusedIdx(idx)}
-                className={`group relative flex flex-col items-center justify-center gap-3 rounded-2xl border bg-emerald-500/[0.05] p-8 backdrop-blur-md transition-all duration-150 ${
+                className={`group relative flex flex-col items-center justify-center gap-3 rounded-2xl border bg-emerald-500/[0.05] p-6 sm:p-8 backdrop-blur-md transition-all duration-150 ${
                   isFocused ? 'border-emerald-300 scale-[1.04]' : 'border-emerald-400/30 hover:border-emerald-300/55 hover:scale-[1.02]'
                 }`}
                 style={isFocused ? { boxShadow: '0 0 32px rgba(52,211,153,0.40)' } : undefined}
@@ -333,8 +339,15 @@ const WavePerkPicker = ({
           </div>
         )}
 
-        {/* Bottom legend — keyboard model */}
-        {!revealed && (
+        {/* Bottom legend — touch shows a tap hint; desktop shows the keys. */}
+        {!revealed && IS_TOUCH && (
+          <div className="mt-5 flex items-center justify-center text-[11px] text-gray-500">
+            <span className="rounded-full border border-white/10 bg-white/[0.03] px-3.5 py-1.5 font-semibold tracking-wide text-gray-400">
+              Tap a box to open it
+            </span>
+          </div>
+        )}
+        {!revealed && !IS_TOUCH && (
           <div className="mt-5 flex items-center justify-center gap-4 text-[11px] text-gray-500">
             <span className="flex items-center gap-1.5">
               <kbd className="rounded border border-white/15 bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-bold text-gray-300">1</kbd>
@@ -353,6 +366,7 @@ const WavePerkPicker = ({
             </span>
           </div>
         )}
+      </div>
       </div>
 
       <style>{`

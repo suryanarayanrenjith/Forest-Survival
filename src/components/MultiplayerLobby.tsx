@@ -4,7 +4,7 @@ import {
   ChevronDown, Crown, Play, X, Loader2, Wifi, Check, UserRound,
   Trees, Flame, Snowflake, Mountain, Droplet, Shield, Leaf, Landmark,
   Crosshair, Skull, Cpu, Bot, Footprints, ShieldCheck, EyeOff, Flame as FlameIcon,
-  HeartPulse, Wrench, Ghost, Lock, Sun, Moon, SunMoon, type LucideIcon,
+  HeartPulse, Wrench, Ghost, Lock, Sun, Moon, SunMoon, Smartphone, type LucideIcon,
 } from 'lucide-react';
 import { usePlayerData } from '../hooks/usePlayerData';
 import MenuShell from './MenuShell';
@@ -148,6 +148,11 @@ const PlayerRow = ({ player, index, manager, onViewStats }: {
           {isLocal && !isHost && (
             <span className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide bg-emerald-500/15 text-emerald-300">
               You
+            </span>
+          )}
+          {player.isMobile && (
+            <span className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide bg-teal-500/15 text-teal-300" title="Playing on mobile">
+              <Smartphone className="w-3 h-3" strokeWidth={2.5} /> Mobile
             </span>
           )}
         </div>

@@ -1071,8 +1071,18 @@ const ForestSurvivalGame = () => {
     // the ~10Hz syncs instead of stuttering toward the latest packet. See
     // SnapshotInterpolator. Host/solo never touch these.
     const enemyInterp = new Map<number, SnapshotInterpolator>();
-    const ENEMY_INTERP_DELAY_MS = 165;         // ~1.6× the 100ms sync interval + jitter
     const _enemyInterpOut: TransformSample = { x: 0, y: 0, z: 0, yaw: 0 };
+    // ── Guest-side host-clock reconstruction for the enemy stream ──
+    // The enemy stream has a single sender (the host), so one shared clock
+    // offset de-jitters every enemy at once: we map the host's send-time onto
+    // our clock (floor-tracked offset) and play back enemies a jitter-sized
+    // delay in the past. This is what turns the ~10Hz host stream into smooth,
+    // steady enemy motion instead of jitter-warped stutter on the guest.
+    let hostClockOffset = 0;          // guestTime ≈ hostSendTime + hostClockOffset
+    let hostClockReady = false;
+    let hostNetJitter = 0;            // decaying peak-hold of host-stream jitter (ms)
+    let enemyRenderDelay = 165;       // adaptive playback delay (ms); seeds at the old fixed value
+    let lastEnemySyncAt = 0;          // guest-clock time of the last applied snapshot
     // Minimap throttle — the tactical radar redraws a few times a second, which
     // is plenty for blip motion and keeps the per-frame cost negligible.
     let lastMinimapMs = 0;
@@ -5519,7 +5529,7 @@ const ForestSurvivalGame = () => {
     // snapshot it receives is always a keyframe.
     const handleEnemySync = (raw: unknown) => {
       if (!isMpGuest) return;
-      const msg = raw as { enemies: EnemyWire[]; wave: number; full?: boolean };
+      const msg = raw as { enemies: EnemyWire[]; wave: number; full?: boolean; t?: number };
       const isKeyframe = msg.full !== false; // default true for safety
       // First snapshot from the host → we're in sync; drop the affordance.
       if (mpWaitingForHostRef.current) {
@@ -5541,7 +5551,40 @@ const ForestSurvivalGame = () => {
         updateGameState();
       }
 
-      const nowMs = Date.now();
+      // Map the host's send-time onto our clock so buffered enemy snapshots are
+      // spaced by the host's steady send cadence — not our jittery arrival
+      // times. The offset tracks the floor (fastest path) and drifts up slowly,
+      // mirroring the per-player de-jitter in RemotePlayerManager.
+      const recvNow = Date.now();
+      let pushTime = recvNow;
+      if (typeof msg.t === 'number') {
+        // Long silence (lag spike / tab backgrounded) → resync the clock and
+        // drop stale buffers so enemies re-snap cleanly instead of sliding
+        // across the map when the stream resumes.
+        if (recvNow - lastEnemySyncAt > 1500) {
+          hostClockReady = false;
+          hostNetJitter = 0;
+          enemyInterp.forEach((b) => b.reset());
+        }
+        const offsetSample = recvNow - msg.t;
+        if (!hostClockReady) {
+          hostClockOffset = offsetSample;
+          hostClockReady = true;
+        } else if (offsetSample < hostClockOffset) {
+          hostClockOffset += (offsetSample - hostClockOffset) * 0.5; // track faster path
+        } else {
+          hostClockOffset = Math.min(hostClockOffset + 0.5, offsetSample); // slow drift for clock skew
+        }
+        const dev = offsetSample - hostClockOffset;
+        hostNetJitter = Math.max(dev, hostNetJitter * 0.97);
+        pushTime = msg.t + hostClockOffset;
+        // Size the playback delay to the host cadence + measured jitter (grow
+        // fast to stay ahead of starvation, shrink slow to reclaim latency).
+        const targetDelay = THREE.MathUtils.clamp(ENEMY_SYNC_INTERVAL_MS + 25 + hostNetJitter * 1.6, 120, 360);
+        enemyRenderDelay += (targetDelay - enemyRenderDelay) * (targetDelay > enemyRenderDelay ? 0.25 : 0.02);
+      }
+      lastEnemySyncAt = recvNow;
+
       const seen = new Set<number>();
       for (let s = 0; s < msg.enemies.length; s++) {
         const w = msg.enemies[s];
@@ -5567,7 +5610,7 @@ const ForestSurvivalGame = () => {
         if (!w.d) {
           let buf = enemyInterp.get(w.id);
           if (!buf) { buf = new SnapshotInterpolator({ capacity: 16, maxExtrapolationMs: 180 }); enemyInterp.set(w.id, buf); }
-          buf.push(nowMs, w.x, w.y, w.z, w.ry);
+          buf.push(pushTime, w.x, w.y, w.z, w.ry);
         }
         if (w.d && !e.dead) {
           e.dead = true;
@@ -7677,7 +7720,7 @@ const ForestSurvivalGame = () => {
           const px = enemy.mesh.position.x;
           const pz = enemy.mesh.position.z;
           const buf = enemy.netId !== undefined ? enemyInterp.get(enemy.netId) : undefined;
-          if (buf && buf.sample(frameNowMs - ENEMY_INTERP_DELAY_MS, _enemyInterpOut)) {
+          if (buf && buf.sample(frameNowMs - enemyRenderDelay, _enemyInterpOut)) {
             // Play the host's authoritative path a fixed delay in the past,
             // interpolating between snapshots → smooth, steady-speed motion
             // instead of stuttering toward whichever packet landed last.
@@ -8361,9 +8404,11 @@ const ForestSurvivalGame = () => {
             }
             lastEnemyKeyframeMs = frameNowMs;
             forceEnemyKeyframe = false;
-            mp.broadcastEnemySync(wire, wave, true);
+            // Stamp the host send-time so guests can de-jitter the stream onto
+            // their own clock (same technique as remote players).
+            mp.broadcastEnemySync(wire, wave, true, frameNowMs);
           } else if (wire.length > 0) {
-            mp.broadcastEnemySync(wire, wave, false);
+            mp.broadcastEnemySync(wire, wave, false, frameNowMs);
           }
           // Empty delta → send nothing this tick (pure bandwidth save).
         }
@@ -9441,35 +9486,48 @@ const ForestSurvivalGame = () => {
           </div>
         )}
 
-        {/* Active Wave Perks chip — vertical stack below the vitals panel
-            (top-left). Each picked perk gets a thin rounded pill. Hidden
-            when no perks are picked yet. Solo / Tutorial / MP all show it
-            since perks are run-scoped. */}
-        {gameMode !== 'multiplayer' && activeRunPerks.length > 0 && !gameState.isGameOver && (
-          <div
-            className="pointer-events-none absolute z-30 flex flex-col gap-1"
-            style={{ left: 16, top: 184 }}
-          >
-            <p className="mb-0.5 text-[9px] font-bold uppercase tracking-[0.2em] text-emerald-300/80">
-              Run Perks · {activeRunPerks.length}
-            </p>
-            {activeRunPerks.map((id, idx) => {
-              const perk = WAVE_PERKS[id];
-              if (!perk) return null;
-              const color = perk.rarity === 'epic' ? 'border-purple-400/45 bg-purple-500/12 text-purple-200'
-                : perk.rarity === 'rare' ? 'border-cyan-400/40 bg-cyan-500/10 text-cyan-200'
-                : 'border-white/15 bg-white/[0.04] text-gray-200';
-              return (
-                <span
-                  key={`${id}-${idx}`}
-                  className={`rounded-full border px-2 py-0.5 text-[10px] font-bold backdrop-blur-md ${color}`}
-                >
-                  {perk.name}
+        {/* Active Wave Perks chip — Each picked perk gets a thin rounded pill.
+            Desktop: a vertical stack below the vitals panel (top-left). Touch:
+            a compact, wrapping row tucked into the free band between the compact
+            HUD and the joystick zone, capped so it never grows into the
+            joystick. Hidden when no perks are picked yet. Solo / Tutorial show
+            it (perks are run-scoped; MP has none). */}
+        {gameMode !== 'multiplayer' && activeRunPerks.length > 0 && !gameState.isGameOver && (() => {
+          // On touch keep the band short — cap to 3 pills + a "+N" overflow.
+          const TOUCH_CAP = 3;
+          const visiblePerks = isTouch ? activeRunPerks.slice(0, TOUCH_CAP) : activeRunPerks;
+          const overflow = isTouch ? activeRunPerks.length - visiblePerks.length : 0;
+          return (
+            <div
+              className={`pointer-events-none absolute z-30 flex gap-1 ${isTouch ? 'flex-row flex-wrap items-center max-w-[58vw]' : 'flex-col'}`}
+              style={isTouch ? { left: 8, top: 72 } : { left: 16, top: 184 }}
+            >
+              <p className={`text-[9px] font-bold uppercase tracking-[0.2em] text-emerald-300/80 ${isTouch ? 'mr-0.5' : 'mb-0.5'}`}>
+                Run Perks{isTouch ? '' : ` · ${activeRunPerks.length}`}
+              </p>
+              {visiblePerks.map((id, idx) => {
+                const perk = WAVE_PERKS[id];
+                if (!perk) return null;
+                const color = perk.rarity === 'epic' ? 'border-purple-400/45 bg-purple-500/12 text-purple-200'
+                  : perk.rarity === 'rare' ? 'border-cyan-400/40 bg-cyan-500/10 text-cyan-200'
+                  : 'border-white/15 bg-white/[0.04] text-gray-200';
+                return (
+                  <span
+                    key={`${id}-${idx}`}
+                    className={`rounded-full border px-2 py-0.5 text-[10px] font-bold backdrop-blur-md ${color}`}
+                  >
+                    {perk.name}
+                  </span>
+                );
+              })}
+              {overflow > 0 && (
+                <span className="rounded-full border border-white/15 bg-white/[0.04] px-2 py-0.5 text-[10px] font-bold text-gray-300 backdrop-blur-md">
+                  +{overflow}
                 </span>
-              );
-            })}
-          </div>
-        )}
+              )}
+            </div>
+          );
+        })()}
       </div>
       )}
 
@@ -9530,6 +9588,7 @@ const ForestSurvivalGame = () => {
           key={achievement.queueId}
           achievement={achievement}
           index={index}
+          isTouch={isTouch}
           onClose={() => {
             // Remove this specific achievement from queue
             setAchievementQueue((prev) =>
@@ -9551,11 +9610,20 @@ const ForestSurvivalGame = () => {
           <DamageDirectionIndicator isVisible={!isPaused} />
           <KillFeed
             visible={!isPaused}
-            /* Solo & Tutorial dock the tactical radar under the score panel on
-               desktop, so the feed drops below it (~radar bottom) to never
-               overlap. Touch (radar = small toggle button) and Multiplayer
-               (no docked radar) keep the default high position. */
-            anchorClass={!isTouch && (gameMode === 'classic' || gameMode === 'tutorial') ? 'top-[384px] right-4' : 'top-36 right-4'}
+            /* Desktop Solo & Tutorial dock the tactical radar under the score
+               panel, so the feed drops below it (~radar bottom) to never
+               overlap. On TOUCH the top-right corner holds the control toggle
+               rail (scoreboard/chat/map) + weapon/pause, so the feed moves to
+               the top-centre safe lane and centres its entries. Desktop MP
+               keeps the default high right position. */
+            isTouch={isTouch}
+            anchorClass={
+              isTouch
+                ? 'bottom-16 left-1/2 -translate-x-1/2 items-center'
+                : (gameMode === 'classic' || gameMode === 'tutorial')
+                  ? 'top-[384px] right-4'
+                  : 'top-36 right-4'
+            }
           />
           <ComboDisplay
             combo={gameState.combo}
@@ -9639,6 +9707,7 @@ const ForestSurvivalGame = () => {
       {gameStarted && !gameState.isGameOver && !photoMode && gameMode !== 'tutorial' && activeMissions.length > 0 && (
         <MissionDisplay
           missions={activeMissions}
+          isTouch={isTouch}
           onDismiss={(missionId) => {
             setActiveMissions(prev => prev.filter(m => m.id !== missionId));
           }}

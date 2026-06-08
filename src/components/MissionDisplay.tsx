@@ -5,10 +5,28 @@ import { type Mission, type MissionObjective } from '../utils/ProceduralMissionS
 interface MissionDisplayProps {
   missions: Mission[];
   onDismiss?: (missionId: string) => void;
+  /** Touch devices use a compact, top-centre stack so the cards never sit on
+   *  top of the on-screen joystick (left) or action buttons (bottom-right). */
+  isTouch?: boolean;
 }
 
-export const MissionDisplay: React.FC<MissionDisplayProps> = ({ missions, onDismiss }) => {
+export const MissionDisplay: React.FC<MissionDisplayProps> = ({ missions, onDismiss, isTouch = false }) => {
   if (missions.length === 0) return null;
+
+  // ── Touch: compact, top-centre, capped to one card ──
+  // The left column (joystick) and bottom-right (actions/fire) are control
+  // zones on touch, so missions live in the single safe lane: the top-centre
+  // band above the joystick. Only the most recent mission is shown to keep it
+  // short; the card is compact (no flavour text).
+  if (isTouch) {
+    return (
+      <div className="pointer-events-none fixed top-[60px] left-1/2 z-40 w-[min(82vw,300px)] -translate-x-1/2 space-y-1.5">
+        {missions.slice(0, 1).map((mission) => (
+          <MissionCard key={mission.id} mission={mission} onDismiss={onDismiss} compact />
+        ))}
+      </div>
+    );
+  }
 
   // Anchored to the left side, below the health panel — the top-right
   // corner is reserved for the kill feed, which previously overlapped.
@@ -24,9 +42,12 @@ export const MissionDisplay: React.FC<MissionDisplayProps> = ({ missions, onDism
 interface MissionCardProps {
   mission: Mission;
   onDismiss?: (missionId: string) => void;
+  /** Compact variant (touch): drops the flavour text + trims padding so the
+   *  card stays short enough to clear the joystick zone. */
+  compact?: boolean;
 }
 
-const MissionCard: React.FC<MissionCardProps> = ({ mission, onDismiss }) => {
+const MissionCard: React.FC<MissionCardProps> = ({ mission, onDismiss, compact = false }) => {
   const progress = calculateProgress(mission);
   const timeRemaining = formatTimeRemaining(mission.timeRemaining);
 
@@ -49,7 +70,7 @@ const MissionCard: React.FC<MissionCardProps> = ({ mission, onDismiss }) => {
   }[mission.difficulty];
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-black/55 backdrop-blur-md p-3.5 shadow-2xl transition-colors hover:border-cyan-400/40">
+    <div className={`pointer-events-auto rounded-2xl border border-white/10 bg-black/55 backdrop-blur-md shadow-2xl transition-colors hover:border-cyan-400/40 ${compact ? 'p-2.5' : 'p-3.5'}`}>
       {/* Header */}
       <div className="flex items-start justify-between mb-2">
         <div className="flex-1">
@@ -76,16 +97,16 @@ const MissionCard: React.FC<MissionCardProps> = ({ mission, onDismiss }) => {
         )}
       </div>
 
-      {/* Story */}
-      {mission.story && (
+      {/* Story — hidden in the compact (touch) layout to keep the card short. */}
+      {mission.story && !compact && (
         <p className="text-gray-300 text-xs italic mb-2 line-clamp-2">
           &quot;{mission.story}&quot;
         </p>
       )}
 
-      {/* Objectives */}
+      {/* Objectives — capped to two on the compact layout. */}
       <div className="space-y-1.5 mb-2">
-        {mission.objectives.map((objective) => (
+        {(compact ? mission.objectives.slice(0, 2) : mission.objectives).map((objective) => (
           <ObjectiveItem key={objective.id} objective={objective} />
         ))}
       </div>

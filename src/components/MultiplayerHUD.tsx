@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Timer, Users, Swords, Crosshair, Skull, Star, ListOrdered, X } from 'lucide-react';
+import { Timer, Users, Swords, Crosshair, Skull, Star, ListOrdered, X, Smartphone } from 'lucide-react';
 import type { PlayerData } from '../utils/MultiplayerManager';
 import { RANK_TIERS } from '../utils/rankSystem';
 import Minimap from './Minimap';
@@ -54,6 +54,11 @@ const MultiplayerHUD = ({ localPlayer, remotePlayers, remainingTime, gameMode, i
             {player.name}
             {isLocal && <span className="text-emerald-400 ml-1">· you</span>}
           </span>
+          {player.isMobile && (
+            <span className="flex-shrink-0" title="Playing on mobile">
+              <Smartphone className="w-3 h-3 text-teal-300" strokeWidth={2.25} aria-label="Playing on mobile" />
+            </span>
+          )}
           {player.rankTier !== undefined && RANK_TIERS[player.rankTier] && (
             <span
               className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide flex-shrink-0"
