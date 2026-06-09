@@ -18,6 +18,7 @@ import { WeatherSystem } from './utils/WeatherSystem';
 import { BiomeSystem } from './utils/BiomeSystem';
 import { createAtmosphericHazeMaterial, createSkyDomeMaterial, updateShaderTime } from './utils/Shaders';
 import { getMapConfig, getRandomMap, DEFAULT_MAP, type MapConfig, type MapType } from './utils/MapSystem';
+import { applyGroundTerrainShader, createTerrainSeed, createTerrainUniforms, resolveTerrainProfile, terrainSegments } from './utils/TerrainSystem';
 import { getHDRIEnvironmentIntensity, getHDRIEnvironmentProfile, loadHDRIEnvironment, type HDRIEnvironmentProfile } from './utils/HDRIEnvironment';
 import { MultiplayerManager, type PlayerData as MpPlayerData, type NetworkMessage, type EnemyWire } from './utils/MultiplayerManager';
 import { RemotePlayerManager } from './utils/RemotePlayerManager';
@@ -1835,37 +1836,41 @@ const ForestSurvivalGame = () => {
       renderAtmosphere.lightPosition.z
     );
 
-    // INFINITE LOW-POLY Ground with dynamic day/night and map-specific colors
-    const groundGeometry = new THREE.PlaneGeometry(mapConfig.groundSize || 2000, mapConfig.groundSize || 2000, 40, 40);
+    // ── TERRAIN SHAPE + GROUND-TEXTURE IDENTITY (per map, per run) ─────────
+    // A seeded, WORLD-LOCKED height field (TerrainSystem) displaces the ground
+    // into rolling hills / dunes / ridges out in the fogged mid-field while
+    // keeping a perfectly flat combat disc around the player — so the whole
+    // gameplay + VFX layer stays on y == 0 and nothing floats or clips. The
+    // seed is fresh each run, so every playthrough gets a distinct landscape.
+    const terrainProfile = resolveTerrainProfile(mapConfig);
+    const terrainSeed = createTerrainSeed();
+    const terrainUniforms = createTerrainUniforms(terrainProfile, terrainSeed);
+    const groundSegments = terrainSegments(graphicsPreset.terrainDetail);
+
+    // INFINITE Ground with GPU terrain displacement, dynamic day/night and
+    // map-specific colours. The denser segment grid feeds the vertex shader's
+    // height displacement so distant hills read smoothly rather than faceted.
+    const groundGeometry = new THREE.PlaneGeometry(
+      mapConfig.groundSize || 2000, mapConfig.groundSize || 2000,
+      groundSegments, groundSegments,
+    );
     // Blend map ground colors with day/night variations
     const isDay = renderAtmosphere.sunVisible;
     const initialGroundOverride = getGroundOverride();
     const groundBaseColor = isDay ? mapConfig.groundColor : new THREE.Color(mapConfig.groundColor).multiplyScalar(0.45).getHex();
     const groundEmissive = isDay ? mapConfig.groundEmissive : new THREE.Color(mapConfig.groundEmissive).multiplyScalar(0.5).getHex();
-    // ── AAA GROUND: PBR base + Cyberpunk-style sun shader ───────────────
-    // The previous version was blowing the ground out into a glowing haze
-    // by piling emissive + incident boost + shimmer + fresnel all at full
-    // strength. Cyberpunk's actual look is the opposite: SHARP directional
-    // sun on lit surfaces, deep shadow elsewhere, subtle surface variation
-    // via per-pixel normal perturbation, and proper Blinn-Phong specular.
+    // ── AAA GROUND: PBR base + full TerrainSystem material ──────────────
+    // This MeshStandardMaterial keeps three.js's full PBR + shadow + fog path
+    // intact. TerrainSystem.applyGroundTerrainShader (called in onBeforeCompile
+    // below) injects the GPU terrain displacement, the ultra-detailed
+    // procedural ground texture (macro patches, cavity AO, micro grain, slope
+    // talus, per-map sand ripples / snow sparkle / lava cracks / wet puddles)
+    // AND a sharp directional sun + Blinn-Phong specular pass. The per-pixel
+    // normal is computed analytically from the height field so hills shade
+    // correctly while the surface still has tactile micro-relief.
     //
-    // This shader keeps three.js's full PBR + shadow path intact and
-    // injects FOUR things at four specific shader chunks:
-    //
-    //   1.  <worldpos_vertex>      world-space position varying
-    //   2.  <common> [frag]        noise helpers + uniforms
-    //   3.  <color_fragment>       subtle patch / detail colour variation
-    //   4.  <normal_fragment_maps> per-pixel procedural normal perturbation
-    //   5.  <lights_fragment_end>  sharp directional sun + crisp specular
-    //
-    // The normal perturbation is the KEY trick — each pixel's normal is
-    // bent slightly by noise so the surface catches light at micro-angles.
-    // This is what gives Cyberpunk's asphalt / concrete / dirt that tactile
-    // "real material" feel without using normal-map textures.
-    //
-    // Emissive is ZERO during day (lit surfaces glow because of strong
-    // direct sun, not because of fake self-illumination). At night a tiny
-    // emissive keeps the ground readable.
+    // Emissive is ZERO during day (lit surfaces glow from strong direct sun,
+    // not fake self-illumination). At night a tiny emissive keeps it readable.
     const groundMaterial = new THREE.MeshStandardMaterial({
       color: groundBaseColor,
       flatShading: false,
@@ -1883,154 +1888,19 @@ const ForestSurvivalGame = () => {
       uSunDirection: { value: initialSunDirection.clone() },
       uSunColor: { value: new THREE.Color(1.0, 0.94, 0.78) },
       uIncidentBoost: { value: (isDay ? 0.12 : 0.04) * (renderProfile.groundSpecular ?? 1.0) },
-      uSpecularStrength: { value: (isDay ? 0.65 : 0.18) * (renderProfile.groundSpecular ?? 1.0) },
-      uNormalStrength: { value: 0.35 * (renderProfile.groundNormal ?? 1.0) },
+      uSpecularStrength: { value: (isDay ? 0.42 : 0.14) * (renderProfile.groundSpecular ?? 1.0) },
+      uNormalStrength: { value: 0.26 * (renderProfile.groundNormal ?? 1.0) },
       uPatchScale: { value: 0.035 },
       uPatchStrength: { value: 0.18 * (renderProfile.groundPatch ?? 1.0) },
       uIsNight: { value: isDay ? 0.0 : 1.0 },
     };
 
+    // All ground shader injection (terrain displacement + ultra-detailed,
+    // map-specific procedural texturing + sharp directional sun) lives in
+    // TerrainSystem.applyGroundTerrainShader. It wires BOTH the day-cycle
+    // uniforms (updated each frame) and the static per-map terrain uniforms.
     groundMaterial.onBeforeCompile = (shader) => {
-      shader.uniforms.uTime = groundShaderUniforms.uTime;
-      shader.uniforms.uSunDirection = groundShaderUniforms.uSunDirection;
-      shader.uniforms.uSunColor = groundShaderUniforms.uSunColor;
-      shader.uniforms.uIncidentBoost = groundShaderUniforms.uIncidentBoost;
-      shader.uniforms.uSpecularStrength = groundShaderUniforms.uSpecularStrength;
-      shader.uniforms.uNormalStrength = groundShaderUniforms.uNormalStrength;
-      shader.uniforms.uPatchScale = groundShaderUniforms.uPatchScale;
-      shader.uniforms.uPatchStrength = groundShaderUniforms.uPatchStrength;
-      shader.uniforms.uIsNight = groundShaderUniforms.uIsNight;
-
-      // ── VERTEX: world-space position varying ──────────────────────────
-      shader.vertexShader = shader.vertexShader.replace(
-        '#include <common>',
-        `#include <common>
-        varying vec3 vGroundWorldPos;`,
-      );
-      shader.vertexShader = shader.vertexShader.replace(
-        '#include <worldpos_vertex>',
-        `#include <worldpos_vertex>
-        #ifdef USE_INSTANCING
-          vGroundWorldPos = (instanceMatrix * vec4(transformed, 1.0)).xyz;
-        #else
-          vGroundWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
-        #endif`,
-      );
-
-      // ── FRAGMENT: noise helpers + custom uniforms ─────────────────────
-      shader.fragmentShader = shader.fragmentShader.replace(
-        '#include <common>',
-        `#include <common>
-        uniform float uTime;
-        uniform vec3  uSunDirection;
-        uniform vec3  uSunColor;
-        uniform float uIncidentBoost;
-        uniform float uSpecularStrength;
-        uniform float uNormalStrength;
-        uniform float uPatchScale;
-        uniform float uPatchStrength;
-        uniform float uIsNight;
-        varying vec3  vGroundWorldPos;
-
-        float gHash(vec2 p) {
-          return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
-        }
-        float gNoise(vec2 p) {
-          vec2 i = floor(p); vec2 f = fract(p);
-          float a = gHash(i);
-          float b = gHash(i + vec2(1.0, 0.0));
-          float c = gHash(i + vec2(0.0, 1.0));
-          float d = gHash(i + vec2(1.0, 1.0));
-          vec2 u = f * f * (3.0 - 2.0 * f);
-          return mix(a, b, u.x) + (c - a) * u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
-        }
-        float gFbm(vec2 p) {
-          float v = 0.0; float a = 0.5;
-          for (int i = 0; i < 4; i++) { v += a * gNoise(p); p = p * 2.07 + vec2(13.0, 7.0); a *= 0.5; }
-          return v;
-        }
-        // Analytic gradient of fBm via finite differences — used to bend
-        // per-pixel normal so the surface catches light at micro-angles.
-        // This is the Cyberpunk "tactile material" trick without textures.
-        vec2 gFbmGradient(vec2 p, float epsilon) {
-          float c = gFbm(p);
-          float dx = gFbm(p + vec2(epsilon, 0.0)) - c;
-          float dy = gFbm(p + vec2(0.0, epsilon)) - c;
-          return vec2(dx, dy) / epsilon;
-        }`,
-      );
-
-      // ── COLOR: subtle patches + grit. Cyberpunk-restrained, NOT noisy. ─
-      shader.fragmentShader = shader.fragmentShader.replace(
-        '#include <color_fragment>',
-        `#include <color_fragment>
-        // Large-scale patches — gentle brightness variation across the
-        // ground (weathered look without the technicolor look-at-me look).
-        float gPatch = gFbm(vGroundWorldPos.xz * uPatchScale);
-        diffuseColor.rgb *= 1.0 + (gPatch - 0.5) * uPatchStrength;
-        // High-freq grit — micro-detail visible only up close.
-        float gFine = gNoise(vGroundWorldPos.xz * 3.5);
-        diffuseColor.rgb += vec3(gFine - 0.5) * 0.025;`,
-      );
-
-      // ── NORMAL PERTURBATION: bend the surface normal per-pixel ────────
-      // We compute a fBm gradient in the XZ world plane and use it as a
-      // tangent-space normal. The standard PBR + shadow path then uses
-      // this perturbed normal for ALL lighting calculations — direct sun,
-      // IBL, hemisphere — giving each pixel a unique highlight response.
-      // This is the single most impactful change vs the previous shader.
-      shader.fragmentShader = shader.fragmentShader.replace(
-        '#include <normal_fragment_maps>',
-        `#include <normal_fragment_maps>
-        vec2 gGrad = gFbmGradient(vGroundWorldPos.xz * 0.4, 0.5);
-        vec3 gPerturb = vec3(-gGrad.x, 0.0, -gGrad.y) * uNormalStrength;
-        normal = normalize(normal + gPerturb);`,
-      );
-
-      // ── LIGHTING: sharp directional sun + Blinn-Phong specular ────────
-      // Sharp incident boost (pow 3.0 not pow 0.5) so ONLY surfaces
-      // directly facing the sun get extra warmth — no global wash.
-      // Plus a crisp Blinn-Phong specular highlight that catches the sun
-      // like a polished surface (the "wet street" Cyberpunk shimmer).
-      //
-      // CRITICAL: every contribution is scaled INVERSELY with surface luma
-      // — bright ground (desert sand 0xd4a574 luma ≈ 0.66) gets a small
-      // boost, dark ground (forest grass luma ≈ 0.25) gets the full boost.
-      // This keeps the "sunbeam catches the surface" effect uniform across
-      // ALL maps without blowing out warm/sandy biomes.
-      shader.fragmentShader = shader.fragmentShader.replace(
-        '#include <lights_fragment_end>',
-        `#include <lights_fragment_end>
-        {
-          vec3 sunDir = normalize(uSunDirection);
-          float sunDot = max(dot(normal, sunDir), 0.0);
-          // Luma-aware damping: dark surfaces get full boost, bright
-          // surfaces (desert sand, tundra snow) get clamped so the
-          // additive light never crosses the bloom threshold.
-          float baseLuma = dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722));
-          float lumaDamp = clamp(1.0 - baseLuma * 1.2, 0.20, 1.0);
-          // Sharp pow(N·L, 3.0) — directly-facing surfaces light up,
-          // grazing-angle surfaces do NOT.
-          float incident = pow(sunDot, 3.0);
-          float patchMod = 0.6 + gFbm(vGroundWorldPos.xz * 0.10) * 0.8;
-          reflectedLight.directDiffuse +=
-            uSunColor * incident * uIncidentBoost * patchMod * lumaDamp;
-
-          // Blinn-Phong specular — also luma-damped so bright sand
-          // doesn't double up with its own brightness.
-          vec3 viewDir = normalize(vViewPosition);
-          vec3 halfVec = normalize(sunDir + viewDir);
-          float specPower = pow(max(dot(normal, halfVec), 0.0), 48.0);
-          float specPatch = 0.55 + gFbm(vGroundWorldPos.xz * 0.22) * 0.9;
-          reflectedLight.directSpecular +=
-            uSunColor * specPower * uSpecularStrength * specPatch * sunDot * lumaDamp;
-
-          // Subtle subsurface "back-spill" — kicks only at extreme
-          // grazing-toward-sun angles. Day-only, luma-damped.
-          float backSpill = pow(max(dot(-sunDir, viewDir), 0.0), 8.0) * 0.14 * (1.0 - uIsNight) * lumaDamp;
-          reflectedLight.indirectDiffuse += diffuseColor.rgb * backSpill;
-        }`,
-      );
+      applyGroundTerrainShader(shader, groundShaderUniforms, terrainUniforms);
     };
 
     const ground = new THREE.Mesh(groundGeometry, groundMaterial);
@@ -2039,13 +1909,11 @@ const ForestSurvivalGame = () => {
     ground.castShadow = false;
     scene.add(ground);
 
-    // Subtle ground variation
-    const vertices = groundGeometry.attributes.position.array as Float32Array;
-    for (let i = 0; i < vertices.length; i += 3) {
-      vertices[i + 2] = Math.random() * 0.5 - 0.25;
-    }
-    groundGeometry.attributes.position.needsUpdate = true;
-    groundGeometry.computeVertexNormals();
+    // NOTE: macro height variation (hills / dunes / ridges) is now applied on
+    // the GPU in the terrain vertex shader from a world-locked height field,
+    // and the matching per-pixel normal is computed analytically there — so no
+    // CPU vertex jitter / normal recompute is needed. The flat plane geometry
+    // is just the canvas the shader displaces.
 
     // Update ground position to follow camera seamlessly
     const updateGroundPosition = (playerX: number, playerZ: number) => {
@@ -3317,6 +3185,17 @@ const ForestSurvivalGame = () => {
         }
       }
     };
+
+    // ── Airdrop glow light ────────────────────────────────────────────────
+    // ONE permanent, scene-parented PointLight handed to the killstreak airdrop
+    // system. Previously each landed crate scene.add()'d its own PointLight,
+    // recompiling every material the first time an airdrop dropped — the lag the
+    // user reported. Pre-allocated here (counted during warmup's shader
+    // compile), the airdrop system only moves it + toggles intensity.
+    const airdropGlowLight = new THREE.PointLight(0xffffff, 0, 13);
+    airdropGlowLight.castShadow = false;
+    scene.add(airdropGlowLight);
+    enhancedPowerUps.setGlowLight(airdropGlowLight);
 
     // ── Muzzle-flash PointLight pool ─────────────────────────────────
     // Each MuzzleFlash used to scene.add() its own PointLight on every
@@ -6166,9 +6045,9 @@ const ForestSurvivalGame = () => {
       // contribution than the diffuse boost. Still bounded so it never
       // crosses the bloom threshold uniformly.
       groundShaderUniforms.uSpecularStrength.value = isNightShader
-        ? 0.18 * (renderProfile.groundSpecular ?? 1.0)
-        : (0.45 + sunAlt * 0.35) * (renderProfile.groundSpecular ?? 1.0);
-      groundShaderUniforms.uNormalStrength.value = 0.35 * (renderProfile.groundNormal ?? 1.0);
+        ? 0.14 * (renderProfile.groundSpecular ?? 1.0)
+        : (0.28 + sunAlt * 0.26) * (renderProfile.groundSpecular ?? 1.0);
+      groundShaderUniforms.uNormalStrength.value = 0.26 * (renderProfile.groundNormal ?? 1.0);
       groundShaderUniforms.uPatchStrength.value = 0.18 * (renderProfile.groundPatch ?? 1.0);
       groundShaderUniforms.uIsNight.value = isNightShader ? 1.0 : 0.0;
 
@@ -8877,6 +8756,13 @@ const ForestSurvivalGame = () => {
           abilitySystem.createAbilityEffect(scene, wp, 'overcharge'),
           abilitySystem.createAbilityEffect(scene, wp, 'phantom'),
         );
+        // Pre-warm the killstreak AIRDROP materials (crate, metal bands, glow
+        // panel + label, beacon, parachute vertex-colours, smoke points) so the
+        // first real airdrop never stalls compiling them. Spawned high overhead
+        // (startY ~100) so it's off-screen; the shared glow light is already
+        // scene-parented, so this never changes the light count. Cleared in
+        // teardown via enhancedPowerUps.clearAll.
+        enhancedPowerUps.createAirdrop(scene, wp.x, wp.z, 'speed');
       });
       await yieldFrame();
 
@@ -8972,6 +8858,9 @@ const ForestSurvivalGame = () => {
             else mat.dispose();
           }
         });
+        // Remove the pre-warm airdrop (its shader programs are now cached) and
+        // reset the shared glow light to off.
+        enhancedPowerUps.clearAll(scene);
       } catch (err) {
         console.warn('[Warmup] teardown failed (non-fatal):', err);
       }

@@ -34,13 +34,18 @@ export interface AtmosphereGrading {
  *
  *  HDR chromatic aberration (radial)
  *    → multi-tap volumetric god-ray radial blur (additive)
+ *    → anamorphic horizontal lens streaks (Ultra, additive HDR)
+ *    → film halation / warm highlight diffusion (additive HDR)
+ *    → aerial perspective warm tint
  *    → exposure × atmospheric tint
  *    → HDR brightness / saturation / contrast
  *    → ACES Filmic tonemap (HDR -> [0,1] LDR)
  *    → LDR shadow lift + vibrance + highlight saturation kick
+ *    → LDR filmic split-tone (cool shadows / warm highlights)
  *    → LDR film grain + subtle scanline
  *    → LDR filmic micro-contrast s-curve  (safe because input is in [0,1])
  *    → LDR vignette
+ *  (CAS adaptive sharpening then runs as a separate final pass.)
  *
  * Critical ordering note: the smoothstep cubic `x²(3-2x)` ONLY behaves
  * in [0,1]. Applying it on HDR values blows up to large negatives, then
@@ -70,6 +75,11 @@ const CinematicGradeShader = {
     aerialPerspective: { value: 1.0 },
     highlightRecovery: { value: 0.18 },
     highlightDesaturation: { value: 0.18 },
+    // ── Cinematic film optics (added in the graphics overhaul) ──────────
+    texelSize: { value: new THREE.Vector2(1 / 1920, 1 / 1080) },
+    anamorphicStrength: { value: 0.0 },   // horizontal blue lens streaks
+    halationStrength: { value: 0.0 },     // warm highlight diffusion bleed
+    splitToneStrength: { value: 0.0 },    // warm highs / cool shadows grade
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -100,6 +110,10 @@ const CinematicGradeShader = {
     uniform float aerialPerspective;
     uniform float highlightRecovery;
     uniform float highlightDesaturation;
+    uniform vec2  texelSize;
+    uniform float anamorphicStrength;
+    uniform float halationStrength;
+    uniform float splitToneStrength;
     varying vec2  vUv;
 
     // ACES Filmic tonemap — Narkowicz fit; the curve used by Cyberpunk,
@@ -170,16 +184,58 @@ const CinematicGradeShader = {
           shaft += s * bright * decay;
           wAccum += decay;
         }
-        shaft *= (1.0 / max(wAccum, 1e-4)) * sunColor * sunIntensity * 1.35;
+        shaft *= (1.0 / max(wAccum, 1e-4)) * sunColor * sunIntensity * 1.05;
         // Falloff toward the sun centre so we don't double-add the disc.
         float centerMask = smoothstep(0.0, 0.22, sunDist);
         hdr += shaft * centerMask;
 
         // Sun-halo kicker — extra bloom right around the sun disc that
-        // mimics how a real lens scatters incoming bright light. Reads
-        // as the warm "burning halo" of the sun in the zombie-game image.
-        float haloFalloff = exp(-sunDist * 2.8);
-        hdr += sunColor * sunIntensity * haloFalloff * 0.42;
+        // mimics how a real lens scatters incoming bright light. TIGHTENED
+        // (faster falloff) + dimmed so the sun no longer washes the centre
+        // of the frame to white — a compact warm halo, not a glare bloom.
+        float haloFalloff = exp(-sunDist * 3.6);
+        hdr += sunColor * sunIntensity * haloFalloff * 0.24;
+      }
+
+      // ─── ANAMORPHIC LENS STREAKS (horizontal cinematic flare) ──────
+      // Real anamorphic cine lenses smear bright highlights into a long
+      // horizontal blue streak. We sample the (already bloom-composited)
+      // HDR buffer left/right and accumulate ONLY the highlight energy
+      // (value > 1.0), decay-weighted, tinted cool blue. Reads on the sun,
+      // muzzle flashes, glowing pickups + enemy cores — a signature
+      // "shot on film" look. HDR-additive, like bloom, so it's tonemap-safe.
+      if (anamorphicStrength > 0.001) {
+        vec3 streak = vec3(0.0);
+        float wsum = 0.0;
+        for (int i = 1; i <= 18; i++) {
+          float fi = float(i);
+          float w = exp(-fi * 0.16);
+          vec2 off = vec2(texelSize.x * fi * 4.0, 0.0);
+          vec3 sL = clamp(texture2D(tDiffuse, vUv - off).rgb, vec3(0.0), vec3(64.0));
+          vec3 sR = clamp(texture2D(tDiffuse, vUv + off).rgb, vec3(0.0), vec3(64.0));
+          streak += (max(sL - 1.0, 0.0) + max(sR - 1.0, 0.0)) * w;
+          wsum += w;
+        }
+        streak /= max(wsum, 1e-4);
+        hdr += streak * vec3(0.42, 0.62, 1.0) * anamorphicStrength;
+      }
+
+      // ─── FILM HALATION (warm highlight diffusion bleed) ────────────
+      // Film stock scatters bright light into the emulsion, blooming a soft
+      // reddish-orange halo around highlights (think a glowing window in a
+      // Kodak-graded frame). A tight radial sample of the highlight energy,
+      // tinted warm. Distinct from UnrealBloom's broad halo — this is the
+      // close, organic glow that makes lights feel like they're "burning".
+      if (halationStrength > 0.001) {
+        vec3 halo = vec3(0.0);
+        for (int i = 0; i < 8; i++) {
+          float a = float(i) * 0.7853981634;
+          vec2 off = vec2(cos(a), sin(a)) * texelSize * 4.5;
+          vec3 s = clamp(texture2D(tDiffuse, vUv + off).rgb, vec3(0.0), vec3(64.0));
+          halo += max(s - 1.1, 0.0);
+        }
+        halo *= 0.125;
+        hdr += halo * vec3(1.0, 0.48, 0.32) * halationStrength;
       }
 
       // ─── AERIAL PERSPECTIVE — warm tint on bright distant pixels ────
@@ -199,7 +255,7 @@ const CinematicGradeShader = {
         float lumAerial = dot(hdr, vec3(0.2126, 0.7152, 0.0722));
         float aerialMask = smoothstep(0.9, 2.4, lumAerial) * sunIntensity;
         float topBias = smoothstep(0.4, 1.0, vUv.y);
-        hdr = mix(hdr, hdr * sunColor * 1.06, aerialMask * topBias * 0.18 * aerialPerspective);
+        hdr = mix(hdr, hdr * sunColor * 1.06, aerialMask * topBias * 0.12 * aerialPerspective);
       }
 
       // ─── EXPOSURE × ATMOSPHERIC TINT (linear HDR) ──────────────────
@@ -256,6 +312,18 @@ const CinematicGradeShader = {
       vec3 chromaH = ldr - vec3(lumaH);
       ldr = vec3(lumaH) + chromaH * (1.0 + smoothstep(0.5, 1.2, lumaH) * 0.32);
 
+      // ─── FILMIC SPLIT-TONE (cool shadows, warm highlights) ─────────
+      // The colour-grade signature of graded film + AAA cinematics: push
+      // shadows subtly toward teal and highlights toward amber so the image
+      // reads "graded" instead of flat. Luma-driven, very restrained.
+      if (splitToneStrength > 0.001) {
+        float lumaST = dot(ldr, vec3(0.2126, 0.7152, 0.0722));
+        vec3 coolShadow = vec3(0.90, 0.98, 1.07);
+        vec3 warmHi      = vec3(1.07, 1.01, 0.90);
+        vec3 toneMul = mix(coolShadow, warmHi, smoothstep(0.18, 0.82, lumaST));
+        ldr *= mix(vec3(1.0), toneMul, splitToneStrength);
+      }
+
       // ─── FILM GRAIN (LDR, luma-shaped) ─────────────────────────────
       float grain = filmHash(vUv * vec2(1919.0, 1079.0) + vec2(time * 41.0, time * 17.0)) - 0.5;
       float lumaG = dot(ldr, vec3(0.2126, 0.7152, 0.0722));
@@ -281,13 +349,79 @@ const CinematicGradeShader = {
 } as const;
 
 /**
+ * AMD FidelityFX Contrast Adaptive Sharpening (CAS), sharpen-only port.
+ *
+ * Runs as the FINAL pass on the tonemapped LDR image (after SMAA) to recover
+ * the crisp micro-detail that AA + bloom soften. CAS is adaptive: it sharpens
+ * low-contrast regions more than already-sharp edges and clamps to the local
+ * 3×3 min/max so it never rings or haloes. The result is a noticeably crisper,
+ * higher-perceived-resolution image with no shimmer.
+ *
+ * Reference: AMD GPUOpen FidelityFX CAS (https://gpuopen.com/fidelityfx-cas/).
+ */
+const CASShader = {
+  uniforms: {
+    tDiffuse: { value: null as THREE.Texture | null },
+    texelSize: { value: new THREE.Vector2(1 / 1920, 1 / 1080) },
+    sharpness: { value: 0.4 },
+  },
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    uniform vec2  texelSize;
+    uniform float sharpness;
+    varying vec2  vUv;
+
+    void main() {
+      // 3×3 neighbourhood (a b c / d e f / g h i), e = centre.
+      vec3 a = texture2D(tDiffuse, vUv + texelSize * vec2(-1.0, -1.0)).rgb;
+      vec3 b = texture2D(tDiffuse, vUv + texelSize * vec2( 0.0, -1.0)).rgb;
+      vec3 c = texture2D(tDiffuse, vUv + texelSize * vec2( 1.0, -1.0)).rgb;
+      vec3 d = texture2D(tDiffuse, vUv + texelSize * vec2(-1.0,  0.0)).rgb;
+      vec4 eF = texture2D(tDiffuse, vUv);
+      vec3 e = eF.rgb;
+      vec3 f = texture2D(tDiffuse, vUv + texelSize * vec2( 1.0,  0.0)).rgb;
+      vec3 g = texture2D(tDiffuse, vUv + texelSize * vec2(-1.0,  1.0)).rgb;
+      vec3 h = texture2D(tDiffuse, vUv + texelSize * vec2( 0.0,  1.0)).rgb;
+      vec3 i = texture2D(tDiffuse, vUv + texelSize * vec2( 1.0,  1.0)).rgb;
+
+      // Soft min/max of the cross (b,d,e,f,h), reinforced by the diagonals.
+      vec3 mnRGB = min(min(min(d, e), min(f, b)), h);
+      mnRGB += min(mnRGB, min(min(a, c), min(g, i)));
+      vec3 mxRGB = max(max(max(d, e), max(f, b)), h);
+      mxRGB += max(mxRGB, max(max(a, c), max(g, i)));
+
+      // Adaptive sharpening amount per channel.
+      vec3 rcpM = 1.0 / max(mxRGB, vec3(1e-4));
+      vec3 ampRGB = clamp(min(mnRGB, 2.0 - mxRGB) * rcpM, 0.0, 1.0);
+      ampRGB = sqrt(ampRGB);
+      float peak = -1.0 / mix(8.0, 5.0, clamp(sharpness, 0.0, 1.0));
+      vec3 wRGB = ampRGB * peak;
+      vec3 rcpW = 1.0 / (1.0 + 4.0 * wRGB);
+      vec3 sharp = clamp((b * wRGB + d * wRGB + f * wRGB + h * wRGB + e) * rcpW, 0.0, 1.0);
+
+      gl_FragColor = vec4(mix(e, sharp, clamp(sharpness, 0.0, 1.0)), eF.a);
+    }
+  `,
+} as const;
+
+/**
  * AAA post-processing pipeline built on three.js's native
  * `examples/jsm/postprocessing` modules — no external libraries.
  *
  *  RenderPass         (scene → linear HDR HalfFloat target)
  *    → UnrealBloomPass  [aggressive mip-chain bloom for the "glow"]
- *    → CinematicGrade   [CA + god-rays + ACES + LDR grade + grain + vignette]
+ *    → CinematicGrade   [CA + god-rays + anamorphic streaks + film halation
+ *                        + aerial perspective + ACES + LDR grade + split-tone
+ *                        + grain + vignette]
  *    → SMAAPass         [Medium+ — sub-pixel morphological AA]
+ *    → CAS              [Medium+ — adaptive sharpening, final crispness]
  *
  * Ambient occlusion is intentionally NOT in this pipeline. Both
  * pmndrs N8AO and three.js GTAO produced a "multiply-by-zero" black
@@ -301,10 +435,11 @@ export class PostProcessingPipeline {
 
   private readonly bloom: UnrealBloomPass;
   private baseBloomIntensity: number;
-  private readonly baseBloomThreshold: number = 0.82;
+  private readonly baseBloomThreshold: number = 0.86;
   private bloomMultiplier = 1.0;
   private readonly cinematic: ShaderPass;
   private readonly smaaPass: SMAAPass | null;
+  private readonly casPass: ShaderPass | null;
   private readonly camera: THREE.PerspectiveCamera | THREE.OrthographicCamera;
   private readonly hdrTarget: THREE.WebGLRenderTarget;
   private readonly _tempSun = new THREE.Vector3();
@@ -373,15 +508,17 @@ export class PostProcessingPipeline {
     // kicker + brighter pickup cores, the world reads as having real
     // volumetric light scattering rather than dry flat shading.
     this.baseBloomIntensity =
-      isUltra ? 1.18 :
-      quality === 'high' ? 0.96 :
-      quality === 'medium' ? 0.74 :
-      0.52;
+      isUltra ? 1.02 :
+      quality === 'high' ? 0.84 :
+      quality === 'medium' ? 0.66 :
+      0.48;
     this.bloom = new UnrealBloomPass(
       new THREE.Vector2(width, height),
       this.baseBloomIntensity,
-      0.95,   // wider radius — soft cinematic halos (was 0.85)
-      0.78,   // slightly lower threshold so emissive pickups / sun bloom hard
+      0.9,    // soft cinematic halo radius
+      0.86,   // higher threshold: only true highlights bloom, not the bright
+              // sky — kills the centre-of-frame sun blowout while pickups /
+              // emissives / muzzle flashes (far above threshold) still glow.
     );
     this.composer.addPass(this.bloom);
 
@@ -398,6 +535,15 @@ export class PostProcessingPipeline {
     this.cinematic.uniforms.scanlineStrength.value =
       isUltra ? 0.04 : quality === 'high' ? 0.03 : 0.02;
     this.cinematic.uniforms.aspect.value = width / Math.max(1, height);
+    (this.cinematic.uniforms.texelSize.value as THREE.Vector2).set(1 / width, 1 / height);
+    // Cinematic film optics. Anamorphic streaks are the heaviest (36 taps) so
+    // they're reserved for Ultra; halation + split-tone are cheap and run on
+    // every post-FX tier. All restrained — this is grading, not a filter.
+    this.cinematic.uniforms.anamorphicStrength.value = isUltra ? 0.55 : 0.0;
+    this.cinematic.uniforms.halationStrength.value =
+      isUltra ? 0.3 : quality === 'high' ? 0.24 : quality === 'medium' ? 0.16 : 0.0;
+    this.cinematic.uniforms.splitToneStrength.value =
+      isUltra ? 0.5 : quality === 'high' ? 0.42 : quality === 'medium' ? 0.32 : 0.0;
     this.composer.addPass(this.cinematic);
 
     // ─── 4. SMAA AA (Medium+) ───────────────────────────────────────
@@ -408,6 +554,24 @@ export class PostProcessingPipeline {
       this.smaaPass = smaa;
     } else {
       this.smaaPass = null;
+    }
+
+    // ─── 5. CAS sharpening (FINAL — after AA) ───────────────────────
+    // Recovers the crispness AA + bloom soften. Runs last so it sharpens the
+    // fully-composited image. Cheap (9 taps) and adaptive, so it's on for all
+    // post-FX tiers.
+    if (quality !== 'low') {
+      const cas = new ShaderPass({
+        uniforms: THREE.UniformsUtils.clone(CASShader.uniforms),
+        vertexShader: CASShader.vertexShader,
+        fragmentShader: CASShader.fragmentShader,
+      });
+      (cas.uniforms.texelSize.value as THREE.Vector2).set(1 / width, 1 / height);
+      cas.uniforms.sharpness.value = isUltra ? 0.5 : quality === 'high' ? 0.42 : 0.34;
+      this.composer.addPass(cas);
+      this.casPass = cas;
+    } else {
+      this.casPass = null;
     }
 
     void isHigh;
@@ -530,7 +694,7 @@ export class PostProcessingPipeline {
       if (this.isNightMode) {
         // Moonlight god-rays — cool blue, restrained.
         (u.sunColor.value as THREE.Color).setRGB(0.55, 0.7, 1.0);
-        u.sunIntensity.value = 0.28 * onScreenGate * godRayStrength;
+        u.sunIntensity.value = 0.20 * onScreenGate * godRayStrength;
       } else {
         // Warm shift as the sun drops — golden-hour at low altitude,
         // pure white at noon. lowSun ramps as altitude → 0.
@@ -540,11 +704,11 @@ export class PostProcessingPipeline {
           0.92 - lowSun * 0.22,
           0.78 - lowSun * 0.34,
         );
-        // Cranked from 0.32 → 0.55 — dramatic shafts that read as the
-        // dominant visual feature of any outdoor map when the sun is up.
-        // Extra punch at low-sun angles (golden-hour drama).
-        const goldenBoost = 1.0 + lowSun * 0.45;
-        u.sunIntensity.value = 0.55 * onScreenGate * altGate * goldenBoost * godRayStrength;
+        // Restrained shafts — present and cinematic, but no longer the
+        // glaring centre-of-frame blowout. Extra punch only at low-sun
+        // angles (golden-hour drama) where it reads as atmosphere.
+        const goldenBoost = 1.0 + lowSun * 0.35;
+        u.sunIntensity.value = 0.36 * onScreenGate * altGate * goldenBoost * godRayStrength;
       }
     } else {
       u.sunIntensity.value = 0.0;
@@ -582,6 +746,8 @@ export class PostProcessingPipeline {
     this.bloom.setSize(w, h);
     if (this.smaaPass) this.smaaPass.setSize(w, h);
     this.cinematic.uniforms.aspect.value = w / Math.max(1, h);
+    (this.cinematic.uniforms.texelSize.value as THREE.Vector2).set(1 / w, 1 / h);
+    if (this.casPass) (this.casPass.uniforms.texelSize.value as THREE.Vector2).set(1 / w, 1 / h);
   }
 
   dispose() {
@@ -591,6 +757,9 @@ export class PostProcessingPipeline {
     }
     if (this.bloom && typeof (this.bloom as unknown as { dispose?: () => void }).dispose === 'function') {
       (this.bloom as unknown as { dispose: () => void }).dispose();
+    }
+    if (this.casPass && typeof (this.casPass as unknown as { dispose?: () => void }).dispose === 'function') {
+      (this.casPass as unknown as { dispose: () => void }).dispose();
     }
     this.composer.dispose();
   }

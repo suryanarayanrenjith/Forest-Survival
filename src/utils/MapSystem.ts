@@ -15,6 +15,7 @@
  */
 
 import type { BiomeType } from './BiomeSystem';
+import type { TerrainProfileInput } from './TerrainSystem';
 
 export type MapType =
   | 'deep_forest'
@@ -94,6 +95,12 @@ export interface MapConfig {
   };
   groundRoughness?: number;
   groundMetalness?: number;
+  // ── Terrain shape + ground-texture identity ─────────────────────────────
+  // Drives the GPU-displaced landscape (rolling hills, dunes, ridges) and the
+  // per-map procedural ground material (sand ripples, snow sparkle, lava
+  // cracks, wet swamp puddles, etc.). See TerrainSystem.ts. Optional — maps
+  // that omit it get a grounded neutral-earth default.
+  terrain?: TerrainProfileInput;
 }
 
 export const MAP_CONFIGS: Record<MapType, MapConfig> = {
@@ -147,6 +154,21 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       groundSpecular: 1.0,
       groundNormal: 1.0,
       groundPatch: 1.0,
+    },
+    // Soft, mossy forest floor — gentle rolling humus broken by exposed roots
+    // and damp earth. Warm/cool leaf-litter patches over a mossy rock talus.
+    terrain: {
+      amplitude: 3.0,
+      frequency: 0.016,
+      ridginess: 0.12,
+      flatRadius: 20,
+      falloff: 52,
+      macroTintA: [1.10, 1.05, 0.90],
+      macroTintB: [0.84, 0.96, 0.82],
+      rockColor: 0x3a4a32,
+      detailColor: [0.95, 1.0, 0.82],
+      detailScale: 1.05,
+      wetness: 0.18,
     },
   },
 
@@ -206,6 +228,22 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       groundSpecular: 0.72,
       groundNormal: 1.05,
       groundPatch: 1.1,
+    },
+    // Cracked basalt plates with glowing magma seams running between them.
+    // Sharp, jagged ridges of cooled lava. Dark obsidian talus on the slopes.
+    terrain: {
+      amplitude: 4.6,
+      frequency: 0.019,
+      ridginess: 0.42,
+      flatRadius: 18,
+      falloff: 46,
+      macroTintA: [1.12, 0.86, 0.72],
+      macroTintB: [0.7, 0.66, 0.66],
+      rockColor: 0x130f0d,
+      detailColor: [1.0, 0.7, 0.5],
+      detailScale: 1.25,
+      crackGlow: 1.6,
+      crackColor: 0xff4a12,
     },
   },
 
@@ -270,6 +308,25 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     },
     groundRoughness: 0.88,
     groundMetalness: 0.02,
+    // Wind-sculpted snow drifts over a frozen highland. Long sightlines
+    // (fogFar 480) so the undulation only swells far out where haze hides it.
+    // Sparse crystalline sparkle + directional drift ripples sell the snow.
+    terrain: {
+      amplitude: 5.2,
+      frequency: 0.011,
+      ridginess: 0.08,
+      flatRadius: 44,
+      falloff: 170,
+      macroTintA: [1.04, 1.06, 1.12],
+      macroTintB: [0.9, 0.93, 1.0],
+      rockColor: 0x5a6b78,
+      detailColor: [0.9, 0.96, 1.1],
+      detailScale: 0.8,
+      rippleDir: [0.86, 0.5],
+      rippleScale: 0.5,
+      rippleStrength: 0.22,
+      sparkle: 0.7,
+    },
   },
 
   // ── Arid desert with mesa pillars ──
@@ -336,6 +393,25 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     },
     groundRoughness: 0.94,
     groundMetalness: 0.01,
+    // Sweeping wind-carved dunes and eroded sandstone benches. Big, ridged
+    // amplitude that only rises in the deep distance (fogFar 420). Crisp
+    // directional sand ripples + a faint mica sparkle catch the harsh sun.
+    terrain: {
+      amplitude: 6.4,
+      frequency: 0.012,
+      ridginess: 0.5,
+      flatRadius: 40,
+      falloff: 155,
+      macroTintA: [1.12, 1.02, 0.82],
+      macroTintB: [0.92, 0.8, 0.62],
+      rockColor: 0x8a5e34,
+      detailColor: [1.1, 0.95, 0.72],
+      detailScale: 1.0,
+      rippleDir: [0.94, 0.34],
+      rippleScale: 0.62,
+      rippleStrength: 0.3,
+      sparkle: 0.25,
+    },
   },
 
   // ── Dark swamp with toxic pools ──
@@ -367,6 +443,49 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     // off the dark swamp backdrop.
     bloomMultiplier: 1.20,                 // was 1.40 — pulled back with new baseline
     bloomThresholdBias: -0.05,             // was -0.08
+    // Murky wetland grade — green-biased, shadows gently lifted for
+    // readability through the fog, strong wet specular on the soaked ground.
+    renderProfile: {
+      atmosphereWeight: 0.5,
+      nightAtmosphereWeight: 0.28,
+      exposure: 0.92,
+      saturation: 0.96,
+      contrast: 1.02,
+      bloomStrength: 1.0,
+      godRayStrength: 0.55,
+      aerialPerspective: 0.72,
+      highlightRecovery: 0.22,
+      highlightDesaturation: 0.2,
+      vibrance: 1.0,
+      shadowLift: 1.08,
+      hazeDensity: 0.95,
+      fogDensity: 1.0,
+      environmentIntensity: 0.85,
+      directLight: 0.9,
+      ambientLight: 1.0,
+      volumetricLight: 0.7,
+      fillLight: 0.92,
+      rimLight: 0.9,
+      groundSpecular: 1.15,
+      groundNormal: 1.05,
+      groundPatch: 1.05,
+    },
+    // Sodden wetland — near-flat with low silt mounds, threaded with dark
+    // pooled water. Heavy wetness gives the ground that black, reflective
+    // bog sheen; mossy muck on the rare raised banks.
+    terrain: {
+      amplitude: 1.9,
+      frequency: 0.018,
+      ridginess: 0.05,
+      flatRadius: 18,
+      falloff: 48,
+      macroTintA: [0.96, 1.06, 0.86],
+      macroTintB: [0.78, 0.84, 0.7],
+      rockColor: 0x22301c,
+      detailColor: [0.85, 1.0, 0.78],
+      detailScale: 1.1,
+      wetness: 0.75,
+    },
   },
 
   // ── Concrete walls and bunkers ──
@@ -397,6 +516,49 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     // Industrial / mil-sim — minimal bloom for a grounded look.
     bloomMultiplier: 0.70,
     bloomThresholdBias: 0.06,
+    // Desaturated, grounded mil-sim grade — restrained bloom, crisp sun,
+    // tight highlights. Reads like overcast-noon at an abandoned base.
+    renderProfile: {
+      atmosphereWeight: 0.2,
+      nightAtmosphereWeight: 0.12,
+      exposure: 0.96,
+      saturation: 0.84,
+      contrast: 1.05,
+      bloomStrength: 0.85,
+      godRayStrength: 0.8,
+      aerialPerspective: 0.85,
+      highlightRecovery: 0.16,
+      highlightDesaturation: 0.16,
+      vibrance: 0.85,
+      shadowLift: 0.98,
+      hazeDensity: 0.95,
+      fogDensity: 1.0,
+      environmentIntensity: 0.95,
+      directLight: 1.0,
+      ambientLight: 0.98,
+      volumetricLight: 0.9,
+      fillLight: 0.95,
+      rimLight: 0.95,
+      groundSpecular: 0.9,
+      groundNormal: 1.15,
+      groundPatch: 1.12,
+    },
+    // Compacted dirt-and-gravel parade ground with cracked asphalt aprons and
+    // low blast berms. Mostly flat (a real base) with gritty micro-relief and
+    // faint oil-slick sheen pooling in the ruts.
+    terrain: {
+      amplitude: 1.6,
+      frequency: 0.02,
+      ridginess: 0.18,
+      flatRadius: 16,
+      falloff: 44,
+      macroTintA: [1.06, 1.03, 0.96],
+      macroTintB: [0.86, 0.86, 0.84],
+      rockColor: 0x3c3c38,
+      detailColor: [1.0, 0.98, 0.92],
+      detailScale: 1.35,
+      wetness: 0.2,
+    },
   },
 
   // ── TWILIGHT VALE — REPLACEMENT for the removed Crystal Caverns ──
@@ -436,6 +598,48 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     // catch the orange horizon light + emissive enemy cores.
     bloomMultiplier: 0.78,
     bloomThresholdBias: 0.04,
+    // Dusk grade — moody and violet, shadows held down, the deep purples
+    // pushed by vibrance, a warm rim from the setting sun on the horizon.
+    renderProfile: {
+      atmosphereWeight: 0.32,
+      nightAtmosphereWeight: 0.22,
+      exposure: 0.86,
+      saturation: 0.94,
+      contrast: 1.04,
+      bloomStrength: 0.9,
+      godRayStrength: 0.7,
+      aerialPerspective: 0.8,
+      highlightRecovery: 0.2,
+      highlightDesaturation: 0.2,
+      vibrance: 1.06,
+      shadowLift: 0.95,
+      hazeDensity: 1.0,
+      fogDensity: 1.0,
+      environmentIntensity: 0.8,
+      directLight: 0.95,
+      ambientLight: 0.95,
+      volumetricLight: 0.85,
+      fillLight: 0.9,
+      rimLight: 1.08,
+      groundSpecular: 1.0,
+      groundNormal: 1.0,
+      groundPatch: 1.0,
+    },
+    // Haunted vale floor — soft rolling violet earth, dew-damp, with charred
+    // dark-purple rock breaking the slopes. Quiet and otherworldly.
+    terrain: {
+      amplitude: 3.2,
+      frequency: 0.015,
+      ridginess: 0.14,
+      flatRadius: 20,
+      falloff: 54,
+      macroTintA: [1.08, 0.94, 1.14],
+      macroTintB: [0.82, 0.78, 0.96],
+      rockColor: 0x271836,
+      detailColor: [0.94, 0.86, 1.1],
+      detailScale: 1.0,
+      wetness: 0.16,
+    },
   },
 
   // ── Crumbling stone ruins ──
@@ -466,6 +670,49 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     // Wet-stone rainy ruins — moderate bloom catching the rain highlights.
     bloomMultiplier: 1.00,                 // was 1.15
     bloomThresholdBias: -0.02,             // was -0.04
+    // Rain-soaked stone grade — cool, slightly desaturated, with a strong
+    // wet specular response so the flagstones glisten under the downpour.
+    renderProfile: {
+      atmosphereWeight: 0.4,
+      nightAtmosphereWeight: 0.24,
+      exposure: 0.94,
+      saturation: 0.9,
+      contrast: 1.03,
+      bloomStrength: 1.0,
+      godRayStrength: 0.6,
+      aerialPerspective: 0.78,
+      highlightRecovery: 0.2,
+      highlightDesaturation: 0.18,
+      vibrance: 0.95,
+      shadowLift: 1.0,
+      hazeDensity: 1.0,
+      fogDensity: 1.0,
+      environmentIntensity: 0.9,
+      directLight: 0.95,
+      ambientLight: 1.0,
+      volumetricLight: 0.75,
+      fillLight: 0.95,
+      rimLight: 0.95,
+      groundSpecular: 1.25,
+      groundNormal: 1.12,
+      groundPatch: 1.06,
+    },
+    // Worn flagstone plaza heaved by centuries of root and frost — broken
+    // tiles, rubble ridges, rain pooling in the hollows between cracked
+    // pavers (heavy wetness sheen).
+    terrain: {
+      amplitude: 2.6,
+      frequency: 0.017,
+      ridginess: 0.24,
+      flatRadius: 19,
+      falloff: 50,
+      macroTintA: [1.08, 1.05, 0.98],
+      macroTintB: [0.84, 0.85, 0.82],
+      rockColor: 0x4c4840,
+      detailColor: [1.0, 0.98, 0.9],
+      detailScale: 1.3,
+      wetness: 0.55,
+    },
   },
 };
 

@@ -78,41 +78,58 @@ export const skyDomeFragmentShader = `
     if (!isNight) {
       // ===== DAYTIME =====
       // Rich vertical gradient: pale haze at the horizon -> deep blue zenith.
-      vec3 zenith = skyColorTop * 0.78;
+      vec3 zenith = skyColorTop * 0.80;
       vec3 horizon = skyColorHorizon;
       sky = mix(horizon, zenith, pow(h, 0.42));
 
-      // Warm, volumetric glow around the sun — feeds the bloom pass so the
-      // sun reads as a radiant, hazy light source rather than a flat dot.
-      // Intensities tuned for the AGX tonemap downstream — too high here and
-      // the entire sky blooms into white.
+      float sunAmount = max(sd, 0.0);
+
+      // ── ATMOSPHERIC FORWARD SCATTERING ──
+      // The half of the sky toward the sun — especially the horizon band —
+      // glows warmer and brighter. A cheap single-scattering cue that makes
+      // the dome feel like real atmosphere rather than a flat gradient.
+      vec3 scatterWarm = vec3(1.0, 0.84, 0.62);
+      float horizonBand = pow(1.0 - h, 1.7);
+      sky += scatterWarm * sunAmount * horizonBand * 0.12;
+
+      // Warm glow around the sun — feeds the bloom pass so the sun reads as a
+      // radiant light source rather than a flat dot. TIGHTENED + DIMMED so the
+      // sun no longer blows out the whole centre of the frame: the glow falls
+      // off faster (higher powers) and at lower intensity, keeping the bright
+      // region compact instead of a giant white wash.
       vec3 sunColor = vec3(1.0, 0.94, 0.80);
-      float glow = pow(max(sd, 0.0), 12.0);
-      float wideGlow = pow(max(sd, 0.0), 3.0);
-      // hugeGlow removed — it was spreading bright across the entire sky
-      // and washing out the upper gradient.
-      // Halved across the board so the sun stays bright but doesn't consume
-      // the upper half of the screen under the new aggressive bloom pass.
-      sky += sunColor * wideGlow * 0.04;
-      sky += sunColor * glow * 0.45;
+      float glow = pow(sunAmount, 14.0);
+      float wideGlow = pow(sunAmount, 4.5);
+      sky += sunColor * wideGlow * 0.022;
+      sky += sunColor * glow * 0.26;
 
       // Compact HDR sun disk — bright enough to drive bloom + god rays
       // but the disc itself stays a small, readable light source.
       float disk = smoothstep(0.99930, 0.99965, sd);
-      sky += sunColor * disk * 2.6;
+      sky += sunColor * disk * 2.1;
 
       // Atmospheric horizon haze for depth — thicker band so the horizon
       // dissolves into atmosphere instead of ending at a hard edge.
       float haze = pow(1.0 - h, 2.4);
-      sky += horizon * haze * 0.42;
+      sky += horizon * haze * 0.40;
 
-      // Drifting volumetric cloud bands — less reflective so they read as
-      // soft cirrus instead of white sheets.
-      float cloudMask = smoothstep(0.04, 0.45, dir.y);
-      vec2 cuv = dir.xz / max(dir.y, 0.16) * 1.15 + vec2(time * 0.011, time * 0.005);
-      float clouds = smoothstep(0.55, 0.96, fbm(cuv)) * cloudMask;
-      vec3 cloudCol = mix(vec3(0.92, 0.92, 0.92), sunColor, glow * 0.55);
-      sky = mix(sky, cloudCol, clouds * 0.45);
+      // ── VOLUMETRIC CLOUDS with sun-side self-lighting ──
+      // Two fBm layers at different scales + opposing drift give parallax
+      // depth; a second density sample offset toward the sun cheaply lights
+      // the sun-facing billows and shadows the far side, so clouds read as
+      // 3D volumes instead of flat cirrus sheets.
+      float cloudMask = smoothstep(0.03, 0.42, dir.y);
+      vec2 cuv = dir.xz / max(dir.y, 0.15) * 1.05 + vec2(time * 0.010, time * 0.004);
+      float c1 = fbm(cuv);
+      float c2 = fbm(cuv * 2.4 + vec2(-time * 0.008, time * 0.006));
+      float density = c1 * 0.62 + c2 * 0.38;
+      float clouds = smoothstep(0.5, 0.9, density) * cloudMask;
+      vec2 towardSun = normalize(sunDir.xz - dir.xz + vec2(1e-4)) * 0.05;
+      float densSun = fbm(cuv + towardSun) * 0.62 + fbm(cuv * 2.4 + towardSun) * 0.38;
+      float lit = clamp((density - densSun) * 3.5 + 0.45, 0.0, 1.0);
+      vec3 cloudCol = mix(vec3(0.55, 0.58, 0.66), vec3(1.0, 0.97, 0.90), lit);
+      cloudCol = mix(cloudCol, sunColor, glow * 0.5);
+      sky = mix(sky, cloudCol, clouds * 0.5);
     } else {
       // ===== NIGHT (NEON-NOIR TWIST) =====
       // A deep cobalt zenith fading through cyan-violet at the horizon —

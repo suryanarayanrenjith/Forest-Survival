@@ -148,6 +148,20 @@ export class EnhancedPowerUpSystem {
   private airdrops: Airdrop[] = [];
   private activePowerUps: Map<PowerUpType, { expiresAt: number }> = new Map();
 
+  // Single SHARED glow light for landed crates. Adding/removing a PointLight
+  // at runtime forces three.js to recompile every material in the scene (the
+  // light count is baked into shaders) — that was the stutter on the first
+  // airdrop. The host pre-allocates ONE light at scene init and hands it over;
+  // we only ever move it + toggle its intensity, which never recompiles.
+  // Reference: https://discourse.threejs.org/t/scene-freezes-when-adding-dynamically-pointlight/28281
+  private glowLight: THREE.PointLight | null = null;
+
+  /** Inject the host-owned, permanently-scene-parented airdrop glow light. */
+  setGlowLight(light: THREE.PointLight | null): void {
+    this.glowLight = light;
+    if (light) light.intensity = 0;
+  }
+
   createAirdrop(
     scene: THREE.Scene,
     x: number,
@@ -366,11 +380,9 @@ export class EnhancedPowerUpSystem {
       group.add(line);
     }
 
-    // Coloured key light underneath the panel — bathes the surrounding
-    // ground in the perk's signature hue so it stands out at night.
-    const glowLight = new THREE.PointLight(config.emissiveColor, 2.0, 13);
-    glowLight.position.y = 1.5;
-    group.add(glowLight);
+    // NOTE: the coloured key light that bathes the ground in the perk's hue is
+    // the SHARED `glowLight` (see setGlowLight) driven in updateAirdrops — NOT a
+    // per-crate PointLight, which would recompile every scene material on spawn.
 
     // Starting position (high in the air)
     const startY = 100;
@@ -428,8 +440,7 @@ export class EnhancedPowerUpSystem {
       const airdrop = this.airdrops[i];
 
       if (airdrop.collected) {
-        scene.remove(airdrop.mesh);
-        if (airdrop.smoke) scene.remove(airdrop.smoke);
+        this.disposeAirdrop(airdrop, scene);
         this.airdrops.splice(i, 1);
         continue;
       }
@@ -510,7 +521,55 @@ export class EnhancedPowerUpSystem {
       }
     }
 
+    // Drive the single shared glow light from the most prominent active crate
+    // (landed, or close enough to the ground that the glow reads). Pure
+    // move + intensity changes — never a recompile.
+    if (this.glowLight) {
+      let lit = false;
+      for (let i = 0; i < this.airdrops.length; i++) {
+        const a = this.airdrops[i];
+        if (a.collected) continue;
+        const y = a.mesh.position.y;
+        if (a.landed || y < 14) {
+          const cfg = POWER_UP_CONFIGS[a.powerUpType];
+          this.glowLight.color.setHex(cfg.emissiveColor);
+          this.glowLight.position.set(a.mesh.position.x, a.mesh.position.y + 1.5, a.mesh.position.z);
+          const prox = a.landed ? 1 : 1 - Math.min(1, Math.max(0, (y - 2) / 12));
+          this.glowLight.intensity = 2.0 * prox;
+          lit = true;
+          break;
+        }
+      }
+      if (!lit) this.glowLight.intensity = 0;
+    }
+
     return landedAirdrops;
+  }
+
+  /**
+   * Fully release an airdrop's GPU resources. Airdrop visuals are allocated
+   * fresh per crate (not shared/cached), so disposing geometries + materials on
+   * removal is safe and prevents a slow GPU memory leak over a long run. The
+   * parachute cone + suspension lines are already removed/disposed on landing,
+   * so traversal only finds the crate body + fittings here.
+   */
+  private disposeAirdrop(airdrop: Airdrop, scene: THREE.Scene): void {
+    scene.remove(airdrop.mesh);
+    airdrop.mesh.traverse((child) => {
+      if (child instanceof THREE.Mesh) {
+        child.geometry.dispose();
+        const mat = child.material;
+        if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+        else mat.dispose();
+      }
+    });
+    if (airdrop.smoke) {
+      scene.remove(airdrop.smoke);
+      airdrop.smoke.geometry.dispose();
+      const sm = airdrop.smoke.material;
+      if (Array.isArray(sm)) sm.forEach((m) => m.dispose());
+      else sm.dispose();
+    }
   }
 
   collectAirdrop(airdrop: Airdrop): PowerUpType {
@@ -557,12 +616,10 @@ export class EnhancedPowerUpSystem {
   }
 
   clearAll(scene: THREE.Scene): void {
-    this.airdrops.forEach(airdrop => {
-      scene.remove(airdrop.mesh);
-      if (airdrop.smoke) scene.remove(airdrop.smoke);
-    });
+    this.airdrops.forEach(airdrop => this.disposeAirdrop(airdrop, scene));
     this.airdrops = [];
     this.activePowerUps.clear();
+    if (this.glowLight) this.glowLight.intensity = 0;
   }
 
   getAirdrops(): Airdrop[] {

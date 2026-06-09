@@ -176,24 +176,37 @@ export class BiomeSystem {
     if (cached) return cached;
     const mat = new THREE.MeshStandardMaterial({
       color: this.grassConfigs[biome].color,
-      roughness: 0.62,
-      metalness: 0.03,
+      // Matte, non-metallic blades — grass shouldn't throw sharp specular
+      // glints. The faint emissive only keeps it readable at night.
+      roughness: 0.82,
+      metalness: 0.0,
       emissive: this.grassConfigs[biome].color,
-      emissiveIntensity: 0.16,
+      emissiveIntensity: 0.06,
       side: THREE.DoubleSide,
       flatShading: true,
     });
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.uTime = this.grassTime;
-      shader.vertexShader = 'uniform float uTime;\n' + shader.vertexShader;
+      shader.vertexShader = 'uniform float uTime;\nvarying float vBladeH;\n' + shader.vertexShader;
       shader.vertexShader = shader.vertexShader.replace(
         '#include <begin_vertex>',
         `#include <begin_vertex>
+         // Normalised blade height (0 = root, 1 = tip) for the shading gradient.
+         vBladeH = clamp(transformed.y / 0.62, 0.0, 1.0);
          float gWindH = transformed.y;
          float gWindP = uTime * 1.5 + instanceMatrix[3].x * 0.18 + instanceMatrix[3].z * 0.18;
          float gWindS = gWindH * gWindH * 0.55;
          transformed.x += sin(gWindP) * gWindS;
          transformed.z += cos(gWindP * 0.8) * gWindS * 0.6;`,
+      );
+      // Root-to-tip gradient — shaded base, brighter tip. This single change
+      // gives the lawn natural depth and removes the flat, glowing-green
+      // "AstroTurf" read that made the ground look artificial.
+      shader.fragmentShader = 'varying float vBladeH;\n' + shader.fragmentShader;
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <color_fragment>',
+        `#include <color_fragment>
+         diffuseColor.rgb *= mix(0.5, 1.1, vBladeH);`,
       );
     };
     this.grassMaterials.set(biome, mat);
