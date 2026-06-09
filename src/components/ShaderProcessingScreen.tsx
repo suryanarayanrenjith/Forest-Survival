@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, RefreshCw, ArrowRightCircle, Crosshair, Check, Loader2 } from 'lucide-react';
+import { detectIsTouch } from '../hooks/useDeviceInfo';
+
+// Touch devices run in (short) landscape, where the tall vertical loader layout
+// overflowed and the phase checklist overlapped. Compact mode lays the ring and
+// checklist out horizontally so everything fits a phone's landscape height.
+const IS_TOUCH = detectIsTouch();
 
 /**
  * Loader phases shown in the status checklist. They roughly map to the staged
@@ -132,6 +138,99 @@ const ShaderProcessingScreen = ({ visible, error, onContinueAnyway }: ShaderProc
             </div>
           </div>
         </div>
+      </div>
+    );
+  }
+
+  // ── LOADING STATE (COMPACT / TOUCH) — horizontal ring + checklist ───────────
+  // Fits a phone's short landscape height; the full vertical layout below
+  // overflowed and the steps overlapped.
+  if (IS_TOUCH) {
+    const Rc = 40;
+    const CIRCc = 2 * Math.PI * Rc;
+    const dashOffsetC = CIRCc * (1 - Math.min(100, progress) / 100);
+    return (
+      <div className="fixed inset-0 z-[90] flex items-center justify-center overflow-hidden bg-[#05080a] px-5">
+        <div
+          className="absolute inset-0 sps-glow"
+          style={{ background: `radial-gradient(ellipse 60% 60% at center, ${accentSoft} 0%, ${accentFaint} 40%, transparent 72%)` }}
+        />
+        <div className="relative flex w-full max-w-md items-center gap-5">
+          {/* Compact ring */}
+          <div className="relative shrink-0" style={{ width: 104, height: 104 }}>
+            <svg viewBox="0 0 104 104" className="h-full w-full -rotate-90">
+              <circle cx="52" cy="52" r={Rc} fill="none" stroke="rgba(255,255,255,0.07)" strokeWidth="3" />
+              <circle
+                cx="52" cy="52" r={Rc} fill="none" stroke={accent} strokeWidth="3" strokeLinecap="round"
+                strokeDasharray={CIRCc} strokeDashoffset={dashOffsetC}
+                style={{ transition: 'stroke-dashoffset 140ms linear', filter: `drop-shadow(0 0 5px ${accentSoft})` }}
+              />
+            </svg>
+            <div className="absolute inset-0 flex flex-col items-center justify-center">
+              <Crosshair className="sps-reticle mb-0.5 h-4 w-4" style={{ color: accent }} strokeWidth={1.75} />
+              <div className="flex items-baseline">
+                <span className="text-2xl font-black leading-none tabular-nums tracking-tight text-white">{progressValue}</span>
+                <span className="ml-0.5 text-xs font-bold text-gray-500">%</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Right column — wordmark, title, bar, condensed checklist */}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span className="relative flex h-2 w-2">
+                <span className="absolute inline-flex h-full w-full rounded-sm bg-emerald-400/60 sps-glow" />
+                <span className="relative inline-flex h-2 w-2 rotate-45 rounded-sm bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.8)]" />
+              </span>
+              <span className="text-[9px] font-bold uppercase tracking-[0.4em] text-gray-300/90">
+                Forest <span className="text-emerald-300">Survival</span>
+              </span>
+            </div>
+            <h2 className="mt-1 text-lg font-black leading-tight tracking-tight text-white">Preparing the battlefield</h2>
+            <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-white/[0.06]">
+              <div
+                className="h-full rounded-full"
+                style={{
+                  width: `${Math.min(100, progress)}%`,
+                  background: 'linear-gradient(90deg, #15803d, #34d399 60%, #22d3ee)',
+                  boxShadow: '0 0 10px rgba(52,211,153,0.5)',
+                  transition: 'width 140ms linear',
+                }}
+              />
+            </div>
+            {/* Condensed checklist — 2×2 grid, icon + label, no hints. */}
+            <div className="mt-2.5 grid grid-cols-2 gap-x-3 gap-y-1.5">
+              {PHASES.map((phase, index) => {
+                const state = index < activePhase ? 'done' : index === activePhase ? 'active' : 'pending';
+                return (
+                  <div key={phase.label} className="flex items-center gap-1.5">
+                    <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+                      {state === 'done' ? (
+                        <span className="flex h-4 w-4 items-center justify-center rounded-full bg-emerald-500/20">
+                          <Check className="h-2.5 w-2.5 text-emerald-300" strokeWidth={3} />
+                        </span>
+                      ) : state === 'active' ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-300" strokeWidth={2.5} />
+                      ) : (
+                        <span className="h-1.5 w-1.5 rounded-full bg-white/15" />
+                      )}
+                    </span>
+                    <span className={`truncate text-[10px] font-semibold leading-tight ${state === 'pending' ? 'text-gray-600' : 'text-gray-200'}`}>
+                      {phase.label}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        <style>{`
+          @keyframes sps-glow-pulse { 0%,100% { opacity: 0.75; } 50% { opacity: 1; } }
+          .sps-glow { animation: sps-glow-pulse 3.6s ease-in-out infinite; will-change: opacity; }
+          @keyframes sps-reticle-pulse { 0%,100% { transform: scale(1); opacity: 0.9; } 50% { transform: scale(1.08); opacity: 1; } }
+          .sps-reticle { animation: sps-reticle-pulse 2.4s ease-in-out infinite; will-change: transform, opacity; }
+        `}</style>
       </div>
     );
   }

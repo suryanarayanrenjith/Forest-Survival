@@ -69,12 +69,16 @@ const RunModifierPicker = ({ options, onChoose, onBack }: RunModifierPickerProps
   }, [options, focusedIdx, onChoose, onBack]);
 
   return (
-    <div className="fixed inset-0 z-[90] flex items-center justify-center overflow-y-auto bg-[#05080a] px-4 py-8">
+    <div className="fixed inset-0 z-[90] flex items-center justify-center overflow-y-auto px-4 py-8">
+      {/* Layered translucent treatment so the shared menu forest backdrop shows
+          through — this screen sits between ClassicMenu and the loader and must
+          read as part of the same menu world, not a separate black modal. */}
+      <div className="fixed inset-0 z-[1] pointer-events-none bg-gradient-to-b from-black/60 via-black/40 to-black/80" />
       <div
-        className="absolute inset-0"
-        style={{ background: 'radial-gradient(ellipse 55% 45% at center, rgba(248,113,113,0.28) 0%, transparent 65%)' }}
+        className="fixed inset-0 z-[1] pointer-events-none"
+        style={{ background: 'radial-gradient(ellipse 55% 45% at center, rgba(248,113,113,0.22) 0%, transparent 62%)' }}
       />
-      <div className="relative w-full max-w-3xl">
+      <div className="relative z-20 w-full max-w-3xl">
         {/* Header */}
         <div className="mb-8 text-center">
           <p className="text-[10px] font-bold uppercase tracking-[0.5em] text-rose-300/85">

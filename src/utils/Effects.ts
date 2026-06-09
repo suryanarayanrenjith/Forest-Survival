@@ -284,6 +284,150 @@ export class ImpactEffect {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Explosion FX (rocket launcher + barrel blast).
+//
+// The old explosion `scene.add()`-ed a fresh THREE.PointLight every blast, which
+// forced three.js to RECOMPILE every material in the world (the light count is
+// baked into shaders at compile time) — the exact stutter the muzzle-flash and
+// pickup systems were already rewritten to avoid. On the rocket launcher (and
+// chained barrels) that recompile fired several times a second and was the
+// reported "lag".
+//
+// The fix mirrors those systems: the host pre-allocates a small PointLight pool
+// and we acquire/release a slot via intensity toggling (never add/remove). The
+// fireball + shockwave + white-hot flash are pooled-geometry additive meshes
+// animated per-frame in the game loop (no setTimeout chains), so the blast both
+// runs allocation-light AND reads as a punchier, expanding fireball.
+//
+// Reference: https://discourse.threejs.org/t/scene-freezes-when-adding-dynamically-pointlight/28281
+// ─────────────────────────────────────────────────────────────────────────────
+
+let _explosionLightAcquire: MuzzleLightAcquire | null = null;
+let _explosionLightRelease: MuzzleLightRelease | null = null;
+export function setExplosionLightPool(acquire: MuzzleLightAcquire, release: MuzzleLightRelease) {
+  _explosionLightAcquire = acquire;
+  _explosionLightRelease = release;
+}
+
+// Shared geometries — one fireball sphere, one white-hot core, one ground ring.
+// Built once; scaled per-instance, never disposed by the effect cleanup.
+const EXPLO_FIREBALL_GEO = new THREE.IcosahedronGeometry(1, 2);
+const EXPLO_FLASH_GEO = new THREE.IcosahedronGeometry(1, 1);
+const EXPLO_SHOCK_GEO = (() => {
+  const g = new THREE.RingGeometry(0.82, 1, 40);
+  g.rotateX(-Math.PI / 2); // lie flat on the ground (XZ plane)
+  return g;
+})();
+
+const easeOut = (t: number) => 1 - (1 - t) * (1 - t);
+
+export class ExplosionEffect {
+  private group: THREE.Group;
+  private fireball: THREE.Mesh;
+  private flash: THREE.Mesh;
+  private shock: THREE.Mesh;
+  private fireMat: THREE.MeshBasicMaterial;
+  private flashMat: THREE.MeshBasicMaterial;
+  private shockMat: THREE.MeshBasicMaterial;
+  private light: THREE.PointLight | null;
+  private age = 0;
+  private readonly life = 0.55;          // total seconds on screen
+  private readonly radius: number;       // visual scale driver
+  private readonly lightPeak: number;
+
+  constructor(scene: THREE.Scene, position: THREE.Vector3, radius = 9, color = 0xff7a2a) {
+    this.radius = radius;
+    this.lightPeak = Math.min(80, 30 + radius * 4);
+    this.group = new THREE.Group();
+    this.group.position.copy(position);
+
+    this.fireMat = new THREE.MeshBasicMaterial({
+      color, transparent: true, opacity: 1,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    this.fireball = new THREE.Mesh(EXPLO_FIREBALL_GEO, this.fireMat);
+    this.fireball.position.y = radius * 0.18;
+    this.fireball.userData.cannotReceiveAO = true;
+    this.fireball.renderOrder = 992;
+    this.group.add(this.fireball);
+
+    this.flashMat = new THREE.MeshBasicMaterial({
+      color: 0xfff2c4, transparent: true, opacity: 1,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    this.flash = new THREE.Mesh(EXPLO_FLASH_GEO, this.flashMat);
+    this.flash.position.y = radius * 0.18;
+    this.flash.userData.cannotReceiveAO = true;
+    this.flash.renderOrder = 994;
+    this.group.add(this.flash);
+
+    this.shockMat = new THREE.MeshBasicMaterial({
+      color: 0xffb066, transparent: true, opacity: 0.85,
+      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+    });
+    this.shock = new THREE.Mesh(EXPLO_SHOCK_GEO, this.shockMat);
+    this.shock.position.y = 0.12;
+    this.shock.userData.cannotReceiveAO = true;
+    this.shock.renderOrder = 991;
+    this.group.add(this.shock);
+
+    scene.add(this.group);
+
+    // Borrow a pooled light (never scene.add a fresh one — that recompiles).
+    this.light = _explosionLightAcquire ? _explosionLightAcquire() : null;
+    if (this.light) {
+      this.light.color.setHex(0xff8a3a);
+      this.light.intensity = this.lightPeak;
+      this.light.distance = Math.max(24, radius * 4);
+      this.light.position.set(position.x, position.y + 1.5, position.z);
+    }
+  }
+
+  update(delta: number): boolean {
+    this.age += delta;
+    const t = this.age / this.life;
+    if (t >= 1) return true;
+
+    // Fireball: rapid expand then linger-fade.
+    const fb = easeOut(Math.min(1, this.age / 0.32));
+    const fbScale = this.radius * (0.22 + 0.45 * fb);
+    this.fireball.scale.setScalar(fbScale);
+    this.fireMat.opacity = this.age < 0.16 ? 1 : Math.max(0, 1 - (this.age - 0.16) / 0.34);
+
+    // White-hot core: very brief, snaps out fast.
+    const flScale = this.radius * (0.18 + 0.5 * easeOut(Math.min(1, this.age / 0.09)));
+    this.flash.scale.setScalar(flScale);
+    this.flashMat.opacity = Math.max(0, 1 - this.age / 0.13);
+    this.flash.visible = this.flashMat.opacity > 0.01;
+
+    // Ground shockwave: spreads wide and thin, fades out.
+    const sw = easeOut(t);
+    this.shock.scale.set(this.radius * (0.2 + 1.25 * sw), 1, this.radius * (0.2 + 1.25 * sw));
+    this.shockMat.opacity = 0.85 * Math.max(0, 1 - t);
+
+    // Pooled light decays quickly so the bloom doesn't linger.
+    if (this.light) {
+      this.light.intensity = this.lightPeak * Math.max(0, 1 - this.age / 0.3);
+    }
+
+    return false;
+  }
+
+  dispose(scene: THREE.Scene) {
+    scene.remove(this.group);
+    this.fireMat.dispose();
+    this.flashMat.dispose();
+    this.shockMat.dispose();
+    if (this.light) {
+      if (_explosionLightRelease) _explosionLightRelease(this.light);
+      else scene.remove(this.light);
+      this.light = null;
+    }
+    // Geometries are shared (EXPLO_*) — never dispose here.
+  }
+}
+
 // Robot hit effect — the enemies are robots, so hits throw off hot sparks and
 // bits of metal (electric yellow/orange/white with the occasional cyan arc),
 // not blood. Sparks fly out from the impact, then arc down under gravity.

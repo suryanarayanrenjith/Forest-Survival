@@ -4,7 +4,7 @@ import { GraduationCap, Play, Home, MousePointerClick } from 'lucide-react';
 import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
 import { GunModel, type WeaponType as GunWeaponType } from './utils/GunModel';
-import { MuzzleFlash, BulletTracer, ImpactEffect, RobotHitSparks, setMuzzleLightPool } from './utils/Effects';
+import { MuzzleFlash, BulletTracer, ImpactEffect, RobotHitSparks, ExplosionEffect, setMuzzleLightPool, setExplosionLightPool } from './utils/Effects';
 import { soundManager } from './utils/SoundManager';
 import { gameSettingsManager, type UserSettings, type KeyBindings } from './utils/GameSettingsManager';
 import { PostProcessingPipeline } from './utils/PostProcessing';
@@ -68,6 +68,7 @@ import { RUN_MODIFIERS, getDailyTrio, type RunModifierId } from './utils/RunModi
 import { spawnBarrels, type ExplosiveBarrel } from './utils/HazardSystem';
 import { spawnRangedSentinels, updateSentinelGlow, type RangedSentinel } from './utils/RangedSentinelSystem';
 import { CHARACTER_PASSIVES } from './utils/CharacterPassiveRegistry';
+import { getCharacterAbility } from './utils/CharacterAbilityRegistry';
 import { DAILY_CHALLENGES, getTodayChallengeId } from './utils/DailyChallengeRegistry';
 import { bonusForLevel, levelFromXp, xpPerKill, xpProgressAtLevel, type MasteryBonus } from './utils/WeaponMasterySystem';
 import { TITLE_FOR_ACHIEVEMENT } from './utils/CosmeticTitles';
@@ -294,6 +295,13 @@ const ForestSurvivalGame = () => {
   const [classicDifficulty, setClassicDifficulty] = useState<'easy' | 'medium' | 'hard' | 'adaptive'>('medium');
   const [classicTimeOfDay, setClassicTimeOfDay] = useState<'day' | 'night' | 'auto'>('auto');
   const [selectedMap, setSelectedMap] = useState<MapType>(DEFAULT_MAP);
+  // Solo / Tutorial character pick. Drives the ground-shadow silhouette AND
+  // the signature active ability + passive (the same path multiplayer uses,
+  // where the class comes from the lobby instead). Read by the long-lived
+  // game effect via a ref so changing it never re-mounts the scene.
+  const [selectedCharacter, setSelectedCharacter] = useState<ClassId>('ranger');
+  const selectedCharacterRef = useRef<ClassId>('ranger');
+  useEffect(() => { selectedCharacterRef.current = selectedCharacter; }, [selectedCharacter]);
   // Tracks whether the player launched classic via the "Roll & Play"
   // random-mode button. On restart we re-roll the map (and time of day)
   // so it's actually random across sessions, not the first map forever.
@@ -2324,8 +2332,13 @@ const ForestSurvivalGame = () => {
     // CLIMB_MAX: the tallest obstacle the player can land and stand ON TOP of.
     //   Rocks/boulders up to this height become platforms you can hop onto and
     //   stroll across; taller ones stay solid walls. (Trees use height 99.)
+    //   Raised 2.8 → 4.0 so the big rocks/boulders (heights 3–4) become
+    //   traversable platforms — the player can now hop onto and over them
+    //   instead of being walled off. The higher jump (above) reaches these even
+    //   on a heavy loadout. Enemies are unaffected (they pass feetY=-1 and keep
+    //   pathing around everything taller than STEP_OVER).
     const STEP_OVER_HEIGHT = 0.7;
-    const CLIMB_MAX_HEIGHT = 2.8;
+    const CLIMB_MAX_HEIGHT = 4.0;
 
     const checkTerrainCollision = (newX: number, newZ: number, playerY?: number): boolean => {
       const feetY = playerY === undefined ? -1 : playerY - currentCameraHeight;
@@ -2713,18 +2726,21 @@ const ForestSurvivalGame = () => {
       }).catch(() => { /* best-effort — local play is unaffected */ });
     };
 
-    // === MULTIPLAYER CHARACTER PASSIVE ===
-    // Lobby characters now ship with mechanical perks (Heavy → +20% HP,
-    // Medic → 0.5 HP/s regen, etc.). Read the local class once and snapshot
-    // its modifiers so the per-frame loop can stack them on top of the
-    // skill-tree + wave-perk + run-modifier bonuses. Read directly off the
-    // multiplayer manager because `localClassPick` is declared later in the
-    // scene init below.
-    const mpClassEarly = (isMultiplayer && multiplayerManager
-      ? multiplayerManager.getLocalPlayer().modelClass
-      : undefined) as keyof typeof CHARACTER_PASSIVES | undefined;
-    const mpPassive = mpClassEarly ? CHARACTER_PASSIVES[mpClassEarly] : null;
-    const mpMods = mpPassive?.mods ?? {};
+    // === CHARACTER IDENTITY (class → passive + ability + shadow) ===
+    // Every character ships with a mechanical passive (Heavy → +20% HP, Medic
+    // → 0.5 HP/s regen, etc.) AND a signature active ability. The class is the
+    // lobby pick in multiplayer, and the Solo/Tutorial character selector
+    // otherwise — so the SAME identity drives every game mode. Snapshot the
+    // class once here; the per-frame loop stacks the passive on top of the
+    // skill-tree + wave-perk + run-modifier bonuses, and the ability dispatch
+    // reads `activeAbility`.
+    const activeClassId: ClassId = (isMultiplayer && multiplayerManager
+      ? (multiplayerManager.getLocalPlayer().modelClass as ClassId | undefined)
+      : selectedCharacterRef.current) ?? 'ranger';
+    const activeAbility = getCharacterAbility(activeClassId);
+    // `mpMods` name retained for the many downstream stat-stack sites; it now
+    // applies the selected character's passive in EVERY mode, not just MP.
+    const mpMods = CHARACTER_PASSIVES[activeClassId]?.mods ?? {};
 
     // Game state. Ammo starts at the pistol's max-ammo cap, with the
     // One-in-the-Chamber modifier (if active) clamping it to 1.
@@ -2824,6 +2840,16 @@ const ForestSurvivalGame = () => {
     const bulletTracers: BulletTracer[] = [];
     const impactEffects: ImpactEffect[] = [];
     const robotSparks: RobotHitSparks[] = [];
+    const explosionEffects: ExplosionEffect[] = [];
+
+    // ── Decapitation gibs ────────────────────────────────────────────────
+    // A powerful headshot kill (sniper / launcher-tier weapons) pops the
+    // enemy's head clean off: we hide the real (pooled) head, clone it into a
+    // free-flying gib that arcs, bounces and tumbles, then fades. The clone
+    // SHARES the head's geometry + material (no GPU re-upload), so it's cheap.
+    interface HeadGib { mesh: THREE.Object3D; vel: THREE.Vector3; spin: THREE.Vector3; life: number; restY: number; }
+    const headGibs: HeadGib[] = [];
+    const MAX_HEAD_GIBS = 10;
 
     // Camera shake system
     let cameraShakeIntensity = 0;
@@ -2967,16 +2993,14 @@ const ForestSurvivalGame = () => {
     // Renders an invisible full-body humanoid attached to the local camera
     // so the player's GROUND SHADOW shows a believable person holding a
     // gun (instead of a floating gun shadow). Used in BOTH solo and
-    // multiplayer; the model class is the player's lobby pick in MP, a
-    // sensible default in solo.
-    const localClassPick = (isMultiplayer && multiplayerManager
-      ? multiplayerManager.getLocalPlayer().modelClass
-      : undefined) as ClassId | undefined;
+    // multiplayer; the model class is the player's lobby pick in MP, the
+    // Solo/Tutorial character selector otherwise — each class has a distinct
+    // silhouette, so every character casts a recognisably different shadow.
     const localColor = (isMultiplayer && multiplayerManager
       ? multiplayerManager.getLocalPlayer().color
-      : 0x6a9b3f);
+      : activeAbility.shadowColor);
     const localPlayerShadow = new LocalPlayerShadow(scene, {
-      modelClass: localClassPick ?? 'ranger',
+      modelClass: activeClassId,
       color: localColor,
       weapon: 'pistol',
       shadows: graphicsPreset.shadowsEnabled,
@@ -3318,6 +3342,39 @@ const ForestSurvivalGame = () => {
       (light) => {
         if (!light) return;
         for (const slot of muzzleLightPool) {
+          if (slot.light === light) {
+            slot.inUse = false;
+            slot.light.intensity = 0;
+            return;
+          }
+        }
+      },
+    );
+
+    // ── Explosion PointLight pool ────────────────────────────────────
+    // The rocket launcher + barrel blasts used to scene.add() a fresh
+    // PointLight per explosion (and fade it via setTimeout), recompiling
+    // every material in the world each time — the reported explosion lag.
+    // A small pool of 4 covers overlapping rocket hits and barrel chains;
+    // ExplosionEffect borrows a slot and fades it in the animate loop.
+    const EXPLOSION_LIGHT_POOL_SIZE = 4;
+    const explosionLightPool: { light: THREE.PointLight; inUse: boolean }[] = [];
+    for (let _el = 0; _el < EXPLOSION_LIGHT_POOL_SIZE; _el++) {
+      const el = new THREE.PointLight(0xff8a3a, 0, 38);
+      el.castShadow = false;
+      scene.add(el);
+      explosionLightPool.push({ light: el, inUse: false });
+    }
+    setExplosionLightPool(
+      () => {
+        for (const slot of explosionLightPool) {
+          if (!slot.inUse) { slot.inUse = true; return slot.light; }
+        }
+        return null;
+      },
+      (light) => {
+        if (!light) return;
+        for (const slot of explosionLightPool) {
           if (slot.light === light) {
             slot.inUse = false;
             slot.light.intensity = 0;
@@ -3904,7 +3961,7 @@ const ForestSurvivalGame = () => {
     };
     const moveSpeed = 0.3;
     const sprintMultiplier = 1.8;
-    const baseJumpPower = 0.44; // Prominent but less floaty — reliably clears climbable rocks (<= CLIMB_MAX)
+    const baseJumpPower = 0.45; // Higher, weightier hop — clears climbable rocks even on the heaviest loadout
     const gravity = 0.02;
 
     // ── STAMINA SYSTEM ─────────────────────────────────────────────────
@@ -4177,14 +4234,145 @@ const ForestSurvivalGame = () => {
     // earns every reward tier.
     let lastStreakAwarded = 0;
 
-    // DASH ABILITY - Quick burst of speed
+    // CHARACTER ABILITY - bound to the dash/ability key, dispatched per class.
+    // The cooldown gate is unified across every ability (so the HUD shows ONE
+    // recharge ring); the dash's burst-movement mechanic keeps its own timers.
+    let abilityCooldown = 0;                       // seconds remaining
+    let abilityCooldownMax = activeAbility.cooldown; // for the HUD ratio
+    let abilityActiveUntil = 0;                    // ms timestamp for HUD "active" glow
+    // Dash burst-movement state (used only by the ranger's Dash ability).
     let isDashing = false;
-    let dashCooldown = 0;
-    const dashCooldownTime = 2.0; // 2 second cooldown
     const dashDuration = 0.15; // 150ms dash
     const dashSpeed = 2.5; // Dash speed multiplier
     let dashTimer = 0;
     const dashDirection = new THREE.Vector3();
+
+    // Dispatch the selected character's signature ability (bound ability key).
+    // Wherever possible this reuses the game's already-balanced timed-effect
+    // machinery (speed boost, riot shield, overcharge, infinite ammo, phantom,
+    // rocket blast), so every ability behaves IDENTICALLY across Solo, Tutorial
+    // and Multiplayer — the only thing that changes per mode is where the class
+    // comes from. Hoisted (function decl) so onKeyDown can call it; it runs only
+    // during play, long after every closed-over `const` is initialised.
+    function triggerCharacterAbility() {
+      const nowMs = Date.now();
+      let cd = activeAbility.cooldown;
+      const activeMs = activeAbility.duration * 1000;
+
+      switch (activeAbility.id) {
+        case 'dash': {
+          // Ranger — instant directional burst + a brief cinematic time-warp.
+          isDashing = true;
+          dashTimer = dashDuration;
+          // Dash Mastery skill / perks / Ranger passive shrink the cooldown.
+          cd = activeAbility.cooldown
+            * Math.max(0.15, 1 + skillBonus('dashCooldown'))
+            * perkBonuses.dashCooldownMult
+            * (mpMods.dashCooldownMult ?? 1);
+          const dir = new THREE.Vector3();
+          camera.getWorldDirection(dir);
+          dir.y = 0; dir.normalize();
+          const right = new THREE.Vector3();
+          right.crossVectors(camera.up, dir).normalize();
+          dashDirection.set(0, 0, 0);
+          if (moving('moveForward')) dashDirection.add(dir);
+          if (moving('moveBackward')) dashDirection.sub(dir);
+          if (moving('moveLeft')) dashDirection.add(right);
+          if (moving('moveRight')) dashDirection.sub(right);
+          if (dashDirection.length() === 0 && touchControls.enabled && touchControls.moving) {
+            dashDirection.addScaledVector(dir, touchControls.moveY).addScaledVector(right, -touchControls.moveX);
+          }
+          if (dashDirection.length() === 0) dashDirection.copy(dir);
+          dashDirection.normalize();
+          soundManager.play('jump', 0.5);
+          gunModel.triggerDash();
+          if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
+          timeScale = 0.5;
+          setTimeout(() => { timeScale = 1.0; }, 100);
+          break;
+        }
+        case 'adrenaline': {
+          // Scout — short, strong movement-speed surge (reuses speed boost).
+          speedBoostActive = true;
+          speedBoostEndTime = nowMs + activeMs;
+          setPowerUpMessage('Adrenaline · speed surge');
+          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Adrenaline Surge!', 'powerup');
+          createParticles(camera.position, 0x6ef0ff, 18);
+          break;
+        }
+        case 'bulwark': {
+          // Heavy — braces the riot shield (reuses the frontal-absorb shield).
+          shieldActive = true;
+          shieldEndTime = nowMs + activeMs;
+          shieldAbsorb = SHIELD_ABSORB_MAX;
+          shieldBreakFlash = 0;
+          setPowerUpMessage('Bulwark · frontal shield raised');
+          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Bulwark Raised!', 'powerup');
+          break;
+        }
+        case 'focusfire': {
+          // Operative — fire-rate + damage burst (reuses overcharge).
+          overchargeActive = true;
+          overchargeEndTime = nowMs + activeMs;
+          setPowerUpMessage('Focus Fire · faster, harder shots');
+          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Focus Fire!', 'powerup');
+          createParticles(camera.position, 0xffcc33, 18);
+          break;
+        }
+        case 'firestorm': {
+          // Pyro — AoE shockwave nuke. Reusing explodeRocket gives correct
+          // distance-falloff damage AND multiplayer-guest hit reporting for free.
+          const fpos = camera.position.clone();
+          fpos.y = 1.2; // originate near the ground so the blast hugs the floor
+          explodeRocket(fpos, 70);
+          setPowerUpMessage('Firestorm!');
+          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Firestorm!', 'powerup');
+          break;
+        }
+        case 'triage': {
+          // Medic — instant self-heal for a third of max HP.
+          health = Math.min(playerMaxHealth, health + playerMaxHealth * 0.35);
+          updateGameState();
+          setPowerUpMessage('Field Triage · patched up');
+          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Field Triage!', 'powerup');
+          createParticles(camera.position, 0x4dff9e, 18);
+          soundManager.play('powerUp', 0.6);
+          break;
+        }
+        case 'overclock': {
+          // Engineer — snap-reload, then unlimited ammo for a few seconds.
+          infiniteAmmoActive = true;
+          infiniteAmmoEndTime = nowMs + activeMs;
+          ammo = effectiveMaxAmmo(currentWeapon);
+          updateGameState();
+          setPowerUpMessage('Overclock · unlimited ammo');
+          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Overclock!', 'powerup');
+          createParticles(camera.position, 0xffd54a, 18);
+          break;
+        }
+        case 'cloak': {
+          // Phantom — intangible stealth (reuses phantom; Phantom passive also
+          // extends its duration via mpMods.phantomDurationMult).
+          phantomActive = true;
+          phantomEndTime = nowMs + activeMs * (mpMods.phantomDurationMult ?? 1);
+          setPowerUpMessage('Cloak · you fade from sight');
+          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Cloak Engaged!', 'powerup');
+          break;
+        }
+      }
+
+      abilityCooldown = cd;
+      abilityCooldownMax = cd;
+      abilityActiveUntil = nowMs + Math.max(activeMs, 200);
+      tutorial.recordAction('use_ability', 1); // advances the ability tutorial step
+      if (activeAbility.id !== 'dash') {
+        gunModel.triggerAbility(); // braced weapon flourish
+        // Firestorm + Triage play their own SFX; the rest get a generic cast cue.
+        if (activeAbility.id !== 'firestorm' && activeAbility.id !== 'triage') {
+          soundManager.play('powerUp', 0.7);
+        }
+      }
+    }
 
     const euler = new THREE.Euler(0, 0, 0, 'YXZ');   // base aim (mouse only)
     const PI_2 = Math.PI / 2;
@@ -4325,49 +4513,22 @@ const ForestSurvivalGame = () => {
         keys[e.code] = true;
       }
 
-      // DASH - Triggered by the bound dash key (instant dash, separate from ability system)
-      if (e.code === b.dash && !paused && !isDashing && dashCooldown <= 0) {
-        isDashing = true;
-        dashTimer = dashDuration;
-        // Dash Mastery skill shrinks the cooldown (bonus value is negative)
-        dashCooldown = dashCooldownTime * Math.max(0.15, 1 + skillBonus('dashCooldown')) * perkBonuses.dashCooldownMult * (mpMods.dashCooldownMult ?? 1);
-
-        // Get dash direction based on movement keys or forward if standing still
-        const dir = new THREE.Vector3();
-        camera.getWorldDirection(dir);
-        dir.y = 0;
-        dir.normalize();
-        const right = new THREE.Vector3();
-        right.crossVectors(camera.up, dir).normalize();
-
-        dashDirection.set(0, 0, 0);
-        if (moving('moveForward')) dashDirection.add(dir);
-        if (moving('moveBackward')) dashDirection.sub(dir);
-        if (moving('moveLeft')) dashDirection.add(right);
-        if (moving('moveRight')) dashDirection.sub(right);
-
-        // Touch: dash in the joystick's direction when it's being held.
-        if (dashDirection.length() === 0 && touchControls.enabled && touchControls.moving) {
-          dashDirection
-            .addScaledVector(dir, touchControls.moveY)
-            .addScaledVector(right, -touchControls.moveX);
+      // CHARACTER ABILITY — the bound ability key fires the selected class's
+      // signature move (Dash for the Ranger, Firestorm for the Pyro, …), gated
+      // by the unified ability cooldown. Same key, same gate, every game mode.
+      if (e.code === b.dash && !paused && !isGameOver && abilityCooldown <= 0 && !isDashing) {
+        // Anti-stack (mirrors the looted-power rule): the signature ability
+        // can't be cast while a looted timed power is still running — otherwise
+        // the player could layer two buffs at once. Pickup and ability are
+        // mutually exclusive, whichever was used first.
+        if (anyTimedEffectActive()) {
+          setPowerUpMessage(touchControls.enabled
+            ? 'Wait for your power to finish'
+            : 'Wait for your active power to finish');
+          setTimeout(() => setPowerUpMessage(''), 1500);
+          return;
         }
-
-        // Default to forward if no movement keys pressed
-        if (dashDirection.length() === 0) {
-          dashDirection.copy(dir);
-        }
-        dashDirection.normalize();
-
-        // Play dash sound and trigger effect
-        soundManager.play('jump', 0.5);
-        gunModel.triggerDash(); // Braced weapon pull-back animation
-        tutorial.recordAction('use_ability', 1); // advances the dash tutorial step
-        if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
-
-        // Slight time slow for cinematic effect
-        timeScale = 0.5;
-        setTimeout(() => { timeScale = 1.0; }, 100);
+        triggerCharacterAbility();
         return; // Don't process other ability actions
       }
 
@@ -4509,56 +4670,56 @@ const ForestSurvivalGame = () => {
     renderer.domElement.addEventListener('click', onCanvasClick);
     renderer.domElement.addEventListener('contextmenu', onContextMenu);
 
+    // Shared rocket geometry + materials. Every rocket used to allocate fresh
+    // geometry + materials (and was never disposed on removal → a slow leak on
+    // a launcher-heavy run). They're all identical, so build once and reuse;
+    // the per-rocket cost is now just the lightweight Mesh wrappers. Disposed
+    // with the rest of the shared resources in the effect cleanup.
+    const rocketBodyGeo = (() => { const g = new THREE.CylinderGeometry(0.13, 0.16, 1.0, 12); g.rotateX(Math.PI / 2); return g; })();
+    const rocketNoseGeo = (() => { const g = new THREE.ConeGeometry(0.16, 0.55, 12); g.rotateX(-Math.PI / 2); return g; })();
+    const rocketFinGeo = new THREE.BoxGeometry(0.04, 0.34, 0.34);
+    const rocketExhaustGeo = (() => { const g = new THREE.ConeGeometry(0.16, 0.8, 10); g.rotateX(Math.PI / 2); return g; })();
+    const rocketCoreGeo = (() => { const g = new THREE.ConeGeometry(0.08, 0.5, 8); g.rotateX(Math.PI / 2); return g; })();
+    const rocketBodyMat = new THREE.MeshStandardMaterial({ color: 0x4b5159, metalness: 0.6, roughness: 0.4 });
+    const rocketNoseMat = new THREE.MeshStandardMaterial({ color: 0xc23a1a, metalness: 0.4, roughness: 0.5, emissive: 0x501608, emissiveIntensity: 0.6 });
+    const rocketFinMat = new THREE.MeshStandardMaterial({ color: 0x202428, metalness: 0.5, roughness: 0.6 });
+    const rocketExhaustMat = new THREE.MeshBasicMaterial({ color: 0xffae3a, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
+    const rocketCoreMat = new THREE.MeshBasicMaterial({ color: 0xfff0c0, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
+    const rocketSharedGeos = [rocketBodyGeo, rocketNoseGeo, rocketFinGeo, rocketExhaustGeo, rocketCoreGeo];
+    const rocketSharedMats = [rocketBodyMat, rocketNoseMat, rocketFinMat, rocketExhaustMat, rocketCoreMat];
+
     // Builds a detailed rocket projectile for the launcher — body, warhead
     // nose, tail fins and a glowing exhaust, so the round reads as a real
-    // rocket rather than a flat coloured dot.
+    // rocket rather than a flat coloured dot. Uses the shared geo/mats above.
+    //
+    // The engine glow is additive emissive MESHES (an inner white-hot cone +
+    // an outer amber flare), NOT a real PointLight: adding a fresh PointLight
+    // the first time a rocket fires forces a full shader recompile of every
+    // material — the "rocket launcher lags initially" stutter. The impact
+    // flash uses the pre-warmed explosion light pool instead.
     const createRocketProjectile = (): THREE.Mesh => {
-      // Body geometry pre-rotated so the mesh's -Z axis is the nose direction
-      const bodyGeo = new THREE.CylinderGeometry(0.13, 0.16, 1.0, 12);
-      bodyGeo.rotateX(Math.PI / 2);
-      const body = new THREE.Mesh(
-        bodyGeo,
-        new THREE.MeshStandardMaterial({ color: 0x4b5159, metalness: 0.6, roughness: 0.4 }),
-      );
+      const body = new THREE.Mesh(rocketBodyGeo, rocketBodyMat);
       body.castShadow = true;
 
-      // Warhead nose cone
-      const noseGeo = new THREE.ConeGeometry(0.16, 0.55, 12);
-      noseGeo.rotateX(-Math.PI / 2);
-      const nose = new THREE.Mesh(
-        noseGeo,
-        new THREE.MeshStandardMaterial({
-          color: 0xc23a1a, metalness: 0.4, roughness: 0.5,
-          emissive: 0x501608, emissiveIntensity: 0.6,
-        }),
-      );
+      const nose = new THREE.Mesh(rocketNoseGeo, rocketNoseMat);
       nose.position.z = -0.75;
       body.add(nose);
 
-      // Tail fins
-      const finMat = new THREE.MeshStandardMaterial({ color: 0x202428, metalness: 0.5, roughness: 0.6 });
       for (let f = 0; f < 4; f++) {
-        const fin = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.34, 0.34), finMat);
+        const fin = new THREE.Mesh(rocketFinGeo, rocketFinMat);
         const a = (f / 4) * Math.PI * 2;
         fin.position.set(Math.cos(a) * 0.17, Math.sin(a) * 0.17, 0.45);
         fin.rotation.z = a;
         body.add(fin);
       }
 
-      // Glowing exhaust plume
-      const exhaustGeo = new THREE.ConeGeometry(0.14, 0.7, 10);
-      exhaustGeo.rotateX(Math.PI / 2); // flares backward (+Z)
-      const exhaust = new THREE.Mesh(
-        exhaustGeo,
-        new THREE.MeshBasicMaterial({ color: 0xffae3a, transparent: true, opacity: 0.9, toneMapped: false }),
-      );
-      exhaust.position.z = 0.85;
+      const exhaust = new THREE.Mesh(rocketExhaustGeo, rocketExhaustMat);
+      exhaust.position.z = 0.9;
       body.add(exhaust);
 
-      // Engine glow light
-      const glow = new THREE.PointLight(0xff7a22, 2.2, 9);
-      glow.position.z = 0.9;
-      body.add(glow);
+      const core = new THREE.Mesh(rocketCoreGeo, rocketCoreMat);
+      core.position.z = 0.78;
+      body.add(core);
 
       // Legacy AO-opt-out userData kept for forward-compat with any future AO pass.
       body.userData.cannotReceiveAO = true;
@@ -5005,10 +5166,74 @@ const ForestSurvivalGame = () => {
       }
     };
 
+    // Pop an enemy's head off as a free-flying gib. The original (pooled) head
+    // is hidden and restored when the corpse is recycled (see the death-cleanup
+    // block). The gib clone shares the head's geometry + material, so it costs
+    // almost nothing. Launches along the shot direction (or away from the
+    // player) with a strong upward arc + tumble.
+    const _gibPos = new THREE.Vector3();
+    const _gibQuat = new THREE.Quaternion();
+    const _gibScale = new THREE.Vector3();
+    const spawnHeadGib = (enemy: Enemy) => {
+      const head = enemy.head;
+      if (!head || !head.visible) return;
+      head.updateWorldMatrix(true, false);
+      head.getWorldPosition(_gibPos);
+      head.getWorldQuaternion(_gibQuat);
+      head.getWorldScale(_gibScale);
+
+      const gib = head.clone(true); // recursive clone — shares geo + material
+      gib.visible = true;
+      gib.position.copy(_gibPos);
+      gib.quaternion.copy(_gibQuat);
+      gib.scale.copy(_gibScale);
+      gib.traverse((o) => { o.castShadow = false; o.userData.cannotReceiveAO = true; });
+      scene.add(gib);
+      head.visible = false; // the body is now headless
+
+      // Launch direction: the shot impulse if we have one, else away from player.
+      const dir = (enemy.hitImpulse && enemy.hitImpulse.lengthSq() > 1e-4)
+        ? enemy.hitImpulse.clone().setY(0).normalize()
+        : new THREE.Vector3(
+            enemy.mesh.position.x - camera.position.x, 0, enemy.mesh.position.z - camera.position.z,
+          ).normalize();
+      if (dir.lengthSq() < 1e-4) dir.set(0, 0, 1);
+      const speed = 4 + Math.random() * 3;
+      const vel = new THREE.Vector3(dir.x * speed, 7 + Math.random() * 3, dir.z * speed);
+      const spin = new THREE.Vector3(
+        (Math.random() - 0.5) * 16, (Math.random() - 0.5) * 14, (Math.random() - 0.5) * 16,
+      );
+      headGibs.push({ mesh: gib, vel, spin, life: 4, restY: 0.25 * _gibScale.y });
+
+      // Cap the gib count so a long sniper streak can't pile up corp'd heads.
+      if (headGibs.length > MAX_HEAD_GIBS) {
+        const old = headGibs.shift();
+        if (old) scene.remove(old.mesh);
+      }
+
+      // Sharp robot-spark burst at the neck + a meaty pop + a punchy shake so
+      // a decapitating shot really lands.
+      robotSparks.push(new RobotHitSparks(scene, _gibPos.clone(), dir, 14));
+      createParticles(_gibPos, 0xffcc44, 10);
+      soundManager.play('enemyHit', 0.85, false, 0.7);
+      if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
+    };
+
+    // Powerful weapons (sniper / launcher-tier, base damage ≥ 60) decapitate on
+    // a critical (headshot) kill — bosses excluded (too large / they wear a
+    // crown). Resolved from the local weapon, which is correct in solo and a
+    // harmless cosmetic approximation for host-resolved multiplayer kills.
+    const canDecapitate = (enemy: Enemy, isCritical: boolean): boolean =>
+      isCritical && enemy.type !== 'boss' && !!enemy.head && enemy.head.visible
+      && WEAPONS[currentWeapon].damage >= 60;
+
     // Extracted enemy-kill handler — shared by direct bullet hits and the
     // rocket launcher's area-of-effect so score, combos, drops, achievements
     // and wave progression all behave identically however an enemy dies.
     const handleEnemyKilled = (enemy: Enemy, isCritical: boolean, killerId?: string) => {
+      // ── DECAPITATION ── pop the head off before the corpse flies (so the
+      // gib launches from the head's pre-ragdoll position).
+      if (canDecapitate(enemy, isCritical)) spawnHeadGib(enemy);
       // ── WORLD state (authoritative): the enemy is dead for everyone. ──
       enemy.dead = true;
       enemy.deathTime = 1.0;
@@ -5722,22 +5947,15 @@ const ForestSurvivalGame = () => {
     };
 
     // Explosion flash, sparks, smoke, shake and crater.
-    const spawnExplosionFX = (pos: THREE.Vector3) => {
+    // The animated fireball + shockwave + pooled light is owned by
+    // ExplosionEffect (updated in the animate loop). NO fresh PointLight is
+    // added per blast — that was the recompile stutter the user reported.
+    const spawnExplosionFX = (pos: THREE.Vector3, radius = 9) => {
       soundManager.play('enemyDeath', 0.9);
       if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
-      createParticles(pos, 0xff7722, 60);
-      createParticles(pos, 0x222222, 28);
-      const flash = new THREE.PointLight(0xff8a3a, 45, 38);
-      flash.position.set(pos.x, pos.y + 1, pos.z);
-      scene.add(flash);
-      let step = 0;
-      const fade = () => {
-        step++;
-        flash.intensity = 45 * (1 - step / 7);
-        if (step >= 7) scene.remove(flash);
-        else setTimeout(fade, 38);
-      };
-      setTimeout(fade, 38);
+      createParticles(pos, 0xff7722, 44);
+      createParticles(pos, 0x222222, 22);
+      explosionEffects.push(new ExplosionEffect(scene, pos, radius));
       createCrater(pos);
     };
 
@@ -5754,7 +5972,7 @@ const ForestSurvivalGame = () => {
       if (barrel.detonated) return;
       barrel.detonated = true;
       const epos = barrel.mesh.position.clone();
-      spawnExplosionFX(epos);
+      spawnExplosionFX(epos, barrel.blastRadius);
       if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
       soundManager.play('powerUp', 0.9, false, 0.7); // dirty low-pitched boom
       // Enemies
@@ -6202,9 +6420,11 @@ const ForestSurvivalGame = () => {
 
         setAbilityHud([
           {
-            key: 'Q', name: 'Dash', kind: 'dash',
-            cooldown: dashCooldown <= 0 ? 1 : Math.max(0, 1 - dashCooldown / dashCooldownTime),
-            active: isDashing,
+            key: 'Q', name: activeAbility.name, kind: 'dash',
+            abilityId: activeAbility.id,
+            accent: activeAbility.color,
+            cooldown: abilityCooldown <= 0 ? 1 : Math.max(0, 1 - abilityCooldown / abilityCooldownMax),
+            active: isDashing || Date.now() < abilityActiveUntil,
           },
           {
             key: 'E', kind: 'power',
@@ -6619,9 +6839,9 @@ const ForestSurvivalGame = () => {
         posAttr.needsUpdate = true;
       }
 
-      // Update dash cooldown
-      if (dashCooldown > 0) {
-        dashCooldown -= rawDelta; // Use raw delta for real-time cooldown
+      // Update ability cooldown (real-time, shared by every character ability)
+      if (abilityCooldown > 0) {
+        abilityCooldown -= rawDelta;
       }
 
       // Update dash timer
@@ -6808,6 +7028,16 @@ const ForestSurvivalGame = () => {
       gunModel.updateIdleSway(delta);
       gunModel.updateWalkBob(delta, isMoving, isRunning && isMoving);
       gunModel.updateAim(delta, aimingActive);
+      // AAA-style strafe lean — tilt the weapon toward sideways movement (most
+      // pronounced while aiming). +1 = strafing right, −1 = left; touch uses the
+      // joystick's horizontal axis.
+      let strafeInput = 0;
+      if (moving('moveLeft')) strafeInput -= 1;
+      if (moving('moveRight')) strafeInput += 1;
+      if (strafeInput === 0 && touchControls.enabled && touchControls.moving) {
+        strafeInput = THREE.MathUtils.clamp(-touchControls.moveX, -1, 1);
+      }
+      gunModel.updateStrafe(delta, strafeInput, aimingActive);
       // Lowered "folded" carry pose while sprinting (not while shooting)
       gunModel.updateSprint(delta, isRunning && isMoving && !isCrouching && !mouseDown);
       // Airborne weapon inertia + landing dip
@@ -6910,9 +7140,15 @@ const ForestSurvivalGame = () => {
           isCrouching = false;
         }
         const weaponWeight = WEAPONS[currentWeapon].weight;
-        // Heavier weapons reduce jump height, but only mildly — even the
-        // minigun should still clear most obstacles for responsive movement.
-        const jumpMultiplier = Math.max(0.78, Math.pow(weaponWeight, -0.28));
+        // Jump height is shaped by TWO factors:
+        //  1. Weapon weight — a light pistol (weight 1.0) vaults clearly higher
+        //     than a heavy minigun (weight 3.0). The spread is pronounced now so
+        //     swapping to the pistol is a real mobility choice.
+        //  2. Character — each class has its own jumpMult (Scout/Phantom spring
+        //     higher, Heavy/Engineer lower) so the chosen character has a
+        //     distinct vertical game, in every mode.
+        const weightJumpMult = THREE.MathUtils.clamp(1.12 - 0.085 * (weaponWeight - 1), 0.95, 1.12);
+        const jumpMultiplier = weightJumpMult * activeAbility.jumpMult;
         velocityY = baseJumpPower * jumpMultiplier;
         isJumping = true;
         wasJumping = true;
@@ -6973,12 +7209,16 @@ const ForestSurvivalGame = () => {
           headBobTime -= HEAD_BOB_TIME_RESET;
         }
 
-        // Vertical head bob only - smooth with lerp for professional feel
-        const targetY = currentCameraHeight + Math.sin(headBobTime) * bobAmount;
+        // Vertical head bob only - smooth with lerp for professional feel.
+        // Bob around floorY (ground OR the rock/boulder top the player is
+        // standing on) — on flat ground floorY === currentCameraHeight so this
+        // is unchanged, but it stops the bob from yanking the camera down to
+        // ground level while strolling across a climbable rock platform.
+        const targetY = floorY + Math.sin(headBobTime) * bobAmount;
         camera.position.y = THREE.MathUtils.lerp(camera.position.y, targetY, rawDelta * 15);
       } else {
-        // Smoothly return to camera height when not moving
-        camera.position.y = THREE.MathUtils.lerp(camera.position.y, currentCameraHeight, rawDelta * 10);
+        // Smoothly settle to the support height (ground or rock top) when idle.
+        camera.position.y = THREE.MathUtils.lerp(camera.position.y, floorY, rawDelta * 10);
       }
 
       // Track player velocity for AI prediction
@@ -7028,6 +7268,41 @@ const ForestSurvivalGame = () => {
         if (impactEffects[i].update(delta)) {
           impactEffects[i].dispose(scene);
           impactEffects.splice(i, 1);
+        }
+      }
+
+      // Update explosion fireballs (rocket + barrel blasts).
+      for (let i = explosionEffects.length - 1; i >= 0; i--) {
+        if (explosionEffects[i].update(delta)) {
+          explosionEffects[i].dispose(scene);
+          explosionEffects.splice(i, 1);
+        }
+      }
+
+      // Update decapitated head gibs — gravity, ground bounce + friction,
+      // tumble, then shrink away. Shares geo/mat with the pooled head, so the
+      // only cleanup on removal is detaching the clone from the scene.
+      for (let i = headGibs.length - 1; i >= 0; i--) {
+        const g = headGibs[i];
+        g.life -= delta;
+        g.vel.y -= 18 * delta; // gravity
+        g.mesh.position.addScaledVector(g.vel, delta);
+        if (g.mesh.position.y <= g.restY) {
+          g.mesh.position.y = g.restY;
+          if (g.vel.y < 0) {
+            g.vel.y *= -0.4;            // bounce restitution
+            g.vel.x *= 0.6; g.vel.z *= 0.6; // ground friction
+            g.spin.multiplyScalar(0.55);
+            if (Math.abs(g.vel.y) < 1.1) g.vel.y = 0; // settle
+          }
+        }
+        g.mesh.rotation.x += g.spin.x * delta;
+        g.mesh.rotation.y += g.spin.y * delta;
+        g.mesh.rotation.z += g.spin.z * delta;
+        if (g.life < 0.5) g.mesh.scale.multiplyScalar(Math.max(0.85, 1 - delta * 2.2));
+        if (g.life <= 0) {
+          scene.remove(g.mesh);
+          headGibs.splice(i, 1);
         }
       }
 
@@ -7690,6 +7965,10 @@ const ForestSurvivalGame = () => {
           }
 
           if (enemy.deathTime <= 0) {
+            // Restore the head we hid on decapitation so the pooled mesh is
+            // whole again for the next enemy that reuses this slot (idempotent
+            // for enemies that were never decapitated).
+            if (enemy.head && !enemy.head.visible) enemy.head.visible = true;
             // Release mesh back to pool for reuse (SmartEnemyManager handles scene removal)
             if (enemy.poolId !== undefined) {
               smartEnemyManager.releaseMeshById(enemy.poolId);
@@ -8899,6 +9178,20 @@ const ForestSurvivalGame = () => {
       casingGeo.dispose();
       casingMat.dispose();
 
+      // Cleanup any in-flight explosion fireballs (releases pooled lights +
+      // per-instance additive materials; shared geometries persist).
+      for (const ex of explosionEffects) ex.dispose(scene);
+      explosionEffects.length = 0;
+
+      // Detach any in-flight head gibs (clones share pooled geo/mat — just
+      // remove the clone objects from the scene).
+      for (const g of headGibs) scene.remove(g.mesh);
+      headGibs.length = 0;
+
+      // Cleanup shared rocket projectile geometry + materials.
+      rocketSharedGeos.forEach((g) => g.dispose());
+      rocketSharedMats.forEach((m) => m.dispose());
+
       if (environmentRenderTarget) {
         scene.environment = null;
         environmentRenderTarget.dispose();
@@ -9194,7 +9487,7 @@ const ForestSurvivalGame = () => {
           <MainMenu onClassicMode={handleModeSelection} onMultiplayerMode={handleMultiplayerMode} onTutorialMode={handleTutorialMode} t={t} />
         )}
         {showClassicMenu && (
-          <ClassicMenu onStartGame={handleClassicGameStart} onBack={() => { setShowClassicMenu(false); setGameMode('none'); }} t={t} />
+          <ClassicMenu onStartGame={handleClassicGameStart} onBack={() => { setShowClassicMenu(false); setGameMode('none'); }} selectedCharacter={selectedCharacter} onSelectCharacter={setSelectedCharacter} t={t} />
         )}
         {runModifierPickerOptions && !showClassicMenu && !gameStarted && (
           <RunModifierPicker
@@ -9210,7 +9503,7 @@ const ForestSurvivalGame = () => {
           />
         )}
         {showTutorialMenu && (
-          <TutorialMenu onStartTutorial={handleTutorialStart} onBack={() => { setShowTutorialMenu(false); setGameMode('none'); }} t={t} />
+          <TutorialMenu onStartTutorial={handleTutorialStart} onBack={() => { setShowTutorialMenu(false); setGameMode('none'); }} selectedCharacter={selectedCharacter} onSelectCharacter={setSelectedCharacter} t={t} />
         )}
         {showMultiplayerLobby && (
           <MultiplayerLobby

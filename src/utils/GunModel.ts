@@ -98,6 +98,11 @@ export class GunModel {
   private abilityAnim = 0;
   private dashAnim = 0;
   private equipAnim = 0; // weapon-swap raise (gun rises from low into the ready pose)
+  // Strafe lean — smoothed [-1..1] (−1 = strafing left, +1 = right). Drives an
+  // AAA-style weapon cant/lean when the player moves sideways, amplified while
+  // aiming down sights so the ADS pose reads as "leaning into the strafe".
+  private strafeLean = 0;
+  private aimedStrafe = 0; // how much of the lean is "aiming" (for amplitude)
 
   constructor(type: WeaponType) {
     this.group = new THREE.Group();
@@ -1126,6 +1131,21 @@ export class GunModel {
   }
 
   /**
+   * AAA-style strafe lean. `strafeInput` is −1 (moving left), 0, or +1
+   * (moving right); `isAiming` amplifies the cant so the lean is most
+   * pronounced down-sights — the weapon visibly tilts toward the strafe
+   * direction. Smoothed so quick taps don't snap the gun around.
+   */
+  updateStrafe(delta: number, strafeInput: number, isAiming: boolean) {
+    const k = Math.min(1, delta * 8);
+    this.strafeLean += (strafeInput - this.strafeLean) * k;
+    if (Math.abs(this.strafeLean) < 0.0015 && strafeInput === 0) this.strafeLean = 0;
+    // Track the aim weighting separately so the amplitude eases in/out with ADS.
+    const aimTarget = isAiming ? 1 : 0;
+    this.aimedStrafe += (aimTarget - this.aimedStrafe) * Math.min(1, delta * 10);
+  }
+
+  /**
    * Weapon inertia while airborne plus a dip when touching down.
    * `verticalVelocity` > 0 means rising, < 0 means falling.
    */
@@ -1192,6 +1212,15 @@ export class GunModel {
     const dash = Math.sin(this.dashAnim * Math.PI);
     const land = Math.sin(this.landAnim * Math.PI);
 
+    // Strafe lean — cant the weapon toward the movement direction. Suppressed
+    // during the sprint pose (which already cants the gun across the body), and
+    // amplified by ~70% while aiming so ADS strafing reads as a deliberate lean.
+    const leanAmp = (1 - sprint) * (0.7 + 0.7 * this.aimedStrafe);
+    const lean = this.strafeLean * leanAmp;
+    const leanRoll = -lean * 0.16;  // roll/cant (top of gun tips into the strafe)
+    const leanShift = lean * 0.035; // weapon trails slightly against the motion
+    const leanYaw = -lean * 0.05;   // a touch of yaw for depth
+
     // Reload pulls the weapon down and in toward the player
     const reload = this.reloadDip;
 
@@ -1199,7 +1228,8 @@ export class GunModel {
     const equip = this.equipAnim; // 1 just-swapped → 0 settled
 
     this.group.position.x =
-      baseX + this.walkOffset.x * swayMul + SP_X * sprint + runX - reload * 0.07;
+      baseX + this.walkOffset.x * swayMul + SP_X * sprint + runX - reload * 0.07
+      + leanShift;
     this.group.position.y =
       baseY + this.walkOffset.y * swayMul + SP_Y * sprint + runY
       + this.jumpOffset.y - land * 0.12 + abil * 0.07 - dash * 0.05 - reload * 0.16
@@ -1212,10 +1242,10 @@ export class GunModel {
       + this.recoilOffset.rotX + SP_RX * sprint + runRotX
       + this.jumpOffset.rotX - land * 0.18 - reload * 0.42 + equip * 0.55;
     this.group.rotation.y =
-      this.swayOffset.rotY * swayMul + SP_RY * sprint;
+      this.swayOffset.rotY * swayMul + SP_RY * sprint + leanYaw;
     this.group.rotation.z =
       this.walkOffset.rotZ * swayMul + this.reloadRotZ + SP_RZ * sprint
-      + runRotZ + abil * 0.22;
+      + runRotZ + abil * 0.22 + leanRoll;
   }
 
   /**

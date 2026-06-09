@@ -12,9 +12,11 @@ export interface AbilityHudItem {
   /** 'dash' = always-available cooldown ability; 'power' = looted power slot. */
   kind: 'dash' | 'power';
   name: string;       // label shown under the slot
-  // ── dash ──
+  // ── dash / character ability ──
+  abilityId?: string; // selects the slot's icon (dash, firestorm, cloak, …)
+  accent?: string;    // per-character accent colour
   cooldown?: number;  // 0..1 — 1 means fully recharged / ready
-  active?: boolean;   // currently dashing
+  active?: boolean;   // currently active (dashing or effect running)
   // ── power slot ──
   powerType?: string | null;         // which loot power (null = empty slot)
   state?: 'empty' | 'held' | 'active'; // held = ready to use, active = running
@@ -380,28 +382,47 @@ const HUD = ({
   );
 };
 
-/** Routes to the dash or looted-power renderer. */
+/** Routes to the character-ability or looted-power renderer. */
 const AbilitySlot = ({ ability }: { ability: AbilityHudItem }) =>
   ability.kind === 'dash' ? <DashSlot ability={ability} /> : <PowerSlot ability={ability} />;
 
-/** Dash — always available; radial cooldown sweep that "refills". */
+/** Per-character ability glyph — keyed by CharacterAbilityId. */
+const ABILITY_ICONS: Record<string, LucideIcon> = {
+  dash: ChevronsRight,
+  adrenaline: Wind,
+  bulwark: ShieldIcon,
+  focusfire: Crosshair,
+  firestorm: Flame,
+  triage: Heart,
+  overclock: InfinityIcon,
+  cloak: Ghost,
+};
+
+/**
+ * Character ability slot — always available, radial cooldown sweep that
+ * "refills". Icon + accent colour come from the selected character so each
+ * class reads distinctly (Dash, Firestorm, Cloak, …).
+ */
 const DashSlot = ({ ability }: { ability: AbilityHudItem }) => {
   const cd = ability.cooldown ?? 1;
   const ready = cd >= 1;
   const deg = Math.min(360, Math.max(0, cd * 360));
+  const accent = ability.accent ?? '#34d399';
+  const Icon = ABILITY_ICONS[ability.abilityId ?? 'dash'] ?? ChevronsRight;
   return (
     <div className="flex flex-col items-center gap-1">
       <div
-        className={`relative flex items-center justify-center w-12 h-12 rounded-xl border transition-colors duration-200 ${
-          ability.active ? 'border-emerald-400/80 bg-emerald-500/25'
-            : ready ? 'border-emerald-400/55 bg-emerald-500/10'
-            : 'border-white/10 bg-black/45'
-        }`}
-        style={ready && !ability.active ? { animation: 'abilityReady 2.4s ease-in-out infinite' } : undefined}
+        className="relative flex items-center justify-center w-12 h-12 rounded-xl border transition-colors duration-200"
+        style={{
+          borderColor: ability.active ? accent : ready ? `${accent}8c` : 'rgba(255,255,255,0.1)',
+          background: ability.active ? `${accent}40` : ready ? `${accent}1a` : 'rgba(0,0,0,0.45)',
+          animation: ready && !ability.active ? 'abilityReady 2.4s ease-in-out infinite' : undefined,
+        }}
       >
-        <ChevronsRight
-          className={`w-5 h-5 ${ability.active ? 'text-emerald-200' : ready ? 'text-emerald-300' : 'text-gray-500'}`}
+        <Icon
+          className="w-5 h-5"
           strokeWidth={2.5}
+          style={{ color: ability.active ? '#ffffff' : ready ? accent : '#6b7280' }}
         />
         {!ready && (
           <div
@@ -409,13 +430,15 @@ const DashSlot = ({ ability }: { ability: AbilityHudItem }) => {
             style={{ background: `conic-gradient(rgba(0,0,0,0) ${deg}deg, rgba(3,6,10,0.82) ${deg}deg)` }}
           />
         )}
-        <kbd className={`absolute -top-1.5 -right-1.5 px-1 min-w-[15px] h-[15px] flex items-center justify-center
-          rounded bg-[#0b0f15] border text-[9px] font-bold font-mono ${
-          ready ? 'border-emerald-400/50 text-emerald-300' : 'border-white/15 text-gray-500'}`}>
+        <kbd
+          className="absolute -top-1.5 -right-1.5 px-1 min-w-[15px] h-[15px] flex items-center justify-center
+            rounded bg-[#0b0f15] border text-[9px] font-bold font-mono"
+          style={{ borderColor: ready ? `${accent}80` : 'rgba(255,255,255,0.15)', color: ready ? accent : '#6b7280' }}
+        >
           {ability.key}
         </kbd>
       </div>
-      <span className={`text-[9px] font-semibold tracking-wide uppercase ${ready ? 'text-gray-300' : 'text-gray-500'}`}>
+      <span className="text-[9px] font-semibold tracking-wide uppercase" style={{ color: ready ? '#d1d5db' : '#6b7280' }}>
         {ability.name}
       </span>
     </div>

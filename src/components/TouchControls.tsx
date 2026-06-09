@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Crosshair, ChevronsUp, ChevronsRight, ChevronsDown, RotateCw, Zap, Pause,
+  Wind, Shield as ShieldIcon, Flame, Heart, Infinity as InfinityIcon, Ghost,
+  Boxes, Swords, PackageSearch, ChevronDown, Lock,
   type LucideIcon,
 } from 'lucide-react';
 import { touchControls } from '../utils/touchControls';
@@ -58,7 +60,21 @@ const TouchControls = ({
   const dash = abilities.find((a) => a.kind === 'dash');
   const power = abilities.find((a) => a.kind === 'power');
   const dashReady = (dash?.cooldown ?? 1) >= 1;
+  // Per-character ability icon (the touch button still dispatches the bound
+  // ability key, so any class's signature move fires from here).
+  const ABILITY_ICONS: Record<string, LucideIcon> = {
+    dash: ChevronsRight, adrenaline: Wind, bulwark: ShieldIcon, focusfire: Crosshair,
+    firestorm: Flame, triage: Heart, overclock: InfinityIcon, cloak: Ghost,
+  };
+  const abilityIcon = ABILITY_ICONS[dash?.abilityId ?? 'dash'] ?? ChevronsRight;
   const powerHeld = power?.state === 'held';
+  const powerActive = power?.state === 'active';
+  // Held/active pickup icon, so mobile players can SEE which power they have.
+  const POWER_ICONS: Record<string, LucideIcon> = {
+    ammo: Boxes, speed: Wind, damage: Swords, shield: ShieldIcon,
+    infinite_ammo: InfinityIcon, overcharge: Zap, phantom: Ghost,
+  };
+  const powerIcon = power?.powerType ? (POWER_ICONS[power.powerType] ?? PackageSearch) : PackageSearch;
   const isReloading = reloadDuration !== null;
 
   // ── Fire (hold) ──
@@ -113,24 +129,32 @@ const TouchControls = ({
       {/* Movement joystick zone — left side, above the look surface. */}
       <Joystick />
 
-      {/* ── Top-right: weapon + pause ── */}
+      {/* ── Top-right: weapon switcher + pause ── */}
       <div className="touch-safe-pad pointer-events-none absolute right-0 top-0 flex items-start gap-2 p-2">
         <div className="pointer-events-auto relative">
+          {/* Labelled weapon pill — shows the equipped gun + a chevron so it
+              reads clearly as "tap to switch weapons". */}
           <button
             type="button"
             aria-label="Switch weapon"
             onClick={() => setWeaponOpen((v) => !v)}
-            className="flex h-12 w-12 items-center justify-center rounded-2xl border border-white/15 bg-black/55 backdrop-blur-md active:scale-95"
+            className={`flex h-12 items-center gap-2 rounded-2xl border bg-black/60 px-3 backdrop-blur-md transition-all active:scale-95 ${
+              weaponOpen ? 'border-emerald-400/60 bg-emerald-500/10' : 'border-white/15'
+            }`}
           >
-            <span className="flex flex-col items-center leading-none">
+            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-500/15">
               <Crosshair className="h-4 w-4 text-emerald-300" strokeWidth={2.25} />
-              <span className="mt-0.5 text-[9px] font-bold tabular-nums text-gray-300">{weaponIndex || '-'}</span>
             </span>
+            <span className="flex flex-col items-start leading-none">
+              <span className="text-[8px] font-bold uppercase tracking-[0.15em] text-gray-500">Weapon {weaponIndex || '-'}</span>
+              <span className="mt-0.5 max-w-[88px] truncate text-[12px] font-bold text-white">{WEAPONS[currentWeapon]?.name ?? '—'}</span>
+            </span>
+            <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${weaponOpen ? 'rotate-180' : ''}`} strokeWidth={2.5} />
           </button>
 
           {weaponOpen && (
-            <div className="absolute right-0 top-14 flex max-h-[60vh] w-36 flex-col gap-1 overflow-y-auto rounded-2xl border border-white/12 bg-black/80 p-1.5 backdrop-blur-md">
-              {Object.keys(WEAPONS).map((key) => {
+            <div className="absolute right-0 top-14 flex max-h-[58vh] w-44 flex-col gap-1 overflow-y-auto rounded-2xl border border-white/12 bg-black/85 p-1.5 backdrop-blur-md">
+              {Object.keys(WEAPONS).map((key, idx) => {
                 const unlocked = unlockedWeapons.includes(key);
                 const current = key === currentWeapon;
                 return (
@@ -139,14 +163,17 @@ const TouchControls = ({
                     type="button"
                     disabled={!unlocked}
                     onClick={() => unlocked && selectWeapon(key)}
-                    className={`flex items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs font-bold transition-colors ${
+                    className={`flex items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-bold transition-colors ${
                       current ? 'bg-emerald-500/20 text-emerald-200'
                         : unlocked ? 'text-gray-200 active:bg-white/10'
                         : 'text-gray-600'
                     }`}
                   >
-                    <span className="truncate">{WEAPONS[key].name}</span>
-                    {!unlocked && <span className="ml-1 text-[9px] text-gray-600">🔒</span>}
+                    <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded text-[10px] font-black tabular-nums ${current ? 'bg-emerald-400/25 text-emerald-100' : 'bg-white/10 text-gray-400'}`}>
+                      {idx + 1}
+                    </span>
+                    <span className="flex-1 truncate">{WEAPONS[key].name}</span>
+                    {!unlocked && <Lock className="ml-1 h-3 w-3 shrink-0 text-gray-600" strokeWidth={2.5} />}
                   </button>
                 );
               })}
@@ -172,10 +199,17 @@ const TouchControls = ({
         <div className="pointer-events-none grid grid-cols-2 gap-2.5">
           <ActionButton label="Reload" icon={RotateCw} onTap={() => tapKey('KeyR')} busy={isReloading} accent="amber" />
           <HoldButton label="Jump" icon={ChevronsUp} onDown={onJumpDown} onUp={onJumpUp} />
-          <ActionButton label="Dash" icon={ChevronsRight} onTap={() => tapKey('KeyQ')} ready={dashReady} cooldown={dash?.cooldown ?? 1} accent="emerald" />
+          <ActionButton label={dash?.name ?? 'Ability'} icon={abilityIcon} onTap={() => tapKey('KeyQ')} ready={dashReady} cooldown={dash?.cooldown ?? 1} accent="emerald" />
           <ActionButton label="Crouch" icon={ChevronsDown} onTap={() => tapKey('KeyC')} />
           <HoldButton label="Aim" icon={Crosshair} onDown={onAimDown} onUp={onAimUp} />
-          <ActionButton label="Power" icon={Zap} onTap={() => tapKey('KeyE')} ready={powerHeld} accent={powerHeld ? 'amber' : 'slate'} />
+          <PowerButton
+            label={powerHeld || powerActive ? (power?.name ?? 'Power') : 'Power'}
+            icon={powerIcon}
+            onTap={() => tapKey('KeyE')}
+            held={powerHeld}
+            active={powerActive}
+            ratio={power?.ratio}
+          />
         </div>
 
         {/* FIRE — primary, under the looking thumb. */}
@@ -328,6 +362,37 @@ const ActionButton = ({
         />
       )}
       {busy && <div className="absolute inset-0 rounded-2xl border-2 border-amber-300/60 animate-pulse" />}
+    </button>
+  );
+};
+
+// ── Power / pickup slot button ─────────────────────────────────────────────
+// Shows the CURRENTLY held (or running) looted power so mobile players can see
+// what they have — empty = dashed "Power" prompt, held = amber + name, active =
+// emerald + name (with the shield's absorb sliver when applicable).
+const PowerButton = ({
+  label, icon: Icon, onTap, held, active, ratio,
+}: {
+  label: string; icon: LucideIcon; onTap: () => void;
+  held: boolean; active: boolean; ratio?: number;
+}) => {
+  const accent = held ? ACCENT.amber : active ? ACCENT.emerald : ACCENT.slate;
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      onPointerDown={(e) => { e.preventDefault(); onTap(); }}
+      className={`pointer-events-auto relative flex h-[52px] w-[52px] flex-col items-center justify-center rounded-2xl border ${accent.border} ${accent.bg} backdrop-blur-md transition-transform active:scale-90 ${
+        held ? 'animate-pulse' : ''
+      }`}
+    >
+      <Icon className={`h-5 w-5 ${accent.text}`} strokeWidth={2.25} />
+      <span className="mt-0.5 max-w-full truncate px-0.5 text-[8px] font-bold uppercase tracking-wide text-gray-300">{label}</span>
+      {active && ratio !== undefined && (
+        <div className="absolute -bottom-0.5 left-1 right-1 h-1 overflow-hidden rounded-full bg-black/55">
+          <div className="h-full rounded-full bg-emerald-300" style={{ width: `${Math.max(0, Math.min(1, ratio)) * 100}%` }} />
+        </div>
+      )}
     </button>
   );
 };

@@ -247,12 +247,12 @@ export class TutorialSystem {
         'Defeated enemies drop loot crates with a random power-up',
         'You can carry only ONE power-up at a time',
         'Tap the Power button to activate your held power-up, then find more loot',
-        'Dash is always available — let\'s try it next...'
+        'Your character\'s Ability is always available — let\'s try it next...'
       ] : [
         'Defeated enemies drop loot crates with a random power-up',
         'You can carry only ONE power-up at a time',
         'Press E to activate your held power-up, then find more loot',
-        'Dash is always available — let\'s try it next...'
+        'Your character\'s Ability is always available — let\'s try it next...'
       ],
       icon: '✨',
       required: true,
@@ -266,17 +266,17 @@ export class TutorialSystem {
     this.addStep({
       id: 'dash_ability',
       category: 'abilities',
-      title: 'Dash Ability',
-      description: 'Quick movement burst',
+      title: 'Character Ability',
+      description: 'Your signature move',
       instructions: touch ? [
-        'Tap the Dash button',
-        'Dash gives you a quick burst of speed',
-        'Great for dodging attacks or closing distance',
+        'Tap the Ability button',
+        'Each character has a unique signature ability',
+        'Use it to turn the tide — dodge, heal, shield or unleash AoE',
         'Try it out once the tutorial finishes'
       ] : [
-        'Press Q to Dash',
-        'Dash gives you a quick burst of speed',
-        'Great for dodging attacks or closing distance',
+        'Press Q to use your Ability',
+        'Each character has a unique signature ability',
+        'Use it to turn the tide — dodge, heal, shield or unleash AoE',
         'Try it out once the tutorial finishes'
       ],
       icon: '⚡',

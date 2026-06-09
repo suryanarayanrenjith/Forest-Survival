@@ -22,7 +22,7 @@ const ACTION_HINTS_KEYBOARD: Record<string, string> = {
   kill: 'Take down the approaching enemy',
   reload: 'Press R to reload',
   switch_weapon: 'Scroll the wheel or press 1–7',
-  use_ability: 'Press Q to Dash',
+  use_ability: 'Press Q to use your Ability',
   collect_powerup: 'Walk over the loot crate',
 };
 
@@ -33,7 +33,7 @@ const ACTION_HINTS_TOUCH: Record<string, string> = {
   kill: 'Take down the approaching enemy',
   reload: 'Tap the Reload button',
   switch_weapon: 'Tap the Weapon button, then pick one',
-  use_ability: 'Tap the Dash button',
+  use_ability: 'Tap the Ability button',
   collect_powerup: 'Walk over the loot crate',
 };
 

@@ -24,6 +24,7 @@ function popcount(value: number): number {
 type GameStartMsg = Extract<NetworkMessage, { type: 'game_start' }>;
 type PlayerRejectedMsg = Extract<NetworkMessage, { type: 'player_rejected' }>;
 import { MAP_CONFIGS, type MapType } from '../utils/MapSystem';
+import { CHARACTER_ABILITIES } from '../utils/CharacterAbilityRegistry';
 
 interface CharacterDef {
   id: ModelClassId;
@@ -203,7 +204,7 @@ const CharacterPicker = ({
             type="button"
             onClick={() => { if (!locked) onPick(c.id); }}
             disabled={locked}
-            title={locked ? `Taken by ${owner}` : `${c.blurb} · ${c.perk}`}
+            title={locked ? `Taken by ${owner}` : `${c.blurb} · Ability: ${CHARACTER_ABILITIES[c.id].name} · ${c.perk}`}
             className="relative flex flex-col items-center justify-center gap-1 py-2 px-1 rounded-lg border transition-all duration-150"
             style={{
               borderColor: isMine ? `${c.color}cc` : locked ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.08)',
@@ -219,6 +220,12 @@ const CharacterPicker = ({
             />
             <span className={`text-[10px] font-bold leading-tight text-center truncate w-full ${isMine ? 'text-white' : 'text-gray-300'}`}>
               {c.name}
+            </span>
+            <span
+              className="text-[8px] font-bold leading-tight text-center truncate w-full"
+              style={{ color: locked ? '#6b7280' : CHARACTER_ABILITIES[c.id].color }}
+            >
+              {CHARACTER_ABILITIES[c.id].glyph} {CHARACTER_ABILITIES[c.id].name}
             </span>
             <span
               className={`text-[8px] font-semibold leading-tight text-center truncate w-full ${isMine ? 'text-white/80' : 'text-gray-500'}`}

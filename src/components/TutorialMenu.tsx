@@ -4,11 +4,15 @@ import {
   Trees, Flame, Snowflake, Mountain, Droplet, Shield, Leaf, Landmark, type LucideIcon,
 } from 'lucide-react';
 import MenuShell from './MenuShell';
+import CharacterSelect from './CharacterSelect';
 import { MAP_CONFIGS, type MapType } from '../utils/MapSystem';
+import type { ClassId } from '../utils/CharacterModels';
 
 interface TutorialMenuProps {
   onStartTutorial: (map: MapType, timeOfDay: 'day' | 'night' | 'auto') => void;
   onBack: () => void;
+  selectedCharacter: ClassId;
+  onSelectCharacter: (id: ClassId) => void;
   t?: (key: string) => string;
 }
 
@@ -29,7 +33,7 @@ const ATMOSPHERES: { key: 'auto' | 'day' | 'night'; icon: LucideIcon; label: str
   { key: 'night', icon: Moon,     label: 'Night', desc: 'Dark',            color: '#818cf8' },
 ];
 
-const TutorialMenu = ({ onStartTutorial, onBack }: TutorialMenuProps) => {
+const TutorialMenu = ({ onStartTutorial, onBack, selectedCharacter, onSelectCharacter }: TutorialMenuProps) => {
   const [selectedMap, setSelectedMap] = useState<MapType>('deep_forest');
   // Default 'auto' so new players see the full day-night transition the
   // game shows in real gameplay.
@@ -84,6 +88,11 @@ const TutorialMenu = ({ onStartTutorial, onBack }: TutorialMenuProps) => {
           </div>
 
           <div className="w-full space-y-4">
+            {/* Character — pick who you'll learn the ropes as */}
+            <Section title="Character">
+              <CharacterSelect selected={selectedCharacter} onSelect={onSelectCharacter} accent="#fbbf24" />
+            </Section>
+
             {/* Atmosphere — Auto/Day/Night (Auto by default) */}
             <Section title="Atmosphere">
               <div className="grid grid-cols-3 gap-2">

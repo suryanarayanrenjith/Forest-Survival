@@ -5,11 +5,15 @@ import {
   Trees, Flame, Snowflake, Mountain, Droplet, Leaf, Landmark, type LucideIcon,
 } from 'lucide-react';
 import MenuShell from './MenuShell';
+import CharacterSelect from './CharacterSelect';
 import { MAP_CONFIGS, getRandomMap, type MapType } from '../utils/MapSystem';
+import type { ClassId } from '../utils/CharacterModels';
 
 interface ClassicMenuProps {
   onStartGame: (difficulty: 'easy' | 'medium' | 'hard' | 'adaptive', timeOfDay: 'day' | 'night' | 'auto', map: MapType, isRandom: boolean) => void;
   onBack: () => void;
+  selectedCharacter: ClassId;
+  onSelectCharacter: (id: ClassId) => void;
   t: (key: string) => string;
 }
 
@@ -24,7 +28,7 @@ const MAP_ICONS: Record<MapType, LucideIcon> = {
   ancient_ruins: Landmark,
 };
 
-const ClassicMenu = ({ onStartGame, onBack }: ClassicMenuProps) => {
+const ClassicMenu = ({ onStartGame, onBack, selectedCharacter, onSelectCharacter }: ClassicMenuProps) => {
   const [selectedDifficulty, setSelectedDifficulty] = useState<'easy' | 'medium' | 'hard' | 'adaptive'>('medium');
   const [selectedTimeOfDay, setSelectedTimeOfDay] = useState<'day' | 'night' | 'auto'>('auto');
   const [selectedMap, setSelectedMap] = useState<MapType>('deep_forest');
@@ -119,6 +123,11 @@ const ClassicMenu = ({ onStartGame, onBack }: ClassicMenuProps) => {
                 {isRandomMode && <Sparkles className="w-3.5 h-3.5 text-[#1a1030]" strokeWidth={2.5} />}
               </span>
             </button>
+
+            {/* Character — independent of Random Mode (you always pick who you are) */}
+            <Section title="Character" dimmed={false}>
+              <CharacterSelect selected={selectedCharacter} onSelect={onSelectCharacter} accent="#34d399" />
+            </Section>
 
             {/* Difficulty */}
             <Section title="Difficulty" dimmed={isRandomMode}>
