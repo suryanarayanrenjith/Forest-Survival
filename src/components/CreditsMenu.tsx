@@ -35,10 +35,14 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
   const githubUrl = 'https://github.com/suryanarayanrenjith/Forest-Survival';
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 overflow-y-auto menu-overlay-in"
-      style={{ background: 'rgba(5,8,10,0.94)', backdropFilter: 'blur(14px)' }}
-    >
+    <>
+      {/* Backdrop blur lives on its own layer — never invalidated by child scroll */}
+      <div
+        className="fixed inset-0 z-50"
+        style={{ background: 'rgba(5,8,10,0.94)', backdropFilter: 'blur(14px)' }}
+      />
+      {/* Scroll container has no backdrop-filter so it never triggers a repaint */}
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 overflow-y-auto menu-overlay-in">
       <div
         className="relative w-full max-w-2xl rounded-2xl border border-white/10 bg-[#0b0f15] overflow-hidden"
         style={{ animation: 'crFade 0.4s cubic-bezier(0.16,1,0.3,1) forwards' }}
@@ -231,6 +235,7 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
         }
       `}</style>
     </div>
+    </>
   );
 };
 
