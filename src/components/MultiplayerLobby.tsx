@@ -7,7 +7,6 @@ import {
   HeartPulse, Wrench, Ghost, Lock, Sun, Moon, SunMoon, Smartphone, type LucideIcon,
 } from 'lucide-react';
 import { usePlayerData } from '../hooks/usePlayerData';
-import MenuShell from './MenuShell';
 import UserAvatar from './UserAvatar';
 import PlayerStatsModal from './PlayerStatsModal';
 import { computeRank, legacySoloRankXp, RANK_TIERS } from '../utils/rankSystem';
@@ -25,6 +24,7 @@ type GameStartMsg = Extract<NetworkMessage, { type: 'game_start' }>;
 type PlayerRejectedMsg = Extract<NetworkMessage, { type: 'player_rejected' }>;
 import { MAP_CONFIGS, type MapType } from '../utils/MapSystem';
 import { CHARACTER_ABILITIES } from '../utils/CharacterAbilityRegistry';
+import { ABILITY_ICONS } from './abilityIcons';
 
 interface CharacterDef {
   id: ModelClassId;
@@ -198,6 +198,7 @@ const CharacterPicker = ({
         const owner = takenBy.get(c.id);
         const isMine = selected === c.id;
         const locked = !!owner && !isMine;
+        const AbilityIcon = ABILITY_ICONS[CHARACTER_ABILITIES[c.id].id];
         return (
           <button
             key={c.id}
@@ -222,10 +223,11 @@ const CharacterPicker = ({
               {c.name}
             </span>
             <span
-              className="text-[8px] font-bold leading-tight text-center truncate w-full"
+              className="flex items-center justify-center gap-1 text-[8px] font-bold leading-tight text-center truncate w-full"
               style={{ color: locked ? '#6b7280' : CHARACTER_ABILITIES[c.id].color }}
             >
-              {CHARACTER_ABILITIES[c.id].glyph} {CHARACTER_ABILITIES[c.id].name}
+              <AbilityIcon className="w-2.5 h-2.5 flex-shrink-0" strokeWidth={2.5} />
+              <span className="truncate">{CHARACTER_ABILITIES[c.id].name}</span>
             </span>
             <span
               className={`text-[8px] font-semibold leading-tight text-center truncate w-full ${isMine ? 'text-white/80' : 'text-gray-500'}`}
@@ -580,8 +582,11 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
     setTimeout(() => setCopied(false), 1800);
   };
 
+  // Layout-only — the dark tint + full-screen blur behind the lobby panels
+  // is rendered statically at App level (outside the menu transition), so
+  // the backdrop can't drift while this screen slides in/out.
   const backdrop = 'fixed inset-0 z-50 flex items-center justify-center p-4 overflow-y-auto';
-  const backdropStyle = { background: 'rgba(5,8,10,0.24)', backdropFilter: 'blur(14px) saturate(130%)' } as const;
+  const backdropStyle = {} as const;
   const panelClass = 'w-full max-w-sm rounded-3xl border border-white/10 bg-white/[0.04] backdrop-blur-2xl shadow-[0_24px_80px_-24px_rgba(0,0,0,0.6)]';
   const panelInnerClass = 'w-full max-w-xl rounded-3xl border border-white/10 bg-white/[0.035] backdrop-blur-2xl shadow-[0_24px_80px_-24px_rgba(0,0,0,0.6)] overflow-hidden flex flex-col max-h-[94dvh]';
 
@@ -591,7 +596,6 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
   if (currentUser === undefined) {
     return (
       <div className={backdrop} style={backdropStyle}>
-        <MenuShell variant="multiplayer" />
         <div className="flex flex-col items-center gap-4 rounded-3xl border border-white/10 bg-white/[0.04] px-6 py-5 backdrop-blur-2xl shadow-[0_24px_80px_-24px_rgba(0,0,0,0.6)]">
           <Loader2 className="w-10 h-10 text-sky-400 animate-spin" strokeWidth={2} />
           <div className="text-sm font-semibold tracking-wide text-gray-300">Checking your session…</div>
@@ -602,7 +606,6 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
   if (currentUser === null) {
     return (
       <div className={backdrop} style={backdropStyle}>
-        <MenuShell variant="multiplayer" />
         <div className={panelClass + ' p-6 text-center'}
           style={{ animation: 'mlFade 0.35s cubic-bezier(0.16,1,0.3,1) forwards' }}>
           <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-sky-500/12 mb-3">
@@ -629,7 +632,6 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
   if (view === 'menu') {
     return (
       <div className={backdrop} style={backdropStyle}>
-        <MenuShell variant="multiplayer" />
         <div className={panelClass + ' p-6'}
           style={{ animation: 'mlFade 0.35s cubic-bezier(0.16,1,0.3,1) forwards' }}>
           <div className="text-center mb-6">
@@ -692,7 +694,6 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
   if (view === 'host' && isConnecting && !manager) {
     return (
       <div className={backdrop} style={backdropStyle}>
-        <MenuShell variant="multiplayer" />
         <div className="flex flex-col items-center gap-4 rounded-3xl border border-white/10 bg-white/[0.04] px-6 py-5 backdrop-blur-2xl shadow-[0_24px_80px_-24px_rgba(0,0,0,0.6)]">
           <Loader2 className="w-10 h-10 text-emerald-400 animate-spin" strokeWidth={2} />
           <div className="text-sm font-semibold tracking-wide text-gray-300">Creating lobby…</div>
@@ -706,7 +707,6 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
     const SelMapIcon = MAP_ICONS[selectedMap];
     return (
       <div className={backdrop} style={backdropStyle}>
-        <MenuShell variant="multiplayer" />
         <div className={panelInnerClass}
           style={{ animation: 'mlFade 0.35s cubic-bezier(0.16,1,0.3,1) forwards' }}>
           {/* Header */}
@@ -991,7 +991,6 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
   if (view === 'join' && !manager) {
     return (
       <div className={backdrop} style={backdropStyle}>
-        <MenuShell variant="multiplayer" />
         <div className={panelClass + ' p-6'}
           style={{ animation: 'mlFade 0.35s cubic-bezier(0.16,1,0.3,1) forwards' }}>
           <div className="text-center mb-6">
@@ -1053,7 +1052,6 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
   if (view === 'join' && manager) {
     return (
       <div className={backdrop} style={backdropStyle}>
-        <MenuShell variant="multiplayer" />
         <div className="w-full max-w-md rounded-3xl border border-white/10 bg-white/[0.04] overflow-hidden backdrop-blur-2xl shadow-[0_24px_80px_-24px_rgba(0,0,0,0.6)]"
           style={{ animation: 'mlFade 0.35s cubic-bezier(0.16,1,0.3,1) forwards' }}>
           <div className="flex items-center gap-3 px-5 py-4 border-b border-white/[0.07]">

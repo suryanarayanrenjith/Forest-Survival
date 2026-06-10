@@ -35,8 +35,6 @@ export interface CharacterAbility {
   name: string;
   /** One-line description for the character card. */
   description: string;
-  /** Emoji glyph for menus (the HUD uses its own lucide icon set). */
-  glyph: string;
   /** Cooldown in seconds. */
   cooldown: number;
   /** Active duration in seconds (0 = instant / no lingering effect). */
@@ -58,50 +56,50 @@ export const CHARACTER_ABILITIES: Record<ClassId, CharacterAbility> = {
   ranger: {
     id: 'dash', classId: 'ranger',
     name: 'Dash',
-    description: 'Burst forward with a brief time-warp to dodge or reposition.',
-    glyph: '⚡', cooldown: 5, duration: 0, color: '#22d3ee', shadowColor: 0x3f7a2a, jumpMult: 1.0,
+    description: 'Charge forward with crushing force — robots in your path are bowled over and trampled.',
+    cooldown: 5, duration: 0, color: '#22d3ee', shadowColor: 0x3f7a2a, jumpMult: 1.0,
   },
   scout: {
     id: 'adrenaline', classId: 'scout',
     name: 'Adrenaline',
     description: 'Kick into a 1.75× movement-speed surge for a few seconds.',
-    glyph: '🏃', cooldown: 11, duration: 4, color: '#f6b53b', shadowColor: 0xf6b53b, jumpMult: 1.06,
+    cooldown: 11, duration: 4, color: '#f6b53b', shadowColor: 0xf6b53b, jumpMult: 1.06,
   },
   heavy: {
     id: 'bulwark', classId: 'heavy',
     name: 'Bulwark',
     description: 'Brace a riot shield that soaks frontal damage until it breaks.',
-    glyph: '🛡️', cooldown: 15, duration: 5, color: '#e0564f', shadowColor: 0xb02b2b, jumpMult: 0.94,
+    cooldown: 15, duration: 5, color: '#e0564f', shadowColor: 0xb02b2b, jumpMult: 0.94,
   },
   operative: {
     id: 'focusfire', classId: 'operative',
     name: 'Focus Fire',
     description: 'Overclock your weapon — faster fire rate and bigger damage.',
-    glyph: '🎯', cooldown: 15, duration: 5, color: '#9aa3b2', shadowColor: 0x3a3f4a, jumpMult: 1.02,
+    cooldown: 15, duration: 5, color: '#9aa3b2', shadowColor: 0x3a3f4a, jumpMult: 1.02,
   },
   pyro: {
     id: 'firestorm', classId: 'pyro',
     name: 'Firestorm',
     description: 'Detonate a fiery shockwave that scorches everything nearby.',
-    glyph: '🔥', cooldown: 13, duration: 0, color: '#ff7a33', shadowColor: 0xd96528, jumpMult: 0.98,
+    cooldown: 13, duration: 0, color: '#ff7a33', shadowColor: 0xd96528, jumpMult: 0.98,
   },
   medic: {
     id: 'triage', classId: 'medic',
     name: 'Field Triage',
     description: 'Instantly patch up a third of your maximum health.',
-    glyph: '➕', cooldown: 16, duration: 0, color: '#19c37d', shadowColor: 0xc91a1a, jumpMult: 1.0,
+    cooldown: 16, duration: 0, color: '#19c37d', shadowColor: 0xc91a1a, jumpMult: 1.0,
   },
   engineer: {
     id: 'overclock', classId: 'engineer',
     name: 'Overclock',
     description: 'Snap-reload, then fire with unlimited ammo for a few seconds.',
-    glyph: '⚙️', cooldown: 14, duration: 4, color: '#e0a84a', shadowColor: 0xc78a2a, jumpMult: 0.96,
+    cooldown: 14, duration: 4, color: '#e0a84a', shadowColor: 0xc78a2a, jumpMult: 0.96,
   },
   phantom: {
     id: 'cloak', classId: 'phantom',
     name: 'Cloak',
     description: 'Vanish and phase through enemies, breaking their tracking.',
-    glyph: '👻', cooldown: 15, duration: 4, color: '#a06bff', shadowColor: 0x7c33ff, jumpMult: 1.04,
+    cooldown: 15, duration: 4, color: '#a06bff', shadowColor: 0x7c33ff, jumpMult: 1.04,
   },
 };
 

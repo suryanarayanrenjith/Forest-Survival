@@ -36,7 +36,7 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 overflow-y-auto"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 overflow-y-auto menu-overlay-in"
       style={{ background: 'rgba(5,8,10,0.94)', backdropFilter: 'blur(14px)' }}
     >
       <div

@@ -101,7 +101,7 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 menu-overlay-in"
       style={{ background: 'rgba(5,8,10,0.92)', backdropFilter: 'blur(12px)' }}
     >
       <div

@@ -647,3 +647,170 @@ canvas {
 .animate-rotate-hint {
   animation: rotateHint 2.2s ease-in-out infinite;
 }
+
+/* ===== MENU TRANSITION SYSTEM =====
+   Cinematic cross-screen transitions for the menu shell (Main / Classic /
+   Tutorial / Multiplayer / modifier picker). The wrapper is full-viewport, so
+   `position: fixed` children keep their on-screen placement even while the
+   wrapper briefly becomes their containing block during the transform. All
+   animations are compositor-friendly (opacity / transform / filter) and the
+   global prefers-reduced-motion rule above collapses them to instant. */
+
+.menu-screen {
+  position: fixed;
+  inset: 0;
+}
+
+/* Directional screen slide — forward navigation enters from the RIGHT
+   (content travels right → left, like turning a page deeper), back
+   navigation mirrors it (left → right). Distances are modest so it reads
+   as elegant motion, not a full-screen carousel. */
+@keyframes menuScreenInFwd {
+  from {
+    opacity: 0;
+    transform: translateX(56px);
+    filter: blur(8px);
+  }
+  60% {
+    filter: blur(0px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+    filter: blur(0px);
+  }
+}
+
+@keyframes menuScreenOutFwd {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+    filter: blur(0px);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(-48px);
+    filter: blur(6px);
+  }
+}
+
+@keyframes menuScreenInBack {
+  from {
+    opacity: 0;
+    transform: translateX(-56px);
+    filter: blur(8px);
+  }
+  60% {
+    filter: blur(0px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+    filter: blur(0px);
+  }
+}
+
+@keyframes menuScreenOutBack {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+    filter: blur(0px);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(48px);
+    filter: blur(6px);
+  }
+}
+
+/* `backwards` fill so the inert filter/transform are dropped once the enter
+   animation finishes — the wrapper stops being a containing block and the
+   backdrop-blur panels inside render on their normal fast path. */
+.menu-screen-enter-fwd {
+  animation: menuScreenInFwd 0.42s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+.menu-screen-enter-back {
+  animation: menuScreenInBack 0.42s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+.menu-screen-exit-fwd {
+  animation: menuScreenOutFwd 0.19s cubic-bezier(0.45, 0, 0.7, 0.4) forwards;
+  pointer-events: none;
+}
+
+.menu-screen-exit-back {
+  animation: menuScreenOutBack 0.19s cubic-bezier(0.45, 0, 0.7, 0.4) forwards;
+  pointer-events: none;
+}
+
+/* Staggered content rise — apply to a container whose direct children should
+   cascade in (menu sections, mode cards). Runs alongside the screen-level
+   enter so the UI reads as "assembling" rather than popping. */
+@keyframes menuRise {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.menu-stagger > * {
+  animation: menuRise 0.55s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+.menu-stagger > *:nth-child(1) { animation-delay: 0.06s; }
+.menu-stagger > *:nth-child(2) { animation-delay: 0.11s; }
+.menu-stagger > *:nth-child(3) { animation-delay: 0.16s; }
+.menu-stagger > *:nth-child(4) { animation-delay: 0.21s; }
+.menu-stagger > *:nth-child(5) { animation-delay: 0.26s; }
+.menu-stagger > *:nth-child(6) { animation-delay: 0.31s; }
+.menu-stagger > *:nth-child(7) { animation-delay: 0.36s; }
+.menu-stagger > *:nth-child(8) { animation-delay: 0.41s; }
+.menu-stagger > *:nth-child(n + 9) { animation-delay: 0.45s; }
+
+/* Pop-in cascade for expanding option grids (map selector etc.). */
+@keyframes menuPop {
+  from {
+    opacity: 0;
+    transform: scale(0.9) translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.menu-pop-grid > * {
+  animation: menuPop 0.32s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+.menu-pop-grid > *:nth-child(1) { animation-delay: 0.00s; }
+.menu-pop-grid > *:nth-child(2) { animation-delay: 0.03s; }
+.menu-pop-grid > *:nth-child(3) { animation-delay: 0.06s; }
+.menu-pop-grid > *:nth-child(4) { animation-delay: 0.09s; }
+.menu-pop-grid > *:nth-child(5) { animation-delay: 0.12s; }
+.menu-pop-grid > *:nth-child(6) { animation-delay: 0.15s; }
+.menu-pop-grid > *:nth-child(7) { animation-delay: 0.18s; }
+.menu-pop-grid > *:nth-child(8) { animation-delay: 0.21s; }
+.menu-pop-grid > *:nth-child(n + 9) { animation-delay: 0.24s; }
+
+/* Overlay menus (Settings / Credits / Auth / Profile / Pause / Game Over).
+   FADE ONLY — the full-screen dark backdrop must never translate or scale
+   (a moving black sheet reads as the whole world shifting). The panel
+   inside each overlay carries its own pop animation (pmFade / goFade /
+   authFade / smFade / crFade), so the backdrop settles while the card
+   glides — the correct layered-motion look. */
+@keyframes menuOverlayIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.menu-overlay-in {
+  animation: menuOverlayIn 0.28s ease-out backwards;
+}

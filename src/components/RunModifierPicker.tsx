@@ -70,10 +70,9 @@ const RunModifierPicker = ({ options, onChoose, onBack }: RunModifierPickerProps
 
   return (
     <div className="fixed inset-0 z-[90] flex items-center justify-center overflow-y-auto px-4 py-8">
-      {/* Layered translucent treatment so the shared menu forest backdrop shows
-          through — this screen sits between ClassicMenu and the loader and must
-          read as part of the same menu world, not a separate black modal. */}
-      <div className="fixed inset-0 z-[1] pointer-events-none bg-gradient-to-b from-black/60 via-black/40 to-black/80" />
+      {/* The shared dark gradient chrome lives at App level (static, outside
+          the menu transition). Only this screen's rose identity tint renders
+          here — subtle enough that the slide doesn't read as a moving sheet. */}
       <div
         className="fixed inset-0 z-[1] pointer-events-none"
         style={{ background: 'radial-gradient(ellipse 55% 45% at center, rgba(248,113,113,0.22) 0%, transparent 62%)' }}

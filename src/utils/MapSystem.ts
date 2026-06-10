@@ -12,6 +12,15 @@
  *   • visibilityMult tracks how far the player can read the environment
  *   • bloomMultiplier kept modest (0.85–1.15) — the global cinematic
  *     bloom is already aggressive, per-map multipliers fine-tune feel
+ *
+ * VOLUMETRIC PARITY RULE — every map keeps the full forest-grade
+ * atmosphere stack visibly alive: god rays ≥ ~0.6, volumetric bounce
+ * light ≥ ~0.75, haze dome ≥ ~0.7. High-albedo maps (tundra, desert)
+ * must NOT fight brightness by zeroing the volumetrics (that just reads
+ * as "no shaders on this map") — blow-out is controlled at the correct
+ * levers instead: exposure, highlightRecovery/Desaturation, and the
+ * bloom threshold bias. The result is the same dreamy light-in-the-air
+ * feel on snow and sand as under the forest canopy, without the wash.
  */
 
 import type { BiomeType } from './BiomeSystem';
@@ -128,35 +137,40 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     hasSpecialWeather: false,
     visibilityMult: 0.9,
     enemySpawnRadiusMult: 1.0,
-    bloomMultiplier: 1.05,
-    bloomThresholdBias: -0.02,
+    bloomMultiplier: 1.12,
+    bloomThresholdBias: -0.04,
+    // SHOWCASE GRADE — the forest is the flagship map, pushed slightly past
+    // the neutral 1.0 baseline: thicker canopy god rays, a denser breathing
+    // haze, richer foliage vibrance and a dewier, more tactile floor. The
+    // other maps' parity values are tuned relative to THIS look.
     renderProfile: {
       atmosphereWeight: 0.18,
       nightAtmosphereWeight: 0.12,
       exposure: 1.0,
-      saturation: 1.0,
-      contrast: 1.0,
-      bloomStrength: 1.0,
-      godRayStrength: 1.0,
-      aerialPerspective: 0.9,
+      saturation: 1.04,
+      contrast: 1.03,
+      bloomStrength: 1.05,
+      godRayStrength: 1.15,            // sunbeams pour through the canopy
+      aerialPerspective: 1.0,
       highlightRecovery: 0.14,
       highlightDesaturation: 0.14,
-      vibrance: 1.0,
+      vibrance: 1.08,                  // lusher greens, deeper sky blues
       shadowLift: 1.0,
-      hazeDensity: 1.0,
+      hazeDensity: 1.12,               // morning-mist body between the trunks
       fogDensity: 1.0,
-      environmentIntensity: 1.0,
+      environmentIntensity: 1.05,
       directLight: 1.0,
       ambientLight: 1.0,
-      volumetricLight: 1.0,
+      volumetricLight: 1.1,            // warm golden bounce under the canopy
       fillLight: 1.0,
-      rimLight: 1.0,
-      groundSpecular: 1.0,
-      groundNormal: 1.0,
-      groundPatch: 1.0,
+      rimLight: 1.1,                   // leaf-edge / trunk-edge sun rim
+      groundSpecular: 1.08,            // dew glint on the moss
+      groundNormal: 1.12,              // more tactile root-and-humus relief
+      groundPatch: 1.1,
     },
     // Soft, mossy forest floor — gentle rolling humus broken by exposed roots
     // and damp earth. Warm/cool leaf-litter patches over a mossy rock talus.
+    // Wetness raised for a dewy, just-rained sheen that catches the god rays.
     terrain: {
       amplitude: 3.0,
       frequency: 0.016,
@@ -167,8 +181,8 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       macroTintB: [0.84, 0.96, 0.82],
       rockColor: 0x3a4a32,
       detailColor: [0.95, 1.0, 0.82],
-      detailScale: 1.05,
-      wetness: 0.18,
+      detailScale: 1.15,
+      wetness: 0.3,
     },
   },
 
@@ -207,23 +221,23 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     renderProfile: {
       atmosphereWeight: 0.66,
       nightAtmosphereWeight: 0.35,
-      exposure: 0.82,
+      exposure: 0.84,
       saturation: 0.9,
       contrast: 1.04,
       bloomStrength: 0.9,
-      godRayStrength: 0.62,
-      aerialPerspective: 0.5,
+      godRayStrength: 0.8,             // ember-laden shafts through the smoke
+      aerialPerspective: 0.6,
       highlightRecovery: 0.36,
       highlightDesaturation: 0.22,
       vibrance: 0.9,
       shadowLift: 0.92,
-      hazeDensity: 0.75,
+      hazeDensity: 0.88,               // thick volcanic particulate haze
       fogDensity: 0.9,
       environmentIntensity: 0.86,
       directLight: 0.92,
       ambientLight: 0.9,
-      volumetricLight: 0.62,
-      fillLight: 0.72,
+      volumetricLight: 0.85,           // warm lava-glow bounce, forest parity
+      fillLight: 0.8,
       rimLight: 0.85,
       groundSpecular: 0.72,
       groundNormal: 1.05,
@@ -248,12 +262,14 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
   },
 
   // ── Icy tundra with frozen pines ──
-  // AGGRESSIVE retuning: previous values (skyColor 0x6090b8, fogColor 0x5c7894,
-  // HDRI dayIntensity 0.98, bloom 0.72) still produced the bright-white wash
-  // because every brightness contributor stacked: bright sky + bright HDRI
-  // env + bright fog + bloom + sun god-rays. Pulled EVERY brightness lever
-  // down so the player can actually read distant geometry. Tundra now reads
-  // as a real "cold overcast highland" rather than a fog blowout.
+  // Third-pass tuning. The first fix for the bright-white wash pulled EVERY
+  // lever down — including the volumetrics — which killed the wash but left
+  // tundra reading as "the map with no shaders": no god rays, no haze, no
+  // light in the air. This pass restores full forest-grade volumetrics
+  // (god rays, haze dome, warm bounce) and controls brightness ONLY at the
+  // correct levers: exposure, highlight recovery/desaturation, and a high
+  // bloom threshold. Cold sunlight now visibly streams between the pines
+  // while the snowfield itself stays readable and un-blown.
   frozen_tundra: {
     id: 'frozen_tundra',
     name: 'Frozen Tundra',
@@ -278,33 +294,34 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     weatherType: 'snow',
     visibilityMult: 1.0,                  // open + readable
     enemySpawnRadiusMult: 1.1,
-    // Heavily restrained bloom — was the primary cause of the wash.
-    bloomMultiplier: 0.36,                // snow is high-albedo; keep bloom surgical
-    bloomThresholdBias: 0.26,             // only weapon cores / pickups bloom
+    // Restrained-but-alive bloom: high threshold keeps the snowfield from
+    // blooming wholesale while the sun disc / god-ray core still glows.
+    bloomMultiplier: 0.52,                // snow is high-albedo; bloom stays surgical
+    bloomThresholdBias: 0.16,             // sun + emissives bloom, snow doesn't
     renderProfile: {
       atmosphereWeight: 0.86,
       nightAtmosphereWeight: 0.42,
-      exposure: 0.54,
-      saturation: 0.62,
-      contrast: 0.92,
-      bloomStrength: 0.58,
-      godRayStrength: 0.18,
-      aerialPerspective: 0.08,
-      highlightRecovery: 0.92,
-      highlightDesaturation: 0.78,
-      vibrance: 0.58,
-      shadowLift: 0.82,
-      hazeDensity: 0.32,
+      exposure: 0.72,                     // brightness control lever #1
+      saturation: 0.78,                   // cold but no longer grey-dead
+      contrast: 0.98,
+      bloomStrength: 0.72,
+      godRayStrength: 0.62,               // cold shafts between frozen pines
+      aerialPerspective: 0.3,
+      highlightRecovery: 0.78,            // brightness control lever #2
+      highlightDesaturation: 0.6,
+      vibrance: 0.78,
+      shadowLift: 0.9,
+      hazeDensity: 0.7,                   // visible breathing ice-haze
       fogDensity: 0.62,
-      environmentIntensity: 0.52,
-      directLight: 0.72,
-      ambientLight: 0.68,
-      volumetricLight: 0.22,
-      fillLight: 0.42,
-      rimLight: 0.45,
-      groundSpecular: 0.25,
-      groundNormal: 0.6,
-      groundPatch: 0.72,
+      environmentIntensity: 0.6,
+      directLight: 0.78,
+      ambientLight: 0.7,
+      volumetricLight: 0.78,              // warm-vs-cold bounce restored
+      fillLight: 0.6,
+      rimLight: 0.68,                     // snow-edge rim sparkle
+      groundSpecular: 0.45,               // crystalline glint, not mirror
+      groundNormal: 0.72,
+      groundPatch: 0.8,
     },
     groundRoughness: 0.88,
     groundMetalness: 0.02,
@@ -363,32 +380,35 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     weatherType: 'sandstorm',
     visibilityMult: 1.25,                 // was 1.2 — open sightlines
     enemySpawnRadiusMult: 1.2,
-    // Lower bloom — desert is already bright + warm.
-    bloomMultiplier: 0.44,
-    bloomThresholdBias: 0.24,
+    // Bloom restrained via THRESHOLD (sand never blooms wholesale) while
+    // the multiplier stays high enough that the harsh sun + god-ray core
+    // read as a real desert glare. Volumetrics restored to forest parity —
+    // heat-haze + golden shafts are the signature "dreamy 2014" desert look.
+    bloomMultiplier: 0.58,
+    bloomThresholdBias: 0.14,
     renderProfile: {
       atmosphereWeight: 0.84,
       nightAtmosphereWeight: 0.38,
-      exposure: 0.56,
-      saturation: 0.58,
-      contrast: 0.94,
-      bloomStrength: 0.62,
-      godRayStrength: 0.22,
-      aerialPerspective: 0.06,
-      highlightRecovery: 0.88,
-      highlightDesaturation: 0.82,
-      vibrance: 0.55,
-      shadowLift: 0.78,
-      hazeDensity: 0.28,
-      fogDensity: 0.58,
-      environmentIntensity: 0.5,
-      directLight: 0.68,
-      ambientLight: 0.62,
-      volumetricLight: 0.18,
-      fillLight: 0.38,
-      rimLight: 0.36,
-      groundSpecular: 0.22,
-      groundNormal: 0.8,
+      exposure: 0.74,                     // brightness control lever #1
+      saturation: 0.74,
+      contrast: 0.98,
+      bloomStrength: 0.74,
+      godRayStrength: 0.7,                // harsh sun shafts off the mesas
+      aerialPerspective: 0.42,            // golden distance tint (Mie scatter)
+      highlightRecovery: 0.72,            // brightness control lever #2
+      highlightDesaturation: 0.58,
+      vibrance: 0.72,
+      shadowLift: 0.86,
+      hazeDensity: 0.72,                  // shimmering heat-haze on the horizon
+      fogDensity: 0.6,
+      environmentIntensity: 0.6,
+      directLight: 0.8,
+      ambientLight: 0.66,
+      volumetricLight: 0.8,               // warm sand-bounce, forest parity
+      fillLight: 0.55,
+      rimLight: 0.6,
+      groundSpecular: 0.35,               // mica glints in the hardpan
+      groundNormal: 0.85,
       groundPatch: 0.95,
     },
     groundRoughness: 0.94,
@@ -452,18 +472,18 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       saturation: 0.96,
       contrast: 1.02,
       bloomStrength: 1.0,
-      godRayStrength: 0.55,
+      godRayStrength: 0.75,             // murky shafts through the canopy
       aerialPerspective: 0.72,
       highlightRecovery: 0.22,
       highlightDesaturation: 0.2,
       vibrance: 1.0,
       shadowLift: 1.08,
-      hazeDensity: 0.95,
+      hazeDensity: 1.0,                 // swamp breathes — full vapor dome
       fogDensity: 1.0,
       environmentIntensity: 0.85,
       directLight: 0.9,
       ambientLight: 1.0,
-      volumetricLight: 0.7,
+      volumetricLight: 0.85,            // sickly-warm bounce, forest parity
       fillLight: 0.92,
       rimLight: 0.9,
       groundSpecular: 1.15,
@@ -525,18 +545,18 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       saturation: 0.84,
       contrast: 1.05,
       bloomStrength: 0.85,
-      godRayStrength: 0.8,
+      godRayStrength: 0.92,             // crisp sun shafts across the compound
       aerialPerspective: 0.85,
       highlightRecovery: 0.16,
       highlightDesaturation: 0.16,
       vibrance: 0.85,
       shadowLift: 0.98,
-      hazeDensity: 0.95,
+      hazeDensity: 1.0,                 // dusty parade-ground air
       fogDensity: 1.0,
       environmentIntensity: 0.95,
       directLight: 1.0,
       ambientLight: 0.98,
-      volumetricLight: 0.9,
+      volumetricLight: 0.98,
       fillLight: 0.95,
       rimLight: 0.95,
       groundSpecular: 0.9,
@@ -607,7 +627,7 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       saturation: 0.94,
       contrast: 1.04,
       bloomStrength: 0.9,
-      godRayStrength: 0.7,
+      godRayStrength: 0.88,             // low orange sun rakes long dusk shafts
       aerialPerspective: 0.8,
       highlightRecovery: 0.2,
       highlightDesaturation: 0.2,
@@ -618,7 +638,7 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       environmentIntensity: 0.8,
       directLight: 0.95,
       ambientLight: 0.95,
-      volumetricLight: 0.85,
+      volumetricLight: 0.98,            // dusk bounce — wisps hang in the air
       fillLight: 0.9,
       rimLight: 1.08,
       groundSpecular: 1.0,
@@ -679,7 +699,7 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       saturation: 0.9,
       contrast: 1.03,
       bloomStrength: 1.0,
-      godRayStrength: 0.6,
+      godRayStrength: 0.8,              // storm-light shafts between columns
       aerialPerspective: 0.78,
       highlightRecovery: 0.2,
       highlightDesaturation: 0.18,
@@ -690,7 +710,7 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       environmentIntensity: 0.9,
       directLight: 0.95,
       ambientLight: 1.0,
-      volumetricLight: 0.75,
+      volumetricLight: 0.92,            // rain-mist bounce, forest parity
       fillLight: 0.95,
       rimLight: 0.95,
       groundSpecular: 1.25,

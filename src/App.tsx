@@ -77,6 +77,8 @@ import { EnhancedSettings, type GameSettings } from './components/EnhancedSettin
 import { ErrorBoundary } from './components/ErrorBoundary';
 import ShaderProcessingScreen, { type WarmupErrorInfo } from './components/ShaderProcessingScreen';
 import MenuBackdrop, { type MenuBackdropVariant } from './components/MenuBackdrop';
+import MenuShell from './components/MenuShell';
+import MenuTransition from './components/MenuTransition';
 import MusicMuteButton from './components/MusicMuteButton';
 import { musicMute } from './utils/musicMute';
 import { useMutation, useQuery } from 'convex/react';
@@ -4120,11 +4122,19 @@ const ForestSurvivalGame = () => {
     let abilityCooldownMax = activeAbility.cooldown; // for the HUD ratio
     let abilityActiveUntil = 0;                    // ms timestamp for HUD "active" glow
     // Dash burst-movement state (used only by the ranger's Dash ability).
+    // The dash is a CHARGE: longer travel at higher speed, and any robot
+    // caught in the path is trampled — bowled over with full force (see the
+    // trample pass in the dash movement block). Heavy chassis (tank / boss /
+    // mini-boss) survive with a chunk of damage + a hard shove so the charge
+    // can't trivialise the big fights on its short cooldown.
     let isDashing = false;
-    const dashDuration = 0.15; // 150ms dash
-    const dashSpeed = 2.5; // Dash speed multiplier
+    const dashDuration = 0.24; // charge window (was 0.15 — needs travel to run targets over)
+    const dashSpeed = 2.9; // charge speed multiplier
     let dashTimer = 0;
     const dashDirection = new THREE.Vector3();
+    // Enemies already hit by the CURRENT charge — cleared on each dash so one
+    // robot can't be re-trampled every frame of the same charge.
+    const dashHitEnemies = new Set<Enemy>();
 
     // Dispatch the selected character's signature ability (bound ability key).
     // Wherever possible this reuses the game's already-balanced timed-effect
@@ -4140,9 +4150,13 @@ const ForestSurvivalGame = () => {
 
       switch (activeAbility.id) {
         case 'dash': {
-          // Ranger — instant directional burst + a brief cinematic time-warp.
+          // Ranger — a trampling charge + a brief cinematic time-warp.
           isDashing = true;
           dashTimer = dashDuration;
+          dashHitEnemies.clear();
+          // FOV surge — the lens pulls wide for the burst, then the existing
+          // per-frame decay eases it back. Reads as raw acceleration.
+          fovPunch = Math.min(fovPunch + 8, 10);
           // Dash Mastery skill / perks / Ranger passive shrink the cooldown.
           cd = activeAbility.cooldown
             * Math.max(0.15, 1 + skillBonus('dashCooldown'))
@@ -6943,6 +6957,90 @@ const ForestSurvivalGame = () => {
           camera.position.x = newX;
           camera.position.z = newZ;
         }
+
+        // ── TRAMPLE — the Ranger's charge bowls through robots ────────────
+        // Any robot caught within the charge radius takes the full force of
+        // the impact: standard chassis are killed outright and launched
+        // forward along the charge (run-over ragdoll); heavy chassis (tank /
+        // boss / mini-boss) survive with chunk damage + a hard shove so the
+        // 5s-cooldown charge can't trivialise the big fights. Each enemy is
+        // hit at most once per charge (dashHitEnemies).
+        const TRAMPLE_RADIUS_SQ = 2.6 * 2.6;
+        for (let di = 0; di < enemies.length; di++) {
+          const te = enemies[di];
+          if (te.dead || dashHitEnemies.has(te)) continue;
+          const tdx = te.mesh.position.x - camera.position.x;
+          const tdz = te.mesh.position.z - camera.position.z;
+          if (tdx * tdx + tdz * tdz > TRAMPLE_RADIUS_SQ) continue;
+          dashHitEnemies.add(te);
+
+          const heavyChassis = te.type === 'tank' || te.type === 'boss' || te.isMiniBoss === true;
+          const trampleDmg = heavyChassis
+            ? Math.max(60, te.maxHealth * 0.3)   // heavy: real damage, not lethal
+            : te.maxHealth + 50;                  // standard robots: flattened
+
+          // Record the charge direction so the death ragdoll (or survivor
+          // shove) launches the way the player is running.
+          if (!te.hitImpulse) te.hitImpulse = new THREE.Vector3();
+          te.hitImpulse.set(dashDirection.x, 0, dashDirection.z);
+          te.damageFlashTime = 0.5;
+
+          if (isMpGuest && mp) {
+            // Guests don't own enemy health — report the trample to the host
+            // (same path as bullets); local feedback below stays snappy.
+            if (te.netId !== undefined) mp.sendEnemyHit(te.netId, trampleDmg, false);
+          } else {
+            te.health -= trampleDmg;
+          }
+
+          // ── Crunchy impact feedback ──
+          soundManager.play('enemyHit', 0.9, false, 0.7); // low-pitched metal thud
+          createParticles(te.mesh.position, 0x66e8ff, 18); // dash-cyan energy burst
+          _tempVec3_2.set(dashDirection.x, 0.25, dashDirection.z).normalize();
+          robotSparks.push(new RobotHitSparks(scene, te.mesh.position.clone(), _tempVec3_2.clone(), 24));
+          if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
+          haptic('hit');
+          if (gameSettingsManager.getSetting('hitMarkers')) addHitMarker(false);
+          if (gameSettingsManager.getSetting('damageNumbers')) {
+            _tempVec3_2.copy(te.mesh.position).project(camera);
+            addDamageNumber(
+              Math.floor(trampleDmg),
+              (_tempVec3_2.x * 0.5 + 0.5) * 100,
+              (-_tempVec3_2.y * 0.5 + 0.5) * 100,
+              true,
+              false,
+            );
+          }
+          // Micro hit-stop so the collision lands with weight.
+          timeScale = 0.35;
+          setTimeout(() => { timeScale = 1.0; }, 90);
+
+          if (!isMpGuest && te.health <= 0) {
+            handleEnemyKilled(te, false);
+            // Override the standard ragdoll with the full-force "run over"
+            // launch — bowled hard forward along the charge, tumbling.
+            if (gameSettingsManager.getSetting('ragdollPhysics')) {
+              const launch = te.type === 'tank' ? 9 : 14;
+              te.deathVel = new THREE.Vector3(
+                dashDirection.x * launch,
+                6.5 + Math.random() * 2,
+                dashDirection.z * launch,
+              );
+              te.deathSpin = new THREE.Vector3(
+                (Math.random() - 0.5) * 14,
+                (Math.random() - 0.5) * 9,
+                (Math.random() - 0.5) * 16,
+              );
+              te.deathStarted = true;
+            }
+            if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Trampled!', 'combo');
+          } else if (!isMpGuest && heavyChassis) {
+            // Survivor: hard shove along the charge — the player barges
+            // through rather than face-planting into a stationary tank.
+            te.mesh.position.x += dashDirection.x * 2.6;
+            te.mesh.position.z += dashDirection.z * 2.6;
+          }
+        }
       }
 
       // Movement with collision detection (skip if dashing)
@@ -9367,47 +9465,84 @@ const ForestSurvivalGame = () => {
       : showTutorialMenu   ? 'tutorial'
       : 'main';
 
+    // Screen identity for the cross-menu transition — includes the run-
+    // modifier picker (its own "screen" between ClassicMenu and gameplay)
+    // so every navigation hop gets the same cinematic enter/exit.
+    const menuScreenKey =
+      showMultiplayerLobby ? 'multiplayer'
+      : showClassicMenu    ? 'classic'
+      : showTutorialMenu   ? 'tutorial'
+      : runModifierPickerOptions ? 'modifier'
+      : 'main';
+    // Navigation depth — drives the slide direction (deeper = forward,
+    // enter from the right; shallower = back, enter from the left).
+    const menuScreenDepth =
+      menuScreenKey === 'main' ? 0
+      : menuScreenKey === 'modifier' ? 2
+      : 1;
+
     return (
       <>
         {/* Persistent — same component instance across every menu render */}
         <MenuBackdrop variant={menuVariant} />
 
-        {gameMode === 'none' && !showClassicMenu && !showTutorialMenu && !showMultiplayerLobby && (
-          <MainMenu onClassicMode={handleModeSelection} onMultiplayerMode={handleMultiplayerMode} onTutorialMode={handleTutorialMode} t={t} />
-        )}
-        {showClassicMenu && (
-          <ClassicMenu onStartGame={handleClassicGameStart} onBack={() => { setShowClassicMenu(false); setGameMode('none'); }} selectedCharacter={selectedCharacter} onSelectCharacter={setSelectedCharacter} t={t} />
-        )}
-        {runModifierPickerOptions && !showClassicMenu && !gameStarted && (
-          <RunModifierPicker
-            options={runModifierPickerOptions}
-            onChoose={beginClassicWithModifier}
-            onBack={() => {
-              // Cancel the modifier step and return to ClassicMenu with the
-              // same params so the player doesn't have to re-pick map/etc.
-              pendingClassicStartRef.current = null;
-              setRunModifierPickerOptions(null);
-              setShowClassicMenu(true);
-            }}
+        {/* STATIC menu chrome — readability gradients + per-variant tint live
+            HERE, outside the animated screen wrapper, so the dark overlay
+            stays rock-solid while screens slide (a moving black sheet made
+            the old transition feel like the whole world was shifting). */}
+        <div className="fixed inset-0 z-[1] pointer-events-none bg-gradient-to-b from-black/50 via-black/30 to-black/75" />
+        <div
+          className="fixed inset-0 z-[1] pointer-events-none"
+          style={{ background: 'radial-gradient(ellipse at center, transparent 42%, rgba(0,0,0,0.58) 100%)' }}
+        />
+        {menuVariant === 'multiplayer' && (
+          <div
+            className="fixed inset-0 z-[1] pointer-events-none animate-fadeIn"
+            style={{ background: 'rgba(5,8,10,0.24)', backdropFilter: 'blur(14px) saturate(130%)' }}
           />
         )}
-        {showTutorialMenu && (
-          <TutorialMenu onStartTutorial={handleTutorialStart} onBack={() => { setShowTutorialMenu(false); setGameMode('none'); }} selectedCharacter={selectedCharacter} onSelectCharacter={setSelectedCharacter} t={t} />
-        )}
-        {showMultiplayerLobby && (
-          <MultiplayerLobby
-            onStartGame={handleMultiplayerStartGame}
-            existingManager={multiplayerManager}
-            onBack={() => {
-              if (multiplayerManager) {
-                try { multiplayerManager.disconnect(); } catch { /* ignore */ }
-                setMultiplayerManager(null);
-              }
-              setShowMultiplayerLobby(false);
-              setGameMode('none');
-            }}
-          />
-        )}
+        <div key={menuVariant} className="animate-fadeIn">
+          <MenuShell variant={menuVariant} />
+        </div>
+
+        <MenuTransition menuKey={menuScreenKey} depth={menuScreenDepth}>
+          {gameMode === 'none' && !showClassicMenu && !showTutorialMenu && !showMultiplayerLobby && (
+            <MainMenu onClassicMode={handleModeSelection} onMultiplayerMode={handleMultiplayerMode} onTutorialMode={handleTutorialMode} t={t} />
+          )}
+          {showClassicMenu && (
+            <ClassicMenu onStartGame={handleClassicGameStart} onBack={() => { setShowClassicMenu(false); setGameMode('none'); }} selectedCharacter={selectedCharacter} onSelectCharacter={setSelectedCharacter} t={t} />
+          )}
+          {runModifierPickerOptions && !showClassicMenu && !gameStarted && (
+            <RunModifierPicker
+              options={runModifierPickerOptions}
+              onChoose={beginClassicWithModifier}
+              onBack={() => {
+                // Cancel the modifier step and return to ClassicMenu with the
+                // same params so the player doesn't have to re-pick map/etc.
+                pendingClassicStartRef.current = null;
+                setRunModifierPickerOptions(null);
+                setShowClassicMenu(true);
+              }}
+            />
+          )}
+          {showTutorialMenu && (
+            <TutorialMenu onStartTutorial={handleTutorialStart} onBack={() => { setShowTutorialMenu(false); setGameMode('none'); }} selectedCharacter={selectedCharacter} onSelectCharacter={setSelectedCharacter} t={t} />
+          )}
+          {showMultiplayerLobby && (
+            <MultiplayerLobby
+              onStartGame={handleMultiplayerStartGame}
+              existingManager={multiplayerManager}
+              onBack={() => {
+                if (multiplayerManager) {
+                  try { multiplayerManager.disconnect(); } catch { /* ignore */ }
+                  setMultiplayerManager(null);
+                }
+                setShowMultiplayerLobby(false);
+                setGameMode('none');
+              }}
+            />
+          )}
+        </MenuTransition>
         {/* Global music mute — pinned bottom-right, visible across every menu */}
         <MusicMuteButton />
       </>

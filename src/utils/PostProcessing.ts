@@ -36,6 +36,7 @@ export interface AtmosphereGrading {
  *    → multi-tap volumetric god-ray radial blur (additive)
  *    → anamorphic horizontal lens streaks (Ultra, additive HDR)
  *    → film halation / warm highlight diffusion (additive HDR)
+ *    → dreamy soft-light diffusion veil (additive HDR, energy-guarded)
  *    → aerial perspective warm tint
  *    → exposure × atmospheric tint
  *    → HDR brightness / saturation / contrast
@@ -80,6 +81,7 @@ const CinematicGradeShader = {
     anamorphicStrength: { value: 0.0 },   // horizontal blue lens streaks
     halationStrength: { value: 0.0 },     // warm highlight diffusion bleed
     splitToneStrength: { value: 0.0 },    // warm highs / cool shadows grade
+    dreamDiffusion: { value: 0.0 },       // wide soft-light veil (2014 "dreamy" look)
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -114,6 +116,7 @@ const CinematicGradeShader = {
     uniform float anamorphicStrength;
     uniform float halationStrength;
     uniform float splitToneStrength;
+    uniform float dreamDiffusion;
     varying vec2  vUv;
 
     // ACES Filmic tonemap — Narkowicz fit; the curve used by Cyberpunk,
@@ -236,6 +239,38 @@ const CinematicGradeShader = {
         }
         halo *= 0.125;
         hdr += halo * vec3(1.0, 0.48, 0.32) * halationStrength;
+      }
+
+      // ─── DREAMY SOFT-LIGHT DIFFUSION (2014-era golden veil) ─────────
+      // The signature softness of Dying Light / Far Cry 4-era AAA: a WIDE,
+      // ultra-soft gather of the scene's luminous energy laid gently back
+      // over the frame. Unlike the thresholded UnrealBloom (which only
+      // halos true highlights) this wraps everything moderately bright —
+      // sunlit fog, warm ground, the sky — in a faint luminous veil, so
+      // light feels like it hangs IN the air rather than sitting ON
+      // surfaces. Luma-masked from mid-greys up so shadows stay grounded
+      // and the frame never lifts toward washed-out grey, and the
+      // contribution is energy-guarded so already-bright pixels don't
+      // stack toward a blowout.
+      if (dreamDiffusion > 0.001) {
+        vec3 veil = vec3(0.0);
+        // 12-tap dual-ring gather (radii 9px + 21px) ≈ a very wide, very
+        // cheap gaussian. Hex angles keep the kernel rotationally even.
+        for (int i = 0; i < 6; i++) {
+          float a = float(i) * 1.0471975512;
+          vec2 ringDir = vec2(cos(a), sin(a));
+          veil += clamp(texture2D(tDiffuse, vUv + ringDir * texelSize * 9.0).rgb,  vec3(0.0), vec3(64.0));
+          veil += clamp(texture2D(tDiffuse, vUv + ringDir * texelSize * 21.0).rgb, vec3(0.0), vec3(64.0));
+        }
+        veil *= (1.0 / 12.0);
+        float veilLum = dot(veil, vec3(0.2126, 0.7152, 0.0722));
+        // Soft knee from mid-tones upward — dark forest floors contribute
+        // nothing, sunlit air contributes fully.
+        float veilMask = smoothstep(0.35, 1.6, veilLum);
+        // Energy guard: fade the veil out where the frame is already hot
+        // so the diffusion can never push highlights into clipping.
+        vec3 headroom = 1.0 - clamp(hdr * 0.25, vec3(0.0), vec3(1.0));
+        hdr += veil * veilMask * dreamDiffusion * headroom;
       }
 
       // ─── AERIAL PERSPECTIVE — warm tint on bright distant pixels ────
@@ -544,6 +579,12 @@ export class PostProcessingPipeline {
       isUltra ? 0.3 : quality === 'high' ? 0.24 : quality === 'medium' ? 0.16 : 0.0;
     this.cinematic.uniforms.splitToneStrength.value =
       isUltra ? 0.5 : quality === 'high' ? 0.42 : quality === 'medium' ? 0.32 : 0.0;
+    // Dreamy soft-light veil — the 2014 "golden hour through the air" look.
+    // 12 taps, cheap enough for every post-FX tier; strength is deliberately
+    // subtle (it's a veil, not a glow) and CAS at the end of the chain
+    // restores the micro-detail the diffusion softens.
+    this.cinematic.uniforms.dreamDiffusion.value =
+      isUltra ? 0.30 : quality === 'high' ? 0.25 : quality === 'medium' ? 0.18 : 0.10;
     this.composer.addPass(this.cinematic);
 
     // ─── 4. SMAA AA (Medium+) ───────────────────────────────────────

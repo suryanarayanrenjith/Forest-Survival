@@ -4,7 +4,6 @@ import {
   Shield, Crosshair, Skull, CloudSun, Sun, Moon,
   Trees, Flame, Snowflake, Mountain, Droplet, Leaf, Landmark, type LucideIcon,
 } from 'lucide-react';
-import MenuShell from './MenuShell';
 import CharacterSelect from './CharacterSelect';
 import { MAP_CONFIGS, getRandomMap, type MapType } from '../utils/MapSystem';
 import type { ClassId } from '../utils/CharacterModels';
@@ -52,12 +51,9 @@ const ClassicMenu = ({ onStartGame, onBack, selectedCharacter, onSelectCharacter
 
   return (
     <div className="relative w-full h-dvh overflow-hidden">
-      <MenuShell variant="classic" />
-      <div className="fixed inset-0 z-[1] pointer-events-none bg-gradient-to-b from-black/50 via-black/30 to-black/75" />
-      <div
-        className="fixed inset-0 z-[1] pointer-events-none"
-        style={{ background: 'radial-gradient(ellipse at center, transparent 42%, rgba(0,0,0,0.55) 100%)' }}
-      />
+      {/* Backdrop chrome (dark gradients + themed tint) is rendered at App
+          level OUTSIDE the menu transition so it stays static while this
+          screen slides. Only the content below animates. */}
 
       {/* Back */}
       <button
@@ -87,7 +83,7 @@ const ClassicMenu = ({ onStartGame, onBack, selectedCharacter, onSelectCharacter
             </h1>
           </div>
 
-          <div className="w-full space-y-4">
+          <div className="w-full space-y-4 menu-stagger">
             {/* Random Mode */}
             <button
               onClick={() => {
@@ -182,7 +178,7 @@ const ClassicMenu = ({ onStartGame, onBack, selectedCharacter, onSelectCharacter
                 <ChevronDown className={`w-4 h-4 text-gray-500 flex-shrink-0 transition-transform ${showMapSelector ? 'rotate-180' : ''}`} strokeWidth={2.25} />
               </button>
               {showMapSelector && (
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2 menu-pop-grid">
                   {Object.values(MAP_CONFIGS).map((map) => {
                     const Icon = MAP_ICONS[map.id];
                     const active = selectedMap === map.id;

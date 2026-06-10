@@ -13,7 +13,6 @@ import {
 } from 'lucide-react';
 import { useConvexAuth, useAuthActions } from '@convex-dev/auth/react';
 import { usePlayerData } from '../hooks/usePlayerData';
-import MenuShell from './MenuShell';
 import SettingsMenu from './SettingsMenu';
 import CreditsMenu from './CreditsMenu';
 import AuthMenu from './AuthMenu';
@@ -189,19 +188,14 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode }: MainMenu
 
   return (
     <div className="relative w-full h-dvh overflow-hidden">
-      <MenuShell variant="main" />
-
-      {/* Cinematic vignette + readability overlay */}
-      <div className="absolute inset-0 bg-gradient-to-b from-black/55 via-black/35 to-black/80" />
-      <div
-        className="absolute inset-0 pointer-events-none"
-        style={{ background: 'radial-gradient(ellipse at center, transparent 45%, rgba(0,0,0,0.7) 100%)' }}
-      />
+      {/* Backdrop chrome (dark gradients + themed tint) is rendered at App
+          level OUTSIDE the menu transition so it stays static while this
+          screen slides. Only the content below animates. */}
 
       {/* Main Screen */}
       {!showSettings && (
         <div className="relative z-10 h-dvh overflow-y-auto">
-        <div className="flex min-h-full flex-col items-center justify-center px-6 py-10">
+        <div className="flex min-h-full flex-col items-center justify-center px-6 py-10 menu-stagger">
           {/* Title */}
           <div className="relative mb-10 sm:mb-14 text-center">
             <div className="flex items-center justify-center gap-3 mb-3">

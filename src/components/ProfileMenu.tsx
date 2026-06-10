@@ -170,7 +170,7 @@ const ProfileMenu = ({ onClose }: ProfileMenuProps) => {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto p-3 sm:p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto p-3 sm:p-4 menu-overlay-in"
       style={{ background: 'rgba(5,8,10,0.94)', backdropFilter: 'blur(14px)' }}
     >
       <MenuShell variant="main" />

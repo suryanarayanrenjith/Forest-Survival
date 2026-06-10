@@ -28,7 +28,7 @@ const GameOver = ({ isVictory, score, enemiesKilled, wave, onRestart, onMainMenu
 
   return (
     <div
-      className="absolute inset-0 overflow-y-auto"
+      className="absolute inset-0 overflow-y-auto menu-overlay-in"
       style={{
         background: 'radial-gradient(ellipse at center, rgba(8,11,16,0.94) 0%, rgba(2,4,8,0.98) 100%)',
         backdropFilter: 'blur(12px)',

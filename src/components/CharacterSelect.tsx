@@ -5,6 +5,7 @@ import {
 import { CLASS_IDS, type ClassId } from '../utils/CharacterModels';
 import { CHARACTER_ABILITIES } from '../utils/CharacterAbilityRegistry';
 import { CHARACTER_PASSIVES } from '../utils/CharacterPassiveRegistry';
+import { ABILITY_ICONS } from './abilityIcons';
 
 /**
  * Solo / Tutorial character picker.
@@ -36,6 +37,7 @@ interface CharacterSelectProps {
 const CharacterSelect = ({ selected, onSelect, accent = '#34d399' }: CharacterSelectProps) => {
   const ability = CHARACTER_ABILITIES[selected];
   const passive = CHARACTER_PASSIVES[selected];
+  const AbilityIcon = ABILITY_ICONS[ability.id];
 
   return (
     <div className="space-y-2.5">
@@ -71,10 +73,10 @@ const CharacterSelect = ({ selected, onSelect, accent = '#34d399' }: CharacterSe
       >
         <div className="flex items-start gap-2.5">
           <span
-            className="flex items-center justify-center w-9 h-9 rounded-lg text-lg flex-shrink-0"
+            className="flex items-center justify-center w-9 h-9 rounded-lg flex-shrink-0"
             style={{ background: `${ability.color}24` }}
           >
-            {ability.glyph}
+            <AbilityIcon className="w-[18px] h-[18px]" style={{ color: ability.color }} strokeWidth={2.1} />
           </span>
           <div className="min-w-0">
             <p className="text-[10px] uppercase tracking-[0.18em] font-semibold" style={{ color: ability.color }}>

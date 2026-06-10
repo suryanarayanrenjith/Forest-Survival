@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import {
   Heart, Crosshair, Skull, Waves, Flame, Lock,
-  Zap, Shield as ShieldIcon, Wind, Ghost, Footprints, ChevronsRight,
+  Zap, Shield as ShieldIcon, Wind, Ghost, Footprints,
   Swords, Infinity as InfinityIcon, Boxes, PackageSearch, type LucideIcon,
 } from 'lucide-react';
 import { WEAPONS } from '../types/game';
+import { getAbilityIcon } from './abilityIcons';
 
 /** One slot's live state for the HUD ability bar. */
 export interface AbilityHudItem {
@@ -386,18 +387,6 @@ const HUD = ({
 const AbilitySlot = ({ ability }: { ability: AbilityHudItem }) =>
   ability.kind === 'dash' ? <DashSlot ability={ability} /> : <PowerSlot ability={ability} />;
 
-/** Per-character ability glyph — keyed by CharacterAbilityId. */
-const ABILITY_ICONS: Record<string, LucideIcon> = {
-  dash: ChevronsRight,
-  adrenaline: Wind,
-  bulwark: ShieldIcon,
-  focusfire: Crosshair,
-  firestorm: Flame,
-  triage: Heart,
-  overclock: InfinityIcon,
-  cloak: Ghost,
-};
-
 /**
  * Character ability slot — always available, radial cooldown sweep that
  * "refills". Icon + accent colour come from the selected character so each
@@ -408,7 +397,7 @@ const DashSlot = ({ ability }: { ability: AbilityHudItem }) => {
   const ready = cd >= 1;
   const deg = Math.min(360, Math.max(0, cd * 360));
   const accent = ability.accent ?? '#34d399';
-  const Icon = ABILITY_ICONS[ability.abilityId ?? 'dash'] ?? ChevronsRight;
+  const Icon = getAbilityIcon(ability.abilityId);
   return (
     <div className="flex flex-col items-center gap-1">
       <div

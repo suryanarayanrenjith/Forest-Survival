@@ -3,7 +3,6 @@ import {
   ArrowLeft, GraduationCap, Play, ChevronDown, CloudSun, Sun, Moon,
   Trees, Flame, Snowflake, Mountain, Droplet, Shield, Leaf, Landmark, type LucideIcon,
 } from 'lucide-react';
-import MenuShell from './MenuShell';
 import CharacterSelect from './CharacterSelect';
 import { MAP_CONFIGS, type MapType } from '../utils/MapSystem';
 import type { ClassId } from '../utils/CharacterModels';
@@ -44,12 +43,9 @@ const TutorialMenu = ({ onStartTutorial, onBack, selectedCharacter, onSelectChar
 
   return (
     <div className="relative w-full h-dvh overflow-hidden">
-      <MenuShell variant="tutorial" />
-      <div className="absolute inset-0 bg-gradient-to-b from-black/45 via-black/28 to-black/72 pointer-events-none" />
-      <div
-        className="absolute inset-0 pointer-events-none"
-        style={{ background: 'radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.58) 100%)' }}
-      />
+      {/* Backdrop chrome (dark gradients + themed tint) is rendered at App
+          level OUTSIDE the menu transition so it stays static while this
+          screen slides. Only the content below animates. */}
 
       {/* Back */}
       <button
@@ -87,7 +83,7 @@ const TutorialMenu = ({ onStartTutorial, onBack, selectedCharacter, onSelectChar
             </p>
           </div>
 
-          <div className="w-full space-y-4">
+          <div className="w-full space-y-4 menu-stagger">
             {/* Character — pick who you'll learn the ropes as */}
             <Section title="Character">
               <CharacterSelect selected={selectedCharacter} onSelect={onSelectCharacter} accent="#fbbf24" />
@@ -135,7 +131,7 @@ const TutorialMenu = ({ onStartTutorial, onBack, selectedCharacter, onSelectChar
                 <ChevronDown className={`w-4 h-4 text-gray-500 flex-shrink-0 transition-transform ${showMapSelector ? 'rotate-180' : ''}`} strokeWidth={2.25} />
               </button>
               {showMapSelector && (
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2 menu-pop-grid">
                   {Object.values(MAP_CONFIGS).map((map) => {
                     const Icon = MAP_ICONS[map.id];
                     const active = selectedMap === map.id;

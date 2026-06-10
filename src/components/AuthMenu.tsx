@@ -168,7 +168,7 @@ const AuthMenu = ({ onClose, onSignedIn, initialMode = 'signIn' }: AuthMenuProps
 
   return (
     <div
-      className="fixed inset-0 z-50 overflow-y-auto"
+      className="fixed inset-0 z-50 overflow-y-auto menu-overlay-in"
       style={{ background: 'rgba(5,8,10,0.94)', backdropFilter: 'blur(14px)' }}
     >
       <MenuShell variant="main" />
