@@ -21,7 +21,7 @@ const TECH_STACK: TechItem[] = [
   { label: 'Three.js',          hint: 'r180 · WebGL2',           icon: Boxes,   accent: '#34d399' },
   { label: '@react-three/fiber', hint: 'Loader scene · Canvas',   icon: Layers3, accent: '#60a5fa' },
   { label: '@react-three/drei',  hint: 'Preload · helpers',       icon: Sparkles, accent: '#a78bfa' },
-  { label: 'three.js Postprocessing', hint: 'Bloom · GTAO · ACES · SMAA', icon: Wand2,   accent: '#c084fc' },
+  { label: 'three.js Postprocessing', hint: 'Bloom · GTAO · ACES · SMAA · God-rays · CAS', icon: Wand2,   accent: '#c084fc' },
   { label: 'Convex',            hint: 'Realtime DB · serverless', icon: Database, accent: '#f97316' },
   { label: 'Convex Auth',       hint: 'Accounts · sessions',     icon: ShieldCheck, accent: '#22d3ee' },
   { label: 'Tailwind + Lucide', hint: 'Design system',           icon: Palette, accent: '#fbbf24' },
@@ -84,8 +84,7 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
             </h3>
 
             <p className="text-[14px] leading-relaxed text-gray-300/90 max-w-prose mb-3">
-              A 3D first-person wave survival shooter vibecoded from start to finish, completely built from scratch. Used agentic AI to
-              turn ideas into a real, playable game.
+              A fully-featured 3D first-person wave survival shooter vibecoded from start to finish — character abilities, procedural terrain, snapshot-interpolated multiplayer netcode, in-game photo mode, and more. Built completely from scratch through conversational AI coding.
             </p>
             <p className="text-[12px] leading-relaxed text-emerald-300/70 max-w-prose">
               Open Source · MIT license

@@ -42,6 +42,23 @@ Every weapon earns its own **mastery XP** as you kill with it (see **Weapon Mast
 
 ---
 
+## 🎭 Characters
+
+Pick one of **eight distinct characters** before each run — available in Classic, Tutorial and Multiplayer modes. Every character has a **signature active ability** (triggered by the ability key, gated by a cooldown) and a mild **mechanical passive**. Each character also casts a unique full-body shadow matching their class silhouette and currently held weapon.
+
+| Character | Active Ability | CD | Duration | Effect | Passive |
+|-----------|---------------|----|----------|--------|---------|
+| Ranger | **Dash** | 5s | Instant | Burst forward — bowl over enemies in your path | −10% dash cooldown |
+| Scout | **Adrenaline** | 11s | 4s | 1.75× movement-speed surge | +12% movement speed |
+| Heavy | **Bulwark** | 15s | 5s | Frontal riot shield soaks incoming damage | +20% max HP, −8% speed |
+| Operative | **Focus Fire** | 15s | 5s | Overclock your weapon: faster fire rate + bigger damage | +10% headshot damage |
+| Pyro | **Firestorm** | 13s | Instant | Detonates an AoE shockwave that scorches nearby enemies | Burning bullets (extra damage per hit) |
+| Medic | **Field Triage** | 16s | Instant | Instantly restores ⅓ of max HP | Regenerate 0.5 HP / sec |
+| Engineer | **Overclock** | 14s | 4s | Snap-reload, then unlimited ammo | −15% reload time |
+| Phantom | **Cloak** | 15s | 4s | Vanish and phase through enemies, breaking their tracking | +15% Phantom power-up duration |
+
+---
+
 ## 👾 Enemies
 
 Premium low-poly creatures with chest cores, shoulder plating, knee/elbow pads, glowing waist belts, back-vent panels, glowing visors and head crests. Base HP scales up with difficulty and wave number.
@@ -72,6 +89,7 @@ Premium low-poly creatures with chest cores, shoulder plating, knee/elbow pads, 
 - Kill streaks with tiered notifications
 - Achievement system with **19 unlockable Titles** that show up in the kill feed
 - Procedural mission system with 14 mission types across 6 difficulty tiers
+- **Damage direction indicator** — red threat arc sweeps around the crosshair pointing at incoming fire (CoD-style spatial awareness)
 
 **Roguelike Wave Progression**
 - 🎁 **Mystery Box** picker between waves — three face-down crates. One hides a perk; pick wisely. Number keys highlight, Enter opens.
@@ -133,29 +151,24 @@ Every weapon has its own **L0 → L10 mastery** ladder. Kills grant XP scaled by
 - Image-based lighting — environment reflections that make metals read as real metal
 - 8 distinct biomes with unique palettes, fog and atmosphere
 - **Seamless world streaming** — 5 × 5 chunk grid (~350m visible) with tightened distance fog that blends new chunks into the sky tone, so the player never sees a "world ends here" pop-in
-- Ground Truth Ambient Occlusion (GTAO), Unreal-style mip-chain bloom, screen-space god rays, ACES filmic tone mapping and cinematic colour grading — all running on three.js's native postprocessing stack (no external FX libraries)
+- **Procedural terrain** — GPU vertex-displaced rolling hills and ridges in the mid/far field; the player's combat arena stays perfectly flat so gameplay is unaffected
+- **Per-biome ground materials** — macro earth-tone patches, cavity AO, micro grain, slope→rock blending, normal-mapped micro-relief, and per-map identity layers (sand ripples, snow drift + sparkle, lava cracks, wet swamp puddles)
+- **Full-body player shadow** — a class-specific humanoid silhouette (holding the current weapon) is invisible to the camera but casts a believable shadow on the ground
+- Full cinematic post-processing pipeline: GTAO · Unreal Bloom · ACES filmic tonemap · SMAA · HDR chromatic aberration · multi-tap volumetric god rays · anamorphic lens streaks (Ultra) · film halation · aerial perspective · CAS adaptive sharpening — all in a single custom fragment shader pass
+- **Ragdoll death physics** — enemies crumple with physical joint constraints on death (toggleable in Settings)
+- Cinematic direction-aware menu transitions — pure CSS compositor animation, zero JS per-frame cost
 - Blood splatter, muzzle flash and impact effects
 
 **Multiplayer**
 - Peer-to-peer multiplayer via PeerJS (no dedicated game server)
 - Host-authoritative **shared enemy world** — every player fights the same enemies in the same positions; an enemy attacking one player is reflected for everyone
-- Up to 8 players, **8 selectable character classes with mechanical passives**
+- **Snapshot interpolation** — remote players and enemies rendered via timestamped snapshot buffering (Valve-style); motion stays smooth across packet gaps without the classic lerp-to-latest stutter
+- Up to 8 players, **8 selectable character classes** — each with a unique active ability and a mechanical passive (see [Characters](#-characters))
 - Mystery Box runs in multiplayer too with an 8s auto-pick countdown so a distracted player can't stall the match
 - Floating name tags + health bars above every player
 - In-game chat with quick emotes, live scoreboard HUD, spectator mode and game-over screens
 
-### Multiplayer Character Passives
-
-| Character | Passive |
-|-----------|---------|
-| Ranger | −10% dash cooldown |
-| Scout | +12% movement speed |
-| Heavy | +20% max HP, −8% speed |
-| Operative | +10% headshot damage |
-| Pyro | Burning bullets (small extra damage per hit) |
-| Medic | Regenerate 0.5 HP / sec |
-| Engineer | −15% reload time |
-| Phantom | +15% Phantom power-up duration |
+> Character abilities, passives and shadow silhouettes are detailed in the [Characters](#-characters) section above — the same picks apply in Classic, Tutorial and Multiplayer.
 
 **Accounts & Progression** (powered by Convex)
 - Username / password accounts via Convex Auth — no email required
@@ -163,6 +176,7 @@ Every weapon has its own **L0 → L10 mastery** ladder. Kills grant XP scaled by
 - Account rank (Bronze → Master) and level driven by kills and wins, not games played
 - Smart skill tree unlocked with points earned from Solo runs and Daily Challenge claims
 - Achievements are Solo-only; cross-device settings sync; privacy-aware public profiles
+- **Global leaderboard** — ranks all players by composite account XP (difficulty-weighted solo rank + multiplayer + meta); opt-out privacy toggle in Profile Settings
 
 **UI & Polish**
 - Cohesive, professional dark UI built with hand-crafted Tailwind styling
@@ -172,7 +186,11 @@ Every weapon has its own **L0 → L10 mastery** ladder. Kills grant XP scaled by
 - Screen shake and damage flash effects
 - Skill tree, mission display, stats gallery
 - Themed tutorial that freezes the world while you read each step
-- Full settings menu with persistence
+- **Full settings menu** — Graphics (Low / Medium / High / Ultra), Audio, Gameplay (ragdoll, auto-reload, adaptive difficulty), Controls, UI — all persisted
+- **Key Bindings Editor** — 11 fully rebindable keyboard actions (Move, Jump, Sprint, Crouch, Dash, Reload, Power-Up, Tactical Map)
+- **Colorblind modes** — Protanopia, Deuteranopia and Tritanopia correction filters
+- **Photo Mode** — from the Pause Menu; 8 filter presets (Original, Vivid, Noir, Sepia, Cool, Warm, Dramatic, Faded) + manual Brightness / Contrast / Saturation; captures cloud-saved to Profile → Photos
+- **Shader warmup screen** — circular progress ring + staged phase checklist (Compiling shaders → Warming materials → Priming post-processing → Spawning the world) on game start
 
 **Mobile & Tablet** (best on desktop — see [Mobile & Tablet](#-mobile--tablet))
 - Auto-detected touch controls: virtual joystick, swipe-to-look, and on-screen
@@ -215,12 +233,14 @@ Plus **Killstreak Airdrops** delivered straight to you (see Killstreak Airdrops 
 | Space | Jump |
 | Shift | Sprint |
 | C | Crouch |
-| Q | Dash |
+| Q | Dash / Active Ability |
 | R | Reload |
 | 1–7 / Scroll | Switch weapons |
 | E / F / V / B | Abilities |
 | M | Toggle expanded tactical map |
 | ESC | Pause |
+
+> All movement and action keys (except mouse, weapon slots and Pause) are **fully rebindable** in Settings → Controls.
 
 ### Mystery Box picker
 
@@ -259,6 +279,7 @@ Touch devices are auto-detected and the game remaps to on-screen controls:
   fullscreen + landscape lock on start where supported.
 - The HUD, menus and multiplayer scoreboard/chat all adapt to a compact,
   non-overlapping touch layout sized to the visible viewport.
+- **Haptic feedback** — context-sensitive vibration patterns for fire, hit, headshot, reload, dash, damage received, kill and explosion; rate-limited on full-auto so it never becomes a continuous buzz; toggleable in Settings.
 
 ---
 
@@ -344,11 +365,18 @@ forest-survival/
 │   │   ├── GameOver.tsx
 │   │   ├── PauseMenu.tsx
 │   │   ├── MultiplayerLobby.tsx
+│   │   ├── CharacterSelect.tsx      # Solo / Tutorial character picker
 │   │   ├── SkillTreeMenu.tsx
 │   │   ├── MissionDisplay.tsx
 │   │   ├── WavePerkPicker.tsx       # Mystery Box overlay
 │   │   ├── RunModifierPicker.tsx    # Daily mutator picker
 │   │   ├── DailyChallengeCard.tsx   # Main-menu daily card
+│   │   ├── LeaderboardMenu.tsx      # Global leaderboard
+│   │   ├── PhotoMode.tsx            # In-game photo mode (from Pause Menu)
+│   │   ├── KeyBindingsEditor.tsx    # Rebindable key controls
+│   │   ├── DamageDirectionIndicator.tsx  # Threat arc overlay
+│   │   ├── ShaderProcessingScreen.tsx   # Shader warmup loading screen
+│   │   ├── MenuTransition.tsx       # Direction-aware cross-screen transitions
 │   │   └── ...
 │   └── utils/               # Game system utilities
 │       ├── AIBehaviorSystem.ts
@@ -356,14 +384,20 @@ forest-survival/
 │       ├── MultiplayerManager.ts
 │       ├── SoundManager.ts
 │       ├── SmartEnemyManager.ts
-│       ├── WavePerkRegistry.ts       # 15 perks + mystery roll
-│       ├── RunModifierSystem.ts      # 6 mutators + daily roll
-│       ├── DailyChallengeRegistry.ts # 5 challenges + UTC roll
-│       ├── WeaponMasterySystem.ts    # Per-weapon XP & levels
+│       ├── WavePerkRegistry.ts          # 15 perks + mystery roll
+│       ├── RunModifierSystem.ts         # 6 mutators + daily roll
+│       ├── DailyChallengeRegistry.ts    # 5 challenges + UTC roll
+│       ├── WeaponMasterySystem.ts       # Per-weapon XP & levels
 │       ├── CharacterPassiveRegistry.ts
-│       ├── CosmeticTitles.ts         # Achievement → title map
-│       ├── HazardSystem.ts           # Explosive barrels
-│       ├── RangedSentinelSystem.ts   # Laser turrets
+│       ├── CharacterAbilityRegistry.ts  # 8 active abilities (all modes)
+│       ├── CharacterModels.ts           # Low-poly humanoid class builders
+│       ├── LocalPlayerShadow.ts         # Full-body shadow caster
+│       ├── TerrainSystem.ts             # GPU vertex-displaced procedural terrain
+│       ├── SnapshotInterpolator.ts      # Valve-style netcode interpolation
+│       ├── haptics.ts                   # Mobile vibration feedback
+│       ├── CosmeticTitles.ts            # Achievement → title map
+│       ├── HazardSystem.ts              # Explosive barrels
+│       ├── RangedSentinelSystem.ts      # Laser turrets
 │       └── ...
 ├── convex/                  # Convex backend
 │   ├── schema.ts
