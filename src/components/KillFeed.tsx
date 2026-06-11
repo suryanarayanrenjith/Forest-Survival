@@ -85,7 +85,7 @@ const KillFeed = ({ visible, anchorClass = 'top-36 right-4', isTouch = false }: 
         return (
           <div
             key={entry.id}
-            className="flex items-center gap-2 rounded-lg border border-white/10 bg-black/65 backdrop-blur-md px-3 py-1.5"
+            className="flex items-center gap-2 rounded-lg border border-white/10 bg-black/80 px-3 py-1.5"
             style={{
               opacity: index === 0 ? 1 : 0.7,
               animation: `kfIn 0.22s ease-out ${index * 0.04}s both, kfOut 0.35s ease-in 2.0s both`,

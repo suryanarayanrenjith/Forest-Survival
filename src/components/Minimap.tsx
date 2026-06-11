@@ -267,7 +267,7 @@ const Legend = ({ className = '', soloMode = false }: { className?: string; solo
  *  close. Portaled to <body> so it always paints above the rest of the HUD. */
 const ExpandedRadar = ({ onClose, soloMode = false }: { onClose: () => void; soloMode?: boolean }) => createPortal(
   <div className="pointer-events-none fixed inset-0 z-[140] flex items-center justify-center p-4">
-    <div className="pointer-events-auto flex flex-col items-center gap-2.5 rounded-2xl border border-white/15 bg-[#0b0f15]/82 p-3 shadow-2xl backdrop-blur-md">
+    <div className="pointer-events-auto flex flex-col items-center gap-2.5 rounded-2xl border border-white/15 bg-[#0b0f15]/95 p-3 shadow-2xl">
       <div className="flex w-full items-center justify-between gap-4">
         <span className="flex items-center gap-2 text-xs font-semibold tracking-[0.15em] text-gray-300 uppercase">
           <Radar className="w-4 h-4 text-emerald-400" strokeWidth={2.25} />
@@ -315,7 +315,7 @@ const Minimap = ({ isTouch = false, standalone = false, soloMode = false }: { is
           <button
             onClick={() => setExpanded(true)}
             aria-label="Open tactical map"
-            className="touch-control fixed right-2 top-[162px] z-[46] flex h-12 w-12 items-center justify-center rounded-2xl border border-white/15 bg-black/60 backdrop-blur-md active:scale-95"
+            className="touch-control fixed right-2 top-[162px] z-[46] flex h-12 w-12 items-center justify-center rounded-2xl border border-white/15 bg-black/75 active:scale-95"
             style={{ pointerEvents: 'auto' }}
           >
             <Radar className="h-5 w-5 text-emerald-300" strokeWidth={2.25} />
@@ -328,7 +328,7 @@ const Minimap = ({ isTouch = false, standalone = false, soloMode = false }: { is
 
   // ── Desktop: compact inline radar + expand affordance ──
   const panel = (
-    <div className="flex-shrink-0 rounded-xl border border-white/10 bg-black/60 backdrop-blur-md overflow-hidden">
+    <div className="flex-shrink-0 rounded-xl border border-white/10 bg-black/80 overflow-hidden">
       <div className="flex items-center justify-between px-3 py-2 border-b border-white/[0.07]">
         <span className="flex items-center gap-1.5 text-[10px] font-semibold tracking-[0.15em] text-gray-400 uppercase">
           <Radar className="w-3.5 h-3.5 text-emerald-400" strokeWidth={2.25} />

@@ -89,7 +89,7 @@ export const TutorialOverlay: React.FC<TutorialOverlayProps> = ({
           className="absolute bottom-24 left-1/2 -translate-x-1/2 pointer-events-auto"
           style={{ animation: 'tutorialEnter 0.3s cubic-bezier(0.16,1,0.3,1) forwards' }}
         >
-          <div className={`flex items-center gap-3 rounded-2xl border bg-black/75 backdrop-blur-md px-5 py-3 shadow-2xl transition-colors ${
+          <div className={`flex items-center gap-3 rounded-2xl border bg-black/85 px-5 py-3 shadow-2xl transition-colors ${
             done ? 'border-emerald-400/60' : 'border-emerald-400/25'
           }`}>
             <div className={`flex items-center justify-center w-9 h-9 rounded-xl flex-shrink-0 ${done ? 'bg-emerald-500/25' : 'bg-emerald-500/12'}`}>
@@ -127,7 +127,7 @@ export const TutorialOverlay: React.FC<TutorialOverlayProps> = ({
   // ── READING MODE — the instruction card (blocking) ─────────────────────────
   return (
     <div className="fixed inset-0 z-50">
-      <div className="absolute inset-0" style={{ background: 'rgba(5,8,10,0.6)', backdropFilter: 'blur(2px)' }} />
+      <div className="absolute inset-0" style={{ background: 'rgba(5,8,10,0.7)' }} />
 
       <div
         className="absolute pointer-events-auto w-[90vw] max-w-md"
@@ -255,7 +255,7 @@ export const CoachTip: React.FC<CoachTipProps> = ({
   return (
     <div className={`fixed bottom-56 left-1/2 -translate-x-1/2 z-40 animate-slide-up`}>
       <div
-        className={`rounded-2xl border bg-black/70 p-4 shadow-2xl backdrop-blur-md max-w-md ${priority === 'critical' ? 'animate-pulse' : ''}`}
+        className={`rounded-2xl border bg-black/85 p-4 shadow-2xl max-w-md ${priority === 'critical' ? 'animate-pulse' : ''}`}
         style={{ borderColor: `${iconColor}88`, boxShadow: `0 0 30px ${iconColor}33` }}
       >
         <div className="flex items-start gap-3">

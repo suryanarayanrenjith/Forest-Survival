@@ -131,7 +131,7 @@ const MultiplayerHUD = ({ localPlayer, remotePlayers, remainingTime, gameMode, i
         <button
           onClick={() => setBoardOpen((v) => !v)}
           aria-label="Scoreboard"
-          className="touch-control fixed right-2 top-[62px] z-[46] flex min-w-[52px] flex-col items-center gap-0.5 rounded-2xl border border-white/15 bg-black/60 px-2 py-1.5 backdrop-blur-md active:scale-95"
+          className="touch-control fixed right-2 top-[62px] z-[46] flex min-w-[52px] flex-col items-center gap-0.5 rounded-2xl border border-white/15 bg-black/80 px-2 py-1.5 active:scale-95"
           style={{ pointerEvents: 'auto' }}
         >
           {remainingTime !== null ? (
@@ -192,7 +192,7 @@ const MultiplayerHUD = ({ localPlayer, remotePlayers, remainingTime, gameMode, i
       <div className="flex flex-shrink-0 items-center gap-2.5">
         {remainingTime !== null && (
           <div
-            className={`flex items-center gap-2 rounded-xl border bg-black/60 backdrop-blur-md px-3 py-2 flex-1 ${
+            className={`flex items-center gap-2 rounded-xl border bg-black/80 px-3 py-2 flex-1 ${
               remainingTime < 30 ? 'border-red-500/50' : 'border-white/10'
             }`}
           >
@@ -202,7 +202,7 @@ const MultiplayerHUD = ({ localPlayer, remotePlayers, remainingTime, gameMode, i
             </span>
           </div>
         )}
-        <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-black/60 backdrop-blur-md px-3 py-2">
+        <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-black/80 px-3 py-2">
           {gameMode === 'coop'
             ? <Users className="w-4 h-4 text-sky-400" strokeWidth={2.25} />
             : <Swords className="w-4 h-4 text-rose-400" strokeWidth={2.25} />}
@@ -213,7 +213,7 @@ const MultiplayerHUD = ({ localPlayer, remotePlayers, remainingTime, gameMode, i
       </div>
 
       {/* Scoreboard — flex-1 so it takes the remaining height; the rows scroll. */}
-      <div className="flex min-h-0 flex-1 flex-col rounded-xl border border-white/10 bg-black/60 backdrop-blur-md overflow-hidden">
+      <div className="flex min-h-0 flex-1 flex-col rounded-xl border border-white/10 bg-black/80 overflow-hidden">
         <div className="flex flex-shrink-0 items-center justify-between px-3 py-2 border-b border-white/[0.07]">
           <span className="text-[10px] font-semibold tracking-[0.15em] text-gray-400 uppercase">
             Players · {allPlayers.length}

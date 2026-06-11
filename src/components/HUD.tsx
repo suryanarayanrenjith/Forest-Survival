@@ -121,7 +121,7 @@ const HUD = ({
     return (
       <>
         <div className="touch-safe-pad absolute left-0 top-0 select-none">
-          <div className="m-2 rounded-xl border border-white/10 bg-black/55 px-2.5 py-1.5 backdrop-blur-md">
+          <div className="m-2 rounded-xl border border-white/10 bg-black/75 px-2.5 py-1.5">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
               {/* Health */}
               <div className="flex items-center gap-1.5">
@@ -176,7 +176,7 @@ const HUD = ({
         {/* Combo — top-center, transient. Drops below the FPS pill when shown. */}
         {combo > 1 && (
           <div className={`absolute left-1/2 ${fpsVisible ? 'top-11' : 'top-2'} -translate-x-1/2 select-none`} style={{ animation: 'comboIn 0.25s cubic-bezier(0.34, 1.56, 0.64, 1)' }}>
-            <div className="flex items-center gap-2 rounded-full border border-orange-400/40 bg-orange-500/15 px-3 py-1 backdrop-blur-md">
+            <div className="flex items-center gap-2 rounded-full border border-orange-400/40 bg-orange-950/75 px-3 py-1">
               <Flame className="h-3.5 w-3.5 text-orange-400" strokeWidth={2.25} fill="currentColor" />
               <span className="text-sm font-bold tabular-nums tracking-wide text-orange-200">{combo}x</span>
             </div>
@@ -197,7 +197,7 @@ const HUD = ({
     <>
       {/* ===== Top Left — Vitals ===== */}
       <div className="absolute top-4 left-4 select-none">
-        <div className="rounded-2xl border border-white/10 bg-black/55 backdrop-blur-md px-4 py-3 w-60">
+        <div className="rounded-2xl border border-white/10 bg-black/75 px-4 py-3 w-60">
           {/* Health */}
           <div className="flex items-center justify-between mb-1.5">
             <div className="flex items-center gap-2">
@@ -272,7 +272,7 @@ const HUD = ({
       {/* ===== Top Right — Stats ===== */}
       {!hideStatsPanel && (
         <div className="absolute top-4 right-4 select-none">
-          <div className="rounded-2xl border border-white/10 bg-black/55 backdrop-blur-md px-4 py-3 w-44 text-right">
+          <div className="rounded-2xl border border-white/10 bg-black/75 px-4 py-3 w-44 text-right">
             <div className="text-[10px] font-semibold tracking-[0.15em] text-gray-400 uppercase mb-0.5">Score</div>
             <div
               className={`text-3xl font-bold tabular-nums text-white transition-transform duration-150 ${scorePopup ? 'scale-110' : 'scale-100'}`}
@@ -302,7 +302,7 @@ const HUD = ({
           className={`absolute ${fpsVisible ? 'top-14' : 'top-5'} left-1/2 -translate-x-1/2 select-none`}
           style={{ animation: 'comboIn 0.25s cubic-bezier(0.34, 1.56, 0.64, 1)' }}
         >
-          <div className="flex items-center gap-2 rounded-full border border-orange-400/40 bg-orange-500/15 backdrop-blur-md px-4 py-1.5">
+          <div className="flex items-center gap-2 rounded-full border border-orange-400/40 bg-orange-950/75 px-4 py-1.5">
             <Flame className="w-4 h-4 text-orange-400" strokeWidth={2.25} fill="currentColor" />
             <span className="text-base font-bold text-orange-200 tabular-nums tracking-wide">{combo}x</span>
             <span className="text-[10px] font-semibold tracking-[0.2em] text-orange-300/80 uppercase">Combo</span>
@@ -313,7 +313,7 @@ const HUD = ({
       {/* ===== Bottom Center — Ability Bar ===== */}
       {abilities.length > 0 && (
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2 select-none">
-          <div className="flex items-end gap-2 rounded-2xl border border-white/10 bg-black/55 backdrop-blur-md px-3 py-2.5">
+          <div className="flex items-end gap-2 rounded-2xl border border-white/10 bg-black/75 px-3 py-2.5">
             {abilities.map((a) => (
               <AbilitySlot key={a.key} ability={a} />
             ))}
@@ -332,7 +332,7 @@ const HUD = ({
 
       {/* ===== Bottom Right — Weapons ===== */}
       <div className="absolute bottom-4 right-4 select-none">
-        <div className="rounded-2xl border border-white/10 bg-black/55 backdrop-blur-md p-3">
+        <div className="rounded-2xl border border-white/10 bg-black/75 p-3">
           <div className="text-[10px] font-semibold tracking-[0.15em] text-gray-500 uppercase mb-2 text-right">
             Loadout
           </div>
@@ -520,7 +520,7 @@ const StaminaPie = ({ ratio, exhausted, unlimited = false }: { ratio: number; ex
 
   return (
     <div className="absolute bottom-4 left-4 select-none">
-      <div className="rounded-2xl border border-white/10 bg-black/55 backdrop-blur-md px-3 py-2.5 flex items-center gap-3">
+      <div className="rounded-2xl border border-white/10 bg-black/75 px-3 py-2.5 flex items-center gap-3">
         {/* Pie ring */}
         <div className="relative w-12 h-12">
           {/* Outer ring (track) */}

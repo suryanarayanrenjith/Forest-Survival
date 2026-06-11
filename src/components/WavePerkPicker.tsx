@@ -158,8 +158,8 @@ const WavePerkPicker = ({
 
   return (
     <div
-      className="fixed inset-0 z-[85] overflow-y-auto backdrop-blur-md"
-      style={{ background: '#05080adb' }}
+      className="fixed inset-0 z-[85] overflow-y-auto"
+      style={{ background: '#05080aee' }}
     >
       {/* Subtle vignette so the boxes pop without being overwhelming */}
       <div
@@ -202,7 +202,7 @@ const WavePerkPicker = ({
                     key={idx}
                     className={`relative flex flex-col items-start gap-3 rounded-2xl border ${
                       isPicked ? style.ring : style.border
-                    } ${style.bg} p-5 backdrop-blur-md transition-all duration-300 ${
+                    } ${style.bg} p-5 transition-all duration-300 ${
                       isPicked ? 'scale-[1.04]' : 'scale-100'
                     }`}
                     style={{ boxShadow: `0 0 36px ${style.glow}`, animation: isPicked ? 'perkBoxPop 0.45s ease-out' : 'perkBoxReveal 0.4s ease-out' }}
@@ -231,7 +231,7 @@ const WavePerkPicker = ({
               return (
                 <div
                   key={idx}
-                  className={`relative flex flex-col items-center justify-center gap-2 rounded-2xl border border-white/8 bg-black/35 p-6 sm:p-8 backdrop-blur-md transition-all duration-300 ${
+                  className={`relative flex flex-col items-center justify-center gap-2 rounded-2xl border border-white/8 bg-black/55 p-6 sm:p-8 transition-all duration-300 ${
                     isPicked ? 'scale-[1.04] border-rose-400/35' : 'scale-100'
                   }`}
                   style={{ animation: isPicked ? 'perkBoxPop 0.45s ease-out' : 'perkBoxReveal 0.4s ease-out' }}
@@ -254,7 +254,7 @@ const WavePerkPicker = ({
                 type="button"
                 onClick={() => { setFocusedIdx(idx); setPickedIdx(idx); }}
                 onMouseEnter={() => setFocusedIdx(idx)}
-                className={`group relative flex flex-col items-center justify-center gap-3 rounded-2xl border bg-emerald-500/[0.05] p-6 sm:p-8 backdrop-blur-md transition-all duration-150 ${
+                className={`group relative flex flex-col items-center justify-center gap-3 rounded-2xl border bg-emerald-500/[0.05] p-6 sm:p-8 transition-all duration-150 ${
                   isFocused ? 'border-emerald-300 scale-[1.04]' : 'border-emerald-400/30 hover:border-emerald-300/55 hover:scale-[1.02]'
                 }`}
                 style={isFocused ? { boxShadow: '0 0 32px rgba(52,211,153,0.40)' } : undefined}
@@ -327,7 +327,7 @@ const WavePerkPicker = ({
             haven't touched the tree in a while. */}
         {skillPointsAvailable !== undefined && skillPointsAvailable > 0 && !revealed && (
           <div className="mt-6 flex items-center justify-center">
-            <div className="flex items-center gap-2.5 rounded-full border border-amber-400/30 bg-amber-500/10 px-3.5 py-1.5 backdrop-blur-md">
+            <div className="flex items-center gap-2.5 rounded-full border border-amber-400/30 bg-amber-950/70 px-3.5 py-1.5">
               <GraduationCap className="h-3.5 w-3.5 text-amber-300" strokeWidth={2.25} />
               <span className="text-[11px] font-bold uppercase tracking-[0.15em] text-amber-200">
                 {skillPointsAvailable} Skill Point{skillPointsAvailable === 1 ? '' : 's'} to spend

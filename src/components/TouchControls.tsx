@@ -138,7 +138,7 @@ const TouchControls = ({
             type="button"
             aria-label="Switch weapon"
             onClick={() => setWeaponOpen((v) => !v)}
-            className={`flex h-12 items-center gap-2 rounded-2xl border bg-black/60 px-3 backdrop-blur-md transition-all active:scale-95 ${
+            className={`flex h-12 items-center gap-2 rounded-2xl border bg-black/80 px-3 transition-all active:scale-95 ${
               weaponOpen ? 'border-emerald-400/60 bg-emerald-500/10' : 'border-white/15'
             }`}
           >
@@ -153,7 +153,7 @@ const TouchControls = ({
           </button>
 
           {weaponOpen && (
-            <div className="absolute right-0 top-14 flex max-h-[58vh] w-44 flex-col gap-1 overflow-y-auto rounded-2xl border border-white/12 bg-black/85 p-1.5 backdrop-blur-md">
+            <div className="absolute right-0 top-14 flex max-h-[58vh] w-44 flex-col gap-1 overflow-y-auto rounded-2xl border border-white/12 bg-black/90 p-1.5">
               {Object.keys(WEAPONS).map((key, idx) => {
                 const unlocked = unlockedWeapons.includes(key);
                 const current = key === currentWeapon;
@@ -186,7 +186,7 @@ const TouchControls = ({
             type="button"
             aria-label="Pause"
             onClick={() => tapKey('Escape')}
-            className="pointer-events-auto flex h-12 w-12 items-center justify-center rounded-2xl border border-white/15 bg-black/55 backdrop-blur-md active:scale-95"
+            className="pointer-events-auto flex h-12 w-12 items-center justify-center rounded-2xl border border-white/15 bg-black/75 active:scale-95"
           >
             <Pause className="h-5 w-5 text-white" strokeWidth={2.25} fill="currentColor" />
           </button>
@@ -220,7 +220,7 @@ const TouchControls = ({
           onPointerUp={onFireUp}
           onPointerCancel={onFireUp}
           onContextMenu={(e) => e.preventDefault()}
-          className="pointer-events-auto flex h-[78px] w-[78px] items-center justify-center rounded-full border-2 border-red-400/60 bg-red-500/25 backdrop-blur-md transition-transform active:scale-90 active:bg-red-500/45"
+          className="pointer-events-auto flex h-[78px] w-[78px] items-center justify-center rounded-full border-2 border-red-400/60 bg-red-500/30 transition-transform active:scale-90 active:bg-red-500/45"
         >
           <span className="flex flex-col items-center leading-none">
             <Crosshair className="h-7 w-7 text-red-200" strokeWidth={2.25} />
@@ -315,7 +315,7 @@ const Joystick = () => {
         <>
           {/* Base ring */}
           <div
-            className="fixed h-28 w-28 -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/15 bg-black/30 backdrop-blur-sm"
+            className="fixed h-28 w-28 -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/15 bg-black/45"
             style={{ left: origin.x, top: origin.y }}
           />
           {/* Thumb */}
@@ -351,7 +351,7 @@ const ActionButton = ({
       type="button"
       aria-label={label}
       onPointerDown={(e) => { e.preventDefault(); onTap(); }}
-      className={`pointer-events-auto relative flex h-[52px] w-[52px] flex-col items-center justify-center rounded-2xl border ${a.border} ${a.bg} backdrop-blur-md transition-transform active:scale-90`}
+      className={`pointer-events-auto relative flex h-[52px] w-[52px] flex-col items-center justify-center rounded-2xl border ${a.border} ${a.bg} transition-transform active:scale-90`}
     >
       <Icon className={`h-5 w-5 ${a.text}`} strokeWidth={2.25} />
       <span className="mt-0.5 text-[8px] font-bold uppercase tracking-wide text-gray-300">{label}</span>
@@ -382,7 +382,7 @@ const PowerButton = ({
       type="button"
       aria-label={label}
       onPointerDown={(e) => { e.preventDefault(); onTap(); }}
-      className={`pointer-events-auto relative flex h-[52px] w-[52px] flex-col items-center justify-center rounded-2xl border ${accent.border} ${accent.bg} backdrop-blur-md transition-transform active:scale-90 ${
+      className={`pointer-events-auto relative flex h-[52px] w-[52px] flex-col items-center justify-center rounded-2xl border ${accent.border} ${accent.bg} transition-transform active:scale-90 ${
         held ? 'animate-pulse' : ''
       }`}
     >
@@ -410,7 +410,7 @@ const HoldButton = ({
     onPointerDown={onDown}
     onPointerUp={onUp}
     onPointerCancel={onUp}
-    className="pointer-events-auto relative flex h-[52px] w-[52px] flex-col items-center justify-center rounded-2xl border border-white/15 bg-black/50 backdrop-blur-md transition-transform active:scale-90 active:bg-white/10"
+    className="pointer-events-auto relative flex h-[52px] w-[52px] flex-col items-center justify-center rounded-2xl border border-white/15 bg-black/70 transition-transform active:scale-90 active:bg-white/10"
   >
     <Icon className="h-5 w-5 text-gray-200" strokeWidth={2.25} />
     <span className="mt-0.5 text-[8px] font-bold uppercase tracking-wide text-gray-300">{label}</span>

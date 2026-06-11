@@ -70,7 +70,7 @@ const MissionCard: React.FC<MissionCardProps> = ({ mission, onDismiss, compact =
   }[mission.difficulty];
 
   return (
-    <div className={`pointer-events-auto rounded-2xl border border-white/10 bg-black/55 backdrop-blur-md shadow-2xl transition-colors hover:border-cyan-400/40 ${compact ? 'p-2.5' : 'p-3.5'}`}>
+    <div className={`pointer-events-auto rounded-2xl border border-white/10 bg-black/75 shadow-2xl transition-colors hover:border-cyan-400/40 ${compact ? 'p-2.5' : 'p-3.5'}`}>
       {/* Header */}
       <div className="flex items-start justify-between mb-2">
         <div className="flex-1">

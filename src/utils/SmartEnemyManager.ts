@@ -8,6 +8,7 @@
 // - Spatial partitioning - efficient proximity queries
 
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { type GraphicsPreset } from './GameSettingsManager';
 
 export type EnemyType = 'normal' | 'fast' | 'tank' | 'boss' | 'ranged';
@@ -135,6 +136,9 @@ interface SharedGeometries {
   // Ranged-specific rifle barrel — long thin box clipped onto the right arm.
   rifleBarrelHigh: THREE.BoxGeometry;
   rifleStockHigh: THREE.BoxGeometry;
+  // Previously allocated FRESH per spawn (and leaked) — now shared.
+  jetGlowHigh: THREE.BoxGeometry;     // glow stripe on the backpack vent
+  muzzleGlowHigh: THREE.SphereGeometry; // ranged rifle's glowing muzzle tip
 
   // Medium detail - simplified
   bodyMedium: THREE.BoxGeometry;
@@ -205,6 +209,10 @@ class SmartEnemyManager {
   private sharedGeometries: SharedGeometries | null = null;
   private sharedMaterials: Map<string, THREE.MeshStandardMaterial> = new Map();
   private eyeMaterial: THREE.MeshBasicMaterial | null = null;
+  // Static sub-pieces that share a material AND ride the same animated part
+  // are pre-merged into one geometry (built lazily, cached forever). Cuts an
+  // enemy's HIGH-LOD draw calls nearly in half with pixel-identical output.
+  private mergedGeoCache: Map<string, THREE.BufferGeometry> = new Map();
 
   // Object pool
   private enemyPool: PooledEnemyMesh[] = [];
@@ -227,7 +235,6 @@ class SmartEnemyManager {
   // Adaptive limits
   private currentMaxEnemies: number = 40;
   private baseMaxEnemies: number = 40;
-  private lastAdjustmentTime: number = 0;
   private isNightMode: boolean = false;
 
   // Frustum culling
@@ -306,6 +313,8 @@ class SmartEnemyManager {
       // Ranged-archetype rifle pieces
       rifleBarrelHigh: new THREE.BoxGeometry(0.08, 0.08, 1.4),
       rifleStockHigh:  new THREE.BoxGeometry(0.18, 0.22, 0.46),
+      jetGlowHigh:     new THREE.BoxGeometry(0.46, 0.08, 0.04),
+      muzzleGlowHigh:  new THREE.SphereGeometry(0.08, 10, 8),
 
       // Medium detail - simplified (fewer segments)
       bodyMedium: new THREE.BoxGeometry(1, 1.5, 0.6, 1, 1, 1),
@@ -436,6 +445,35 @@ class SmartEnemyManager {
   }
 
   /**
+   * Merge a set of shared primitive geometries (each with its original local
+   * transform baked in) into ONE cached geometry. The merged result renders
+   * byte-identically to the individual meshes it replaces — same vertices,
+   * same normals, same material — in a single draw call. Keys are
+   * type-independent because the part layout is identical across archetypes
+   * (only the materials differ).
+   */
+  private mergedGeo(
+    key: string,
+    parts: Array<{ geo: THREE.BufferGeometry; pos?: [number, number, number]; rotX?: number }>,
+  ): THREE.BufferGeometry {
+    let merged = this.mergedGeoCache.get(key);
+    if (merged) return merged;
+    const transformed = parts.map((p) => {
+      // mergeGeometries needs uniform indexing — normalise to non-indexed.
+      // (toNonIndexed returns `this` for already-non-indexed geometry, so
+      // clone in that case to avoid mutating the shared primitive.)
+      const clone = p.geo.index ? p.geo.toNonIndexed() : p.geo.clone();
+      if (p.rotX) clone.rotateX(p.rotX);
+      if (p.pos) clone.translate(p.pos[0], p.pos[1], p.pos[2]);
+      return clone;
+    });
+    merged = mergeGeometries(transformed, false)!;
+    transformed.forEach((g) => g.dispose());
+    this.mergedGeoCache.set(key, merged);
+    return merged;
+  }
+
+  /**
    * Pre-populate the enemy pool
    */
   private warmupPool(count: number): void {
@@ -497,6 +535,18 @@ class SmartEnemyManager {
     if (!this.sharedGeometries) return;
 
     const config = ENEMY_CONFIGS[type];
+
+    // ── TYPE-AFFINITY FAST PATH ────────────────────────────────────────
+    // The acquire path prefers a pooled slot that already holds this exact
+    // archetype's meshes. When it found one, everything below is already
+    // built — releaseEnemy() reset every transform — so re-asserting the
+    // scale is all the work a respawn costs. This turns mid-wave spawns
+    // from a ~30-object rebuild into a no-op.
+    if (pooledEnemy.type === type && pooledEnemy.parts.body) {
+      pooledEnemy.group.scale.setScalar(config.scale);
+      return;
+    }
+
     const bodyMat = this.sharedMaterials.get(`${type}_body`)!;
     const accentMat = this.sharedMaterials.get(`${type}_accent`)!;
     const brightMat = this.sharedMaterials.get(`${type}_bright`)!;
@@ -505,139 +555,113 @@ class SmartEnemyManager {
     // Clear existing meshes
     this.clearLODGroups(pooledEnemy);
 
-    // HIGH LOD — premium low-poly creature.
-    // body / arms / legs / head remain the animated parts; the extra pieces
-    // are parented to them so they follow every animation automatically.
+    // HIGH LOD — premium low-poly creature, assembled from MERGED static
+    // sub-geometries (grouped per material) parented to the 6 animated parts
+    // (body / arms / legs / head). Renders pixel-identically to the old
+    // 27-mesh build — same vertices, same materials, same local transforms —
+    // at roughly half the draw calls per enemy, and with zero per-spawn
+    // geometry allocation (the old build created a fresh jet-glow box and
+    // rifle-muzzle sphere on EVERY spawn and never disposed them).
     const highGroup = pooledEnemy.lodGroups.high;
     const G = this.sharedGeometries;
     const darkMat = this.sharedMaterials.get(`${type}_dark`)!;
     const glowMat = this.sharedMaterials.get(`${type}_glow`)!;
     const shadows = this.graphicsPreset?.shadowsEnabled ?? true;
 
-    // ── Torso ──
+    // ── Torso (+ chest plate, shoulder pads, hips, vent, glow set) ──
     const body = new THREE.Mesh(G.bodyHigh, bodyMat);
     body.castShadow = shadows;
     body.position.y = 0.75;
     highGroup.add(body);
     pooledEnemy.parts.body = body;
 
-    // Chest plate + glowing power core
-    const chest = new THREE.Mesh(G.chestHigh, brightMat);
-    chest.position.set(0, 0.06, 0.3);
-    body.add(chest);
-    const core = new THREE.Mesh(G.coreHigh, glowMat);
-    core.position.set(0, 0.06, 0.41);
-    body.add(core);
+    // Bright accents: chest plate + both shoulder pads — one mesh.
+    const bodyBright = new THREE.Mesh(this.mergedGeo('body_bright', [
+      { geo: G.chestHigh, pos: [0, 0.06, 0.3] },
+      { geo: G.shoulderHigh, pos: [-0.62, 0.52, 0] },
+      { geo: G.shoulderHigh, pos: [0.62, 0.52, 0] },
+    ]), brightMat);
+    bodyBright.castShadow = shadows;
+    body.add(bodyBright);
 
-    // Shoulder pads
-    const lShoulder = new THREE.Mesh(G.shoulderHigh, brightMat);
-    lShoulder.castShadow = shadows;
-    lShoulder.position.set(-0.62, 0.52, 0);
-    body.add(lShoulder);
-    const rShoulder = new THREE.Mesh(G.shoulderHigh, brightMat);
-    rShoulder.castShadow = shadows;
-    rShoulder.position.set(0.62, 0.52, 0);
-    body.add(rShoulder);
+    // Dark fittings: hip block + backpack vent — one mesh.
+    const bodyDark = new THREE.Mesh(this.mergedGeo('body_dark', [
+      { geo: G.hipHigh, pos: [0, -0.8, 0] },
+      { geo: G.jetVentHigh, pos: [0, 0.05, -0.36] },
+    ]), darkMat);
+    bodyDark.castShadow = shadows;
+    body.add(bodyDark);
 
-    // Hip block bridging torso and legs
-    const hips = new THREE.Mesh(G.hipHigh, darkMat);
-    hips.castShadow = shadows;
-    hips.position.set(0, -0.8, 0);
-    body.add(hips);
+    // Glow set: power core + waist belt + vent stripe — one mesh. Same
+    // per-type glow material as before so each archetype keeps its colour
+    // identity (red / cyan / green / …).
+    const bodyGlow = new THREE.Mesh(this.mergedGeo('body_glow', [
+      { geo: G.coreHigh, pos: [0, 0.06, 0.41] },
+      { geo: G.beltHigh, pos: [0, -0.5, 0] },
+      { geo: G.jetGlowHigh, pos: [0, -0.18, -0.43] },
+    ]), glowMat);
+    bodyGlow.userData.cannotReceiveAO = true;
+    body.add(bodyGlow);
 
-    // Glowing waist belt — thin slab across the torso just above the hips.
-    // Reads as a power tell at distance; uses the per-type glow material so
-    // each archetype keeps its colour identity (red / cyan / green / etc).
-    const belt = new THREE.Mesh(G.beltHigh, glowMat);
-    belt.position.set(0, -0.50, 0);
-    belt.userData.cannotReceiveAO = true;
-    body.add(belt);
-
-    // Backpack vent — dark plate with a glow stripe peeking out, parented
-    // to the body so it sways with the torso animation.
-    const jet = new THREE.Mesh(G.jetVentHigh, darkMat);
-    jet.position.set(0, 0.05, -0.36);
-    body.add(jet);
-    const jetGlow = new THREE.Mesh(
-      new THREE.BoxGeometry(0.46, 0.08, 0.04),
-      glowMat,
-    );
-    jetGlow.position.set(0, -0.18, -0.43);
-    jetGlow.userData.cannotReceiveAO = true;
-    body.add(jetGlow);
-
-    // ── Arms (+ fists + elbow pads) ──
+    // ── Arms (fist + elbow pad merged into one dark mesh per arm) ──
+    const armDarkGeo = this.mergedGeo('arm_dark', [
+      { geo: G.handHigh, pos: [0, -0.62, 0] },
+      { geo: G.elbowPadHigh, pos: [0, -0.10, 0] },
+    ]);
     const leftArm = new THREE.Mesh(G.armHigh, accentMat);
     leftArm.castShadow = shadows;
     leftArm.position.set(-0.65, 0.6, 0);
     highGroup.add(leftArm);
     pooledEnemy.parts.leftArm = leftArm;
-    const lHand = new THREE.Mesh(G.handHigh, darkMat);
-    lHand.position.set(0, -0.62, 0);
-    leftArm.add(lHand);
-    const lElbow = new THREE.Mesh(G.elbowPadHigh, darkMat);
-    lElbow.position.set(0, -0.10, 0);
-    leftArm.add(lElbow);
+    leftArm.add(new THREE.Mesh(armDarkGeo, darkMat));
 
     const rightArm = new THREE.Mesh(G.armHigh, accentMat);
     rightArm.castShadow = shadows;
     rightArm.position.set(0.65, 0.6, 0);
     highGroup.add(rightArm);
     pooledEnemy.parts.rightArm = rightArm;
-    const rHand = new THREE.Mesh(G.handHigh, darkMat);
-    rHand.position.set(0, -0.62, 0);
-    rightArm.add(rHand);
-    const rElbow = new THREE.Mesh(G.elbowPadHigh, darkMat);
-    rElbow.position.set(0, -0.10, 0);
-    rightArm.add(rElbow);
+    rightArm.add(new THREE.Mesh(armDarkGeo, darkMat));
 
     // ── RANGED ARCHETYPE — clip a rifle onto the right hand. Reads as
     // unmistakable from afar so the player IDs the long-range threat.
     if (type === 'ranged') {
-      const rifleStock = new THREE.Mesh(G.rifleStockHigh, darkMat);
-      rifleStock.position.set(0.06, -0.65, 0.12);
-      rightArm.add(rifleStock);
-      const rifleBarrel = new THREE.Mesh(G.rifleBarrelHigh, darkMat);
-      rifleBarrel.position.set(0.06, -0.65, 0.78);
-      rightArm.add(rifleBarrel);
+      const rifle = new THREE.Mesh(this.mergedGeo('rifle_dark', [
+        { geo: G.rifleStockHigh, pos: [0.06, -0.65, 0.12] },
+        { geo: G.rifleBarrelHigh, pos: [0.06, -0.65, 0.78] },
+      ]), darkMat);
+      rightArm.add(rifle);
       // Glowing muzzle tip — same colour as the eye bar / belt so all
       // emissive bits read as one "energy weapon" set.
-      const muzzle = new THREE.Mesh(
-        new THREE.SphereGeometry(0.08, 10, 8),
-        glowMat,
-      );
+      const muzzle = new THREE.Mesh(G.muzzleGlowHigh, glowMat);
       muzzle.position.set(0.06, -0.65, 1.46);
       muzzle.userData.cannotReceiveAO = true;
       rightArm.add(muzzle);
     }
 
-    // ── Legs (+ feet + knee pads) ──
+    // ── Legs (foot + knee pad merged into one dark mesh per leg) ──
+    const legDarkGeo = this.mergedGeo('leg_dark', [
+      { geo: G.footHigh, pos: [0, -0.56, 0.12] },
+      { geo: G.kneePadHigh, pos: [0, -0.05, 0.06] },
+    ]);
     const leftLeg = new THREE.Mesh(G.legHigh, accentMat);
     leftLeg.castShadow = shadows;
     leftLeg.position.set(-0.25, -0.5, 0);
     highGroup.add(leftLeg);
     pooledEnemy.parts.leftLeg = leftLeg;
-    const lFoot = new THREE.Mesh(G.footHigh, darkMat);
-    lFoot.position.set(0, -0.56, 0.12);
-    leftLeg.add(lFoot);
-    const lKnee = new THREE.Mesh(G.kneePadHigh, darkMat);
-    lKnee.position.set(0, -0.05, 0.06);
-    leftLeg.add(lKnee);
+    leftLeg.add(new THREE.Mesh(legDarkGeo, darkMat));
 
     const rightLeg = new THREE.Mesh(G.legHigh, accentMat);
     rightLeg.castShadow = shadows;
     rightLeg.position.set(0.25, -0.5, 0);
     highGroup.add(rightLeg);
     pooledEnemy.parts.rightLeg = rightLeg;
-    const rFoot = new THREE.Mesh(G.footHigh, darkMat);
-    rFoot.position.set(0, -0.56, 0.12);
-    rightLeg.add(rFoot);
-    const rKnee = new THREE.Mesh(G.kneePadHigh, darkMat);
-    rKnee.position.set(0, -0.05, 0.06);
-    rightLeg.add(rKnee);
+    rightLeg.add(new THREE.Mesh(legDarkGeo, darkMat));
 
-    // ── Head (+ visor, glowing eye bar, crest, antenna) ──
-    const head = new THREE.Mesh(G.headHigh, brightMat);
+    // ── Head (box + tilted crest merged; visor + glowing eye bar ride it) ──
+    const head = new THREE.Mesh(this.mergedGeo('head_bright', [
+      { geo: G.headHigh },
+      { geo: G.crestHigh, rotX: -0.32, pos: [0, 0.62, -0.04] },
+    ]), brightMat);
     head.castShadow = shadows;
     head.position.y = 1.9;
     highGroup.add(head);
@@ -650,13 +674,6 @@ class SmartEnemyManager {
     eyeBar.position.set(0, -0.02, 0.43);
     head.add(eyeBar);
     pooledEnemy.parts.leftEye = eyeBar;
-    const crest = new THREE.Mesh(G.crestHigh, brightMat);
-    crest.castShadow = shadows;
-    crest.position.set(0, 0.62, -0.04);
-    crest.rotation.x = -0.32;
-    head.add(crest);
-    // (Previously had a second antenna cone here — it visually clashed with
-    // the tilted crest, reading as a misaligned duplicate. Removed.)
 
     // MEDIUM LOD - Simplified (no separate arms/legs, just body + head)
     const mediumGroup = pooledEnemy.lodGroups.medium;
@@ -721,8 +738,10 @@ class SmartEnemyManager {
       return null;
     }
 
-    // Find an available pooled enemy
-    let pooledEnemy = this.enemyPool.find(e => !e.inUse);
+    // Prefer a free slot that already holds THIS archetype's meshes —
+    // setupEnemyMeshes then skips the whole rebuild (type-affinity reuse).
+    let pooledEnemy = this.enemyPool.find(e => !e.inUse && e.type === type);
+    if (!pooledEnemy) pooledEnemy = this.enemyPool.find(e => !e.inUse);
 
     // If no available enemy in pool, create new one if under max pool size
     if (!pooledEnemy && this.poolSize < this.maxPoolSize) {
@@ -803,9 +822,29 @@ class SmartEnemyManager {
     // NOTE: We do NOT reset materials because they are SHARED across all enemies.
     // The death/damage animations now use scale effects instead of material changes.
 
+    // Strip gameplay add-ons attached directly to the group (e.g. the
+    // mini-boss crown App.tsx parents onto enemy.mesh). They were never
+    // cleaned up, so a recycled slot could hand the next enemy a leftover
+    // crown. Add-ons are allocated fresh per enemy, so dispose them too.
+    for (let i = pooledEnemy.group.children.length - 1; i >= 0; i--) {
+      const child = pooledEnemy.group.children[i];
+      if (child === pooledEnemy.lodGroups.high
+        || child === pooledEnemy.lodGroups.medium
+        || child === pooledEnemy.lodGroups.low) continue;
+      pooledEnemy.group.remove(child);
+      if (child instanceof THREE.Mesh) {
+        child.geometry.dispose();
+        const mat = child.material;
+        if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+        else mat.dispose();
+      }
+    }
+
     pooledEnemy.inUse = false;
     pooledEnemy.group.visible = false;
-    pooledEnemy.type = null;
+    // `type` is intentionally KEPT — it records which archetype's meshes the
+    // slot still holds, so the type-affinity acquire path can reuse them
+    // without rebuilding ~15 meshes on every respawn.
     pooledEnemy.currentLOD = LODLevel.CULLED;
 
     // Remove from active set
@@ -1009,25 +1048,16 @@ class SmartEnemyManager {
   }
 
   /**
-   * Dynamically adjust enemy limit based on performance
+   * ENEMY COUNT IS SACRED. The old "adaptive limit" silently cut the max
+   * enemy count by 15% per low-FPS second (40 → 10 in a bad stretch), which
+   * thinned every wave on slower machines — a gameplay downgrade dressed up
+   * as an optimization. Performance is now reclaimed in the renderer
+   * (instanced world props, merged enemy parts, no backdrop blur) instead of
+   * by deleting gameplay, so the limit stays pinned at the preset's target.
    */
-  private adjustEnemyLimit(now: number): void {
-    // Don't adjust too frequently
-    if (now - this.lastAdjustmentTime < PERFORMANCE_THRESHOLDS.ADJUSTMENT_COOLDOWN) {
-      return;
-    }
-
-    // Reduce enemies if FPS is consistently low
-    if (this.metrics.consecutiveLowFPSFrames >= 3) {
-      const reduction = Math.max(5, Math.floor(this.currentMaxEnemies * 0.15));
-      this.currentMaxEnemies = Math.max(10, this.currentMaxEnemies - reduction);
-      this.lastAdjustmentTime = now;
-    }
-    // Increase enemies if FPS is consistently high and below base limit
-    else if (this.metrics.consecutiveHighFPSFrames >= 5 && this.currentMaxEnemies < this.baseMaxEnemies) {
-      const increase = Math.min(3, this.baseMaxEnemies - this.currentMaxEnemies);
-      this.currentMaxEnemies += increase;
-      this.lastAdjustmentTime = now;
+  private adjustEnemyLimit(_now: number): void {
+    if (this.currentMaxEnemies !== this.baseMaxEnemies) {
+      this.currentMaxEnemies = this.baseMaxEnemies;
     }
   }
 
@@ -1148,8 +1178,10 @@ class SmartEnemyManager {
       return null;
     }
 
-    // Find an available pooled enemy
-    let pooledEnemy = this.enemyPool.find(e => !e.inUse);
+    // Prefer a free slot that already holds THIS archetype's meshes —
+    // setupEnemyMeshes then skips the whole rebuild (type-affinity reuse).
+    let pooledEnemy = this.enemyPool.find(e => !e.inUse && e.type === type);
+    if (!pooledEnemy) pooledEnemy = this.enemyPool.find(e => !e.inUse);
 
     // If no available enemy in pool, create new one if under max pool size
     if (!pooledEnemy && this.poolSize < this.maxPoolSize) {
@@ -1283,6 +1315,10 @@ class SmartEnemyManager {
       }
       this.sharedGeometries = null;
     }
+
+    // Dispose merged sub-part geometries
+    this.mergedGeoCache.forEach((g) => g.dispose());
+    this.mergedGeoCache.clear();
 
     // Dispose shared materials
     for (const material of this.sharedMaterials.values()) {

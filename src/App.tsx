@@ -19,6 +19,7 @@ import { BiomeSystem } from './utils/BiomeSystem';
 import { createAtmosphericHazeMaterial, createSkyDomeMaterial, updateShaderTime } from './utils/Shaders';
 import { getMapConfig, getRandomMap, DEFAULT_MAP, type MapConfig, type MapType } from './utils/MapSystem';
 import { applyGroundTerrainShader, createTerrainSeed, createTerrainUniforms, resolveTerrainProfile, terrainSegments } from './utils/TerrainSystem';
+import { TerrainInstancer } from './utils/TerrainInstancer';
 import { getHDRIEnvironmentIntensity, getHDRIEnvironmentProfile, loadHDRIEnvironment, type HDRIEnvironmentProfile } from './utils/HDRIEnvironment';
 import { MultiplayerManager, type PlayerData as MpPlayerData, type NetworkMessage, type EnemyWire } from './utils/MultiplayerManager';
 import { RemotePlayerManager } from './utils/RemotePlayerManager';
@@ -1427,12 +1428,21 @@ const ForestSurvivalGame = () => {
     const renderHeight = Math.floor(window.innerHeight * graphicsPreset.pixelRatio);
 
     const renderer = new THREE.WebGLRenderer({
-      antialias: graphicsPreset.antialias, // Based on quality setting
+      // Hardware MSAA only matters when the renderer draws geometry straight
+      // to the canvas (Low preset). With post-processing on, every pass renders
+      // into non-MSAA composer targets and the canvas only receives a fullscreen
+      // blit — MSAA there is pure memory-bandwidth waste (SMAA does the AA).
+      antialias: graphicsPreset.antialias && !graphicsPreset.postProcessing,
       powerPreference: "high-performance",
       stencil: graphicsPreset.postProcessing,
       depth: true,
       alpha: false,
-        logarithmicDepthBuffer: graphicsQuality === 'high' || graphicsQuality === 'ultra' // Highest tiers get the better precision path
+      // NEVER use the logarithmic depth buffer here: it writes gl_FragDepth in
+      // the fragment shader, which disables early-Z rejection on every GPU —
+      // with the full-screen terrain shader + heavy vegetation overdraw that
+      // costs a fortune. Camera near 0.1 / far ~1300 sits comfortably within
+      // standard 24-bit depth precision, so the output is identical.
+      logarithmicDepthBuffer: false,
     });
     renderer.setSize(renderWidth, renderHeight, false);
     renderer.setPixelRatio(1); // Fixed at 1, we handle scaling via renderWidth/Height
@@ -2040,6 +2050,29 @@ const ForestSurvivalGame = () => {
     const CHUNK_SIZE = 100;
     const loadedChunks = new Set<string>();
 
+    // ── GPU-INSTANCED WORLD PROPS ──────────────────────────────────────────
+    // Every tree / rock / bush the chunk streamer scatters is absorbed into
+    // per-(geometry, material) InstancedMesh batches instead of being added as
+    // 1-6 individual scene meshes. Identical pixels, ~50 draw calls instead of
+    // thousands — the core fix for the "10-15 FPS even on strong hardware"
+    // problem. Props the instancer can't express (grass InstancedMesh fields,
+    // anything non-standard) fall back to plain scene.add unchanged.
+    const terrainInstancer = new TerrainInstancer(scene);
+    // Bumped on EVERY add/remove so spatial-grid rebuilds can't be fooled by
+    // an add+remove in the same frame leaving the array length unchanged.
+    let terrainVersion = 0;
+    const addTerrainObject = (obj: TerrainObject) => {
+      if (!terrainInstancer.add(obj.mesh)) scene.add(obj.mesh);
+      terrainObjects.push(obj);
+      terrainVersion++;
+    };
+    const removeTerrainObjectAt = (index: number) => {
+      const obj = terrainObjects[index];
+      if (!terrainInstancer.remove(obj.mesh)) scene.remove(obj.mesh);
+      terrainObjects.splice(index, 1);
+      terrainVersion++;
+    };
+
     // Returns true if a collidable object of the given radius placed at (x,z)
     // would overlap an existing collidable terrain object. Used to keep rocks,
     // trees and boulders from clipping into one another when scattered.
@@ -2091,9 +2124,7 @@ const ForestSurvivalGame = () => {
       for (let i = 0; i < treesInChunk; i++) {
         const spot = findFreeSpot(startX, startZ, 2.6);
         if (!spot.ok) continue; // Skip if no clear space — avoids overlapping trees
-        const tree = biomeSystem.createTree(spot.x, spot.z, biome);
-        terrainObjects.push(tree);
-        scene.add(tree.mesh);
+        addTerrainObject(biomeSystem.createTree(spot.x, spot.z, biome));
       }
 
       // Generate rocks based on biome density * map multiplier
@@ -2101,18 +2132,14 @@ const ForestSurvivalGame = () => {
       for (let i = 0; i < rocksInChunk; i++) {
         const spot = findFreeSpot(startX, startZ, 2.2);
         if (!spot.ok) continue; // Skip if no clear space — avoids overlapping rocks
-        const rock = biomeSystem.createRock(spot.x, spot.z, biome);
-        terrainObjects.push(rock);
-        scene.add(rock.mesh);
+        addTerrainObject(biomeSystem.createRock(spot.x, spot.z, biome));
       }
 
       // Generate occasional boulders (more common in rocky maps)
       if (Math.random() > (0.7 / rockDensityMult)) {
         const spot = findFreeSpot(startX, startZ, 4);
         if (spot.ok) {
-          const boulder = biomeSystem.createBoulder(spot.x, spot.z, biome);
-          terrainObjects.push(boulder);
-          scene.add(boulder.mesh);
+          addTerrainObject(biomeSystem.createBoulder(spot.x, spot.z, biome));
         }
       }
 
@@ -2121,9 +2148,7 @@ const ForestSurvivalGame = () => {
       for (let i = 0; i < bushesInChunk; i++) {
         const x = startX + Math.random() * CHUNK_SIZE;
         const z = startZ + Math.random() * CHUNK_SIZE;
-        const bush = biomeSystem.createBush(x, z, biome);
-        terrainObjects.push(bush);
-        scene.add(bush.mesh);
+        addTerrainObject(biomeSystem.createBush(x, z, biome));
       }
 
       // Generate special biome features (water, cacti, etc.)
@@ -2136,8 +2161,7 @@ const ForestSurvivalGame = () => {
         const z = startZ + Math.random() * CHUNK_SIZE;
         const specialFeature = biomeSystem.createSpecialFeature(x, z, biome);
         if (specialFeature) {
-          terrainObjects.push(specialFeature);
-          scene.add(specialFeature.mesh);
+          addTerrainObject(specialFeature);
           if (specialFeature.type === 'water' && specialFeature.mesh instanceof THREE.Mesh) {
             waterBodies.push(specialFeature.mesh);
           }
@@ -2146,12 +2170,12 @@ const ForestSurvivalGame = () => {
 
       // Lush instanced grass — one draw call per chunk, biome-tinted, with
       // a shader wind sway. Streams in/out with the chunk like other terrain.
+      // (Already an InstancedMesh, so the instancer falls back to scene.add.)
       const grassField = biomeSystem.createGrassField(
         startX, startZ, CHUNK_SIZE, biome, graphicsPreset.terrainDetail,
       );
       if (grassField) {
-        terrainObjects.push(grassField);
-        scene.add(grassField.mesh);
+        addTerrainObject(grassField);
       }
 
       // Update ground color based on biome in this area
@@ -2183,8 +2207,7 @@ const ForestSurvivalGame = () => {
         const dxC = obj.x - playerX;
         const dzC = obj.z - playerZ;
         if (dxC * dxC + dzC * dzC > cullRadius * cullRadius) {
-          scene.remove(obj.mesh);
-          terrainObjects.splice(i, 1);
+          removeTerrainObjectAt(i);
         }
       }
     };
@@ -2210,10 +2233,20 @@ const ForestSurvivalGame = () => {
     const STEP_OVER_HEIGHT = 0.7;
     const CLIMB_MAX_HEIGHT = 4.0;
 
+    // Collision queries run through the terrain spatial grid (declared with
+    // the other grids further down; safe to reference here because these
+    // helpers are only ever CALLED from the game loop). The grid query radius
+    // must cover the largest collidable obstacle radius so a big boulder whose
+    // centre sits in a neighbouring cell is still tested.
+    const COLLISION_QUERY_RADIUS = 12;
+
     const checkTerrainCollision = (newX: number, newZ: number, playerY?: number): boolean => {
       const feetY = playerY === undefined ? -1 : playerY - currentCameraHeight;
-      for (const obj of terrainObjects) {
-        if (!obj.collidable) continue;
+      rebuildTerrainGridIfStale();
+      const nearby = terrainGrid.queryRadius(newX, newZ, COLLISION_QUERY_RADIUS);
+      for (let n = 0; n < nearby.length; n++) {
+        const obj = terrainObjects[nearby[n]];
+        if (!obj || !obj.collidable) continue;
         const h = obj.height;
         if (h !== undefined) {
           // Tiny obstacle → step straight over it (no collision at all).
@@ -2224,8 +2257,7 @@ const ForestSurvivalGame = () => {
         }
         const dx = newX - obj.x;
         const dz = newZ - obj.z;
-        const distance = Math.sqrt(dx * dx + dz * dz);
-        if (distance < obj.radius) {
+        if (dx * dx + dz * dz < obj.radius * obj.radius) {
           return true; // Collision detected
         }
       }
@@ -2238,8 +2270,11 @@ const ForestSurvivalGame = () => {
     // it so brushing the side of a rock at ground level never snaps you upward.
     const supportHeightAt = (x: number, z: number, feetY: number): number => {
       let top = 0;
-      for (const obj of terrainObjects) {
-        if (!obj.collidable || obj.height === undefined) continue;
+      rebuildTerrainGridIfStale();
+      const nearby = terrainGrid.queryRadius(x, z, COLLISION_QUERY_RADIUS);
+      for (let n = 0; n < nearby.length; n++) {
+        const obj = terrainObjects[nearby[n]];
+        if (!obj || !obj.collidable || obj.height === undefined) continue;
         if (obj.height <= STEP_OVER_HEIGHT || obj.height > CLIMB_MAX_HEIGHT) continue;
         if (feetY < obj.height - 0.6) continue; // not high enough to be on top
         const dx = x - obj.x;
@@ -2257,8 +2292,11 @@ const ForestSurvivalGame = () => {
     // jumping over it, then descending into its volume.
     const resolveTerrainPenetration = () => {
       const feetY = camera.position.y - currentCameraHeight;
-      for (const obj of terrainObjects) {
-        if (!obj.collidable) continue;
+      rebuildTerrainGridIfStale();
+      const nearby = terrainGrid.queryRadius(camera.position.x, camera.position.z, COLLISION_QUERY_RADIUS);
+      for (let n = 0; n < nearby.length; n++) {
+        const obj = terrainObjects[nearby[n]];
+        if (!obj || !obj.collidable) continue;
         const h = obj.height;
         if (h !== undefined) {
           if (h <= STEP_OVER_HEIGHT) continue;       // stepped over — never penetrating
@@ -2328,8 +2366,7 @@ const ForestSurvivalGame = () => {
         if (!obj.collidable) continue;
         const dist = Math.sqrt((obj.x - spawnX) ** 2 + (obj.z - spawnZ) ** 2);
         if (dist < obj.radius + SPAWN_CLEARANCE) {
-          scene.remove(obj.mesh);
-          terrainObjects.splice(i, 1);
+          removeTerrainObjectAt(i);
         }
       }
     }
@@ -2689,6 +2726,23 @@ const ForestSurvivalGame = () => {
     const playerVelocity = new THREE.Vector3(0, 0, 0);
     const lastPlayerPosition = new THREE.Vector3(0, 5, 10);
 
+    // ── POWER-UP MESSAGE MANAGER ─────────────────────────────────────────
+    // Single owner for the bottom-centre announcement pill. Every caller used
+    // to pair setPowerUpMessage with its own anonymous setTimeout — overlapping
+    // messages let an OLD timer wipe a NEWER message early, and the
+    // character-ability path ('Firestorm!', 'Adrenaline', …) never scheduled a
+    // clear at all, leaving a PERMANENT popup on screen for the rest of the
+    // run. One managed timer, always scoped to the newest message.
+    let powerMsgTimer: number | null = null;
+    const showPowerMessage = (msg: string, ms = 2000) => {
+      setPowerUpMessage(msg);
+      if (powerMsgTimer !== null) window.clearTimeout(powerMsgTimer);
+      powerMsgTimer = window.setTimeout(() => {
+        powerMsgTimer = null;
+        setPowerUpMessage('');
+      }, ms);
+    };
+
     // Check and unlock weapons based on score
     const checkWeaponUnlocks = () => {
       let newUnlock = false;
@@ -2696,8 +2750,7 @@ const ForestSurvivalGame = () => {
         const weapon = WEAPONS[weaponKey];
         if (score >= weapon.unlockScore && !unlockedWeapons.includes(weaponKey)) {
           unlockedWeapons.push(weaponKey);
-          setPowerUpMessage(`${weapon.name} Unlocked`);
-          setTimeout(() => setPowerUpMessage(''), 3000);
+          showPowerMessage(`${weapon.name} Unlocked`, 3000);
           newUnlock = true;
         }
       });
@@ -3939,27 +3992,27 @@ const ForestSurvivalGame = () => {
         case 'overcharge':
           overchargeActive = true;
           overchargeEndTime = nowMs + overchargeDuration;
-          setPowerUpMessage('Overcharge · faster fire & damage');
+          showPowerMessage('Overcharge · faster fire & damage');
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Overcharge Active!', 'powerup');
           createParticles(camera.position, 0xffcc33, 22);
           break;
         case 'ammo':
           ammo = effectiveMaxAmmo(currentWeapon);
-          setPowerUpMessage('Ammo Refilled');
+          showPowerMessage('Ammo Refilled');
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Ammo Refilled', 'powerup');
           createParticles(camera.position, 0xffd54a, 12);
           break;
         case 'speed':
           speedBoostActive = true;
           speedBoostEndTime = nowMs + speedBoostDuration;
-          setPowerUpMessage('Speed Boost · 10s');
+          showPowerMessage('Speed Boost · 10s');
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Speed Boost Active!', 'powerup');
           createParticles(camera.position, 0x6ef0ff, 20);
           break;
         case 'damage':
           damageBoostActive = true;
           damageBoostEndTime = nowMs + damageBoostDuration;
-          setPowerUpMessage('Damage Boost · 15s');
+          showPowerMessage('Damage Boost · 15s');
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Damage Boost Active!', 'powerup');
           createParticles(camera.position, 0xff8a3a, 20);
           break;
@@ -3968,21 +4021,21 @@ const ForestSurvivalGame = () => {
           shieldEndTime = nowMs + shieldDuration;
           shieldAbsorb = SHIELD_ABSORB_MAX;
           shieldBreakFlash = 0;
-          setPowerUpMessage('Riot Shield · absorbs frontal damage');
+          showPowerMessage('Riot Shield · absorbs frontal damage');
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Riot Shield Up!', 'powerup');
           // No world flare — the braced shield mesh on the arm is the feedback.
           break;
         case 'infinite_ammo':
           infiniteAmmoActive = true;
           infiniteAmmoEndTime = nowMs + infiniteAmmoDuration;
-          setPowerUpMessage('Infinite Ammo · 10s');
+          showPowerMessage('Infinite Ammo · 10s');
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Infinite Ammo Active!', 'powerup');
           createParticles(camera.position, 0xff5aff, 22);
           break;
         case 'phantom':
           phantomActive = true;
           phantomEndTime = nowMs + phantomDuration * (mpMods.phantomDurationMult ?? 1);
-          setPowerUpMessage('Phantom · enemies lose track of you');
+          showPowerMessage('Phantom · enemies lose track of you');
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Phantom Active!', 'powerup');
           // No world flare — the weapon fading out is the feedback.
           break;
@@ -3995,7 +4048,6 @@ const ForestSurvivalGame = () => {
       if (type === 'overcharge') {
         abilitySystem.createAbilityEffect(scene, camera.position, type);
       }
-      setTimeout(() => setPowerUpMessage(''), 2000);
     }
 
     // ── ANTI-STACK GUARD ──────────────────────────────────────────────────
@@ -4023,14 +4075,14 @@ const ForestSurvivalGame = () => {
         case 'rapid_fire':
           rapidFireActive = true;
           rapidFireEndTime = nowMs + rapidFireDuration;
-          setPowerUpMessage('Rapid Fire · 3× fire rate · 15s');
+          showPowerMessage('Rapid Fire · 3× fire rate · 15s', 2200);
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Rapid Fire!', 'powerup');
           createParticles(camera.position, 0xffaa33, 26);
           break;
         case 'invincible':
           invincibleActive = true;
           invincibleEndTime = nowMs + invincibleDuration;
-          setPowerUpMessage('Invincible · 5s');
+          showPowerMessage('Invincible · 5s', 2200);
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Invincible!', 'powerup');
           createParticles(camera.position, 0xffff33, 32);
           break;
@@ -4047,7 +4099,7 @@ const ForestSurvivalGame = () => {
           ammo = effectiveMaxAmmo(pick);
           gunModel.switchWeapon(pick as GunWeaponType);
           setGunFillForWeapon(pick);
-          setPowerUpMessage(`Mystery Box · ${WEAPONS[pick].name}`);
+          showPowerMessage(`Mystery Box · ${WEAPONS[pick].name}`, 2200);
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry(`Mystery: ${WEAPONS[pick].name}`, 'powerup');
           createParticles(camera.position, 0xbb33ff, 22);
           updateGameState();
@@ -4064,7 +4116,7 @@ const ForestSurvivalGame = () => {
             handleEnemyKilled(e, false);
             nuked++;
           }
-          setPowerUpMessage(`Tactical Nuke · ${nuked} eliminated`);
+          showPowerMessage(`Tactical Nuke · ${nuked} eliminated`, 2200);
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry(`Tactical Nuke · ${nuked} kills`, 'powerup');
           triggerScreenShake();
           // A bright burst on the player + the kill flash for the payoff.
@@ -4078,7 +4130,6 @@ const ForestSurvivalGame = () => {
           // from the killstreak airdrop pool today.
           break;
       }
-      setTimeout(() => setPowerUpMessage(''), 2200);
     }
 
     let infiniteAmmoActive = false;
@@ -4188,7 +4239,7 @@ const ForestSurvivalGame = () => {
           // Scout — short, strong movement-speed surge (reuses speed boost).
           speedBoostActive = true;
           speedBoostEndTime = nowMs + activeMs;
-          setPowerUpMessage('Adrenaline · speed surge');
+          showPowerMessage('Adrenaline · speed surge');
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Adrenaline Surge!', 'powerup');
           createParticles(camera.position, 0x6ef0ff, 18);
           break;
@@ -4199,7 +4250,7 @@ const ForestSurvivalGame = () => {
           shieldEndTime = nowMs + activeMs;
           shieldAbsorb = SHIELD_ABSORB_MAX;
           shieldBreakFlash = 0;
-          setPowerUpMessage('Bulwark · frontal shield raised');
+          showPowerMessage('Bulwark · frontal shield raised');
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Bulwark Raised!', 'powerup');
           break;
         }
@@ -4207,18 +4258,33 @@ const ForestSurvivalGame = () => {
           // Operative — fire-rate + damage burst (reuses overcharge).
           overchargeActive = true;
           overchargeEndTime = nowMs + activeMs;
-          setPowerUpMessage('Focus Fire · faster, harder shots');
+          showPowerMessage('Focus Fire · faster, harder shots');
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Focus Fire!', 'powerup');
           createParticles(camera.position, 0xffcc33, 18);
           break;
         }
         case 'firestorm': {
           // Pyro — AoE shockwave nuke. Reusing explodeRocket gives correct
-          // distance-falloff damage AND multiplayer-guest hit reporting for free.
+          // distance-falloff damage AND multiplayer-guest hit reporting for
+          // free. On top of the main blast, a ring of staggered secondary
+          // bursts (pure FX, no extra damage) rolls outward so the cast reads
+          // as a true fire nova instead of a single small explosion.
           const fpos = camera.position.clone();
           fpos.y = 1.2; // originate near the ground so the blast hugs the floor
           explodeRocket(fpos, 70);
-          setPowerUpMessage('Firestorm!');
+          for (let fi = 0; fi < 5; fi++) {
+            const fa = (fi / 5) * Math.PI * 2 + Math.random() * 0.5;
+            const fr = 4.5 + Math.random() * 2.5;
+            const fx = fpos.x + Math.cos(fa) * fr;
+            const fz = fpos.z + Math.sin(fa) * fr;
+            window.setTimeout(() => {
+              if (isSceneDisposed || isGameOver) return;
+              explosionEffects.push(new ExplosionEffect(scene, new THREE.Vector3(fx, 0.4, fz), 4.5));
+              createParticles(new THREE.Vector3(fx, 1.0, fz), 0xff7a2a, 8);
+            }, 70 + fi * 75);
+          }
+          fovPunch = Math.min(fovPunch + 6, 10);
+          showPowerMessage('Firestorm!');
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Firestorm!', 'powerup');
           break;
         }
@@ -4226,7 +4292,7 @@ const ForestSurvivalGame = () => {
           // Medic — instant self-heal for a third of max HP.
           health = Math.min(playerMaxHealth, health + playerMaxHealth * 0.35);
           updateGameState();
-          setPowerUpMessage('Field Triage · patched up');
+          showPowerMessage('Field Triage · patched up');
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Field Triage!', 'powerup');
           createParticles(camera.position, 0x4dff9e, 18);
           soundManager.play('powerUp', 0.6);
@@ -4238,7 +4304,7 @@ const ForestSurvivalGame = () => {
           infiniteAmmoEndTime = nowMs + activeMs;
           ammo = effectiveMaxAmmo(currentWeapon);
           updateGameState();
-          setPowerUpMessage('Overclock · unlimited ammo');
+          showPowerMessage('Overclock · unlimited ammo');
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Overclock!', 'powerup');
           createParticles(camera.position, 0xffd54a, 18);
           break;
@@ -4248,7 +4314,7 @@ const ForestSurvivalGame = () => {
           // extends its duration via mpMods.phantomDurationMult).
           phantomActive = true;
           phantomEndTime = nowMs + activeMs * (mpMods.phantomDurationMult ?? 1);
-          setPowerUpMessage('Cloak · you fade from sight');
+          showPowerMessage('Cloak · you fade from sight');
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Cloak Engaged!', 'powerup');
           break;
         }
@@ -4415,10 +4481,9 @@ const ForestSurvivalGame = () => {
         // the player could layer two buffs at once. Pickup and ability are
         // mutually exclusive, whichever was used first.
         if (anyTimedEffectActive()) {
-          setPowerUpMessage(touchControls.enabled
+          showPowerMessage(touchControls.enabled
             ? 'Wait for your power to finish'
-            : 'Wait for your active power to finish');
-          setTimeout(() => setPowerUpMessage(''), 1500);
+            : 'Wait for your active power to finish', 1500);
           return;
         }
         triggerCharacterAbility();
@@ -4440,16 +4505,14 @@ const ForestSurvivalGame = () => {
           // Anti-stack: a timed power can't start while another timed effect is
           // still running — the player keeps the held power and is told to wait.
           if (isTimedPower(heldPower) && anyTimedEffectActive()) {
-            setPowerUpMessage('Wait for your active power to finish');
-            setTimeout(() => setPowerUpMessage(''), 1600);
+            showPowerMessage('Wait for your active power to finish', 1600);
           } else {
             const power = heldPower;
             heldPower = null;
             applyPower(power);
           }
         } else {
-          setPowerUpMessage('No power held — defeat enemies to find loot');
-          setTimeout(() => setPowerUpMessage(''), 1600);
+          showPowerMessage('No power held — defeat enemies to find loot', 1600);
         }
       }
 
@@ -4479,8 +4542,7 @@ const ForestSurvivalGame = () => {
           updateGameState();
         } else if (!unlockedWeapons.includes(weaponName)) {
           const weapon = WEAPONS[weaponName];
-          setPowerUpMessage(`${weapon.name} Locked — ${weapon.unlockScore} pts needed`);
-          setTimeout(() => setPowerUpMessage(''), 2000);
+          showPowerMessage(`${weapon.name} Locked — ${weapon.unlockScore} pts needed`);
         }
       }
 
@@ -4736,10 +4798,12 @@ const ForestSurvivalGame = () => {
         const flash = new MuzzleFlash(scene, gunWorldPos, weapon.bulletColor);
         muzzleFlashes.push(flash);
 
-        // Notify all enemies about gunshot
+        // Notify all enemies about gunshot. registerSound clones the position
+        // internally, so passing the live vector avoids one allocation per
+        // enemy per shot (which added up fast on autofire weapons).
         for (const enemy of enemies) {
           if (!enemy.dead && enemy.perception) {
-            enemy.perception.registerSound(camera.position.clone(), 1.0);
+            enemy.perception.registerSound(camera.position, 1.0);
           }
         }
 
@@ -4996,6 +5060,14 @@ const ForestSurvivalGame = () => {
     let fpsFrameCount = 0;
     let fpsLastTime = performance.now();
 
+    // World-streaming throttle: chunk generation + the distant-object cull
+    // only need to run when the player crosses a chunk boundary (plus a slow
+    // heartbeat as a safety net) — not 60×/sec. The per-frame version walked
+    // the whole terrainObjects array every frame for nothing.
+    let worldGenChunkX = Number.NaN;
+    let worldGenChunkZ = Number.NaN;
+    let worldGenAccum = 0;
+
     // Head bob time accumulator - prevents floating point precision issues from Date.now()
     let headBobTime = 0;
     const HEAD_BOB_TIME_RESET = 1000; // Reset every 1000 units to prevent float overflow
@@ -5045,12 +5117,13 @@ const ForestSurvivalGame = () => {
     // radius, so a 1-cell query catches every meaningful neighbour.
     const enemyGrid = new SpatialGrid<number>(7);
     const terrainGrid = new SpatialGrid<number>(8);
-    let terrainGridStamp = -1; // bumps whenever terrainObjects changes shape
+    let terrainGridStamp = -1; // tracks terrainVersion (bumped on every add/remove)
     const rebuildTerrainGridIfStale = () => {
-      // Cheap shape hash — length covers add/remove from chunk streaming.
-      // Terrain objects don't move, so length alone is a reliable signal.
-      if (terrainGridStamp === terrainObjects.length) return;
-      terrainGridStamp = terrainObjects.length;
+      // terrainVersion increments on EVERY add/remove, so this can't be fooled
+      // by an add+remove pair that leaves the array length unchanged. O(1)
+      // when fresh — every collision helper calls it before querying.
+      if (terrainGridStamp === terrainVersion) return;
+      terrainGridStamp = terrainVersion;
       terrainGrid.clear();
       for (let k = 0; k < terrainObjects.length; k++) {
         const obj = terrainObjects[k];
@@ -5200,8 +5273,7 @@ const ForestSurvivalGame = () => {
           if (gameSettingsManager.getSetting('killFeed')) {
             addKillFeedEntry(`${WEAPONS[currentWeapon].name} · Mastery L${masteryLevelAfter}`, 'powerup');
           }
-          setPowerUpMessage(`Mastery Unlocked · ${WEAPONS[currentWeapon].name} L${masteryLevelAfter}`);
-          setTimeout(() => setPowerUpMessage(''), 2200);
+          showPowerMessage(`Mastery Unlocked · ${WEAPONS[currentWeapon].name} L${masteryLevelAfter}`, 2200);
         }
         // Re-snapshot the bonus for the active weapon so a level-up that
         // happens mid-kill applies on the next reload / recoil instead of
@@ -5262,8 +5334,7 @@ const ForestSurvivalGame = () => {
             if (gameSettingsManager.getSetting('killFeed')) {
               addKillFeedEntry(`${killStreak} Streak · ${rewardLabel} Inbound`, 'powerup');
             }
-            setPowerUpMessage(`AIRDROP INBOUND · ${rewardLabel}`);
-            setTimeout(() => setPowerUpMessage(''), 2400);
+            showPowerMessage(`AIRDROP INBOUND · ${rewardLabel}`, 2400);
           }
           // Rising combo chime at each 5x milestone — pitch climbs with the
           // combo so a hot streak audibly escalates. Independent of the kill
@@ -5448,8 +5519,7 @@ const ForestSurvivalGame = () => {
               const lvlBefore = levelFromXp(masteryTotalXp(currentWeapon) - masteryBonus);
               const lvlAfter = levelFromXp(masteryTotalXp(currentWeapon));
               refreshMasteryBonus();
-              setPowerUpMessage(`Consolation · +${masteryBonus} ${WEAPONS[currentWeapon].name} Mastery XP`);
-              setTimeout(() => setPowerUpMessage(''), 2200);
+              showPowerMessage(`Consolation · +${masteryBonus} ${WEAPONS[currentWeapon].name} Mastery XP`, 2200);
               if (gameSettingsManager.getSetting('killFeed')) {
                 addKillFeedEntry(`+${masteryBonus} ${WEAPONS[currentWeapon].name} XP`, 'powerup');
               }
@@ -6749,7 +6819,9 @@ const ForestSurvivalGame = () => {
       const now = Date.now();
       if (speedBoostActive && now >= speedBoostEndTime) {
         speedBoostActive = false;
-        setPowerUpMessage('');
+        // No setPowerUpMessage('') here — the managed message timer owns the
+        // pill, and this stray clear used to wipe whatever NEWER message was
+        // showing the instant the boost ran out.
         if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Speed Boost Expired', 'powerup');
       }
       if (damageBoostActive && now >= damageBoostEndTime) {
@@ -7218,8 +7290,20 @@ const ForestSurvivalGame = () => {
         footstepAccum = 0;
       }
 
-      // Infinite world - update chunks and ground based on player position
-      updateWorldGeneration(camera.position.x, camera.position.z);
+      // Infinite world — stream chunks when the player crosses a chunk
+      // boundary (or on a 1s heartbeat); keep the cheap ground recenter
+      // every frame so the displaced terrain never visibly snaps.
+      worldGenAccum += rawDelta;
+      {
+        const pcx = Math.floor(camera.position.x / CHUNK_SIZE);
+        const pcz = Math.floor(camera.position.z / CHUNK_SIZE);
+        if (pcx !== worldGenChunkX || pcz !== worldGenChunkZ || worldGenAccum >= 1) {
+          worldGenChunkX = pcx;
+          worldGenChunkZ = pcz;
+          worldGenAccum = 0;
+          updateWorldGeneration(camera.position.x, camera.position.z);
+        }
+      }
       updateGroundPosition(camera.position.x, camera.position.z);
 
 
@@ -7447,8 +7531,7 @@ const ForestSurvivalGame = () => {
               const hintNow = Date.now();
               if (hintNow - lastHeldHintAt > 1500) {
                 lastHeldHintAt = hintNow;
-                setPowerUpMessage(touchControls.enabled ? 'Use your power (tap Power) before looting another' : 'Use your power (E) before looting another');
-                setTimeout(() => setPowerUpMessage(''), 1400);
+                showPowerMessage(touchControls.enabled ? 'Use your power (tap Power) before looting another' : 'Use your power (E) before looting another', 1400);
               }
             } else {
               powerUp.collected = true;
@@ -7467,7 +7550,7 @@ const ForestSurvivalGame = () => {
               // Stow the looted power — it is NOT applied until the player
               // presses E. The HUD power slot reflects what's held.
               heldPower = powerUp.type as HeldPower;
-              setPowerUpMessage(`${POWER_LABELS[heldPower]} looted · ${touchControls.enabled ? 'tap Power' : 'press E'} to use`);
+              showPowerMessage(`${POWER_LABELS[heldPower]} looted · ${touchControls.enabled ? 'tap Power' : 'press E'} to use`, 2200);
               if (gameSettingsManager.getSetting('killFeed')) {
                 addKillFeedEntry(`Looted ${POWER_LABELS[heldPower]}`, 'powerup');
               }
@@ -7475,7 +7558,6 @@ const ForestSurvivalGame = () => {
               tutorial.recordAction('collect_powerup', 1); // advances the loot tutorial step
               powerUpsThisRun += 1;
               achievementSystem.setProgress('resourceful', powerUpsThisRun);
-              setTimeout(() => setPowerUpMessage(''), 2200);
               updateGameState();
             }
           }
@@ -7727,8 +7809,7 @@ const ForestSurvivalGame = () => {
                 triggerDamageFlash();
                 createParticles(enemy.mesh.position, 0xff3322, 50);
                 soundManager.play('powerUp', 1.0, false, 0.5);
-                setPowerUpMessage('BOSS ENRAGED');
-                setTimeout(() => setPowerUpMessage(''), 2400);
+                showPowerMessage('BOSS ENRAGED', 2400);
               }
             }
             scene.remove(bullet.mesh);
@@ -9097,6 +9178,14 @@ const ForestSurvivalGame = () => {
       }
       setReloadDurationUI(null); // clear stale indicator for the next run
 
+      // Cancel any pending power-message clear and wipe the pill so a stale
+      // announcement can't carry into the next run.
+      if (powerMsgTimer !== null) {
+        clearTimeout(powerMsgTimer);
+        powerMsgTimer = null;
+      }
+      setPowerUpMessage('');
+
       // Photo Mode can't survive a scene teardown — clear it so a fresh run
       // never starts mid-photoshoot.
       photoModeRef.current = false;
@@ -9149,6 +9238,10 @@ const ForestSurvivalGame = () => {
 
       // Cleanup SmartEnemyManager (releases pooled resources)
       smartEnemyManager.dispose();
+
+      // Cleanup instanced world-prop batches (before BiomeSystem disposes the
+      // shared geometries/materials the batches reference).
+      terrainInstancer.dispose();
 
       // Cleanup BiomeSystem (releases shared geometry/material pools)
       biomeSystem.dispose();
@@ -9602,7 +9695,7 @@ const ForestSurvivalGame = () => {
           slow connection from looking like an empty, broken world. */}
       {mpWaitingForHost && !showShaderProcessing && !photoMode && (
         <div className="pointer-events-none absolute left-1/2 top-[18%] z-20 -translate-x-1/2">
-          <div className="flex items-center gap-2.5 rounded-full border border-emerald-400/30 bg-black/55 px-4 py-2 backdrop-blur-md">
+          <div className="flex items-center gap-2.5 rounded-full border border-emerald-400/30 bg-black/75 px-4 py-2">
             <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-emerald-300/40 border-t-emerald-300" />
             <span className="text-[12px] font-semibold uppercase tracking-[0.18em] text-emerald-200/90">Syncing with host…</span>
           </div>
@@ -9613,7 +9706,7 @@ const ForestSurvivalGame = () => {
           cursor (Escape) just shows this; the click passes through (this layer is
           pointer-events-none) to the canvas, which re-locks (see onMouseDown). */}
       {showResumePrompt && gameStarted && gameMode === 'multiplayer' && !gameState.isGameOver && !isPaused && !showShaderProcessing && !photoMode && !isTouch && (
-        <div className="pointer-events-none absolute inset-0 z-[80] flex items-center justify-center bg-black/45 backdrop-blur-[2px]">
+        <div className="pointer-events-none absolute inset-0 z-[80] flex items-center justify-center bg-black/55">
           <div className="flex flex-col items-center gap-3 rounded-2xl border border-white/10 bg-[#0b0f15]/85 px-8 py-6">
             <MousePointerClick className="h-7 w-7 text-emerald-300" strokeWidth={2} />
             <span className="text-base font-bold tracking-wide text-white">Click to resume</span>
@@ -9675,8 +9768,7 @@ const ForestSurvivalGame = () => {
           <div
             className="px-3 py-1 rounded-lg"
             style={{
-              background: 'rgba(0,0,0,0.5)',
-              backdropFilter: 'blur(4px)',
+              background: 'rgba(0,0,0,0.65)',
               border: '1px solid rgba(255,255,255,0.1)',
             }}
           >
@@ -9755,7 +9847,7 @@ const ForestSurvivalGame = () => {
             className="absolute left-1/2 top-1/2 select-none"
             style={{ transform: 'translate(-50%, 26px)' }}
           >
-            <div className="flex items-center gap-1.5 rounded-full border border-amber-400/30 bg-black/55 backdrop-blur-md px-2.5 py-1">
+            <div className="flex items-center gap-1.5 rounded-full border border-amber-400/30 bg-black/75 px-2.5 py-1">
               <div className="relative w-3.5 h-3.5">
                 <div
                   key={reloadDurationUI}
@@ -9794,7 +9886,7 @@ const ForestSurvivalGame = () => {
             className="pointer-events-none absolute left-1/2 z-30 -translate-x-1/2"
             style={{ top: userSettings.showFPS ? 38 : 6 }}
           >
-            <div className="flex items-center gap-2 rounded-full border border-rose-400/40 bg-rose-500/15 px-3 py-1 backdrop-blur-md">
+            <div className="flex items-center gap-2 rounded-full border border-rose-400/40 bg-rose-950/75 px-3 py-1">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-rose-300" />
               <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-rose-200">
                 {RUN_MODIFIERS[activeRunModifierRef.current].name} · ×{RUN_MODIFIERS[activeRunModifierRef.current].scoreMult.toFixed(2)}
@@ -9831,14 +9923,14 @@ const ForestSurvivalGame = () => {
                 return (
                   <span
                     key={`${id}-${idx}`}
-                    className={`rounded-full border px-2 py-0.5 text-[10px] font-bold backdrop-blur-md ${color}`}
+                    className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${color}`}
                   >
                     {perk.name}
                   </span>
                 );
               })}
               {overflow > 0 && (
-                <span className="rounded-full border border-white/15 bg-white/[0.04] px-2 py-0.5 text-[10px] font-bold text-gray-300 backdrop-blur-md">
+                <span className="rounded-full border border-white/15 bg-white/[0.04] px-2 py-0.5 text-[10px] font-bold text-gray-300">
                   +{overflow}
                 </span>
               )}

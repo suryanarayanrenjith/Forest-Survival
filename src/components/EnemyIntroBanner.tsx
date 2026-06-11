@@ -51,7 +51,7 @@ const EnemyIntroBanner = ({ intro, onDone }: EnemyIntroBannerProps) => {
     <div className="pointer-events-none fixed inset-x-0 top-44 z-[55] flex justify-center px-4">
       <div
         key={intro.id}
-        className="relative w-full max-w-md overflow-hidden rounded-2xl border bg-black/80 backdrop-blur-md shadow-2xl"
+        className="relative w-full max-w-md overflow-hidden rounded-2xl border bg-black/90 shadow-2xl"
         style={{
           borderColor: `${accent}66`,
           boxShadow: `0 0 40px ${accent}33`,

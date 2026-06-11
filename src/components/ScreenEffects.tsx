@@ -79,23 +79,33 @@ const ScreenEffects = ({ health, maxHealth = 100, isVisible }: ScreenEffectsProp
 
   return (
     <>
-      {/* Low Health Vignette */}
+      {/* Low Health Vignette.
+          PERF: this full-screen layer pulses for as long as the player stays
+          critical, so it must live on its own GPU-composited layer
+          (will-change + translateZ) — without that, Chromium repaints the
+          whole viewport every animation frame on top of the WebGL canvas,
+          which was the "game lags hard at low health" report. */}
       {isLowHealth && (
         <div
           className="fixed inset-0 pointer-events-none z-30"
           style={{
             background: `radial-gradient(circle at center, transparent 0%, transparent 40%, rgba(139, 0, 0, ${isCriticalHealth ? 0.6 : 0.3}) 100%)`,
-            animation: isCriticalHealth ? 'pulse 1s ease-in-out infinite' : 'none'
+            animation: isCriticalHealth ? 'pulse 1s ease-in-out infinite' : 'none',
+            willChange: isCriticalHealth ? 'opacity' : undefined,
+            transform: 'translateZ(0)',
           }}
         />
       )}
 
-      {/* Critical Health Warning - Small indicator at bottom */}
+      {/* Critical Health Warning - Small indicator at bottom.
+          PERF: no backdrop-filter here — a blur element that is ITSELF
+          animated forces the browser to re-blur the live canvas behind it
+          every single frame. A solid translucent fill reads the same. */}
       {isCriticalHealth && (
         <div className="fixed bottom-28 left-1/2 transform -translate-x-1/2 pointer-events-none z-30">
           <div
-            className="bg-red-900/80 border border-red-500/60 rounded-full px-4 py-1.5 backdrop-blur-sm"
-            style={{ animation: 'pulse 0.8s ease-in-out infinite' }}
+            className="bg-red-950/90 border border-red-500/60 rounded-full px-4 py-1.5"
+            style={{ animation: 'pulse 0.8s ease-in-out infinite', willChange: 'opacity' }}
           >
             <div className="text-red-400 font-bold text-xs tracking-[0.15em] uppercase flex items-center gap-2">
               <AlertTriangle className="w-3.5 h-3.5" strokeWidth={2.5} />
@@ -152,7 +162,7 @@ const ScreenEffects = ({ health, maxHealth = 100, isVisible }: ScreenEffectsProp
           <div className="fixed top-4 left-1/2 transform -translate-x-1/2 pointer-events-none"
             style={{ zIndex: 42, animation: 'headshotText 0.4s ease-out forwards' }}
           >
-            <div className="bg-yellow-500/90 rounded-full px-4 py-1 backdrop-blur-sm">
+            <div className="bg-yellow-500/95 rounded-full px-4 py-1">
               <span className="text-black font-black text-sm tracking-wider">HEADSHOT</span>
             </div>
           </div>

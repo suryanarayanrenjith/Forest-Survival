@@ -298,7 +298,7 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
             return (
               <div
                 key={msg.id}
-                className={`${style.bg} border ${style.border} rounded-lg px-2 py-1 backdrop-blur-sm animate-slideInLeft max-w-[180px]`}
+                className={`${style.bg} border ${style.border} rounded-lg px-2 py-1 animate-slideInLeft max-w-[180px]`}
               >
                 <div className="flex items-center gap-1.5 text-[10px]">
                   <style.icon className="w-3 h-3 flex-shrink-0" style={{ color: style.iconColor }} strokeWidth={2.25} />
@@ -314,7 +314,7 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
         <button
           onClick={() => setTouchOpen(true)}
           aria-label="Open chat"
-          className="touch-control fixed right-2 top-[112px] z-[46] flex h-12 w-12 items-center justify-center rounded-2xl border border-white/15 bg-black/60 backdrop-blur-md active:scale-95"
+          className="touch-control fixed right-2 top-[112px] z-[46] flex h-12 w-12 items-center justify-center rounded-2xl border border-white/15 bg-black/80 active:scale-95"
           style={{ pointerEvents: 'auto' }}
         >
           <MessageSquare className="h-5 w-5 text-emerald-300" strokeWidth={2.25} />
@@ -432,7 +432,7 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
     <div className="absolute bottom-24 sm:bottom-28 left-2 sm:left-4 space-y-2" style={{ zIndex: 30 }}>
       {/* Chat Messages - Responsive sizing */}
       {showChat && (
-        <div className="w-[280px] sm:w-80 md:w-96 h-48 sm:h-56 md:h-64 bg-[#0b0f15]/95 backdrop-blur-md border border-white/10 rounded-2xl overflow-hidden flex flex-col">
+        <div className="w-[280px] sm:w-80 md:w-96 h-48 sm:h-56 md:h-64 bg-[#0b0f15]/95 border border-white/10 rounded-2xl overflow-hidden flex flex-col">
           {/* Header */}
           <div className="px-3 py-2 flex items-center justify-between border-b border-white/[0.07]">
             <div className="flex items-center gap-2">
@@ -523,7 +523,7 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
 
       {/* Emote Picker */}
       {showEmotes && (
-        <div className="w-[280px] sm:w-80 md:w-96 bg-[#0b0f15]/95 backdrop-blur-md border border-white/10 rounded-2xl p-3">
+        <div className="w-[280px] sm:w-80 md:w-96 bg-[#0b0f15]/95 border border-white/10 rounded-2xl p-3">
           <div className="flex items-center justify-between mb-2.5">
             <span className="text-xs font-semibold tracking-[0.12em] text-gray-300 uppercase">Quick Emotes</span>
             <div className="flex items-center gap-2">
@@ -557,7 +557,7 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
       {!showChat && (
         <button
           onClick={() => setShowChat(true)}
-          className="flex items-center gap-2 rounded-lg border border-white/10 bg-black/70 backdrop-blur-md
+          className="flex items-center gap-2 rounded-lg border border-white/10 bg-black/85
             px-3.5 py-2 text-sm font-semibold text-gray-300 transition-all hover:text-white hover:bg-black/80 hover:border-emerald-500/40"
         >
           <MessageSquare className="w-4 h-4 text-emerald-400" strokeWidth={2.25} />
@@ -579,7 +579,7 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
           return (
             <div
               key={msg.id}
-              className={`${style.bg} border ${style.border} rounded-lg px-2 sm:px-3 py-1 sm:py-2 backdrop-blur-sm max-w-[200px] sm:max-w-xs`}
+              className={`${style.bg} border ${style.border} rounded-lg px-2 sm:px-3 py-1 sm:py-2 max-w-[200px] sm:max-w-xs`}
               style={{
                 animation: `slideInLeft 0.3s ease-out both${age > FEED_TTL_MS - 900 ? ', feedOut 0.85s ease-in forwards' : ''}`,
               }}

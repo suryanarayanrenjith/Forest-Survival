@@ -77,7 +77,7 @@ const ComboDisplay = ({ combo, killStreak, visible }: ComboDisplayProps) => {
       {/* Combo counter */}
       {combo > 0 && (
         <div
-          className={`flex items-center gap-2 rounded-full border bg-black/60 backdrop-blur-md px-4 py-1.5
+          className={`flex items-center gap-2 rounded-full border bg-black/75 px-4 py-1.5
             transition-transform duration-200 ${comboIncreased ? 'scale-110' : 'scale-100'}`}
           style={{ borderColor: `${tier.color}66` }}
         >
@@ -91,7 +91,7 @@ const ComboDisplay = ({ combo, killStreak, visible }: ComboDisplayProps) => {
 
       {/* Kill streak */}
       {killStreak >= 5 && streakLabel && (
-        <div className="flex items-center gap-2 rounded-full border border-orange-400/40 bg-orange-500/15 backdrop-blur-md px-3.5 py-1">
+        <div className="flex items-center gap-2 rounded-full border border-orange-400/40 bg-orange-950/75 px-3.5 py-1">
           <Zap className="w-3.5 h-3.5 text-orange-400" strokeWidth={2.25} fill="currentColor" />
           <span className="text-xs font-bold text-orange-200 tracking-[0.1em] uppercase">{streakLabel}</span>
           <span className="text-[10px] font-bold text-orange-100 tabular-nums bg-black/30 rounded px-1.5 py-0.5">
