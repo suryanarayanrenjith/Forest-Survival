@@ -659,6 +659,12 @@ canvas {
 .menu-screen {
   position: fixed;
   inset: 0;
+  /* CRITICAL: keep menu CONTENT above the App-level chrome (gradients /
+     tints at z-index 1). Without this, positioned chrome siblings with a
+     positive z-index paint over the transformed .menu-screen stacking
+     context (z-auto) — the whole UI got washed dark by the vignette and
+     the multiplayer tint sheet sat on top of the entire lobby. */
+  z-index: 10;
 }
 
 /* Directional screen slide — forward navigation enters from the RIGHT

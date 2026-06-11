@@ -240,6 +240,13 @@ const TERRAIN_FRAG_COMMON = /* glsl */ `
   uniform float uPatchScale;
   uniform float uPatchStrength;
   uniform float uIsNight;
+  // ── LIVE RAIN (weather system) ──
+  // uRainWet  — 0..1 ground soak; grows puddles + darkens soil, lingers
+  //             after the rain ends (slow dry-out).
+  // uRainRipple — 0..1 active precipitation; animates ripple rings on the
+  //             puddles so still pools only form once the rain has stopped.
+  uniform float uRainWet;
+  uniform float uRainRipple;
 
   uniform vec3  uTMacroA;
   uniform vec3  uTMacroB;
@@ -401,10 +408,18 @@ export function applyGroundTerrainShader(
       diffuseColor.rgb = mix(diffuseColor.rgb, uTRock, gSlope * 0.6);
 
       // Wet pooling — low-lying puddle patches darken & desaturate the soil.
-      if (uTWetness > 0.001) {
-        float pud = smoothstep(0.54, 0.8, gFbm(gWP * 0.06 + 21.0));
-        gWet = pud * uTWetness;
+      // uTWetness is the map's static base (swamp); uRainWet is the LIVE rain
+      // soak from the weather system. As the rain soaks in, the puddle
+      // threshold widens so pools visibly GROW outward from the low spots,
+      // then slowly recede as the ground dries.
+      float wetAmt = max(uTWetness, uRainWet);
+      if (wetAmt > 0.001) {
+        float pudNoise = gFbm(gWP * 0.06 + 21.0);
+        float pud = smoothstep(0.54 - uRainWet * 0.16, 0.8 - uRainWet * 0.2, pudNoise);
+        gWet = pud * wetAmt;
         diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 0.42, gWet);
+        // Rain also soak-darkens the ground BETWEEN the puddles.
+        diffuseColor.rgb *= 1.0 - uRainWet * 0.16 * (1.0 - pud);
       }
 
       // Lava crack veins — thin emissive seams between cooled plates.
@@ -477,6 +492,44 @@ export function applyGroundTerrainShader(
         float wetSpec = pow(max(dot(normal, halfVec), 0.0), 160.0);
         reflectedLight.directSpecular += uSunColor * wetSpec * gWet * 1.6 * sunDot;
       }
+
+      // ── PUDDLE MIRROR REFLECTIONS — the "RTX puddle" moment ──────────
+      // Each puddle is shaded as a thin sheet of water: a near-mirror
+      // world-up normal perturbed by LIVE rain ripples, a fresnel-weighted
+      // sample of the scene's PMREM environment (the same prefiltered IBL
+      // the PBR pipeline already uses — so this is one extra texture fetch,
+      // not a render pass), and the bloom pass then catches the bright sky
+      // bounce. While rain falls the surface shivers with travelling
+      // ripples; once it stops the pools settle into still mirrors and
+      // slowly dry out. Guarded so a missing environment map (failed HDRI
+      // load) simply skips the reflection instead of breaking the shader.
+      #if defined( USE_ENVMAP ) && defined( ENVMAP_TYPE_CUBE_UV )
+      if (gWet > 0.003) {
+        vec2 rWP = vGroundWorldPos.xz;
+        // Two interleaved travelling waves — amplitude follows the live
+        // precipitation and the antialiasing fade so distant puddles never
+        // shimmer.
+        float rT = uTime * 6.0;
+        float rw1 = sin(rWP.x * 9.1 + rT) * sin(rWP.y * 8.3 - rT * 0.9);
+        float rw2 = sin((rWP.x + rWP.y) * 13.7 - rT * 1.4);
+        float rAmp = 0.085 * uRainRipple * gMicro;
+        vec3 puddleN = normalize(vec3(
+          (rw1 * 0.7 + rw2 * 0.3) * rAmp,
+          1.0,
+          (rw1 * 0.3 - rw2 * 0.7) * rAmp
+        ));
+        vec3 viewDirW = normalize(cameraPosition - vGroundWorldPos);
+        vec3 refW = reflect(-viewDirW, puddleN);
+        refW.y = max(refW.y, 0.04); // water reflects the world above it
+        // Fresnel — grazing angles turn the pool into a true mirror.
+        float fres = 0.05 + 0.95 * pow(1.0 - max(dot(viewDirW, puddleN), 0.0), 5.0);
+        // Sharpest reflection in a full, still puddle; rain agitation and
+        // partial dryness rough it up.
+        float mirrorRough = 0.05 + (1.0 - gWet) * 0.22 + uRainRipple * 0.08;
+        vec3 reflCol = textureCubeUV(envMap, envMapRotation * refW, mirrorRough).rgb;
+        reflectedLight.indirectSpecular += reflCol * envMapIntensity * gWet * (0.30 + 0.70 * fres);
+      }
+      #endif
 
       // Sparkle — sparse view-dependent glints on snow / sand. Gated by the
       // antialiased gMicro so the sharp glints never become shimmering noise.

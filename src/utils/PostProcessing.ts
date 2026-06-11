@@ -193,11 +193,11 @@ const CinematicGradeShader = {
         hdr += shaft * centerMask;
 
         // Sun-halo kicker — extra bloom right around the sun disc that
-        // mimics how a real lens scatters incoming bright light. TIGHTENED
-        // (faster falloff) + dimmed so the sun no longer washes the centre
-        // of the frame to white — a compact warm halo, not a glare bloom.
-        float haloFalloff = exp(-sunDist * 3.6);
-        hdr += sunColor * sunIntensity * haloFalloff * 0.24;
+        // mimics how a real lens scatters incoming bright light. Compact
+        // falloff so it reads as a warm halo, with enough punch that the
+        // sun feels like a genuine light source burning through the trees.
+        float haloFalloff = exp(-sunDist * 3.4);
+        hdr += sunColor * sunIntensity * haloFalloff * 0.30;
       }
 
       // ─── ANAMORPHIC LENS STREAKS (horizontal cinematic flare) ──────
@@ -470,7 +470,7 @@ export class PostProcessingPipeline {
 
   private readonly bloom: UnrealBloomPass;
   private baseBloomIntensity: number;
-  private readonly baseBloomThreshold: number = 0.86;
+  private readonly baseBloomThreshold: number = 0.82;
   private bloomMultiplier = 1.0;
   private readonly cinematic: ShaderPass;
   private readonly smaaPass: SMAAPass | null;
@@ -542,18 +542,20 @@ export class PostProcessingPipeline {
     // "lit by glow" look. Combined with the boosted god-rays + halo
     // kicker + brighter pickup cores, the world reads as having real
     // volumetric light scattering rather than dry flat shading.
+    // Boosted across every tier for the dramatic "lit by glow" AAA look —
+    // pure uniform changes, zero added GPU cost.
     this.baseBloomIntensity =
-      isUltra ? 1.02 :
-      quality === 'high' ? 0.84 :
-      quality === 'medium' ? 0.66 :
-      0.48;
+      isUltra ? 1.18 :
+      quality === 'high' ? 0.96 :
+      quality === 'medium' ? 0.75 :
+      0.55;
     this.bloom = new UnrealBloomPass(
       new THREE.Vector2(width, height),
       this.baseBloomIntensity,
       0.9,    // soft cinematic halo radius
-      0.86,   // higher threshold: only true highlights bloom, not the bright
-              // sky — kills the centre-of-frame sun blowout while pickups /
-              // emissives / muzzle flashes (far above threshold) still glow.
+      0.82,   // threshold: true highlights bloom generously (sun, emissives,
+              // muzzle flashes, pickup cores) while the broad sky stays
+              // below the knee so the frame centre never washes out.
     );
     this.composer.addPass(this.bloom);
 
@@ -733,9 +735,10 @@ export class PostProcessingPipeline {
 
       (u.sunUV.value as THREE.Vector2).set(sx * 0.5 + 0.5, sy * 0.5 + 0.5);
       if (this.isNightMode) {
-        // Moonlight god-rays — cool blue, restrained.
+        // Moonlight god-rays — cool blue, present enough to silhouette the
+        // canopy on a clear night.
         (u.sunColor.value as THREE.Color).setRGB(0.55, 0.7, 1.0);
-        u.sunIntensity.value = 0.20 * onScreenGate * godRayStrength;
+        u.sunIntensity.value = 0.26 * onScreenGate * godRayStrength;
       } else {
         // Warm shift as the sun drops — golden-hour at low altitude,
         // pure white at noon. lowSun ramps as altitude → 0.
@@ -745,11 +748,12 @@ export class PostProcessingPipeline {
           0.92 - lowSun * 0.22,
           0.78 - lowSun * 0.34,
         );
-        // Restrained shafts — present and cinematic, but no longer the
-        // glaring centre-of-frame blowout. Extra punch only at low-sun
-        // angles (golden-hour drama) where it reads as atmosphere.
-        const goldenBoost = 1.0 + lowSun * 0.35;
-        u.sunIntensity.value = 0.36 * onScreenGate * altGate * goldenBoost * godRayStrength;
+        // Dramatic but controlled shafts — clearly visible streaming through
+        // the canopy, with extra punch at low-sun angles (golden-hour drama)
+        // where they read as pure atmosphere. Weather scales this further:
+        // clear skies crank it, overcast kills it.
+        const goldenBoost = 1.0 + lowSun * 0.4;
+        u.sunIntensity.value = 0.46 * onScreenGate * altGate * goldenBoost * godRayStrength;
       }
     } else {
       u.sunIntensity.value = 0.0;

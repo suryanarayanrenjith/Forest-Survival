@@ -76,7 +76,8 @@ export interface GameState {
   hostId: string;
   map?: string; // Map ID for session persistence
   difficulty?: 'easy' | 'medium' | 'hard' | 'adaptive'; // Host-selected difficulty
-  /** Host-selected time of day for the match. 'auto' runs the day/night cycle. */
+  /** Host-selected time of day for the match. 'auto' runs the day/night cycle.
+   *  (Weather is NOT synced — every client runs the map's automatic climate.) */
   timeOfDay?: 'day' | 'night' | 'auto';
 }
 

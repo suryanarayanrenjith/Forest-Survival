@@ -587,8 +587,8 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
   // the backdrop can't drift while this screen slides in/out.
   const backdrop = 'fixed inset-0 z-50 flex items-center justify-center p-4 overflow-y-auto';
   const backdropStyle = {} as const;
-  const panelClass = 'w-full max-w-sm rounded-3xl border border-white/10 bg-white/[0.04] backdrop-blur-2xl shadow-[0_24px_80px_-24px_rgba(0,0,0,0.6)]';
-  const panelInnerClass = 'w-full max-w-xl rounded-3xl border border-white/10 bg-white/[0.035] backdrop-blur-2xl shadow-[0_24px_80px_-24px_rgba(0,0,0,0.6)] overflow-hidden flex flex-col max-h-[94dvh]';
+  const panelClass = 'w-full max-w-sm rounded-3xl border border-white/10 bg-[#0b1016]/95 shadow-[0_24px_80px_-24px_rgba(0,0,0,0.8)]';
+  const panelInnerClass = 'w-full max-w-xl rounded-3xl border border-white/10 bg-[#0b1016]/95 shadow-[0_24px_80px_-24px_rgba(0,0,0,0.8)] overflow-hidden flex flex-col max-h-[94dvh]';
 
   // ── AUTH GATE ───────────────────────────────────────────────────────────
   // Multiplayer always plays as the signed-in account username. Guests who
@@ -596,7 +596,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
   if (currentUser === undefined) {
     return (
       <div className={backdrop} style={backdropStyle}>
-        <div className="flex flex-col items-center gap-4 rounded-3xl border border-white/10 bg-white/[0.04] px-6 py-5 backdrop-blur-2xl shadow-[0_24px_80px_-24px_rgba(0,0,0,0.6)]">
+        <div className="flex flex-col items-center gap-4 rounded-3xl border border-white/10 bg-[#0b1016]/95 px-6 py-5 shadow-[0_24px_80px_-24px_rgba(0,0,0,0.8)]">
           <Loader2 className="w-10 h-10 text-sky-400 animate-spin" strokeWidth={2} />
           <div className="text-sm font-semibold tracking-wide text-gray-300">Checking your session…</div>
         </div>
@@ -694,7 +694,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
   if (view === 'host' && isConnecting && !manager) {
     return (
       <div className={backdrop} style={backdropStyle}>
-        <div className="flex flex-col items-center gap-4 rounded-3xl border border-white/10 bg-white/[0.04] px-6 py-5 backdrop-blur-2xl shadow-[0_24px_80px_-24px_rgba(0,0,0,0.6)]">
+        <div className="flex flex-col items-center gap-4 rounded-3xl border border-white/10 bg-[#0b1016]/95 px-6 py-5 shadow-[0_24px_80px_-24px_rgba(0,0,0,0.8)]">
           <Loader2 className="w-10 h-10 text-emerald-400 animate-spin" strokeWidth={2} />
           <div className="text-sm font-semibold tracking-wide text-gray-300">Creating lobby…</div>
         </div>
@@ -1052,7 +1052,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
   if (view === 'join' && manager) {
     return (
       <div className={backdrop} style={backdropStyle}>
-        <div className="w-full max-w-md rounded-3xl border border-white/10 bg-white/[0.04] overflow-hidden backdrop-blur-2xl shadow-[0_24px_80px_-24px_rgba(0,0,0,0.6)]"
+        <div className="w-full max-w-md rounded-3xl border border-white/10 bg-[#0b1016]/95 overflow-hidden shadow-[0_24px_80px_-24px_rgba(0,0,0,0.8)]"
           style={{ animation: 'mlFade 0.35s cubic-bezier(0.16,1,0.3,1) forwards' }}>
           <div className="flex items-center gap-3 px-5 py-4 border-b border-white/[0.07]">
             <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-sky-500/12">

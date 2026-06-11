@@ -1287,12 +1287,13 @@ const ForestSurvivalGame = () => {
 
     if (actualTimeOfDay === 'auto') {
       dayCycleSystem.enableAutoCycle(true);
-      // Cycle speed dropped from 1.5 → 0.85 so the now-continuous
-      // anchor-to-anchor interpolation has time to breathe. A full
-      // 24-hour cycle is ~140 real-seconds — fast enough that you'll
-      // see day, dusk, night within one wave-run, slow enough that the
-      // dusk-into-night fade reads as a real sunset, not a switch flip.
-      dayCycleSystem.setCycleSpeed(0.85);
+      // ULTRA-REALISTIC pacing: 0.22 stretches a full 24-hour cycle to
+      // ~9 real minutes (was ~140 s at 0.85). Sunsets now unfold over a
+      // couple of minutes like real golden hour — combined with the
+      // quintic anchor blending and the weather fronts layered on top,
+      // the sky reads as a living atmosphere instead of a colour strobe.
+      // A long run still sees the full day → dusk → night → dawn arc.
+      dayCycleSystem.setCycleSpeed(0.22);
     } else {
       dayCycleSystem.enableAutoCycle(false);
       // Set specific time based on mode (simplified to 3 modes)
@@ -1905,6 +1906,10 @@ const ForestSurvivalGame = () => {
       uPatchScale: { value: 0.035 },
       uPatchStrength: { value: 0.18 * (renderProfile.groundPatch ?? 1.0) },
       uIsNight: { value: isDay ? 0.0 : 1.0 },
+      // Live rain state (weather system): ground soak → growing reflective
+      // puddles; active precipitation → ripple animation on those puddles.
+      uRainWet: { value: 0 },
+      uRainRipple: { value: 0 },
     };
 
     // All ground shader injection (terrain displacement + ultra-detailed,
@@ -2036,10 +2041,18 @@ const ForestSurvivalGame = () => {
         console.warn('[App] HDRI environment loading failed; using generated sky IBL fallback:', err);
       });
 
-    // === WEATHER SYSTEM ===
-    const weatherSystem = new WeatherSystem(scene, camera);
-    // Disable weather system as it causes lag and annoying visual effects
-    weatherSystem.setWeather('clear');
+    // === WEATHER SYSTEM v3 — automatic per-map climate ===
+    // No menu, no sync: every mode (Solo / Tutorial / Multiplayer) and every
+    // time-of-day (Auto / Day / Night) gets a living sky driven by the map's
+    // climate — rain on the forest/swamp maps, sandstorms in the desert,
+    // blizzards on the tundra, ashfall over the volcanic wasteland. Outputs
+    // per-frame atmosphere MODIFIERS folded into the day-cycle atmosphere
+    // below, so weather costs a handful of multiplies per frame plus one
+    // Points draw while a storm is active.
+    const weatherSystem = new WeatherSystem(scene);
+    weatherSystem.setClimate(selectedMap);
+    // Live modifiers, refreshed at the top of every frame.
+    let weatherMods = weatherSystem.update(0, camera.position, !atmosphericSettings.sunVisible);
 
     // === BIOME SYSTEM ===
     const biomeSystem = new BiomeSystem(scene);
@@ -6103,6 +6116,41 @@ const ForestSurvivalGame = () => {
       atmosphericSettings = dayCycleSystem.update(photoModeRef.current ? 0 : delta);
       renderAtmosphere = getRenderAtmosphere();
 
+      // ── WEATHER — fold the live front into the day-cycle atmosphere ──
+      // getRenderAtmosphere() returns a fresh struct each frame, so mutating
+      // it here is safe. Overcast flattens the light and thickens the air;
+      // rain darkens the sky toward storm grey; a sandstorm tints the world
+      // tan, a blizzard whites it out, ashfall smothers it brown-grey. The
+      // same modifiers scale god rays + ground wetness/puddles below. The
+      // director reads the day cycle (isNight) so nights run calmer.
+      weatherMods = weatherSystem.update(
+        photoModeRef.current ? 0 : rawDelta,
+        camera.position,
+        !atmosphericSettings.sunVisible,
+      );
+      if (weatherMods.skyDarken > 0.005) {
+        renderAtmosphere.skyColor = darkenHexColor(renderAtmosphere.skyColor, 1 - weatherMods.skyDarken * 0.5);
+        renderAtmosphere.fogColor = darkenHexColor(renderAtmosphere.fogColor, 1 - weatherMods.skyDarken * 0.4);
+        renderAtmosphere.ambientColor = darkenHexColor(renderAtmosphere.ambientColor, 1 - weatherMods.skyDarken * 0.18);
+      }
+      // Storm colour cast — sandstorm tan / blizzard white / ash brown.
+      if (weatherMods.tintStrength > 0.005) {
+        const tintHex = weatherMods.tint.getHex();
+        renderAtmosphere.skyColor = blendHexColor(renderAtmosphere.skyColor, tintHex, weatherMods.tintStrength * 0.6);
+        renderAtmosphere.fogColor = blendHexColor(renderAtmosphere.fogColor, tintHex, weatherMods.tintStrength);
+      }
+      renderAtmosphere.lightIntensity *= weatherMods.lightMult;
+      renderAtmosphere.ambientIntensity *= weatherMods.ambientMult;
+      renderAtmosphere.fogDensity *= weatherMods.fogDensityMult;
+      renderAtmosphere.saturation *= weatherMods.saturationMult;
+      renderAtmosphere.bloomStrength *= weatherMods.bloomMult;
+      // Live rain → terrain shader: puddles grow with the soak and ripple
+      // while precipitation is actually falling (storm puddles only form in
+      // rain climates — sand/snow/ash storms keep wetness at 0).
+      groundShaderUniforms.uRainWet.value = weatherMods.wetness;
+      groundShaderUniforms.uRainRipple.value =
+        weatherMods.wetness > 0.001 ? weatherMods.rainAmount * weatherMods.wetness : 0;
+
       const sunDirection = computeSunDirection();
       const lowLight = sunDirection.y < 0.18;
 
@@ -6127,10 +6175,13 @@ const ForestSurvivalGame = () => {
         : (0.08 + sunAlt * 0.10) * (renderProfile.groundSpecular ?? 1.0);
       // Specular is what makes the ground look "polished / wet" — bigger
       // contribution than the diffuse boost. Still bounded so it never
-      // crosses the bloom threshold uniformly.
-      groundShaderUniforms.uSpecularStrength.value = isNightShader
+      // crosses the bloom threshold uniformly. Rain pushes it further so a
+      // downpour leaves the whole arena reading as slick, reflective wet
+      // ground (and gloom leaves a damp sheen).
+      groundShaderUniforms.uSpecularStrength.value = (isNightShader
         ? 0.14 * (renderProfile.groundSpecular ?? 1.0)
-        : (0.28 + sunAlt * 0.26) * (renderProfile.groundSpecular ?? 1.0);
+        : (0.28 + sunAlt * 0.26) * (renderProfile.groundSpecular ?? 1.0))
+        * (1 + weatherMods.wetness * 1.6);
       groundShaderUniforms.uNormalStrength.value = 0.26 * (renderProfile.groundNormal ?? 1.0);
       groundShaderUniforms.uPatchStrength.value = 0.18 * (renderProfile.groundPatch ?? 1.0);
       groundShaderUniforms.uIsNight.value = isNightShader ? 1.0 : 0.0;
@@ -6269,7 +6320,9 @@ const ForestSurvivalGame = () => {
         colorTint: renderAtmosphere.colorTint,
         sunDirection,
         isNight: !renderAtmosphere.sunVisible,
-        godRayStrength: renderProfile.godRayStrength,
+        // Weather drives the shafts: clear skies crank them, overcast/rain
+        // kills them (no crepuscular rays through a storm deck).
+        godRayStrength: (renderProfile.godRayStrength ?? 1.0) * weatherMods.godRayMult,
         aerialPerspective: renderProfile.aerialPerspective,
         highlightRecovery: renderProfile.highlightRecovery,
         highlightDesaturation: renderProfile.highlightDesaturation,
@@ -8942,6 +8995,9 @@ const ForestSurvivalGame = () => {
         // scene-parented, so this never changes the light count. Cleared in
         // teardown via enhancedPowerUps.clearAll.
         enhancedPowerUps.createAirdrop(scene, wp.x, wp.z, 'speed');
+        // Pre-warm the rain shader (hidden Points mesh) so a dynamic-weather
+        // front can roll in mid-fight without a first-rain compile hitch.
+        weatherSystem.prewarm();
       });
       await yieldFrame();
 
@@ -9376,6 +9432,7 @@ const ForestSurvivalGame = () => {
     setClassicDifficulty(difficulty || 'medium');
     // Host-selected time of day applies to every client (the game effect reads
     // `classicTimeOfDay`; 'auto' runs the day/night cycle, as before).
+    // Weather needs no sync — every client runs the map's automatic climate.
     setClassicTimeOfDay(timeOfDay || 'auto');
     multiplayerTimeLimitRef.current = timeLimit;
     soundManager.initialize();
@@ -9581,17 +9638,25 @@ const ForestSurvivalGame = () => {
 
         {/* STATIC menu chrome — readability gradients + per-variant tint live
             HERE, outside the animated screen wrapper, so the dark overlay
-            stays rock-solid while screens slide (a moving black sheet made
-            the old transition feel like the whole world was shifting). */}
-        <div className="fixed inset-0 z-[1] pointer-events-none bg-gradient-to-b from-black/50 via-black/30 to-black/75" />
+            stays rock-solid while screens slide. These sit at z-[1], BELOW
+            the menu content (.menu-screen is z-10) — they darken the 3D
+            backdrop only, never the UI. The old setup let these (and the
+            multiplayer blur sheet) paint OVER every menu, washing out the
+            whole UI and blurring the entire lobby. Gradients also softened
+            so the footer buttons (Settings / Credits / Login) stay crisp. */}
+        <div className="fixed inset-0 z-[1] pointer-events-none bg-gradient-to-b from-black/40 via-black/20 to-black/55" />
         <div
           className="fixed inset-0 z-[1] pointer-events-none"
-          style={{ background: 'radial-gradient(ellipse at center, transparent 42%, rgba(0,0,0,0.58) 100%)' }}
+          style={{ background: 'radial-gradient(ellipse at center, transparent 46%, rgba(0,0,0,0.42) 100%)' }}
         />
         {menuVariant === 'multiplayer' && (
+          // Plain dark tint — NO backdrop-filter. The old blur(14px) sheet
+          // both blurred the live canvas every frame AND (because the lobby
+          // renders inside a transformed stacking context) painted on top of
+          // the entire lobby UI, blurring it into unreadability.
           <div
             className="fixed inset-0 z-[1] pointer-events-none animate-fadeIn"
-            style={{ background: 'rgba(5,8,10,0.24)', backdropFilter: 'blur(14px) saturate(130%)' }}
+            style={{ background: 'rgba(5,8,10,0.42)' }}
           />
         )}
         <div key={menuVariant} className="animate-fadeIn">

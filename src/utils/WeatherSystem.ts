@@ -1,371 +1,438 @@
 import * as THREE from 'three';
+import type { MapType } from './MapSystem';
 
-export type WeatherType = 'clear' | 'rain' | 'storm' | 'mist' | 'snow';
+/**
+ * WEATHER SYSTEM v3 — per-map climates with signature storms.
+ *
+ * Always-on and fully automatic: there is no weather menu. Every run gets a
+ * living sky driven by a weather DIRECTOR that drifts between clear, overcast
+ * and the map's signature storm with long cinematic cross-fades. The climate
+ * is tuned per environment — the desert is mostly blazing sun broken by
+ * sandstorms, the tundra brews white-out blizzards, the volcanic wasteland
+ * chokes under ashfall, and the forest/swamp maps get true rain (with growing
+ * puddles + reflections, see TerrainSystem). Time of day feeds back into the
+ * director: nights run calmer and moodier than days.
+ *
+ * Architecture is atmosphere-first: the primary output is a small struct of
+ * ATMOSPHERE MODIFIERS (light / fog / saturation / bloom / god-ray
+ * multipliers, a sky tint, ground wetness) that the render loop folds into
+ * the existing day-night atmosphere — a handful of multiplies per frame.
+ * The only geometry is ONE Points field (single draw call, ≤2600 sprites)
+ * shaped per storm: vertical rain streaks, drifting snow, wind-driven dust,
+ * or slow-falling ash.
+ */
 
-interface WeatherParticle {
-  mesh: THREE.Points;
-  geometry: THREE.BufferGeometry;
-  material: THREE.PointsMaterial | THREE.ShaderMaterial;
-  velocities: Float32Array;
+/** Per-frame modifiers the render loop folds into the atmosphere. */
+export interface WeatherMods {
+  /** Multiplies the directional (sun/moon) light intensity. */
+  lightMult: number;
+  /** Multiplies ambient + hemisphere intensity. */
+  ambientMult: number;
+  /** Multiplies fog density (storms = thicker air). */
+  fogDensityMult: number;
+  /** Multiplies colour-grade saturation. */
+  saturationMult: number;
+  /** Multiplies bloom strength. */
+  bloomMult: number;
+  /** Multiplies god-ray strength (clear sky = dramatic shafts). */
+  godRayMult: number;
+  /** 0..1 — darkens sky + fog colours toward storm grey. */
+  skyDarken: number;
+  /** Sky/fog colour cast (sandstorm tan, blizzard white, ash brown). */
+  tint: THREE.Color;
+  /** 0..1 — how strongly the tint takes over the sky/fog colours. */
+  tintStrength: number;
+  /** 0..1 — rain soak: drives puddle growth + wet ground in the terrain shader. */
+  wetness: number;
+  /** 0..1 — live precipitation intensity (particles + puddle ripples). */
+  rainAmount: number;
+}
+
+type WeatherState = 'clear' | 'gloomy' | 'storm';
+export type StormKind = 'rain' | 'sandstorm' | 'blizzard' | 'ashfall';
+
+interface ModsPreset {
+  lightMult: number;
+  ambientMult: number;
+  fogDensityMult: number;
+  saturationMult: number;
+  bloomMult: number;
+  godRayMult: number;
+  skyDarken: number;
+  tintHex: number;
+  tintStrength: number;
+  wetness: number;
+  rainAmount: number;
+}
+
+const CLEAR_PRESET: ModsPreset = {
+  lightMult: 1.04, ambientMult: 1.0, fogDensityMult: 0.92, saturationMult: 1.04,
+  bloomMult: 1.06, godRayMult: 1.3, skyDarken: 0, tintHex: 0xffffff, tintStrength: 0,
+  wetness: 0, rainAmount: 0,
+};
+
+const GLOOMY_PRESET: ModsPreset = {
+  lightMult: 0.58, ambientMult: 0.88, fogDensityMult: 1.55, saturationMult: 0.78,
+  bloomMult: 0.92, godRayMult: 0.22, skyDarken: 0.3, tintHex: 0x8d97a2, tintStrength: 0.16,
+  wetness: 0.15, rainAmount: 0,
+};
+
+/** Atmosphere look for each storm species. */
+const STORM_PRESETS: Record<StormKind, ModsPreset> = {
+  // Downpour — dark storm deck, soaked reflective ground.
+  rain: {
+    lightMult: 0.52, ambientMult: 0.84, fogDensityMult: 1.8, saturationMult: 0.74,
+    bloomMult: 0.96, godRayMult: 0.14, skyDarken: 0.4, tintHex: 0x76828e, tintStrength: 0.2,
+    wetness: 1.0, rainAmount: 1.0,
+  },
+  // Wall of wind-driven sand — warm tan haze swallows the horizon.
+  sandstorm: {
+    lightMult: 0.66, ambientMult: 0.96, fogDensityMult: 2.6, saturationMult: 0.94,
+    bloomMult: 0.95, godRayMult: 0.12, skyDarken: 0.12, tintHex: 0xc89858, tintStrength: 0.55,
+    wetness: 0, rainAmount: 1.0,
+  },
+  // White-out — bright but blinding; the world dissolves into driven snow.
+  blizzard: {
+    lightMult: 0.72, ambientMult: 1.05, fogDensityMult: 3.0, saturationMult: 0.7,
+    bloomMult: 0.95, godRayMult: 0.06, skyDarken: 0.08, tintHex: 0xdfe8f2, tintStrength: 0.5,
+    wetness: 0, rainAmount: 1.0,
+  },
+  // Volcanic ashfall — smothered light under a brown-grey pall.
+  ashfall: {
+    lightMult: 0.56, ambientMult: 0.86, fogDensityMult: 2.0, saturationMult: 0.84,
+    bloomMult: 0.95, godRayMult: 0.1, skyDarken: 0.28, tintHex: 0x55483c, tintStrength: 0.42,
+    wetness: 0, rainAmount: 1.0,
+  },
+};
+
+/** Particle-field shaping per storm species (one Points draw call). */
+interface StormParticles {
+  count: number;
+  /** 'streak' = vertical rain sprite, 'flake' = soft round sprite. */
+  sprite: 'streak' | 'flake';
+  color: number;
+  size: number;
+  opacity: number;
+  additive: boolean;
+  fallMin: number;   // m/s
+  fallVar: number;
+  windX: number;     // m/s lateral drift
+  windZ: number;
+}
+
+const STORM_PARTICLES: Record<StormKind, StormParticles> = {
+  rain:      { count: 2200, sprite: 'streak', color: 0xbcd6ff, size: 0.65, opacity: 0.5,  additive: true,  fallMin: 26,  fallVar: 14,  windX: 2.6, windZ: 1.2 },
+  sandstorm: { count: 2400, sprite: 'flake',  color: 0xd8b070, size: 1.35, opacity: 0.32, additive: false, fallMin: 2.5, fallVar: 2.5, windX: 30,  windZ: 9 },
+  blizzard:  { count: 2600, sprite: 'flake',  color: 0xf2f7ff, size: 0.55, opacity: 0.8,  additive: false, fallMin: 7,   fallVar: 6,   windX: 17,  windZ: 5 },
+  ashfall:   { count: 1700, sprite: 'flake',  color: 0x9a948c, size: 0.6,  opacity: 0.55, additive: false, fallMin: 2.2, fallVar: 2.2, windX: 3.5, windZ: 2 },
+};
+
+/** Per-map climate: which storm, and how the director weights its rolls. */
+interface ClimateProfile {
+  storm: StormKind;
+  clearWeight: number;
+  gloomyWeight: number;
+  stormWeight: number;
+}
+
+const MAP_CLIMATES: Record<MapType, ClimateProfile> = {
+  deep_forest:        { storm: 'rain',      clearWeight: 45, gloomyWeight: 29, stormWeight: 26 },
+  autumn_grove:       { storm: 'rain',      clearWeight: 42, gloomyWeight: 32, stormWeight: 26 },
+  toxic_swamp:        { storm: 'rain',      clearWeight: 24, gloomyWeight: 38, stormWeight: 38 },
+  military_outpost:   { storm: 'rain',      clearWeight: 42, gloomyWeight: 32, stormWeight: 26 },
+  ancient_ruins:      { storm: 'rain',      clearWeight: 46, gloomyWeight: 30, stormWeight: 24 },
+  desert_canyon:      { storm: 'sandstorm', clearWeight: 60, gloomyWeight: 16, stormWeight: 24 },
+  frozen_tundra:      { storm: 'blizzard',  clearWeight: 34, gloomyWeight: 30, stormWeight: 36 },
+  scorched_wasteland: { storm: 'ashfall',   clearWeight: 40, gloomyWeight: 26, stormWeight: 34 },
+};
+
+const DEFAULT_CLIMATE: ClimateProfile = MAP_CLIMATES.deep_forest;
+
+// ── Particle field bounds ──────────────────────────────────────────────────
+const FIELD_RADIUS = 42;   // cylinder radius around the camera (m)
+const FIELD_TOP = 34;      // sprites respawn / wrap at this height
+
+/** Soft vertical streak sprite (rain) — built once, shared forever. */
+let streakTexture: THREE.CanvasTexture | null = null;
+function getStreakTexture(): THREE.CanvasTexture {
+  if (streakTexture) return streakTexture;
+  const canvas = document.createElement('canvas');
+  canvas.width = 8;
+  canvas.height = 32;
+  const ctx = canvas.getContext('2d')!;
+  const grad = ctx.createLinearGradient(0, 0, 0, 32);
+  grad.addColorStop(0, 'rgba(200,225,255,0)');
+  grad.addColorStop(0.35, 'rgba(200,225,255,0.9)');
+  grad.addColorStop(0.75, 'rgba(180,210,255,0.55)');
+  grad.addColorStop(1, 'rgba(180,210,255,0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(2.5, 0, 3, 32);
+  streakTexture = new THREE.CanvasTexture(canvas);
+  return streakTexture;
+}
+
+/** Soft round sprite (snow / dust / ash) — built once, shared forever. */
+let flakeTexture: THREE.CanvasTexture | null = null;
+function getFlakeTexture(): THREE.CanvasTexture {
+  if (flakeTexture) return flakeTexture;
+  const canvas = document.createElement('canvas');
+  canvas.width = 32;
+  canvas.height = 32;
+  const ctx = canvas.getContext('2d')!;
+  const grad = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
+  grad.addColorStop(0, 'rgba(255,255,255,0.95)');
+  grad.addColorStop(0.45, 'rgba(255,255,255,0.55)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 32, 32);
+  flakeTexture = new THREE.CanvasTexture(canvas);
+  return flakeTexture;
 }
 
 export class WeatherSystem {
-  private scene: THREE.Scene;
-  private currentWeather: WeatherType;
-  private particles: WeatherParticle | null = null;
-  private mistPlanes: THREE.Mesh[] = [];
-  private thunderLightning: THREE.PointLight | null = null;
-  private time: number = 0;
+  private readonly scene: THREE.Scene;
+  private climate: ClimateProfile = DEFAULT_CLIMATE;
 
-  constructor(scene: THREE.Scene, _camera: THREE.Camera) {
+  // Smoothly-blended live modifiers (what update() returns).
+  private readonly current: WeatherMods = {
+    lightMult: 1, ambientMult: 1, fogDensityMult: 1, saturationMult: 1,
+    bloomMult: 1, godRayMult: 1, skyDarken: 0, tint: new THREE.Color(0xffffff),
+    tintStrength: 0, wetness: 0, rainAmount: 0,
+  };
+  private target: ModsPreset = CLEAR_PRESET;
+  private readonly targetTint = new THREE.Color(0xffffff);
+
+  // ── Weather director ──
+  private state: WeatherState = 'clear';
+  private holdRemaining = 0;
+  private night = false;
+
+  // ── Storm particle field (lazy single Points mesh) ──
+  private field: THREE.Points | null = null;
+  private fieldMaterial: THREE.PointsMaterial | null = null;
+  private fieldVelY: Float32Array | null = null;
+  private fieldConfig: StormParticles = STORM_PARTICLES.rain;
+
+  constructor(scene: THREE.Scene) {
     this.scene = scene;
-    // camera parameter kept for API consistency but not stored
-    this.currentWeather = 'clear';
   }
 
-  setWeather(weatherType: WeatherType) {
-    this.clear();
-    this.currentWeather = weatherType;
+  /**
+   * Configure the climate for the selected map. Called once at scene init.
+   * Opens on a fair director roll and SNAPS the blend to it, so a run that
+   * begins mid-gloom looks gloomy from the very first frame.
+   */
+  setClimate(map: MapType): void {
+    this.climate = MAP_CLIMATES[map] ?? DEFAULT_CLIMATE;
+    this.fieldConfig = STORM_PARTICLES[this.climate.storm];
+    this.state = this.rollNextState(null);
+    this.holdRemaining = this.holdSecondsFor(this.state);
+    this.target = this.presetFor(this.state);
+    this.snapToTarget();
+  }
 
-    switch (weatherType) {
-      case 'rain':
-        this.createRain();
-        break;
-      case 'storm':
-        this.createStorm();
-        break;
-      case 'mist':
-        this.createMist();
-        break;
-      case 'snow':
-        this.createSnow();
-        break;
-      case 'clear':
-      default:
-        break;
+  getStormKind(): StormKind {
+    return this.climate.storm;
+  }
+
+  private presetFor(state: WeatherState): ModsPreset {
+    if (state === 'storm') return STORM_PRESETS[this.climate.storm];
+    return state === 'gloomy' ? GLOOMY_PRESET : CLEAR_PRESET;
+  }
+
+  /** Storms are intense but bounded; clear spells breathe longer. */
+  private holdSecondsFor(state: WeatherState): number {
+    if (state === 'storm') return 32 + Math.random() * 34;
+    if (state === 'gloomy') return 38 + Math.random() * 42;
+    return 55 + Math.random() * 60;
+  }
+
+  /**
+   * Weighted next-state roll. Map climate sets the base odds; night calms
+   * the sky (fewer storms, a touch more brooding gloom) so the environment
+   * tracks both WHERE you are and WHEN it is.
+   */
+  private rollNextState(previous: WeatherState | null): WeatherState {
+    const nightStorm = this.night ? 0.72 : 1;
+    const nightGloom = this.night ? 1.15 : 1;
+    const entries: Array<[WeatherState, number]> = [
+      ['clear', this.climate.clearWeight],
+      ['gloomy', this.climate.gloomyWeight * nightGloom],
+      ['storm', this.climate.stormWeight * nightStorm],
+    ];
+    let total = 0;
+    for (const [state, weight] of entries) {
+      if (state !== previous) total += weight;
     }
+    let roll = Math.random() * total;
+    for (const [state, weight] of entries) {
+      if (state === previous) continue;
+      roll -= weight;
+      if (roll <= 0) return state;
+    }
+    return 'clear';
   }
 
-  private createRain() {
-    const particleCount = 5000;
-    const positions = new Float32Array(particleCount * 3);
-    const velocities = new Float32Array(particleCount * 3);
+  private snapToTarget(): void {
+    const c = this.current;
+    const t = this.target;
+    c.lightMult = t.lightMult;
+    c.ambientMult = t.ambientMult;
+    c.fogDensityMult = t.fogDensityMult;
+    c.saturationMult = t.saturationMult;
+    c.bloomMult = t.bloomMult;
+    c.godRayMult = t.godRayMult;
+    c.skyDarken = t.skyDarken;
+    c.tint.setHex(t.tintHex);
+    c.tintStrength = t.tintStrength;
+    c.wetness = t.wetness;
+    c.rainAmount = t.rainAmount;
+  }
 
-    for (let i = 0; i < particleCount; i++) {
+  /**
+   * Advance the weather and return the live modifiers. Call once per frame
+   * with the unscaled delta. `isNight` tunes the director to the day cycle.
+   */
+  update(delta: number, cameraPosition: THREE.Vector3, isNight: boolean): WeatherMods {
+    this.night = isNight;
+
+    this.holdRemaining -= delta;
+    if (this.holdRemaining <= 0) {
+      this.state = this.rollNextState(this.state);
+      this.target = this.presetFor(this.state);
+      this.holdRemaining = this.holdSecondsFor(this.state);
+    }
+
+    // Cinematic cross-fade: exponential ease with a ~10 s time constant so
+    // fronts roll in, never snap. Frame-rate independent. Wetness DRIES ~3×
+    // slower than it soaks, so puddles linger after the rain stops — and with
+    // the ripples gone they settle into still mirrors.
+    const blend = 1 - Math.exp(-delta / 10);
+    const dryBlend = 1 - Math.exp(-delta / 30);
+    const c = this.current;
+    const t = this.target;
+    this.targetTint.setHex(t.tintHex);
+    c.lightMult += (t.lightMult - c.lightMult) * blend;
+    c.ambientMult += (t.ambientMult - c.ambientMult) * blend;
+    c.fogDensityMult += (t.fogDensityMult - c.fogDensityMult) * blend;
+    c.saturationMult += (t.saturationMult - c.saturationMult) * blend;
+    c.bloomMult += (t.bloomMult - c.bloomMult) * blend;
+    c.godRayMult += (t.godRayMult - c.godRayMult) * blend;
+    c.skyDarken += (t.skyDarken - c.skyDarken) * blend;
+    c.tint.lerp(this.targetTint, blend);
+    c.tintStrength += (t.tintStrength - c.tintStrength) * blend;
+    c.wetness += (t.wetness - c.wetness) * (t.wetness > c.wetness ? blend : dryBlend);
+    c.rainAmount += (t.rainAmount - c.rainAmount) * blend;
+
+    this.updateField(delta, cameraPosition, c.rainAmount);
+    return c;
+  }
+
+  // ── Storm particle field ───────────────────────────────────────────────
+
+  private buildField(): void {
+    const cfg = this.fieldConfig;
+    const positions = new Float32Array(cfg.count * 3);
+    const velY = new Float32Array(cfg.count);
+    for (let i = 0; i < cfg.count; i++) {
       const i3 = i * 3;
-      // Spread around camera
-      positions[i3] = (Math.random() - 0.5) * 200;
-      positions[i3 + 1] = Math.random() * 100 + 20;
-      positions[i3 + 2] = (Math.random() - 0.5) * 200;
-
-      // Velocity
-      velocities[i3] = (Math.random() - 0.5) * 0.5;
-      velocities[i3 + 1] = -1.5 - Math.random() * 0.5;
-      velocities[i3 + 2] = (Math.random() - 0.5) * 0.5;
+      const a = Math.random() * Math.PI * 2;
+      const r = Math.sqrt(Math.random()) * FIELD_RADIUS;
+      positions[i3] = Math.cos(a) * r;
+      positions[i3 + 1] = Math.random() * FIELD_TOP;
+      positions[i3 + 2] = Math.sin(a) * r;
+      velY[i] = cfg.fallMin + Math.random() * cfg.fallVar;
     }
-
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
 
-    const material = new THREE.PointsMaterial({
-      color: 0xaaccff,
-      size: 0.15,
+    this.fieldMaterial = new THREE.PointsMaterial({
+      color: cfg.color,
+      size: cfg.size,
+      map: cfg.sprite === 'streak' ? getStreakTexture() : getFlakeTexture(),
       transparent: true,
-      opacity: 0.6,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false
-    });
-
-    const mesh = new THREE.Points(geometry, material);
-    this.scene.add(mesh);
-
-    this.particles = {
-      mesh,
-      geometry,
-      material,
-      velocities
-    };
-  }
-
-  private createStorm() {
-    // Create rain first
-    this.createRain();
-
-    // Add thunder lightning
-    this.thunderLightning = new THREE.PointLight(0xaaccff, 0, 100);
-    this.thunderLightning.position.set(0, 50, 0);
-    this.scene.add(this.thunderLightning);
-
-    // Make rain more intense
-    if (this.particles && this.particles.material instanceof THREE.PointsMaterial) {
-      this.particles.material.size = 0.2;
-      this.particles.material.opacity = 0.8;
-    }
-
-    // Increase velocity for storm
-    if (this.particles) {
-      for (let i = 0; i < this.particles.velocities.length; i += 3) {
-        this.particles.velocities[i + 1] *= 2; // Double fall speed
-      }
-    }
-  }
-
-  private createMist() {
-    const mistCount = 20;
-
-    for (let i = 0; i < mistCount; i++) {
-      const mistGeometry = new THREE.PlaneGeometry(50, 30);
-      const mistMaterial = new THREE.ShaderMaterial({
-        uniforms: {
-          time: { value: Math.random() * 100 },
-          opacity: { value: 0.15 },
-          color: { value: new THREE.Color(0xccddee) }
-        },
-        vertexShader: `
-          uniform float time;
-          varying vec2 vUv;
-          varying float vOpacity;
-
-          void main() {
-            vUv = uv;
-            vec3 pos = position;
-
-            // Animated mist movement
-            pos.x += sin(time * 0.5 + uv.y * 3.14) * 2.0;
-            pos.y += cos(time * 0.3 + uv.x * 3.14) * 1.0;
-
-            vOpacity = sin(time * 0.8) * 0.3 + 0.7;
-
-            gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
-          }
-        `,
-        fragmentShader: `
-          uniform float opacity;
-          uniform vec3 color;
-          varying vec2 vUv;
-          varying float vOpacity;
-
-          void main() {
-            // Soft gradient
-            float alpha = opacity * vOpacity * (1.0 - vUv.y) * smoothstep(0.0, 1.0, vUv.y);
-
-            // Add some variation
-            float noise = sin(vUv.x * 10.0) * cos(vUv.y * 10.0) * 0.1 + 0.9;
-
-            gl_FragColor = vec4(color, alpha * noise);
-          }
-        `,
-        transparent: true,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-        blending: THREE.AdditiveBlending
-      });
-
-      const mist = new THREE.Mesh(mistGeometry, mistMaterial);
-
-      // Random placement around camera
-      mist.position.set(
-        (Math.random() - 0.5) * 100,
-        Math.random() * 5 + 2,
-        (Math.random() - 0.5) * 100
-      );
-
-      mist.rotation.y = Math.random() * Math.PI;
-
-      this.scene.add(mist);
-      this.mistPlanes.push(mist);
-    }
-  }
-
-  private createSnow() {
-    const particleCount = 3000;
-    const positions = new Float32Array(particleCount * 3);
-    const velocities = new Float32Array(particleCount * 3);
-
-    for (let i = 0; i < particleCount; i++) {
-      const i3 = i * 3;
-      // Spread around camera
-      positions[i3] = (Math.random() - 0.5) * 200;
-      positions[i3 + 1] = Math.random() * 100 + 20;
-      positions[i3 + 2] = (Math.random() - 0.5) * 200;
-
-      // Slower, drifting velocity
-      velocities[i3] = (Math.random() - 0.5) * 0.3;
-      velocities[i3 + 1] = -0.2 - Math.random() * 0.3;
-      velocities[i3 + 2] = (Math.random() - 0.5) * 0.3;
-    }
-
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-
-    const material = new THREE.PointsMaterial({
-      color: 0xffffff,
-      size: 0.4,
-      transparent: true,
-      opacity: 0.8,
-      blending: THREE.NormalBlending,
+      opacity: 0,
+      blending: cfg.additive ? THREE.AdditiveBlending : THREE.NormalBlending,
       depthWrite: false,
-      map: this.createSnowflakeTexture()
+      sizeAttenuation: true,
+      fog: false,
     });
 
-    const mesh = new THREE.Points(geometry, material);
-    this.scene.add(mesh);
-
-    this.particles = {
-      mesh,
-      geometry,
-      material,
-      velocities
-    };
+    this.field = new THREE.Points(geometry, this.fieldMaterial);
+    this.field.frustumCulled = false;
+    this.field.visible = false;
+    this.field.userData.cannotReceiveAO = true;
+    this.fieldVelY = velY;
+    this.scene.add(this.field);
   }
 
-  private createSnowflakeTexture(): THREE.Texture {
-    const canvas = document.createElement('canvas');
-    canvas.width = 32;
-    canvas.height = 32;
-    const ctx = canvas.getContext('2d')!;
-
-    // Draw snowflake
-    ctx.fillStyle = 'white';
-    ctx.beginPath();
-    ctx.arc(16, 16, 8, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Add some detail
-    for (let i = 0; i < 6; i++) {
-      const angle = (i / 6) * Math.PI * 2;
-      ctx.beginPath();
-      ctx.moveTo(16, 16);
-      ctx.lineTo(16 + Math.cos(angle) * 8, 16 + Math.sin(angle) * 8);
-      ctx.strokeStyle = 'white';
-      ctx.lineWidth = 1;
-      ctx.stroke();
+  private updateField(delta: number, cameraPosition: THREE.Vector3, amount: number): void {
+    if (amount < 0.02) {
+      if (this.field) this.field.visible = false;
+      return;
     }
+    if (!this.field) this.buildField();
+    const field = this.field!;
+    const material = this.fieldMaterial!;
+    const velY = this.fieldVelY!;
+    const cfg = this.fieldConfig;
 
-    const texture = new THREE.Texture(canvas);
-    texture.needsUpdate = true;
-    return texture;
+    field.visible = true;
+    material.opacity = cfg.opacity * amount;
+    // The whole field rides the camera (positions are camera-local), so the
+    // storm is always around the player with zero respawn churn.
+    field.position.set(cameraPosition.x, 0, cameraPosition.z);
+
+    const positions = (field.geometry.getAttribute('position') as THREE.BufferAttribute)
+      .array as Float32Array;
+    const windX = cfg.windX * delta;
+    const windZ = cfg.windZ * delta;
+    const wrap = FIELD_RADIUS * 2;
+    for (let i = 0; i < cfg.count; i++) {
+      const i3 = i * 3;
+      positions[i3] += windX;
+      positions[i3 + 1] -= velY[i] * delta;
+      positions[i3 + 2] += windZ;
+      // Vertical recycle (fell below ground).
+      if (positions[i3 + 1] < 0) {
+        const a = Math.random() * Math.PI * 2;
+        const r = Math.sqrt(Math.random()) * FIELD_RADIUS;
+        positions[i3] = Math.cos(a) * r;
+        positions[i3 + 1] = FIELD_TOP;
+        positions[i3 + 2] = Math.sin(a) * r;
+      }
+      // Horizontal wrap — strong storm winds (sand/blizzard) push sprites
+      // across the cylinder; wrap to the upwind side so density stays even.
+      if (positions[i3] > FIELD_RADIUS) positions[i3] -= wrap;
+      else if (positions[i3] < -FIELD_RADIUS) positions[i3] += wrap;
+      if (positions[i3 + 2] > FIELD_RADIUS) positions[i3 + 2] -= wrap;
+      else if (positions[i3 + 2] < -FIELD_RADIUS) positions[i3 + 2] += wrap;
+    }
+    (field.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
   }
 
-  update(deltaTime: number, cameraPosition: THREE.Vector3) {
-    this.time += deltaTime;
+  /**
+   * Force-build the storm field (hidden) so its shader program compiles
+   * during the warmup pass instead of when the first front rolls in.
+   */
+  prewarm(): void {
+    if (!this.field) this.buildField();
+  }
 
-    if (this.particles) {
-      const positions = this.particles.geometry.attributes.position.array as Float32Array;
-
-      // Update particle positions
-      for (let i = 0; i < positions.length; i += 3) {
-        positions[i] += this.particles.velocities[i];
-        positions[i + 1] += this.particles.velocities[i + 1];
-        positions[i + 2] += this.particles.velocities[i + 2];
-
-        // Reset particles that fall below ground
-        if (positions[i + 1] < 0) {
-          positions[i] = cameraPosition.x + (Math.random() - 0.5) * 200;
-          positions[i + 1] = 100 + Math.random() * 20;
-          positions[i + 2] = cameraPosition.z + (Math.random() - 0.5) * 200;
-        }
-
-        // Keep particles around camera
-        if (Math.abs(positions[i] - cameraPosition.x) > 100) {
-          positions[i] = cameraPosition.x + (Math.random() - 0.5) * 200;
-        }
-        if (Math.abs(positions[i + 2] - cameraPosition.z) > 100) {
-          positions[i + 2] = cameraPosition.z + (Math.random() - 0.5) * 200;
-        }
-      }
-
-      this.particles.geometry.attributes.position.needsUpdate = true;
-
-      // Move particle system with camera
-      this.particles.mesh.position.copy(cameraPosition);
-      this.particles.mesh.position.y = 0;
-    }
-
-    // Update mist
-    for (const mist of this.mistPlanes) {
-      if (mist.material instanceof THREE.ShaderMaterial) {
-        mist.material.uniforms.time.value = this.time;
-      }
-
-      // Move mist planes to follow camera loosely
-      const targetX = cameraPosition.x + (mist.userData.offsetX || 0);
-      const targetZ = cameraPosition.z + (mist.userData.offsetZ || 0);
-      mist.position.x += (targetX - mist.position.x) * 0.1;
-      mist.position.z += (targetZ - mist.position.z) * 0.1;
-
-      // Rotate slowly
-      mist.rotation.y += deltaTime * 0.1;
-    }
-
-    // Update storm lightning
-    if (this.thunderLightning && this.currentWeather === 'storm') {
-      // Random lightning flashes
-      if (Math.random() < 0.005) {
-        this.thunderLightning.intensity = 10 + Math.random() * 5;
-        this.thunderLightning.position.set(
-          cameraPosition.x + (Math.random() - 0.5) * 100,
-          50 + Math.random() * 20,
-          cameraPosition.z + (Math.random() - 0.5) * 100
-        );
-
-        // Flash duration
-        setTimeout(() => {
-          if (this.thunderLightning) {
-            this.thunderLightning.intensity = 0;
-          }
-        }, 100 + Math.random() * 100);
-      }
+  /** Release everything. Safe to call multiple times. */
+  dispose(): void {
+    if (this.field) {
+      this.scene.remove(this.field);
+      this.field.geometry.dispose();
+      this.fieldMaterial?.dispose();
+      this.field = null;
+      this.fieldMaterial = null;
+      this.fieldVelY = null;
     }
   }
 
-  clear() {
-    if (this.particles) {
-      this.scene.remove(this.particles.mesh);
-      this.particles.geometry.dispose();
-      if (this.particles.material instanceof THREE.Material) {
-        this.particles.material.dispose();
-      }
-      this.particles = null;
-    }
-
-    for (const mist of this.mistPlanes) {
-      this.scene.remove(mist);
-      mist.geometry.dispose();
-      if (mist.material instanceof THREE.Material) {
-        mist.material.dispose();
-      }
-    }
-    this.mistPlanes = [];
-
-    if (this.thunderLightning) {
-      this.scene.remove(this.thunderLightning);
-      this.thunderLightning = null;
-    }
-  }
-
-  getCurrentWeather(): WeatherType {
-    return this.currentWeather;
-  }
-
-  // Get random weather based on probabilities
-  static getRandomWeather(isNight: boolean = false): WeatherType {
-    const rand = Math.random();
-
-    if (isNight) {
-      // Night has more dramatic weather
-      if (rand < 0.3) return 'clear';
-      if (rand < 0.5) return 'mist';
-      if (rand < 0.7) return 'rain';
-      if (rand < 0.85) return 'storm';
-      return 'snow';
-    } else {
-      // Day has more clear weather
-      if (rand < 0.5) return 'clear';
-      if (rand < 0.7) return 'mist';
-      if (rand < 0.85) return 'rain';
-      if (rand < 0.95) return 'storm';
-      return 'snow';
-    }
+  /** Back-compat alias used by the scene teardown. */
+  clear(): void {
+    this.dispose();
   }
 }
