@@ -2,24 +2,34 @@ import * as THREE from 'three';
 import type { MapType } from './MapSystem';
 
 /**
- * WEATHER SYSTEM v3 — per-map climates with signature storms.
+ * WEATHER SYSTEM v4 — real-weather director with per-map climates.
  *
  * Always-on and fully automatic: there is no weather menu. Every run gets a
- * living sky driven by a weather DIRECTOR that drifts between clear, overcast
- * and the map's signature storm with long cinematic cross-fades. The climate
- * is tuned per environment — the desert is mostly blazing sun broken by
- * sandstorms, the tundra brews white-out blizzards, the volcanic wasteland
- * chokes under ashfall, and the forest/swamp maps get true rain (with growing
- * puddles + reflections, see TerrainSystem). Time of day feeds back into the
- * director: nights run calmer and moodier than days.
+ * living sky driven by a weather DIRECTOR that behaves like actual weather:
+ *
+ *   • MOSTLY SUNNY. Clear skies dominate every climate (~55-72% of the time);
+ *     rain/gloom are the exception that makes the sunshine land, not the rule.
+ *   • SIX CONDITIONS everywhere: clear, gloomy (overcast), fog/mist, light
+ *     precipitation (drizzle / flurries / dust haze / ash drift), the map's
+ *     signature storm, and — on rain climates — full THUNDERSTORMS with
+ *     lightning flashes and rolling thunder.
+ *   • WEATHER FRONTS, not slot-machine jumps. The director rolls the next
+ *     condition from per-map weights, then routes through a short bridge
+ *     state when the severity jump is too large — so a storm builds
+ *     clear → overcast → storm and tapers storm → drizzle → clear, exactly
+ *     like a front passing through. Holds are randomized per state (sunny
+ *     spells breathe for minutes; storms are intense but bounded).
+ *   • Night calms the sky (fewer storms, a touch more brooding gloom).
  *
  * Architecture is atmosphere-first: the primary output is a small struct of
  * ATMOSPHERE MODIFIERS (light / fog / saturation / bloom / god-ray
- * multipliers, a sky tint, ground wetness) that the render loop folds into
- * the existing day-night atmosphere — a handful of multiplies per frame.
- * The only geometry is ONE Points field (single draw call, ≤2600 sprites)
- * shaped per storm: vertical rain streaks, drifting snow, wind-driven dust,
- * or slow-falling ash.
+ * multipliers, a sky tint, ground wetness, live lightning) that the render
+ * loop folds into the existing day-night atmosphere — a handful of
+ * multiplies per frame. The only geometry is ONE Points field (single draw
+ * call) shaped per storm: vertical rain streaks, drifting snow, wind-driven
+ * dust, or slow-falling ash. Precipitation intensity drives the field's
+ * drawRange, so drizzle renders (and simulates) a fraction of the sprites a
+ * downpour does.
  */
 
 /** Per-frame modifiers the render loop folds into the atmosphere. */
@@ -46,9 +56,11 @@ export interface WeatherMods {
   wetness: number;
   /** 0..1 — live precipitation intensity (particles + puddle ripples). */
   rainAmount: number;
+  /** 0..1 — live lightning flash envelope (thunderstorms only). */
+  lightning: number;
 }
 
-type WeatherState = 'clear' | 'gloomy' | 'storm';
+type WeatherState = 'clear' | 'gloomy' | 'fog' | 'drizzle' | 'storm' | 'thunder';
 export type StormKind = 'rain' | 'sandstorm' | 'blizzard' | 'ashfall';
 
 interface ModsPreset {
@@ -66,18 +78,30 @@ interface ModsPreset {
 }
 
 const CLEAR_PRESET: ModsPreset = {
-  lightMult: 1.04, ambientMult: 1.0, fogDensityMult: 0.92, saturationMult: 1.04,
-  bloomMult: 1.06, godRayMult: 1.3, skyDarken: 0, tintHex: 0xffffff, tintStrength: 0,
+  lightMult: 1.06, ambientMult: 1.0, fogDensityMult: 0.9, saturationMult: 1.05,
+  bloomMult: 1.06, godRayMult: 1.35, skyDarken: 0, tintHex: 0xffffff, tintStrength: 0,
   wetness: 0, rainAmount: 0,
 };
 
+// Overcast — flat light, thicker air. NO ground wetness: an overcast sky
+// doesn't soak the ground (the old 0.15 here was why the world read as
+// "always rainy" — puddles formed under every grey sky).
 const GLOOMY_PRESET: ModsPreset = {
-  lightMult: 0.58, ambientMult: 0.88, fogDensityMult: 1.55, saturationMult: 0.78,
-  bloomMult: 0.92, godRayMult: 0.22, skyDarken: 0.3, tintHex: 0x8d97a2, tintStrength: 0.16,
-  wetness: 0.15, rainAmount: 0,
+  lightMult: 0.62, ambientMult: 0.9, fogDensityMult: 1.5, saturationMult: 0.8,
+  bloomMult: 0.94, godRayMult: 0.25, skyDarken: 0.28, tintHex: 0x8d97a2, tintStrength: 0.15,
+  wetness: 0, rainAmount: 0,
 };
 
-/** Atmosphere look for each storm species. */
+// Fog / mist — the world dissolves into a pale veil; light shafts cut
+// through it (godRay kept meaningful), colours wash toward grey. A whisper
+// of dew dampens the ground but no puddles ripple.
+const FOG_PRESET: ModsPreset = {
+  lightMult: 0.74, ambientMult: 0.98, fogDensityMult: 3.1, saturationMult: 0.8,
+  bloomMult: 1.0, godRayMult: 0.5, skyDarken: 0.1, tintHex: 0xc7ccd4, tintStrength: 0.42,
+  wetness: 0.1, rainAmount: 0,
+};
+
+/** Atmosphere look for each full-strength storm species. */
 const STORM_PRESETS: Record<StormKind, ModsPreset> = {
   // Downpour — dark storm deck, soaked reflective ground.
   rain: {
@@ -105,6 +129,43 @@ const STORM_PRESETS: Record<StormKind, ModsPreset> = {
   },
 };
 
+// Thunderstorm — only rolled on rain climates. Darker than the plain
+// downpour; the lightning/thunder machinery lights it up.
+const THUNDER_PRESET: ModsPreset = {
+  lightMult: 0.42, ambientMult: 0.8, fogDensityMult: 2.0, saturationMult: 0.68,
+  bloomMult: 1.0, godRayMult: 0.08, skyDarken: 0.52, tintHex: 0x6a7585, tintStrength: 0.26,
+  wetness: 1.0, rainAmount: 1.0,
+};
+
+/** Blend two presets — used to derive each climate's "light precip" look. */
+function mixPresets(a: ModsPreset, b: ModsPreset, t: number, overrides?: Partial<ModsPreset>): ModsPreset {
+  const lerp = (x: number, y: number) => x + (y - x) * t;
+  return {
+    lightMult: lerp(a.lightMult, b.lightMult),
+    ambientMult: lerp(a.ambientMult, b.ambientMult),
+    fogDensityMult: lerp(a.fogDensityMult, b.fogDensityMult),
+    saturationMult: lerp(a.saturationMult, b.saturationMult),
+    bloomMult: lerp(a.bloomMult, b.bloomMult),
+    godRayMult: lerp(a.godRayMult, b.godRayMult),
+    skyDarken: lerp(a.skyDarken, b.skyDarken),
+    tintHex: b.tintHex,
+    tintStrength: lerp(a.tintStrength, b.tintStrength),
+    wetness: lerp(a.wetness, b.wetness),
+    rainAmount: lerp(a.rainAmount, b.rainAmount),
+    ...overrides,
+  };
+}
+
+// Light precipitation per storm species — drizzle on rain maps, flurries on
+// the tundra, a dusty wind in the desert, drifting ash on the wasteland.
+// Roughly 45% of the way to the full storm, with a softer particle load.
+const DRIZZLE_PRESETS: Record<StormKind, ModsPreset> = {
+  rain:      mixPresets(CLEAR_PRESET, STORM_PRESETS.rain, 0.45, { wetness: 0.5, rainAmount: 0.35 }),
+  sandstorm: mixPresets(CLEAR_PRESET, STORM_PRESETS.sandstorm, 0.4, { rainAmount: 0.3 }),
+  blizzard:  mixPresets(CLEAR_PRESET, STORM_PRESETS.blizzard, 0.4, { rainAmount: 0.35 }),
+  ashfall:   mixPresets(CLEAR_PRESET, STORM_PRESETS.ashfall, 0.4, { rainAmount: 0.3 }),
+};
+
 /** Particle-field shaping per storm species (one Points draw call). */
 interface StormParticles {
   count: number;
@@ -120,53 +181,82 @@ interface StormParticles {
   windZ: number;
 }
 
+// Rain falls FAST (real raindrops terminal velocity ≈ 7-9 m/s; the streak
+// sprite reads as the blurred path, so the sim speed runs hotter for the
+// classic heavy-rain look) and is thinner + slightly cooler than v3.
 const STORM_PARTICLES: Record<StormKind, StormParticles> = {
-  rain:      { count: 2200, sprite: 'streak', color: 0xbcd6ff, size: 0.65, opacity: 0.5,  additive: true,  fallMin: 26,  fallVar: 14,  windX: 2.6, windZ: 1.2 },
+  rain:      { count: 2400, sprite: 'streak', color: 0xc4dcff, size: 0.55, opacity: 0.55, additive: true,  fallMin: 32,  fallVar: 16,  windX: 3.2, windZ: 1.6 },
   sandstorm: { count: 2400, sprite: 'flake',  color: 0xd8b070, size: 1.35, opacity: 0.32, additive: false, fallMin: 2.5, fallVar: 2.5, windX: 30,  windZ: 9 },
   blizzard:  { count: 2600, sprite: 'flake',  color: 0xf2f7ff, size: 0.55, opacity: 0.8,  additive: false, fallMin: 7,   fallVar: 6,   windX: 17,  windZ: 5 },
   ashfall:   { count: 1700, sprite: 'flake',  color: 0x9a948c, size: 0.6,  opacity: 0.55, additive: false, fallMin: 2.2, fallVar: 2.2, windX: 3.5, windZ: 2 },
 };
 
-/** Per-map climate: which storm, and how the director weights its rolls. */
+/**
+ * Per-map climate: which storm species, plus the director's state weights.
+ * Clear dominates EVERY map — the design brief is "mostly sunny, sometimes
+ * rainy/gloomy", so even the swamp now spends most of a run under sun.
+ * thunder > 0 only where a thunderstorm makes sense (rain climates).
+ */
 interface ClimateProfile {
   storm: StormKind;
-  clearWeight: number;
-  gloomyWeight: number;
-  stormWeight: number;
+  clear: number;
+  gloomy: number;
+  fog: number;
+  drizzle: number;
+  storm_w: number;
+  thunder: number;
 }
 
 const MAP_CLIMATES: Record<MapType, ClimateProfile> = {
-  deep_forest:        { storm: 'rain',      clearWeight: 45, gloomyWeight: 29, stormWeight: 26 },
-  autumn_grove:       { storm: 'rain',      clearWeight: 42, gloomyWeight: 32, stormWeight: 26 },
-  toxic_swamp:        { storm: 'rain',      clearWeight: 24, gloomyWeight: 38, stormWeight: 38 },
-  military_outpost:   { storm: 'rain',      clearWeight: 42, gloomyWeight: 32, stormWeight: 26 },
-  ancient_ruins:      { storm: 'rain',      clearWeight: 46, gloomyWeight: 30, stormWeight: 24 },
-  desert_canyon:      { storm: 'sandstorm', clearWeight: 60, gloomyWeight: 16, stormWeight: 24 },
-  frozen_tundra:      { storm: 'blizzard',  clearWeight: 34, gloomyWeight: 30, stormWeight: 36 },
-  scorched_wasteland: { storm: 'ashfall',   clearWeight: 40, gloomyWeight: 26, stormWeight: 34 },
+  deep_forest:        { storm: 'rain',      clear: 58, gloomy: 12, fog: 9,  drizzle: 10, storm_w: 7,  thunder: 4 },
+  autumn_grove:       { storm: 'rain',      clear: 56, gloomy: 13, fog: 10, drizzle: 10, storm_w: 7,  thunder: 4 },
+  toxic_swamp:        { storm: 'rain',      clear: 42, gloomy: 15, fog: 16, drizzle: 13, storm_w: 8,  thunder: 6 },
+  military_outpost:   { storm: 'rain',      clear: 57, gloomy: 13, fog: 8,  drizzle: 10, storm_w: 8,  thunder: 4 },
+  ancient_ruins:      { storm: 'rain',      clear: 60, gloomy: 12, fog: 9,  drizzle: 9,  storm_w: 6,  thunder: 4 },
+  desert_canyon:      { storm: 'sandstorm', clear: 72, gloomy: 7,  fog: 4,  drizzle: 7,  storm_w: 10, thunder: 0 },
+  frozen_tundra:      { storm: 'blizzard',  clear: 52, gloomy: 13, fog: 11, drizzle: 12, storm_w: 12, thunder: 0 },
+  scorched_wasteland: { storm: 'ashfall',   clear: 56, gloomy: 12, fog: 9,  drizzle: 11, storm_w: 12, thunder: 0 },
 };
 
 const DEFAULT_CLIMATE: ClimateProfile = MAP_CLIMATES.deep_forest;
+
+// Severity ladder for the front-routing bridge logic. A roll that jumps ≥2
+// severity steps routes through a short bridge state first, so storms build
+// and taper like real fronts instead of snapping from blue sky to downpour.
+const SEVERITY: Record<WeatherState, number> = {
+  clear: 0, fog: 1, gloomy: 1, drizzle: 2, storm: 3, thunder: 3,
+};
 
 // ── Particle field bounds ──────────────────────────────────────────────────
 const FIELD_RADIUS = 42;   // cylinder radius around the camera (m)
 const FIELD_TOP = 34;      // sprites respawn / wrap at this height
 
-/** Soft vertical streak sprite (rain) — built once, shared forever. */
+/** Soft vertical streak sprite (rain) — built once, shared forever.
+ *  v4: thinner, with a hot core and a faint halo so each drop reads as a
+ *  crisp motion-blurred streak instead of a fat glowing dash. */
 let streakTexture: THREE.CanvasTexture | null = null;
 function getStreakTexture(): THREE.CanvasTexture {
   if (streakTexture) return streakTexture;
   const canvas = document.createElement('canvas');
   canvas.width = 8;
-  canvas.height = 32;
+  canvas.height = 48;
   const ctx = canvas.getContext('2d')!;
-  const grad = ctx.createLinearGradient(0, 0, 0, 32);
-  grad.addColorStop(0, 'rgba(200,225,255,0)');
-  grad.addColorStop(0.35, 'rgba(200,225,255,0.9)');
-  grad.addColorStop(0.75, 'rgba(180,210,255,0.55)');
-  grad.addColorStop(1, 'rgba(180,210,255,0)');
-  ctx.fillStyle = grad;
-  ctx.fillRect(2.5, 0, 3, 32);
+  // Faint outer halo
+  const halo = ctx.createLinearGradient(0, 0, 0, 48);
+  halo.addColorStop(0, 'rgba(190,220,255,0)');
+  halo.addColorStop(0.4, 'rgba(190,220,255,0.22)');
+  halo.addColorStop(0.8, 'rgba(180,210,255,0.12)');
+  halo.addColorStop(1, 'rgba(180,210,255,0)');
+  ctx.fillStyle = halo;
+  ctx.fillRect(2, 0, 4, 48);
+  // Hot thin core — slightly brighter toward the head of the drop
+  const core = ctx.createLinearGradient(0, 0, 0, 48);
+  core.addColorStop(0, 'rgba(220,240,255,0)');
+  core.addColorStop(0.3, 'rgba(225,242,255,0.95)');
+  core.addColorStop(0.7, 'rgba(205,230,255,0.6)');
+  core.addColorStop(1, 'rgba(205,230,255,0)');
+  ctx.fillStyle = core;
+  ctx.fillRect(3.5, 0, 1.2, 48);
   streakTexture = new THREE.CanvasTexture(canvas);
   return streakTexture;
 }
@@ -192,12 +282,14 @@ function getFlakeTexture(): THREE.CanvasTexture {
 export class WeatherSystem {
   private readonly scene: THREE.Scene;
   private climate: ClimateProfile = DEFAULT_CLIMATE;
+  /** Graphics-preset particle budget multiplier (low 0.45 … ultra 1.15). */
+  private readonly particleScale: number;
 
   // Smoothly-blended live modifiers (what update() returns).
   private readonly current: WeatherMods = {
     lightMult: 1, ambientMult: 1, fogDensityMult: 1, saturationMult: 1,
     bloomMult: 1, godRayMult: 1, skyDarken: 0, tint: new THREE.Color(0xffffff),
-    tintStrength: 0, wetness: 0, rainAmount: 0,
+    tintStrength: 0, wetness: 0, rainAmount: 0, lightning: 0,
   };
   private target: ModsPreset = CLEAR_PRESET;
   private readonly targetTint = new THREE.Color(0xffffff);
@@ -206,15 +298,27 @@ export class WeatherSystem {
   private state: WeatherState = 'clear';
   private holdRemaining = 0;
   private night = false;
+  /** Set when the director routed through a bridge state — applied next. */
+  private pendingTarget: WeatherState | null = null;
+
+  // ── Lightning / thunder (thunderstorm state only) ──
+  private flashEnv = 0;            // live flash envelope (fast attack, ~0.4s decay)
+  private nextStrikeIn = 0;        // seconds until the next strike
+  private secondFlashIn = -1;      // staggered double-flash timer
+  private thunderDelay = -1;       // strike → clap delay (distance illusion)
+  private thunderPower = 0;        // clap volume hint handed to the caller
+  private pendingClap = 0;         // consumed by consumeThunderClap()
 
   // ── Storm particle field (lazy single Points mesh) ──
   private field: THREE.Points | null = null;
   private fieldMaterial: THREE.PointsMaterial | null = null;
   private fieldVelY: Float32Array | null = null;
+  private fieldCount = 0;
   private fieldConfig: StormParticles = STORM_PARTICLES.rain;
 
-  constructor(scene: THREE.Scene) {
+  constructor(scene: THREE.Scene, particleScale = 1) {
     this.scene = scene;
+    this.particleScale = THREE.MathUtils.clamp(particleScale, 0.25, 1.25);
   }
 
   /**
@@ -229,6 +333,7 @@ export class WeatherSystem {
     this.holdRemaining = this.holdSecondsFor(this.state);
     this.target = this.presetFor(this.state);
     this.snapToTarget();
+    if (this.state === 'thunder') this.scheduleStrike();
   }
 
   getStormKind(): StormKind {
@@ -236,41 +341,91 @@ export class WeatherSystem {
   }
 
   private presetFor(state: WeatherState): ModsPreset {
-    if (state === 'storm') return STORM_PRESETS[this.climate.storm];
-    return state === 'gloomy' ? GLOOMY_PRESET : CLEAR_PRESET;
+    switch (state) {
+      case 'storm':   return STORM_PRESETS[this.climate.storm];
+      case 'thunder': return THUNDER_PRESET;
+      case 'drizzle': return DRIZZLE_PRESETS[this.climate.storm];
+      case 'fog':     return FOG_PRESET;
+      case 'gloomy':  return GLOOMY_PRESET;
+      default:        return CLEAR_PRESET;
+    }
   }
 
-  /** Storms are intense but bounded; clear spells breathe longer. */
+  /** Sunny spells breathe for minutes; storms are intense but bounded. */
   private holdSecondsFor(state: WeatherState): number {
-    if (state === 'storm') return 32 + Math.random() * 34;
-    if (state === 'gloomy') return 38 + Math.random() * 42;
-    return 55 + Math.random() * 60;
+    switch (state) {
+      case 'clear':   return 80 + Math.random() * 90;   // the default mood
+      case 'gloomy':  return 32 + Math.random() * 34;
+      case 'fog':     return 40 + Math.random() * 45;
+      case 'drizzle': return 30 + Math.random() * 32;
+      case 'storm':   return 26 + Math.random() * 26;
+      case 'thunder': return 24 + Math.random() * 20;
+    }
   }
 
   /**
-   * Weighted next-state roll. Map climate sets the base odds; night calms
-   * the sky (fewer storms, a touch more brooding gloom) so the environment
-   * tracks both WHERE you are and WHEN it is.
+   * Weighted next-state roll from the map climate. Night calms the sky
+   * (fewer storms, a touch more brooding gloom/fog), and `clear` is allowed
+   * to re-roll itself so sunny stretches genuinely dominate.
    */
   private rollNextState(previous: WeatherState | null): WeatherState {
-    const nightStorm = this.night ? 0.72 : 1;
-    const nightGloom = this.night ? 1.15 : 1;
+    const c = this.climate;
+    const nightStorm = this.night ? 0.7 : 1;
+    const nightMood = this.night ? 1.15 : 1;
     const entries: Array<[WeatherState, number]> = [
-      ['clear', this.climate.clearWeight],
-      ['gloomy', this.climate.gloomyWeight * nightGloom],
-      ['storm', this.climate.stormWeight * nightStorm],
+      ['clear', c.clear],
+      ['gloomy', c.gloomy * nightMood],
+      ['fog', c.fog * nightMood],
+      ['drizzle', c.drizzle],
+      ['storm', c.storm_w * nightStorm],
+      ['thunder', c.thunder * nightStorm],
     ];
     let total = 0;
     for (const [state, weight] of entries) {
-      if (state !== previous) total += weight;
+      if (state !== previous || state === 'clear') total += weight;
     }
     let roll = Math.random() * total;
     for (const [state, weight] of entries) {
-      if (state === previous) continue;
+      if (state === previous && state !== 'clear') continue;
       roll -= weight;
       if (roll <= 0) return state;
     }
     return 'clear';
+  }
+
+  /**
+   * Front routing: a jump of ≥2 severity steps passes through a short bridge
+   * state — overcast on the way UP (the deck builds before it breaks), light
+   * precipitation on the way DOWN (rain tapers off before the sun returns).
+   */
+  private bridgeFor(from: WeatherState, to: WeatherState): WeatherState | null {
+    const jump = SEVERITY[to] - SEVERITY[from];
+    if (jump >= 2) return 'gloomy';
+    if (jump <= -2) return from === 'storm' || from === 'thunder' ? 'drizzle' : 'gloomy';
+    return null;
+  }
+
+  private advanceDirector(): void {
+    let next: WeatherState;
+    if (this.pendingTarget) {
+      next = this.pendingTarget;
+      this.pendingTarget = null;
+      this.holdRemaining = this.holdSecondsFor(next);
+    } else {
+      const rolled = this.rollNextState(this.state);
+      const bridge = this.bridgeFor(this.state, rolled);
+      if (bridge && bridge !== rolled) {
+        this.pendingTarget = rolled;
+        next = bridge;
+        this.holdRemaining = 9 + Math.random() * 8; // brief transitional front
+      } else {
+        next = rolled;
+        this.holdRemaining = this.holdSecondsFor(rolled);
+      }
+    }
+    this.state = next;
+    this.target = this.presetFor(next);
+    if (next === 'thunder') this.scheduleStrike();
   }
 
   private snapToTarget(): void {
@@ -287,6 +442,54 @@ export class WeatherSystem {
     c.tintStrength = t.tintStrength;
     c.wetness = t.wetness;
     c.rainAmount = t.rainAmount;
+    c.lightning = 0;
+  }
+
+  // ── Lightning ────────────────────────────────────────────────────────────
+
+  private scheduleStrike(): void {
+    this.nextStrikeIn = 3 + Math.random() * 9;
+  }
+
+  private updateLightning(delta: number): void {
+    // Flash envelope: instant attack, exponential decay (~0.35 s tail).
+    if (this.flashEnv > 0) {
+      this.flashEnv = Math.max(0, this.flashEnv - this.flashEnv * delta * 7 - delta * 0.4);
+    }
+    // Staggered second pop — real strikes flicker.
+    if (this.secondFlashIn >= 0) {
+      this.secondFlashIn -= delta;
+      if (this.secondFlashIn < 0) this.flashEnv = Math.min(1, this.flashEnv + 0.7);
+    }
+    // Strike → thunder clap delay (sound lags light; farther = quieter).
+    if (this.thunderDelay >= 0) {
+      this.thunderDelay -= delta;
+      if (this.thunderDelay < 0) {
+        this.pendingClap = this.thunderPower;
+      }
+    }
+    if (this.state !== 'thunder') return;
+    this.nextStrikeIn -= delta;
+    if (this.nextStrikeIn <= 0) {
+      // Closer strikes flash brighter, clap sooner and louder.
+      const proximity = 0.35 + Math.random() * 0.65; // 1 = overhead
+      this.flashEnv = 0.55 + proximity * 0.45;
+      this.secondFlashIn = Math.random() < 0.6 ? 0.1 + Math.random() * 0.12 : -1;
+      this.thunderDelay = 0.4 + (1 - proximity) * 2.4;
+      this.thunderPower = proximity;
+      this.scheduleStrike();
+    }
+  }
+
+  /**
+   * Returns the pending thunder-clap power (0..1) ONCE per strike, 0
+   * otherwise. The caller owns audio — typically a low-pitched rumble
+   * sample scaled by the returned power.
+   */
+  consumeThunderClap(): number {
+    const clap = this.pendingClap;
+    this.pendingClap = 0;
+    return clap;
   }
 
   /**
@@ -297,18 +500,15 @@ export class WeatherSystem {
     this.night = isNight;
 
     this.holdRemaining -= delta;
-    if (this.holdRemaining <= 0) {
-      this.state = this.rollNextState(this.state);
-      this.target = this.presetFor(this.state);
-      this.holdRemaining = this.holdSecondsFor(this.state);
-    }
+    if (this.holdRemaining <= 0) this.advanceDirector();
 
     // Cinematic cross-fade: exponential ease with a ~10 s time constant so
-    // fronts roll in, never snap. Frame-rate independent. Wetness DRIES ~3×
-    // slower than it soaks, so puddles linger after the rain stops — and with
-    // the ripples gone they settle into still mirrors.
+    // fronts roll in, never snap. Frame-rate independent. Wetness dries
+    // slower than it soaks (puddles linger a while after the rain stops and
+    // settle into still mirrors), but fast enough that the world doesn't
+    // read as permanently rained-on.
     const blend = 1 - Math.exp(-delta / 10);
-    const dryBlend = 1 - Math.exp(-delta / 30);
+    const dryBlend = 1 - Math.exp(-delta / 16);
     const c = this.current;
     const t = this.target;
     this.targetTint.setHex(t.tintHex);
@@ -324,6 +524,9 @@ export class WeatherSystem {
     c.wetness += (t.wetness - c.wetness) * (t.wetness > c.wetness ? blend : dryBlend);
     c.rainAmount += (t.rainAmount - c.rainAmount) * blend;
 
+    this.updateLightning(delta);
+    c.lightning = this.flashEnv;
+
     this.updateField(delta, cameraPosition, c.rainAmount);
     return c;
   }
@@ -332,9 +535,10 @@ export class WeatherSystem {
 
   private buildField(): void {
     const cfg = this.fieldConfig;
-    const positions = new Float32Array(cfg.count * 3);
-    const velY = new Float32Array(cfg.count);
-    for (let i = 0; i < cfg.count; i++) {
+    const count = Math.max(200, Math.round(cfg.count * this.particleScale));
+    const positions = new Float32Array(count * 3);
+    const velY = new Float32Array(count);
+    for (let i = 0; i < count; i++) {
       const i3 = i * 3;
       const a = Math.random() * Math.PI * 2;
       const r = Math.sqrt(Math.random()) * FIELD_RADIUS;
@@ -363,6 +567,7 @@ export class WeatherSystem {
     this.field.visible = false;
     this.field.userData.cannotReceiveAO = true;
     this.fieldVelY = velY;
+    this.fieldCount = count;
     this.scene.add(this.field);
   }
 
@@ -377,18 +582,28 @@ export class WeatherSystem {
     const velY = this.fieldVelY!;
     const cfg = this.fieldConfig;
 
+    // Precipitation intensity drives the DRAW RANGE: drizzle renders (and
+    // simulates) only a fraction of the field, a downpour all of it. This is
+    // what makes light rain read sparse instead of just dimmer.
+    const active = Math.max(60, Math.round(this.fieldCount * Math.min(1, amount * 1.15)));
+    field.geometry.setDrawRange(0, active);
+
     field.visible = true;
-    material.opacity = cfg.opacity * amount;
+    material.opacity = cfg.opacity * Math.min(1, 0.35 + amount * 0.65);
     // The whole field rides the camera (positions are camera-local), so the
     // storm is always around the player with zero respawn churn.
     field.position.set(cameraPosition.x, 0, cameraPosition.z);
 
     const positions = (field.geometry.getAttribute('position') as THREE.BufferAttribute)
       .array as Float32Array;
-    const windX = cfg.windX * delta;
-    const windZ = cfg.windZ * delta;
+    // Wind breathes — a slow multi-sine gust cycle so sheets of rain visibly
+    // drift and ease instead of falling in a perfectly steady lattice.
+    const tNow = performance.now() * 0.001;
+    const gust = 0.7 + 0.3 * Math.sin(tNow * 0.5) * Math.sin(tNow * 0.13 + 1.7);
+    const windX = cfg.windX * gust * delta;
+    const windZ = cfg.windZ * gust * delta;
     const wrap = FIELD_RADIUS * 2;
-    for (let i = 0; i < cfg.count; i++) {
+    for (let i = 0; i < active; i++) {
       const i3 = i * 3;
       positions[i3] += windX;
       positions[i3 + 1] -= velY[i] * delta;

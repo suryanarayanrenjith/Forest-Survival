@@ -216,6 +216,11 @@ export interface Enemy {
   // so the player sees a glowing muzzle build before the bolt launches.
   rangedNextShotAt?: number;
   rangedChargeMs?: number;
+  // ── Wet-ground interaction ──────────────────────────────────────────
+  // Metres walked since the last footstep splash — when the ground is wet
+  // and the enemy crosses a puddle, the loop spawns a ripple ring at its
+  // feet every ~1.5 m (budget-capped per frame; see SplashSystem).
+  splashAccum?: number;
 }
 
 export interface Bullet {
@@ -227,6 +232,9 @@ export interface Bullet {
   damage: number;
   /** Rocket-launcher projectile — explodes with area damage + a crater. */
   isRocket?: boolean;
+  /** Precision weapon (sniper) — exempt from the no-body-shot-one-kill
+   *  fairness guard; one-shotting from range is the weapon's identity. */
+  precision?: boolean;
 }
 
 export type PowerUpType = 'ammo' | 'speed' | 'damage' | 'shield' | 'infinite_ammo' | 'overcharge' | 'phantom';

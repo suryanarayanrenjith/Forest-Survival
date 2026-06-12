@@ -86,8 +86,11 @@ export const CHARACTER_ABILITIES: Record<ClassId, CharacterAbility> = {
   medic: {
     id: 'triage', classId: 'medic',
     name: 'Field Triage',
-    description: 'Instantly patch up a third of your maximum health.',
-    cooldown: 16, duration: 0, color: '#19c37d', shadowColor: 0xc91a1a, jumpMult: 1.0,
+    // Nerfed (was a 35% heal every 16 s — with the passive regen on top the
+    // Medic was nearly unkillable). 20% on a longer cooldown keeps the
+    // clutch-heal identity without warping the difficulty curve.
+    description: 'Instantly patch up a fifth of your maximum health.',
+    cooldown: 22, duration: 0, color: '#19c37d', shadowColor: 0xc91a1a, jumpMult: 1.0,
   },
   engineer: {
     id: 'overclock', classId: 'engineer',

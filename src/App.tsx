@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { GraduationCap, Play, Home, MousePointerClick } from 'lucide-react';
 import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
-import { GunModel, type WeaponType as GunWeaponType } from './utils/GunModel';
+import { GunModel, type WeaponType as GunWeaponType, type CastKind } from './utils/GunModel';
 import { MuzzleFlash, BulletTracer, ImpactEffect, RobotHitSparks, ExplosionEffect, setMuzzleLightPool, setExplosionLightPool } from './utils/Effects';
 import { soundManager } from './utils/SoundManager';
 import { gameSettingsManager, type UserSettings, type KeyBindings } from './utils/GameSettingsManager';
@@ -18,7 +18,8 @@ import { WeatherSystem } from './utils/WeatherSystem';
 import { BiomeSystem } from './utils/BiomeSystem';
 import { createAtmosphericHazeMaterial, createSkyDomeMaterial, updateShaderTime } from './utils/Shaders';
 import { getMapConfig, getRandomMap, DEFAULT_MAP, type MapConfig, type MapType } from './utils/MapSystem';
-import { applyGroundTerrainShader, createTerrainSeed, createTerrainUniforms, resolveTerrainProfile, terrainSegments } from './utils/TerrainSystem';
+import { applyGroundTerrainShader, createTerrainSeed, createTerrainUniforms, resolveTerrainProfile, samplePuddleMask, terrainSegments } from './utils/TerrainSystem';
+import { SplashSystem } from './utils/SplashSystem';
 import { TerrainInstancer } from './utils/TerrainInstancer';
 import { getHDRIEnvironmentIntensity, getHDRIEnvironmentProfile, loadHDRIEnvironment, type HDRIEnvironmentProfile } from './utils/HDRIEnvironment';
 import { MultiplayerManager, type PlayerData as MpPlayerData, type NetworkMessage, type EnemyWire } from './utils/MultiplayerManager';
@@ -1910,6 +1911,10 @@ const ForestSurvivalGame = () => {
       // puddles; active precipitation → ripple animation on those puddles.
       uRainWet: { value: 0 },
       uRainRipple: { value: 0 },
+      // Puddle mirror quality knob (graphics preset) + live weather tint for
+      // the env-map bounce, so storm skies reflect storm-dark.
+      uPuddleDetail: { value: graphicsPreset.puddleDetail ?? 1.0 },
+      uEnvTint: { value: new THREE.Color(1, 1, 1) },
     };
 
     // All ground shader injection (terrain displacement + ultra-detailed,
@@ -2041,18 +2046,42 @@ const ForestSurvivalGame = () => {
         console.warn('[App] HDRI environment loading failed; using generated sky IBL fallback:', err);
       });
 
-    // === WEATHER SYSTEM v3 — automatic per-map climate ===
+    // === WEATHER SYSTEM v4 — automatic per-map climate ===
     // No menu, no sync: every mode (Solo / Tutorial / Multiplayer) and every
     // time-of-day (Auto / Day / Night) gets a living sky driven by the map's
-    // climate — rain on the forest/swamp maps, sandstorms in the desert,
-    // blizzards on the tundra, ashfall over the volcanic wasteland. Outputs
-    // per-frame atmosphere MODIFIERS folded into the day-cycle atmosphere
-    // below, so weather costs a handful of multiplies per frame plus one
-    // Points draw while a storm is active.
-    const weatherSystem = new WeatherSystem(scene);
+    // climate. MOSTLY SUNNY everywhere, with six conditions rolled like real
+    // weather fronts: clear, overcast, fog, light precipitation, the map's
+    // signature storm (rain / sandstorm / blizzard / ashfall) and — on rain
+    // climates — thunderstorms with lightning + thunder. Outputs per-frame
+    // atmosphere MODIFIERS folded into the day-cycle atmosphere below, so
+    // weather costs a handful of multiplies per frame plus one Points draw
+    // while precipitation is active.
+    const weatherSystem = new WeatherSystem(scene, graphicsPreset.weatherFx ?? 1);
     weatherSystem.setClimate(selectedMap);
     // Live modifiers, refreshed at the top of every frame.
     let weatherMods = weatherSystem.update(0, camera.position, !atmosphericSettings.sunVisible);
+
+    // === SPLASH SYSTEM — interactive wet ground ===
+    // Pre-allocated GPU pools (one draw call each) for rain-impact ripple
+    // rings on the puddles and footstep splashes under the player, enemies
+    // and the Ranger's dash. Pool sizes scale with the graphics preset.
+    const weatherFxScale = graphicsPreset.weatherFx ?? 1;
+    const splashSystem = new SplashSystem(
+      scene,
+      Math.round(64 * Math.min(1.1, weatherFxScale)),
+      Math.round(192 * Math.min(1.1, weatherFxScale)),
+    );
+    // CPU twin of the shader's puddle mask — answers "is there water here?"
+    // so splashes land exactly where the pixels show puddles. Folds the
+    // map's static wetness (swamp pools) in with the live rain soak.
+    const puddleAt = (x: number, z: number): number =>
+      samplePuddleMask(x, z, terrainSeed, groundShaderUniforms.uRainWet.value, terrainProfile.wetness);
+    // Wet-ground interaction state — the dash's splash ticker plus a
+    // per-frame budget for enemy foot splashes so a packed wave can never
+    // spiral the spawn count. (Player steps reuse the footstep stride
+    // accumulator further down.)
+    let dashSplashAccum = 0;
+    let enemySplashBudget = 4;
 
     // === BIOME SYSTEM ===
     const biomeSystem = new BiomeSystem(scene);
@@ -2664,7 +2693,10 @@ const ForestSurvivalGame = () => {
 
     // Game state. Ammo starts at the pistol's max-ammo cap, with the
     // One-in-the-Chamber modifier (if active) clamping it to 1.
+    // `secondsSinceHit` gates the Medic's passive regen to OUT-OF-COMBAT
+    // only (no damage taken for 5 s) — reset in takeEnemyDamage.
     let health = 100;
+    let secondsSinceHit = 999;
     let ammo = runMods.startAmmoMax ?? 12;
     let score = 0;
     let enemiesKilled = 0;
@@ -3141,9 +3173,11 @@ const ForestSurvivalGame = () => {
       // Floor the combined health scale so no stacking of multipliers (notably
       // the tutorial's reductions on top of Easy) can ever drop an enemy low
       // enough to be one-shot by a standard rifle BODY shot (35 dmg). At 0.8 a
-      // normal enemy (50 base) is ≥40 HP → always needs ≥2 body shots. This is a
-      // no-op in normal play (Easy is 0.9, the lowest, already above the floor),
-      // so it only protects the tutorial / future low-multiplier cases.
+      // normal enemy (50 base) is ≥40 HP → always needs ≥2 body shots. NOTE:
+      // low-HP archetypes (fast = 30 base) can still end up below 35 HP on
+      // Easy — the bullet-impact FAIRNESS GUARD (no body-shot one-kills on a
+      // full-health enemy) is the authoritative backstop for every multiplier
+      // combination; this floor just keeps the spawn-time numbers sane.
       const effectiveHealth = enemyHealth * Math.max(0.8, diffSettings.healthMult * healthMultiplier) * (runMods.enemyHealthMult ?? 1);
 
       return {
@@ -4302,8 +4336,11 @@ const ForestSurvivalGame = () => {
           break;
         }
         case 'triage': {
-          // Medic — instant self-heal for a third of max HP.
-          health = Math.min(playerMaxHealth, health + playerMaxHealth * 0.35);
+          // Medic — instant self-heal for a fifth of max HP. Nerfed from
+          // 0.35 (and the cooldown stretched 16 → 22 s in the registry):
+          // stacked with the passive regen the Medic was out-sustaining
+          // every other class by a wide margin.
+          health = Math.min(playerMaxHealth, health + playerMaxHealth * 0.20);
           updateGameState();
           showPowerMessage('Field Triage · patched up');
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Field Triage!', 'powerup');
@@ -4338,7 +4375,16 @@ const ForestSurvivalGame = () => {
       abilityActiveUntil = nowMs + Math.max(activeMs, 200);
       tutorial.recordAction('use_ability', 1); // advances the ability tutorial step
       if (activeAbility.id !== 'dash') {
-        gunModel.triggerAbility(); // braced weapon flourish
+        // SIGNATURE CAST GESTURES — each class moves the weapon in its own
+        // way (pump / brace / inspect / thrust / stim-jab / bolt-rack /
+        // fade), so an ability cast reads unmistakably as YOUR move and
+        // never like a passive power-up pickup (which doesn't touch the
+        // viewmodel at all). The dash has its own head-down charge instead.
+        const castGestures: Record<string, CastKind> = {
+          adrenaline: 'surge', bulwark: 'brace', focusfire: 'focus',
+          firestorm: 'slam', triage: 'jab', overclock: 'rack', cloak: 'fade',
+        };
+        gunModel.triggerCast(castGestures[activeAbility.id] ?? 'surge');
         // Firestorm + Triage play their own SFX; the rest get a generic cast cue.
         if (activeAbility.id !== 'firestorm' && activeAbility.id !== 'triage') {
           soundManager.play('powerUp', 0.7);
@@ -4353,6 +4399,10 @@ const ForestSurvivalGame = () => {
     // fights the player's mouse input.
     let recoilPitch = 0;
     let recoilYaw = 0;
+    // Dash head-bend — eased 0..1 while the Ranger charges. Pitches the
+    // camera forward (~10°) so the dash reads as a head-down shoulder
+    // charge (paired with the lowered weapon pose in GunModel).
+    let dashLean = 0;
     const _recoilEuler = new THREE.Euler(0, 0, 0, 'YXZ');
 
     // ─── Photo Mode loop state ───────────────────────────────────────────────
@@ -4795,6 +4845,10 @@ const ForestSurvivalGame = () => {
             life: isLauncher ? 240 : 100,
             damage: bulletDamage,
             isRocket: isLauncher,
+            // Sniper rounds are exempt from the no-body-shot-one-kill
+            // fairness guard — deleting one target per trigger pull is the
+            // weapon's whole identity.
+            precision: currentWeapon === 'sniper',
           });
 
           // Bullet tracer — rockets skip it (they trail their own exhaust glow)
@@ -5642,6 +5696,7 @@ const ForestSurvivalGame = () => {
       health -= damage;
 
       if (damage > 0) {
+        secondsSinceHit = 0; // re-arms the Medic's out-of-combat regen delay
         adaptiveDifficulty.recordDamage(damage, false);
         adaptiveDifficulty.recordHealthStatus(health, 100);
         missionSystem.updateProgress('survival', 1);
@@ -6139,6 +6194,27 @@ const ForestSurvivalGame = () => {
         renderAtmosphere.skyColor = blendHexColor(renderAtmosphere.skyColor, tintHex, weatherMods.tintStrength * 0.6);
         renderAtmosphere.fogColor = blendHexColor(renderAtmosphere.fogColor, tintHex, weatherMods.tintStrength);
       }
+      // Lightning — a live flash envelope from the weather director during
+      // thunderstorms. The whole world blinks bluish-white (sky, fog,
+      // ambient, bloom) with no extra lights (perf invariant: the light
+      // count never changes at runtime).
+      if (weatherMods.lightning > 0.01) {
+        const flash = Math.min(1, weatherMods.lightning);
+        renderAtmosphere.skyColor = blendHexColor(renderAtmosphere.skyColor, 0xcfd9ff, flash * 0.55);
+        renderAtmosphere.fogColor = blendHexColor(renderAtmosphere.fogColor, 0xb9c6e8, flash * 0.45);
+        renderAtmosphere.ambientIntensity *= 1 + flash * 2.4;
+        renderAtmosphere.lightIntensity *= 1 + flash * 0.8;
+        renderAtmosphere.bloomStrength *= 1 + flash * 0.5;
+      }
+      // Thunder clap — fired once per strike, delayed after the flash by the
+      // director (distance illusion). Low-pitched rumble, volume ∝ proximity.
+      {
+        const clap = weatherSystem.consumeThunderClap();
+        if (clap > 0) {
+          soundManager.play('thunder', 0.4 + clap * 0.4, false, 0.8 + Math.random() * 0.35);
+          if (clap > 0.8 && gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
+        }
+      }
       renderAtmosphere.lightIntensity *= weatherMods.lightMult;
       renderAtmosphere.ambientIntensity *= weatherMods.ambientMult;
       renderAtmosphere.fogDensity *= weatherMods.fogDensityMult;
@@ -6150,6 +6226,27 @@ const ForestSurvivalGame = () => {
       groundShaderUniforms.uRainWet.value = weatherMods.wetness;
       groundShaderUniforms.uRainRipple.value =
         weatherMods.wetness > 0.001 ? weatherMods.rainAmount * weatherMods.wetness : 0;
+      // Weather tint for the puddle env reflection — dims the static HDRI
+      // bounce under a storm deck (and flares it during lightning) so the
+      // mirrors always agree with the sky overhead.
+      {
+        const envDim = (1 - weatherMods.skyDarken * 0.65) * (1 + weatherMods.lightning * 1.6);
+        const envTint = groundShaderUniforms.uEnvTint.value as THREE.Color;
+        envTint.setRGB(envDim, envDim, envDim);
+        if (weatherMods.tintStrength > 0.005) envTint.lerp(weatherMods.tint, weatherMods.tintStrength * 0.5);
+      }
+      // Splash VFX — advance the GPU pools and emit rain-impact rings onto
+      // the puddles while rain is falling (other storm species stay dry).
+      splashSystem.update(rawDelta);
+      enemySplashBudget = 4; // per-frame cap for enemy footstep splashes
+      splashSystem.updateRain(
+        rawDelta,
+        weatherMods.wetness > 0.05 ? weatherMods.rainAmount * Math.min(1, weatherMods.wetness * 2) : 0,
+        camera.position.x,
+        camera.position.z,
+        puddleAt,
+        weatherFxScale,
+      );
 
       const sunDirection = computeSunDirection();
       const lowLight = sunDirection.y < 0.18;
@@ -6400,10 +6497,15 @@ const ForestSurvivalGame = () => {
           flushMasteryXp();
         }
       }
-      // Per-second HP regen — sum of wave-perk Adrenaline + MP Medic passive.
+      // Per-second HP regen — wave-perk Adrenaline ticks unconditionally;
+      // the Medic class passive only OUT OF COMBAT (5 s without taking
+      // damage), exactly as its card advertises. The old version ticked
+      // mid-fight, which let the Medic face-tank entire waves.
       // Done here (not inside the throttle) so the rate is stable at any FPS;
       // `perkRegenAccum` carries fractional HP between frames.
-      const totalRegen = perkBonuses.regenPerSec + (mpMods.regenPerSec ?? 0);
+      secondsSinceHit += rawDelta;
+      const medicRegen = secondsSinceHit >= 5 ? (mpMods.regenPerSec ?? 0) : 0;
+      const totalRegen = perkBonuses.regenPerSec + medicRegen;
       if (totalRegen > 0 && health > 0 && health < playerMaxHealth) {
         perkRegenAccum += totalRegen * rawDelta;
         if (perkRegenAccum >= 1) {
@@ -6820,8 +6922,11 @@ const ForestSurvivalGame = () => {
       const recoilRecover = Math.min(1, rawDelta * 9.5);
       recoilPitch += (0 - recoilPitch) * recoilRecover;
       recoilYaw += (0 - recoilYaw) * recoilRecover;
+      // Dash head-bend: snap down fast into the charge, ease back upright.
+      dashLean += ((isDashing ? 1 : 0) - dashLean)
+        * Math.min(1, rawDelta * (isDashing ? 16 : 6));
       _recoilEuler.set(
-        Math.max(-PI_2, Math.min(PI_2, euler.x + recoilPitch)),
+        Math.max(-PI_2, Math.min(PI_2, euler.x + recoilPitch - dashLean * 0.17)),
         euler.y + recoilYaw,
         0,
         'YXZ',
@@ -7083,6 +7188,17 @@ const ForestSurvivalGame = () => {
           camera.position.z = newZ;
         }
 
+        // Charging through standing water throws a wake of splashes along
+        // the path — big rings + spray, ticked every few centiseconds.
+        dashSplashAccum += rawDelta;
+        if (dashSplashAccum >= 0.05) {
+          dashSplashAccum = 0;
+          if ((weatherMods.wetness > 0.12 || terrainProfile.wetness > 0.12)
+              && puddleAt(camera.position.x, camera.position.z) > 0.22) {
+            splashSystem.splashAt(camera.position.x, camera.position.z, 1.6, 4);
+          }
+        }
+
         // ── TRAMPLE — the Ranger's charge bowls through robots ────────────
         // Any robot caught within the charge radius takes the full force of
         // the impact: standard chassis are killed outright and launched
@@ -7338,6 +7454,21 @@ const ForestSurvivalGame = () => {
           footstepAccum = 0;
           const vol = isCrouching ? 0.1 : isRunning ? 0.26 : 0.18;
           soundManager.play('footstep', vol, false, 0.9 + Math.random() * 0.16);
+          // INTERACTIVE WET GROUND — a step onto a puddle splashes: ripple
+          // ring + kicked-up droplets + a watery slap, synced to the stride.
+          // puddleAt is the CPU twin of the shader's mask, so the splash
+          // lands exactly where the pixels show water.
+          if (weatherMods.wetness > 0.12 || terrainProfile.wetness > 0.12) {
+            const pw = puddleAt(camera.position.x, camera.position.z);
+            if (pw > 0.22) {
+              splashSystem.splashAt(
+                camera.position.x, camera.position.z,
+                isRunning ? 1.35 : 1.0,
+                isCrouching ? 0 : isRunning ? 5 : 3,
+              );
+              soundManager.play('splash', isCrouching ? 0.1 : 0.22, false, 0.85 + Math.random() * 0.3);
+            }
+          }
         }
       } else {
         footstepAccum = 0;
@@ -7836,6 +7967,20 @@ const ForestSurvivalGame = () => {
               createParticles(enemy.mesh.position, 0xff9933, 3); // orange sparks (robot), not red blood
             }
 
+            // ── FAIRNESS GUARD: no body-shot one-kills ─────────────────
+            // A FULL-health enemy always survives a single non-critical
+            // bullet — whatever the difficulty/damage-multiplier stack
+            // says (easy-mode fast robots used to drop below rifle damage
+            // and die in one shot). It's left at 1 HP, so the second shot
+            // finishes the job. Skill kills keep their identity: headshot
+            // crits, sniper rounds and rockets bypass the guard. Applied
+            // BEFORE the guest branch so multiplayer guests report the
+            // clamped damage and the host resolves identically.
+            if (!isCritical && !bullet.precision
+                && enemy.health >= enemy.maxHealth && damage >= enemy.health) {
+              damage = Math.max(1, enemy.maxHealth - 1);
+            }
+
             if (isMpGuest && mp) {
               // Guests don't own enemy health — report the hit to the host and
               // let it resolve damage and death authoritatively. We still show
@@ -8124,6 +8269,24 @@ const ForestSurvivalGame = () => {
             enemy.mesh.rotation.y = enemy.netYaw ?? enemy.mesh.rotation.y;
           }
           const movedLen = Math.hypot(enemy.mesh.position.x - px, enemy.mesh.position.z - pz);
+
+          // Wet-ground splashes — mirrored enemies wade through puddles too.
+          // Budget-capped per frame; distance-gated so far enemies cost nothing.
+          enemy.splashAccum = (enemy.splashAccum ?? 0) + movedLen;
+          if (enemy.splashAccum > 1.5) {
+            enemy.splashAccum = 0;
+            if (enemySplashBudget > 0
+                && (weatherMods.wetness > 0.12 || terrainProfile.wetness > 0.12)) {
+              const sdx = enemy.mesh.position.x - camera.position.x;
+              const sdz = enemy.mesh.position.z - camera.position.z;
+              // 30 m gate — rings live at y≈0, inside the flat combat zone.
+              if (sdx * sdx + sdz * sdz < 900
+                  && puddleAt(enemy.mesh.position.x, enemy.mesh.position.z) > 0.25) {
+                enemySplashBudget--;
+                splashSystem.splashAt(enemy.mesh.position.x, enemy.mesh.position.z, 0.8 * baseScale, 0);
+              }
+            }
+          }
 
           // Stride/arm swing scaled by how far it actually moved this frame.
           enemy.walkTime += movedLen * 2.8 + delta * 0.6;
@@ -8488,6 +8651,30 @@ const ForestSurvivalGame = () => {
             while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
             while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
             enemy.mesh.rotation.y += angleDiff * Math.min(1, delta * 9);
+
+            // Wet-ground splashes — enemies wading through puddles kick up
+            // ripple rings at their feet every ~1.5 m of travel. Budget-capped
+            // per frame and distance-gated so a packed wave costs at most a
+            // few spawn writes.
+            enemy.splashAccum = (enemy.splashAccum ?? 0) + movedLen;
+            if (enemy.splashAccum > 1.5) {
+              enemy.splashAccum = 0;
+              if (enemySplashBudget > 0
+                  && (weatherMods.wetness > 0.12 || terrainProfile.wetness > 0.12)) {
+                const sdx = enemy.mesh.position.x - camera.position.x;
+                const sdz = enemy.mesh.position.z - camera.position.z;
+                // 30 m gate — rings live at y≈0, inside the flat combat zone.
+                if (sdx * sdx + sdz * sdz < 900
+                    && puddleAt(enemy.mesh.position.x, enemy.mesh.position.z) > 0.25) {
+                  enemySplashBudget--;
+                  splashSystem.splashAt(
+                    enemy.mesh.position.x, enemy.mesh.position.z,
+                    0.8 * (enemy.type === 'boss' ? 1.6 : enemy.type === 'tank' ? 1.3 : 1.0),
+                    0,
+                  );
+                }
+              }
+            }
 
             // Walk animation driven by how far the enemy ACTUALLY moved this
             // frame — the stride stays planted to the ground (no gliding) and
@@ -8998,6 +9185,10 @@ const ForestSurvivalGame = () => {
         // Pre-warm the rain shader (hidden Points mesh) so a dynamic-weather
         // front can roll in mid-fight without a first-rain compile hitch.
         weatherSystem.prewarm();
+        // Same for the splash pools (rings + droplets): exercise one spawn
+        // so attribute upload + both shader programs compile here, not on
+        // the first wet footstep of the match.
+        splashSystem.prewarm(wp.x, wp.z);
       });
       await yieldFrame();
 
@@ -9269,8 +9460,9 @@ const ForestSurvivalGame = () => {
       bulletOuterGlowMatCache.forEach((m) => m.dispose());
       bulletOuterGlowMatCache.clear();
 
-      // Cleanup weather system
+      // Cleanup weather system + splash pools
       weatherSystem.clear();
+      splashSystem.dispose();
 
       // Cleanup sky dome
       skyGeometry.dispose();

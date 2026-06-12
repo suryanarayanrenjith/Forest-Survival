@@ -90,6 +90,13 @@ class SoundManager {
     // tactile feedback instead of being silent.
     this.sounds.set('weaponSwitch', this.createWeaponSwitchSound(ctx, sampleRate));
 
+    // Thunder — rolling storm rumble for the weather system's lightning
+    // strikes (volume/pitch scaled by strike proximity at the call site).
+    this.sounds.set('thunder', this.createThunderSound(ctx, sampleRate));
+
+    // Puddle splash — soft watery slap for steps through standing water.
+    this.sounds.set('splash', this.createSplashSound(ctx, sampleRate));
+
     // ── Per-weapon gunshots ──────────────────────────────────────────────
     // Every weapon used to share the single generic 'shoot' buffer, so all
     // seven guns sounded identical. Each now has a distinct synthesized
@@ -342,6 +349,52 @@ class SoundManager {
       const sweepFreq = o.punchFreq * (1 + o.sweep * Math.exp(-t * 35));
       const punch = Math.sin(2 * Math.PI * sweepFreq * t) * Math.exp(-t * o.punchDecay) * o.bodyLevel;
       data[i] = Math.tanh((crack + body + punch) * 1.4) * 0.6;
+    }
+    return buffer;
+  }
+
+  // Thunder — an initial electric crack folding into a long low brown-noise
+  // rumble with a pitch-falling sub-oscillation. ~3 s tail; the caller
+  // re-pitches per strike so no two claps sound identical.
+  private createThunderSound(ctx: AudioContext, sampleRate: number): AudioBuffer {
+    const duration = 3.0;
+    const buffer = ctx.createBuffer(1, sampleRate * duration, sampleRate);
+    const data = buffer.getChannelData(0);
+    let brown = 0;
+    let lp = 0;
+    for (let i = 0; i < buffer.length; i++) {
+      const t = i / sampleRate;
+      const white = Math.random() * 2 - 1;
+      // Leaky-integrated brown noise → the deep rolling body.
+      brown = Math.max(-1, Math.min(1, brown + white * 0.045)) * 0.997;
+      lp += (brown - lp) * 0.06;
+      const env = Math.min(1, t * 9) * Math.exp(-t * 1.5);
+      // Falling sub-tone gives the "sky tearing" pitch drop.
+      const sub = Math.sin(2 * Math.PI * (42 + 18 * Math.exp(-t * 2.2)) * t)
+        * 0.32 * Math.exp(-t * 2.0);
+      // Sharp opening crack.
+      const crack = white * Math.exp(-t * 26) * 0.5;
+      data[i] = Math.tanh((lp * 22 + sub + crack) * env * 1.7) * 0.85;
+    }
+    return buffer;
+  }
+
+  // Splash — a high-passed noise slap with a quick watery resonance. Short
+  // and soft so footstep-rate playback never gets fatiguing.
+  private createSplashSound(ctx: AudioContext, sampleRate: number): AudioBuffer {
+    const duration = 0.22;
+    const buffer = ctx.createBuffer(1, sampleRate * duration, sampleRate);
+    const data = buffer.getChannelData(0);
+    let lp = 0;
+    for (let i = 0; i < buffer.length; i++) {
+      const t = i / sampleRate;
+      const white = Math.random() * 2 - 1;
+      lp += (white - lp) * 0.25;
+      const hp = white - lp; // crude high-pass = the "spray"
+      const env = Math.min(1, t * 260) * Math.exp(-t * 24);
+      const plop = Math.sin(2 * Math.PI * (620 + 380 * Math.exp(-t * 45)) * t)
+        * 0.3 * Math.exp(-t * 38);
+      data[i] = (hp * 0.55 + plop) * env * 0.8;
     }
     return buffer;
   }
