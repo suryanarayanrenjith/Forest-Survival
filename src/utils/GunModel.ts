@@ -2,20 +2,6 @@ import * as THREE from 'three';
 
 export type WeaponType = 'pistol' | 'rifle' | 'shotgun' | 'smg' | 'sniper' | 'minigun' | 'launcher';
 
-/**
- * Signature cast gestures — every character ability plays its OWN viewmodel
- * flourish so casts read distinctly from one another (and from power-up
- * pickups, which don't move the weapon at all):
- *   surge — double forward pump (Scout's adrenaline hit)
- *   brace — tuck right + down while the shield arm raises (Heavy)
- *   focus — inspect-style cant + raise (Operative dialing in)
- *   slam  — hard forward thrust + muzzle climb (Pyro's nova)
- *   jab   — dip down-left, stim-injector jab (Medic)
- *   rack  — tilt left + sharp back-forth bolt rack (Engineer)
- *   fade  — smooth sink + yaw away as the cloak takes (Phantom)
- */
-export type CastKind = 'surge' | 'brace' | 'focus' | 'slam' | 'jab' | 'rack' | 'fade';
-
 // ─────────────────────────────────────────────────────────────────────────────
 // SHARED MATERIAL CACHE
 //
@@ -112,9 +98,6 @@ export class GunModel {
   private abilityAnim = 0;
   private dashAnim = 0;
   private equipAnim = 0; // weapon-swap raise (gun rises from low into the ready pose)
-  // Signature ability-cast gesture (per-kind envelope; see CastKind)
-  private castAnim = 0;
-  private castKind: CastKind = 'surge';
   // Strafe lean — smoothed [-1..1] (−1 = strafing left, +1 = right). Drives an
   // AAA-style weapon cant/lean when the player moves sideways, amplified while
   // aiming down sights so the ADS pose reads as "leaning into the strafe".
@@ -1187,23 +1170,13 @@ export class GunModel {
   /** Decay the one-shot action flourishes (abilities, dash, weapon equip). */
   updateActions(delta: number) {
     if (this.abilityAnim > 0) this.abilityAnim = Math.max(0, this.abilityAnim - delta * 3);
-    // Dash decays slower than v3 — the charge pose holds through the whole
-    // 0.24 s burst then settles, instead of snapping back mid-charge.
-    if (this.dashAnim > 0) this.dashAnim = Math.max(0, this.dashAnim - delta * 2.6);
+    if (this.dashAnim > 0) this.dashAnim = Math.max(0, this.dashAnim - delta * 3.6);
     if (this.equipAnim > 0) this.equipAnim = Math.max(0, this.equipAnim - delta * 3.4);
-    if (this.castAnim > 0) this.castAnim = Math.max(0, this.castAnim - delta * 2.2);
   }
 
-  /** A quick upward flourish + flick when an ability is cast.
-   *  Legacy generic flourish — prefer triggerCast() for signature gestures. */
+  /** A quick upward flourish + flick when an ability is cast. */
   triggerAbility() {
     this.abilityAnim = 1;
-  }
-
-  /** Play a signature ability-cast gesture (distinct per character class). */
-  triggerCast(kind: CastKind) {
-    this.castKind = kind;
-    this.castAnim = 1;
   }
 
   /** A sharp braced pull-back when the player dashes. */
@@ -1239,45 +1212,6 @@ export class GunModel {
     const dash = Math.sin(this.dashAnim * Math.PI);
     const land = Math.sin(this.landAnim * Math.PI);
 
-    // Signature ability-cast gesture — each kind shapes its own envelope so
-    // every class's cast is unmistakable (and none of them look like the
-    // passive power-up pickups, which never move the weapon).
-    let castX = 0, castY = 0, castZ = 0;
-    let castRX = 0, castRY = 0, castRZ = 0;
-    if (this.castAnim > 0) {
-      const c = this.castAnim;                    // 1 → 0 over ~0.45 s
-      const env = Math.sin(c * Math.PI);          // smooth in-out
-      const env2 = Math.sin(Math.min(1, c * 1.6) * Math.PI); // earlier peak
-      switch (this.castKind) {
-        case 'surge': // double forward pump
-          castZ = -Math.abs(Math.sin(c * Math.PI * 2)) * 0.09;
-          castRX = env * 0.08;
-          break;
-        case 'brace': // tuck right + down while the shield raises
-          castX = env * 0.09; castY = -env * 0.10;
-          castRZ = -env * 0.18; castRY = -env * 0.12;
-          break;
-        case 'focus': // inspect-style cant + raise
-          castY = env * 0.05; castRZ = env * 0.42;
-          castRY = env * 0.2; castRX = -env * 0.06;
-          break;
-        case 'slam': // hard forward thrust + muzzle climb
-          castZ = -env2 * 0.16; castRX = env * 0.22; castY = env * 0.03;
-          break;
-        case 'jab': // stim-injector jab: dip down-left, roll inward
-          castX = -env * 0.12; castY = -env * 0.14;
-          castRZ = env * 0.30; castRX = -env * 0.12;
-          break;
-        case 'rack': // bolt rack: tilt left + sharp back-forth jerk
-          castRZ = env * 0.22; castZ = Math.sin(c * Math.PI * 3) * 0.05;
-          castY = -env * 0.04;
-          break;
-        case 'fade': // cloak: smooth sink + yaw away
-          castY = -env * 0.16; castRY = env * 0.25; castRX = -env * 0.05;
-          break;
-      }
-    }
-
     // Strafe lean — cant the weapon toward the movement direction. Suppressed
     // during the sprint pose (which already cants the gun across the body), and
     // amplified by ~70% while aiming so ADS strafing reads as a deliberate lean.
@@ -1293,31 +1227,25 @@ export class GunModel {
     // Weapon-equip raise — the gun swings up from below + flips level on swap.
     const equip = this.equipAnim; // 1 just-swapped → 0 settled
 
-    // Dash = a head-down CHARGE: the weapon drops low and tucks in across
-    // the body (paired with the camera's forward head-bend in App.tsx), so
-    // the Ranger visibly lowers into the sprint instead of just sliding.
     this.group.position.x =
       baseX + this.walkOffset.x * swayMul + SP_X * sprint + runX - reload * 0.07
-      + leanShift + castX - dash * 0.04;
+      + leanShift;
     this.group.position.y =
       baseY + this.walkOffset.y * swayMul + SP_Y * sprint + runY
-      + this.jumpOffset.y - land * 0.12 + abil * 0.07 - dash * 0.16 - reload * 0.16
-      - equip * 0.5 + castY;
+      + this.jumpOffset.y - land * 0.12 + abil * 0.07 - dash * 0.05 - reload * 0.16
+      - equip * 0.5;
     this.group.position.z =
-      baseZ + this.recoilOffset.z + SP_Z * sprint + dash * 0.22 + reload * 0.12
-      + castZ;
+      baseZ + this.recoilOffset.z + SP_Z * sprint + dash * 0.16 + reload * 0.12;
 
     this.group.rotation.x =
       (this.swayOffset.rotX + this.walkOffset.rotX) * swayMul
       + this.recoilOffset.rotX + SP_RX * sprint + runRotX
-      + this.jumpOffset.rotX - land * 0.18 - reload * 0.42 + equip * 0.55
-      + dash * 0.12 + castRX;
+      + this.jumpOffset.rotX - land * 0.18 - reload * 0.42 + equip * 0.55;
     this.group.rotation.y =
-      this.swayOffset.rotY * swayMul + SP_RY * sprint + leanYaw + castRY
-      - dash * 0.1;
+      this.swayOffset.rotY * swayMul + SP_RY * sprint + leanYaw;
     this.group.rotation.z =
       this.walkOffset.rotZ * swayMul + this.reloadRotZ + SP_RZ * sprint
-      + runRotZ + abil * 0.22 + leanRoll + castRZ + dash * 0.14;
+      + runRotZ + abil * 0.22 + leanRoll;
   }
 
   /**

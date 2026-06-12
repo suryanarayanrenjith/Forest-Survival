@@ -245,14 +245,8 @@ const TERRAIN_FRAG_COMMON = /* glsl */ `
   //             after the rain ends (slow dry-out).
   // uRainRipple — 0..1 active precipitation; animates ripple rings on the
   //             puddles so still pools only form once the rain has stopped.
-  // uPuddleDetail — graphics-preset knob (0..1): scales the procedural
-  //             rain-ring layers perturbing the puddle mirror.
-  // uEnvTint — weather tint folded into the puddle env reflection so a
-  //             storm-grey sky never mirrors as a bright sunny HDRI.
   uniform float uRainWet;
   uniform float uRainRipple;
-  uniform float uPuddleDetail;
-  uniform vec3  uEnvTint;
 
   uniform vec3  uTMacroA;
   uniform vec3  uTMacroB;
@@ -293,22 +287,6 @@ const TERRAIN_FRAG_COMMON = /* glsl */ `
     float dx = gFbm(p + vec2(epsilon, 0.0)) - c;
     float dy = gFbm(p + vec2(0.0, epsilon)) - c;
     return vec2(dx, dy) / epsilon;
-  }
-
-  // PRECISION-STABLE puddle field — band-limited trig (like the terrain
-  // height field) instead of a sin-hash fbm, so it evaluates to the SAME
-  // pattern in JS (float64) and on the GPU (float32). Gameplay samples the
-  // JS twin (samplePuddleMask) to decide where footstep / movement splashes
-  // belong, so the CPU and the pixels must agree on where the puddles are.
-  // KEEP IN SYNC with samplePuddleField() below.
-  float puddleField(vec2 p) {
-    vec2 q = p * 0.3;
-    float s = uTSeed;
-    float v = sin(q.x + s) * cos(q.y * 0.93 + s * 0.7);
-    v += sin(q.x * 1.83 + q.y * 0.67 + s * 1.9) * 0.6;
-    v += cos(q.x * 0.49 - q.y * 1.27 + s * 2.6) * 0.75;
-    v += sin((q.x + q.y) * 1.37 - s * 1.2) * 0.45;
-    return v * 0.178 + 0.5;
   }
 `;
 
@@ -433,10 +411,7 @@ export function applyGroundTerrainShader(
       // uTWetness is the map's static base (swamp); uRainWet is the LIVE rain
       // soak from the weather system. As the rain soaks in, the puddle
       // threshold widens so pools visibly GROW outward from the low spots,
-      // then slowly recede as the ground dries. The mask is the precision-
-      // stable puddleField (NOT fbm) so the JS twin in this module places
-      // splash VFX exactly where the pixels show water; an fbm modulation on
-      // top keeps the depth reading organic without moving the shoreline.
+      // then slowly recede as the ground dries.
       float wetAmt = max(uTWetness, uRainWet);
       if (wetAmt > 0.001) {
         float pudNoise = puddleField(gWP);
@@ -449,9 +424,7 @@ export function applyGroundTerrainShader(
         float pud = smoothstep(0.66 - uRainWet * 0.16, 0.88 - uRainWet * 0.2, pudNoise);
         pud *= 0.72 + 0.28 * gFbm(gWP * 0.6 + 7.0);
         gWet = pud * wetAmt;
-        // Deep-water read: darker base with a subtle cool shift so pools
-        // look like water over soil, not just stained ground.
-        diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.30, 0.34, 0.40), gWet);
+        diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 0.42, gWet);
         // Rain also soak-darkens the ground BETWEEN the puddles.
         diffuseColor.rgb *= 1.0 - uRainWet * 0.16 * (1.0 - pud);
       }
@@ -529,69 +502,34 @@ export function applyGroundTerrainShader(
 
       // ── PUDDLE MIRROR REFLECTIONS — the "RTX puddle" moment ──────────
       // Each puddle is shaded as a thin sheet of water: a near-mirror
-      // world-up normal perturbed by LIVE rain-impact RINGS + travelling
-      // micro-waves, a fresnel-weighted sample of the scene's PMREM
-      // environment (the same prefiltered IBL the PBR pipeline already
-      // uses — one extra texture fetch, not a render pass), a weather tint
-      // so storm skies mirror dark, and a razor-thin sun glint streak. The
-      // bloom pass then catches the bright bounce. While rain falls the
-      // surface dances with expanding impact rings; once it stops the pools
-      // settle into still mirrors and slowly dry out. Guarded so a missing
-      // environment map (failed HDRI load) simply skips the reflection
-      // instead of breaking the shader.
+      // world-up normal perturbed by LIVE rain ripples, a fresnel-weighted
+      // sample of the scene's PMREM environment (the same prefiltered IBL
+      // the PBR pipeline already uses — so this is one extra texture fetch,
+      // not a render pass), and the bloom pass then catches the bright sky
+      // bounce. While rain falls the surface shivers with travelling
+      // ripples; once it stops the pools settle into still mirrors and
+      // slowly dry out. Guarded so a missing environment map (failed HDRI
+      // load) simply skips the reflection instead of breaking the shader.
       #if defined( USE_ENVMAP ) && defined( ENVMAP_TYPE_CUBE_UV )
       if (gWet > 0.003) {
         vec2 rWP = vGroundWorldPos.xz;
-        // Travelling micro-waves — wind shiver across the pool surface.
+        // Two interleaved travelling waves — amplitude follows the live
+        // precipitation and the antialiasing fade so distant puddles never
+        // shimmer.
         float rT = uTime * 6.0;
         float rw1 = sin(rWP.x * 9.1 + rT) * sin(rWP.y * 8.3 - rT * 0.9);
         float rw2 = sin((rWP.x + rWP.y) * 13.7 - rT * 1.4);
-        float rAmp = 0.05 * uRainRipple * gMicro;
-        vec2 ripGrad = vec2(
+        float rAmp = 0.085 * uRainRipple * gMicro;
+        vec3 puddleN = normalize(vec3(
           (rw1 * 0.7 + rw2 * 0.3) * rAmp,
+          1.0,
           (rw1 * 0.3 - rw2 * 0.7) * rAmp
-        );
-
-        // RAIN-IMPACT RINGS — hashed cells each spawn an expanding,
-        // fading circular wavefront (the classic water-surface drop
-        // animation), perturbing the mirror normal so every reflection
-        // wobbles outward from each hit. Layer 2 (offset + finer) fills
-        // the gaps on high/ultra presets; both layers fade with distance
-        // (gMicro) so far puddles stay calm, alias-free mirrors.
-        if (uRainRipple > 0.02 && uPuddleDetail > 0.05) {
-          float ringAA = uRainRipple * gMicro;
-          {
-            vec2 rp = rWP * 0.85;
-            vec2 cell = floor(rp);
-            vec2 f = fract(rp) - 0.5;
-            float h = gHash(cell);
-            vec2 jit = vec2(gHash(cell + 1.7), gHash(cell + 3.1)) - 0.5;
-            vec2 toC = f - jit * 0.5;
-            float d = length(toC);
-            float lt = fract(uTime * 0.9 + h);
-            float ring = smoothstep(0.085, 0.0, abs(d - lt * 0.46)) * (1.0 - lt) * (1.0 - lt);
-            ripGrad += (toC / (d + 0.04)) * ring * 0.16 * ringAA;
-          }
-          if (uPuddleDetail > 0.55) {
-            vec2 rp = rWP * 1.45 + 13.7;
-            vec2 cell = floor(rp);
-            vec2 f = fract(rp) - 0.5;
-            float h = gHash(cell + 5.3);
-            vec2 jit = vec2(gHash(cell + 8.9), gHash(cell + 11.3)) - 0.5;
-            vec2 toC = f - jit * 0.5;
-            float d = length(toC);
-            float lt = fract(uTime * 1.25 + h);
-            float ring = smoothstep(0.075, 0.0, abs(d - lt * 0.42)) * (1.0 - lt) * (1.0 - lt);
-            ripGrad += (toC / (d + 0.04)) * ring * 0.11 * ringAA;
-          }
-        }
-
-        vec3 puddleN = normalize(vec3(ripGrad.x, 1.0, ripGrad.y));
+        ));
         vec3 viewDirW = normalize(cameraPosition - vGroundWorldPos);
         vec3 refW = reflect(-viewDirW, puddleN);
         refW.y = max(refW.y, 0.04); // water reflects the world above it
         // Fresnel — grazing angles turn the pool into a true mirror.
-        float fres = 0.04 + 0.96 * pow(1.0 - max(dot(viewDirW, puddleN), 0.0), 5.0);
+        float fres = 0.05 + 0.95 * pow(1.0 - max(dot(viewDirW, puddleN), 0.0), 5.0);
         // Sharpest reflection in a full, still puddle; rain agitation and
         // partial dryness rough it up. Floor 0.05 keeps the mirror crisp
         // without resolving to a perfect sky-copy.

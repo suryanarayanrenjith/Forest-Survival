@@ -71,11 +71,8 @@ export const CHARACTER_PASSIVES: Record<ClassId, CharacterPassive> = {
   medic: {
     classId: 'medic',
     label: 'Field Triage',
-    // Nerfed from 0.5 (and the old version ticked even DURING combat, which
-    // made the Medic shrug off whole waves). The regen now only ticks after
-    // 5 s without taking damage — enforced in the App.tsx regen block.
-    description: 'Regenerate 0.2 HP / sec out of combat.',
-    mods: { regenPerSec: 0.2 },
+    description: 'Regenerate 0.5 HP / sec out of combat.',
+    mods: { regenPerSec: 0.5 },
   },
   engineer: {
     classId: 'engineer',

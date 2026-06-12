@@ -21,13 +21,6 @@ export interface GraphicsPreset {
   viewDistance: number;
   /** 0-1 multiplier for grass / terrain object density. */
   terrainDetail: number;
-  /** Weather VFX budget: rain particle count, splash ring/droplet pools and
-   *  rain-splash emission rate all scale by this. */
-  weatherFx: number;
-  /** Puddle mirror detail (0-1): 0.05+ enables rain-impact ripple rings,
-   *  0.55+ adds the second finer ring layer. Reflections stay on at every
-   *  tier (one texture fetch) — this only scales the ripple work. */
-  puddleDetail: number;
 }
 
 // Four clean performance tiers. Every field below is read and applied by
@@ -54,8 +47,6 @@ export const GRAPHICS_PRESETS: Record<GraphicsQuality, GraphicsPreset> = {
     maxEnemies: 14,
     viewDistance: 100,
     terrainDetail: 0.55,
-    weatherFx: 0.45,
-    puddleDetail: 0.3,
   },
   // MEDIUM — soft shadows + lightweight bloom, ~85% pixel ratio.
   //   • Soft 1024² shadow map (8MB) — visible directional shadows
@@ -72,8 +63,6 @@ export const GRAPHICS_PRESETS: Record<GraphicsQuality, GraphicsPreset> = {
     maxEnemies: 22,
     viewDistance: 150,
     terrainDetail: 0.85,
-    weatherFx: 0.7,
-    puddleDetail: 0.5,
   },
   // HIGH — native res, MSAA, crisp 2048² shadows + full post-FX stack.
   high: {
@@ -86,8 +75,6 @@ export const GRAPHICS_PRESETS: Record<GraphicsQuality, GraphicsPreset> = {
     maxEnemies: 30,
     viewDistance: 200,
     terrainDetail: 1.0,
-    weatherFx: 1.0,
-    puddleDetail: 1.0,
   },
   // ULTRA — 1.15× super-sampled, 4096² shadows, every effect maxed.
   //   • Pixel ratio 1.15 super-samples slightly (sharper edges)
@@ -104,8 +91,6 @@ export const GRAPHICS_PRESETS: Record<GraphicsQuality, GraphicsPreset> = {
     maxEnemies: 40,
     viewDistance: 260,
     terrainDetail: 1.0,
-    weatherFx: 1.15,
-    puddleDetail: 1.0,
   },
 };
 
