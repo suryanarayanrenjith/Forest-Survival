@@ -2,13 +2,15 @@ import * as THREE from 'three';
 import type { MapType } from './MapSystem';
 
 /**
- * WEATHER SYSTEM v4 — real-weather director with per-map climates.
+ * WEATHER SYSTEM v5 — clear-dominant real-weather director.
  *
  * Always-on and fully automatic: there is no weather menu. Every run gets a
  * living sky driven by a weather DIRECTOR that behaves like actual weather:
  *
- *   • MOSTLY SUNNY. Clear skies dominate every climate (~55-72% of the time);
- *     rain/gloom are the exception that makes the sunshine land, not the rule.
+ *   • MOSTLY CLEAR. Clear skies dominate every climate (~60-78% of rolls),
+ *     starts are heavily biased toward clear, and long clear holds make sun
+ *     the default mood. Rain/gloom/fog are occasional fronts, not a permanent
+ *     filter over the game.
  *   • SIX CONDITIONS everywhere: clear, gloomy (overcast), fog/mist, light
  *     precipitation (drizzle / flurries / dust haze / ash drift), the map's
  *     signature storm, and — on rain climates — full THUNDERSTORMS with
@@ -19,7 +21,8 @@ import type { MapType } from './MapSystem';
  *     clear → overcast → storm and tapers storm → drizzle → clear, exactly
  *     like a front passing through. Holds are randomized per state (sunny
  *     spells breathe for minutes; storms are intense but bounded).
- *   • Night calms the sky (fewer storms, a touch more brooding gloom).
+ *   • Night calms the sky: fewer violent storms, a touch more mist/gloom, and
+ *     no snow-white tint leaking into non-snow maps.
  *
  * Architecture is atmosphere-first: the primary output is a small struct of
  * ATMOSPHERE MODIFIERS (light / fog / saturation / bloom / god-ray
@@ -194,31 +197,184 @@ const STORM_PARTICLES: Record<StormKind, StormParticles> = {
   ashfall:   { count: 1700, sprite: 'flake',  color: 0x9a948c, size: 0.6,  opacity: 0.55, additive: false, fallMin: 2.2, fallVar: 2.2, windX: 3.5, windZ: 2 },
 };
 
+type WeatherWeights = Record<WeatherState, number>;
+type WeatherDurations = Partial<Record<WeatherState, [number, number]>>;
+type PresetTuning = Partial<Record<WeatherState, Partial<ModsPreset>>>;
+
 /**
- * Per-map climate: which storm species, plus the director's state weights.
- * Clear dominates EVERY map — the design brief is "mostly sunny, sometimes
- * rainy/gloomy", so even the swamp now spends most of a run under sun.
- * thunder > 0 only where a thunderstorm makes sense (rain climates).
+ * Per-map climate. We keep the director data here instead of scattering map
+ * checks through the update loop: each map owns its weather weights, start
+ * bias, front durations, night behaviour and visual tuning.
  */
 interface ClimateProfile {
   storm: StormKind;
-  clear: number;
-  gloomy: number;
-  fog: number;
-  drizzle: number;
-  storm_w: number;
-  thunder: number;
+  /** Opening roll bias. Runs can still start moody, but usually start clear. */
+  openingClearChance: number;
+  /** Base weather lottery. Clear is intentionally the largest weight. */
+  weights: WeatherWeights;
+  /** Multipliers applied to the base lottery while the sun is down. */
+  nightMultipliers: WeatherWeights;
+  /** Optional per-map front hold ranges in seconds. */
+  durations?: WeatherDurations;
+  /** After this many non-clear fronts, the director schedules a sun break. */
+  clearBreakAfter: number;
+  /** Map-specific visual overrides for each state. */
+  tuning?: PresetTuning;
+  /** Per-map particle load within the global graphics budget. */
+  particleDensity?: number;
+}
+
+const BASE_DURATIONS: Record<WeatherState, [number, number]> = {
+  clear: [120, 220],
+  gloomy: [34, 64],
+  fog: [38, 72],
+  drizzle: [28, 56],
+  storm: [22, 42],
+  thunder: [20, 36],
+};
+
+function makeWeights(weights: WeatherWeights): WeatherWeights {
+  return weights;
+}
+
+function makeNightMultipliers(overrides: Partial<WeatherWeights> = {}): WeatherWeights {
+  return {
+    clear: 1.08,
+    gloomy: 1.12,
+    fog: 1.18,
+    drizzle: 0.85,
+    storm: 0.62,
+    thunder: 0.5,
+    ...overrides,
+  };
 }
 
 const MAP_CLIMATES: Record<MapType, ClimateProfile> = {
-  deep_forest:        { storm: 'rain',      clear: 58, gloomy: 12, fog: 9,  drizzle: 10, storm_w: 7,  thunder: 4 },
-  autumn_grove:       { storm: 'rain',      clear: 56, gloomy: 13, fog: 10, drizzle: 10, storm_w: 7,  thunder: 4 },
-  toxic_swamp:        { storm: 'rain',      clear: 42, gloomy: 15, fog: 16, drizzle: 13, storm_w: 8,  thunder: 6 },
-  military_outpost:   { storm: 'rain',      clear: 57, gloomy: 13, fog: 8,  drizzle: 10, storm_w: 8,  thunder: 4 },
-  ancient_ruins:      { storm: 'rain',      clear: 60, gloomy: 12, fog: 9,  drizzle: 9,  storm_w: 6,  thunder: 4 },
-  desert_canyon:      { storm: 'sandstorm', clear: 72, gloomy: 7,  fog: 4,  drizzle: 7,  storm_w: 10, thunder: 0 },
-  frozen_tundra:      { storm: 'blizzard',  clear: 52, gloomy: 13, fog: 11, drizzle: 12, storm_w: 12, thunder: 0 },
-  scorched_wasteland: { storm: 'ashfall',   clear: 56, gloomy: 12, fog: 9,  drizzle: 11, storm_w: 12, thunder: 0 },
+  deep_forest: {
+    storm: 'rain',
+    openingClearChance: 0.9,
+    clearBreakAfter: 2,
+    particleDensity: 0.86,
+    weights: makeWeights({ clear: 74, gloomy: 8, fog: 6, drizzle: 5, storm: 4, thunder: 3 }),
+    nightMultipliers: makeNightMultipliers({ fog: 1.25, storm: 0.55, thunder: 0.42 }),
+    durations: { clear: [145, 260], fog: [28, 52], storm: [20, 34], thunder: [18, 30] },
+    tuning: {
+      gloomy: { fogDensityMult: 1.22, saturationMult: 0.86, skyDarken: 0.18, tintHex: 0x71816e, tintStrength: 0.08 },
+      fog: { lightMult: 0.88, fogDensityMult: 1.55, saturationMult: 0.9, skyDarken: 0.04, tintHex: 0x8fa18d, tintStrength: 0.09 },
+      drizzle: { lightMult: 0.7, fogDensityMult: 1.25, saturationMult: 0.82, skyDarken: 0.18, tintHex: 0x69756f, tintStrength: 0.12, wetness: 0.22, rainAmount: 0.28 },
+      storm: { lightMult: 0.54, fogDensityMult: 1.48, saturationMult: 0.74, skyDarken: 0.32, tintHex: 0x5f6e68, tintStrength: 0.16, wetness: 0.74, rainAmount: 0.9 },
+      thunder: { lightMult: 0.44, fogDensityMult: 1.65, saturationMult: 0.68, skyDarken: 0.42, tintHex: 0x586976, tintStrength: 0.2, wetness: 0.82, rainAmount: 0.95 },
+    },
+  },
+  autumn_grove: {
+    storm: 'rain',
+    openingClearChance: 0.86,
+    clearBreakAfter: 3,
+    particleDensity: 0.78,
+    weights: makeWeights({ clear: 68, gloomy: 13, fog: 8, drizzle: 5, storm: 4, thunder: 2 }),
+    nightMultipliers: makeNightMultipliers({ gloomy: 1.22, fog: 1.2, storm: 0.5, thunder: 0.35 }),
+    durations: { clear: [125, 230], gloomy: [42, 76], storm: [20, 34] },
+    tuning: {
+      gloomy: { lightMult: 0.58, fogDensityMult: 1.36, saturationMult: 0.82, skyDarken: 0.24, tintHex: 0x6f6480, tintStrength: 0.16 },
+      fog: { lightMult: 0.72, fogDensityMult: 1.75, saturationMult: 0.84, skyDarken: 0.1, tintHex: 0x81799a, tintStrength: 0.16 },
+      drizzle: { fogDensityMult: 1.32, skyDarken: 0.24, tintHex: 0x665b7a, tintStrength: 0.18, wetness: 0.2, rainAmount: 0.26 },
+      storm: { fogDensityMult: 1.55, skyDarken: 0.38, tintHex: 0x574d68, tintStrength: 0.22, wetness: 0.62, rainAmount: 0.82 },
+      thunder: { fogDensityMult: 1.7, skyDarken: 0.48, tintHex: 0x5d607c, tintStrength: 0.24, wetness: 0.72, rainAmount: 0.9 },
+    },
+  },
+  toxic_swamp: {
+    storm: 'rain',
+    openingClearChance: 0.76,
+    clearBreakAfter: 3,
+    particleDensity: 0.9,
+    weights: makeWeights({ clear: 60, gloomy: 14, fog: 12, drizzle: 7, storm: 4, thunder: 3 }),
+    nightMultipliers: makeNightMultipliers({ clear: 0.98, gloomy: 1.26, fog: 1.3, storm: 0.58, thunder: 0.44 }),
+    durations: { clear: [105, 195], fog: [48, 88], drizzle: [34, 62], storm: [22, 38] },
+    tuning: {
+      gloomy: { lightMult: 0.58, ambientMult: 0.94, fogDensityMult: 1.48, saturationMult: 0.86, skyDarken: 0.22, tintHex: 0x526b4d, tintStrength: 0.18 },
+      fog: { lightMult: 0.76, ambientMult: 1.0, fogDensityMult: 2.25, saturationMult: 0.86, skyDarken: 0.02, tintHex: 0x607a55, tintStrength: 0.22 },
+      drizzle: { lightMult: 0.66, fogDensityMult: 1.55, saturationMult: 0.82, skyDarken: 0.24, tintHex: 0x556f5a, tintStrength: 0.22, wetness: 0.44, rainAmount: 0.32 },
+      storm: { lightMult: 0.48, fogDensityMult: 1.95, saturationMult: 0.76, skyDarken: 0.38, tintHex: 0x455846, tintStrength: 0.25, wetness: 0.95, rainAmount: 0.92 },
+      thunder: { lightMult: 0.4, fogDensityMult: 2.15, saturationMult: 0.72, skyDarken: 0.5, tintHex: 0x465364, tintStrength: 0.28, wetness: 1.0, rainAmount: 1.0 },
+    },
+  },
+  military_outpost: {
+    storm: 'rain',
+    openingClearChance: 0.88,
+    clearBreakAfter: 3,
+    particleDensity: 0.72,
+    weights: makeWeights({ clear: 70, gloomy: 12, fog: 6, drizzle: 6, storm: 4, thunder: 2 }),
+    nightMultipliers: makeNightMultipliers({ gloomy: 1.18, fog: 1.12, storm: 0.52, thunder: 0.36 }),
+    durations: { clear: [135, 245], gloomy: [38, 70], storm: [24, 40] },
+    tuning: {
+      gloomy: { lightMult: 0.66, fogDensityMult: 1.32, saturationMult: 0.78, skyDarken: 0.24, tintHex: 0x77776d, tintStrength: 0.12 },
+      fog: { lightMult: 0.78, fogDensityMult: 1.7, saturationMult: 0.78, skyDarken: 0.06, tintHex: 0x8a887a, tintStrength: 0.14 },
+      drizzle: { fogDensityMult: 1.28, saturationMult: 0.76, skyDarken: 0.24, tintHex: 0x6d7175, tintStrength: 0.15, wetness: 0.24, rainAmount: 0.3 },
+      storm: { fogDensityMult: 1.6, saturationMult: 0.7, skyDarken: 0.42, tintHex: 0x626b72, tintStrength: 0.2, wetness: 0.78, rainAmount: 0.9 },
+      thunder: { fogDensityMult: 1.78, saturationMult: 0.66, skyDarken: 0.52, tintHex: 0x677386, tintStrength: 0.24, wetness: 0.86, rainAmount: 1.0 },
+    },
+  },
+  ancient_ruins: {
+    storm: 'rain',
+    openingClearChance: 0.86,
+    clearBreakAfter: 3,
+    particleDensity: 0.82,
+    weights: makeWeights({ clear: 66, gloomy: 12, fog: 7, drizzle: 8, storm: 5, thunder: 2 }),
+    nightMultipliers: makeNightMultipliers({ gloomy: 1.16, fog: 1.14, storm: 0.58, thunder: 0.42 }),
+    durations: { clear: [120, 230], drizzle: [34, 68], storm: [24, 44] },
+    tuning: {
+      gloomy: { lightMult: 0.6, fogDensityMult: 1.38, saturationMult: 0.82, skyDarken: 0.26, tintHex: 0x777b76, tintStrength: 0.13 },
+      fog: { lightMult: 0.78, fogDensityMult: 1.85, saturationMult: 0.86, skyDarken: 0.06, tintHex: 0x85877e, tintStrength: 0.14 },
+      drizzle: { lightMult: 0.66, fogDensityMult: 1.34, saturationMult: 0.78, skyDarken: 0.24, tintHex: 0x707981, tintStrength: 0.18, wetness: 0.42, rainAmount: 0.36 },
+      storm: { lightMult: 0.48, fogDensityMult: 1.72, saturationMult: 0.72, skyDarken: 0.42, tintHex: 0x63717c, tintStrength: 0.22, wetness: 0.9, rainAmount: 0.95 },
+      thunder: { lightMult: 0.4, fogDensityMult: 1.9, saturationMult: 0.66, skyDarken: 0.54, tintHex: 0x687993, tintStrength: 0.25, wetness: 1.0, rainAmount: 1.0 },
+    },
+  },
+  desert_canyon: {
+    storm: 'sandstorm',
+    openingClearChance: 0.94,
+    clearBreakAfter: 3,
+    particleDensity: 0.95,
+    weights: makeWeights({ clear: 78, gloomy: 6, fog: 4, drizzle: 5, storm: 7, thunder: 0 }),
+    nightMultipliers: makeNightMultipliers({ clear: 1.15, gloomy: 0.9, fog: 1.05, drizzle: 0.82, storm: 0.7, thunder: 0 }),
+    durations: { clear: [165, 290], fog: [28, 50], drizzle: [24, 44], storm: [20, 38] },
+    tuning: {
+      gloomy: { lightMult: 0.78, ambientMult: 0.98, fogDensityMult: 1.18, saturationMult: 0.9, skyDarken: 0.08, tintHex: 0xa68d67, tintStrength: 0.16 },
+      fog: { lightMult: 0.82, ambientMult: 1.0, fogDensityMult: 1.55, saturationMult: 0.92, skyDarken: 0.02, tintHex: 0xb49566, tintStrength: 0.24 },
+      drizzle: { lightMult: 0.78, ambientMult: 1.0, fogDensityMult: 1.9, saturationMult: 0.96, skyDarken: 0.06, tintHex: 0xc29758, tintStrength: 0.38, wetness: 0, rainAmount: 0.28 },
+      storm: { lightMult: 0.62, ambientMult: 0.96, fogDensityMult: 2.55, saturationMult: 0.9, skyDarken: 0.12, tintHex: 0xc09250, tintStrength: 0.52, wetness: 0, rainAmount: 0.92 },
+    },
+  },
+  frozen_tundra: {
+    storm: 'blizzard',
+    openingClearChance: 0.82,
+    clearBreakAfter: 3,
+    particleDensity: 0.9,
+    weights: makeWeights({ clear: 64, gloomy: 12, fog: 8, drizzle: 8, storm: 8, thunder: 0 }),
+    nightMultipliers: makeNightMultipliers({ clear: 1.02, gloomy: 1.18, fog: 1.24, drizzle: 0.92, storm: 0.68, thunder: 0 }),
+    durations: { clear: [125, 240], fog: [36, 72], drizzle: [30, 58], storm: [24, 46] },
+    tuning: {
+      gloomy: { lightMult: 0.7, ambientMult: 1.02, fogDensityMult: 1.42, saturationMult: 0.72, skyDarken: 0.04, tintHex: 0xaebdcc, tintStrength: 0.22 },
+      fog: { lightMult: 0.78, ambientMult: 1.05, fogDensityMult: 2.08, saturationMult: 0.68, skyDarken: 0.02, tintHex: 0xc6d3df, tintStrength: 0.3 },
+      drizzle: { lightMult: 0.72, ambientMult: 1.05, fogDensityMult: 1.85, saturationMult: 0.68, skyDarken: 0.04, tintHex: 0xd0dce8, tintStrength: 0.38, wetness: 0, rainAmount: 0.34 },
+      storm: { lightMult: 0.66, ambientMult: 1.06, fogDensityMult: 2.75, saturationMult: 0.62, skyDarken: 0.06, tintHex: 0xd8e4ee, tintStrength: 0.46, wetness: 0, rainAmount: 0.95 },
+    },
+  },
+  scorched_wasteland: {
+    storm: 'ashfall',
+    openingClearChance: 0.84,
+    clearBreakAfter: 3,
+    particleDensity: 0.78,
+    weights: makeWeights({ clear: 66, gloomy: 12, fog: 7, drizzle: 7, storm: 8, thunder: 0 }),
+    nightMultipliers: makeNightMultipliers({ clear: 1.06, gloomy: 1.1, fog: 1.12, drizzle: 0.9, storm: 0.72, thunder: 0 }),
+    durations: { clear: [120, 225], gloomy: [36, 68], storm: [24, 48] },
+    tuning: {
+      gloomy: { lightMult: 0.62, ambientMult: 0.88, fogDensityMult: 1.34, saturationMult: 0.82, skyDarken: 0.28, tintHex: 0x5a493f, tintStrength: 0.22 },
+      fog: { lightMult: 0.7, ambientMult: 0.9, fogDensityMult: 1.75, saturationMult: 0.82, skyDarken: 0.18, tintHex: 0x6a5747, tintStrength: 0.26 },
+      drizzle: { lightMult: 0.62, ambientMult: 0.86, fogDensityMult: 1.65, saturationMult: 0.82, skyDarken: 0.3, tintHex: 0x5a4b43, tintStrength: 0.32, wetness: 0, rainAmount: 0.3 },
+      storm: { lightMult: 0.52, ambientMult: 0.82, fogDensityMult: 2.05, saturationMult: 0.78, skyDarken: 0.42, tintHex: 0x51453c, tintStrength: 0.42, wetness: 0, rainAmount: 0.88 },
+    },
+  },
 };
 
 const DEFAULT_CLIMATE: ClimateProfile = MAP_CLIMATES.deep_forest;
@@ -229,6 +385,24 @@ const DEFAULT_CLIMATE: ClimateProfile = MAP_CLIMATES.deep_forest;
 const SEVERITY: Record<WeatherState, number> = {
   clear: 0, fog: 1, gloomy: 1, drizzle: 2, storm: 3, thunder: 3,
 };
+
+function random01(): number {
+  const cryptoObj = globalThis.crypto;
+  if (cryptoObj?.getRandomValues) {
+    const value = new Uint32Array(1);
+    cryptoObj.getRandomValues(value);
+    return value[0] / 0x100000000;
+  }
+  return Math.random();
+}
+
+function randomRange(range: [number, number]): number {
+  return range[0] + random01() * (range[1] - range[0]);
+}
+
+function tunePreset(base: ModsPreset, tuning?: Partial<ModsPreset>): ModsPreset {
+  return { ...base, ...(tuning ?? {}) };
+}
 
 // ── Particle field bounds ──────────────────────────────────────────────────
 const FIELD_RADIUS = 42;   // cylinder radius around the camera (m)
@@ -301,6 +475,7 @@ export class WeatherSystem {
   private state: WeatherState = 'clear';
   private holdRemaining = 0;
   private night = false;
+  private nonClearFronts = 0;
   /** Set when the director routed through a bridge state — applied next. */
   private pendingTarget: WeatherState | null = null;
 
@@ -332,7 +507,13 @@ export class WeatherSystem {
   setClimate(map: MapType): void {
     this.climate = MAP_CLIMATES[map] ?? DEFAULT_CLIMATE;
     this.fieldConfig = STORM_PARTICLES[this.climate.storm];
-    this.state = this.rollNextState(null);
+    this.pendingTarget = null;
+    this.flashEnv = 0;
+    this.secondFlashIn = -1;
+    this.thunderDelay = -1;
+    this.pendingClap = 0;
+    this.state = this.rollInitialState();
+    this.nonClearFronts = this.state === 'clear' ? 0 : 1;
     this.holdRemaining = this.holdSecondsFor(this.state);
     this.target = this.presetFor(this.state);
     this.snapToTarget();
@@ -344,26 +525,26 @@ export class WeatherSystem {
   }
 
   private presetFor(state: WeatherState): ModsPreset {
+    let base: ModsPreset;
     switch (state) {
-      case 'storm':   return STORM_PRESETS[this.climate.storm];
-      case 'thunder': return THUNDER_PRESET;
-      case 'drizzle': return DRIZZLE_PRESETS[this.climate.storm];
-      case 'fog':     return FOG_PRESET;
-      case 'gloomy':  return GLOOMY_PRESET;
-      default:        return CLEAR_PRESET;
+      case 'storm':   base = STORM_PRESETS[this.climate.storm]; break;
+      case 'thunder': base = THUNDER_PRESET; break;
+      case 'drizzle': base = DRIZZLE_PRESETS[this.climate.storm]; break;
+      case 'fog':     base = FOG_PRESET; break;
+      case 'gloomy':  base = GLOOMY_PRESET; break;
+      default:        base = CLEAR_PRESET; break;
     }
+    return tunePreset(base, this.climate.tuning?.[state]);
   }
 
   /** Sunny spells breathe for minutes; storms are intense but bounded. */
   private holdSecondsFor(state: WeatherState): number {
-    switch (state) {
-      case 'clear':   return 80 + Math.random() * 90;   // the default mood
-      case 'gloomy':  return 32 + Math.random() * 34;
-      case 'fog':     return 40 + Math.random() * 45;
-      case 'drizzle': return 30 + Math.random() * 32;
-      case 'storm':   return 26 + Math.random() * 26;
-      case 'thunder': return 24 + Math.random() * 20;
-    }
+    return randomRange(this.climate.durations?.[state] ?? BASE_DURATIONS[state]);
+  }
+
+  private rollInitialState(): WeatherState {
+    if (random01() < this.climate.openingClearChance) return 'clear';
+    return this.rollNextState(null, true);
   }
 
   /**
@@ -371,25 +552,22 @@ export class WeatherSystem {
    * (fewer storms, a touch more brooding gloom/fog), and `clear` is allowed
    * to re-roll itself so sunny stretches genuinely dominate.
    */
-  private rollNextState(previous: WeatherState | null): WeatherState {
+  private rollNextState(previous: WeatherState | null, ignoreClearBreak = false): WeatherState {
     const c = this.climate;
-    const nightStorm = this.night ? 0.7 : 1;
-    const nightMood = this.night ? 1.15 : 1;
-    const entries: Array<[WeatherState, number]> = [
-      ['clear', c.clear],
-      ['gloomy', c.gloomy * nightMood],
-      ['fog', c.fog * nightMood],
-      ['drizzle', c.drizzle],
-      ['storm', c.storm_w * nightStorm],
-      ['thunder', c.thunder * nightStorm],
-    ];
+    if (!ignoreClearBreak && this.nonClearFronts >= c.clearBreakAfter) return 'clear';
+    const states: WeatherState[] = ['clear', 'gloomy', 'fog', 'drizzle', 'storm', 'thunder'];
+    const entries = states.map((state): [WeatherState, number] => {
+      let weight = c.weights[state] * (this.night ? c.nightMultipliers[state] : 1);
+      if (state === 'thunder' && c.storm !== 'rain') weight = 0;
+      if (state === previous && state !== 'clear') weight *= 0.16;
+      if (state === 'clear' && previous !== 'clear') weight *= 1.35 + this.nonClearFronts * 0.22;
+      return [state, Math.max(0, weight)];
+    });
     let total = 0;
+    for (const [, weight] of entries) total += weight;
+    if (total <= 0) return 'clear';
+    let roll = random01() * total;
     for (const [state, weight] of entries) {
-      if (state !== previous || state === 'clear') total += weight;
-    }
-    let roll = Math.random() * total;
-    for (const [state, weight] of entries) {
-      if (state === previous && state !== 'clear') continue;
       roll -= weight;
       if (roll <= 0) return state;
     }
@@ -420,13 +598,14 @@ export class WeatherSystem {
       if (bridge && bridge !== rolled) {
         this.pendingTarget = rolled;
         next = bridge;
-        this.holdRemaining = 9 + Math.random() * 8; // brief transitional front
+        this.holdRemaining = randomRange([9, 17]); // brief transitional front
       } else {
         next = rolled;
         this.holdRemaining = this.holdSecondsFor(rolled);
       }
     }
     this.state = next;
+    this.nonClearFronts = next === 'clear' ? 0 : this.nonClearFronts + 1;
     this.target = this.presetFor(next);
     if (next === 'thunder') this.scheduleStrike();
   }
@@ -451,7 +630,7 @@ export class WeatherSystem {
   // ── Lightning ────────────────────────────────────────────────────────────
 
   private scheduleStrike(): void {
-    this.nextStrikeIn = 3 + Math.random() * 9;
+    this.nextStrikeIn = randomRange([3, 12]);
   }
 
   private updateLightning(delta: number): void {
@@ -468,16 +647,16 @@ export class WeatherSystem {
     if (this.thunderDelay >= 0) {
       this.thunderDelay -= delta;
       if (this.thunderDelay < 0) {
-        this.pendingClap = this.thunderPower;
+      this.pendingClap = this.thunderPower;
       }
     }
     if (this.state !== 'thunder') return;
     this.nextStrikeIn -= delta;
     if (this.nextStrikeIn <= 0) {
       // Closer strikes flash brighter, clap sooner and louder.
-      const proximity = 0.35 + Math.random() * 0.65; // 1 = overhead
+      const proximity = 0.35 + random01() * 0.65; // 1 = overhead
       this.flashEnv = 0.55 + proximity * 0.45;
-      this.secondFlashIn = Math.random() < 0.6 ? 0.1 + Math.random() * 0.12 : -1;
+      this.secondFlashIn = random01() < 0.6 ? 0.1 + random01() * 0.12 : -1;
       this.thunderDelay = 0.4 + (1 - proximity) * 2.4;
       this.thunderPower = proximity;
       this.scheduleStrike();
@@ -538,17 +717,17 @@ export class WeatherSystem {
 
   private buildField(): void {
     const cfg = this.fieldConfig;
-    const count = Math.max(200, Math.round(cfg.count * this.particleScale));
+    const count = Math.max(200, Math.round(cfg.count * this.particleScale * (this.climate.particleDensity ?? 1)));
     const positions = new Float32Array(count * 3);
     const velY = new Float32Array(count);
     for (let i = 0; i < count; i++) {
       const i3 = i * 3;
-      const a = Math.random() * Math.PI * 2;
-      const r = Math.sqrt(Math.random()) * FIELD_RADIUS;
+      const a = random01() * Math.PI * 2;
+      const r = Math.sqrt(random01()) * FIELD_RADIUS;
       positions[i3] = Math.cos(a) * r;
-      positions[i3 + 1] = Math.random() * FIELD_TOP;
+      positions[i3 + 1] = random01() * FIELD_TOP;
       positions[i3 + 2] = Math.sin(a) * r;
-      velY[i] = cfg.fallMin + Math.random() * cfg.fallVar;
+      velY[i] = cfg.fallMin + random01() * cfg.fallVar;
     }
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
@@ -613,8 +792,8 @@ export class WeatherSystem {
       positions[i3 + 2] += windZ;
       // Vertical recycle (fell below ground).
       if (positions[i3 + 1] < 0) {
-        const a = Math.random() * Math.PI * 2;
-        const r = Math.sqrt(Math.random()) * FIELD_RADIUS;
+        const a = random01() * Math.PI * 2;
+        const r = Math.sqrt(random01()) * FIELD_RADIUS;
         positions[i3] = Math.cos(a) * r;
         positions[i3 + 1] = FIELD_TOP;
         positions[i3 + 2] = Math.sin(a) * r;
