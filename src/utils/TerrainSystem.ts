@@ -440,7 +440,13 @@ export function applyGroundTerrainShader(
       float wetAmt = max(uTWetness, uRainWet);
       if (wetAmt > 0.001) {
         float pudNoise = puddleField(gWP);
-        float pud = smoothstep(0.56 - uRainWet * 0.15, 0.8 - uRainWet * 0.18, pudNoise);
+        // Thresholds sit ~1σ above the field mean so pools stay distinct
+        // patches in the low spots (≈15% coverage dry, ≈35% fully soaked) —
+        // NOT a floor-wide mirror. The trig field is wider-spread than the
+        // old fbm, so these are deliberately higher than the v3 values; if
+        // the whole arena ever reads white/sky-coloured again, suspect this
+        // pair first. KEEP IN SYNC with samplePuddleMask() below.
+        float pud = smoothstep(0.66 - uRainWet * 0.16, 0.88 - uRainWet * 0.2, pudNoise);
         pud *= 0.72 + 0.28 * gFbm(gWP * 0.6 + 7.0);
         gWet = pud * wetAmt;
         // Deep-water read: darker base with a subtle cool shift so pools
@@ -587,14 +593,17 @@ export function applyGroundTerrainShader(
         // Fresnel — grazing angles turn the pool into a true mirror.
         float fres = 0.04 + 0.96 * pow(1.0 - max(dot(viewDirW, puddleN), 0.0), 5.0);
         // Sharpest reflection in a full, still puddle; rain agitation and
-        // partial dryness rough it up. v4 floor is glassier (0.03) for the
-        // crisp "ray-traced" read on still water.
-        float mirrorRough = 0.03 + (1.0 - gWet) * 0.18 + uRainRipple * 0.06;
+        // partial dryness rough it up. Floor 0.05 keeps the mirror crisp
+        // without resolving to a perfect sky-copy.
+        float mirrorRough = 0.05 + (1.0 - gWet) * 0.20 + uRainRipple * 0.06;
         vec3 reflCol = textureCubeUV(envMap, envMapRotation * refW, mirrorRough).rgb;
         // uEnvTint folds the live weather into the static HDRI bounce so a
-        // storm-dark sky reflects storm-dark.
+        // storm-dark sky reflects storm-dark. Energy is BOUNDED (max ≈0.9 at
+        // a fully grazing, fully soaked pixel) — at distance every ground
+        // pixel hits high fresnel, and an uncapped term turns the whole
+        // floor into a white sky-mirror (the "white ground" bug).
         reflectedLight.indirectSpecular +=
-          reflCol * uEnvTint * envMapIntensity * gWet * (0.26 + 0.84 * fres);
+          reflCol * uEnvTint * envMapIntensity * gWet * (0.22 + 0.68 * fres);
 
         // Sun glint — a razor-thin specular streak across the water, the
         // detail that sells "real reflection" at a glance. Day only;
@@ -602,7 +611,7 @@ export function applyGroundTerrainShader(
         vec3 glintHalf = normalize(sunDir + viewDirW);
         float glint = pow(max(dot(puddleN, glintHalf), 0.0), 720.0);
         reflectedLight.directSpecular +=
-          uSunColor * glint * gWet * fres * 3.2 * (1.0 - uIsNight);
+          uSunColor * glint * gWet * fres * 2.4 * (1.0 - uIsNight);
       }
       #endif
 
@@ -660,6 +669,6 @@ export function samplePuddleMask(
 ): number {
   const wetAmt = Math.max(baseWetness, rainWet);
   if (wetAmt <= 0.001) return 0;
-  const pud = smoothstepJS(0.56 - rainWet * 0.15, 0.8 - rainWet * 0.18, samplePuddleField(x, z, seed));
+  const pud = smoothstepJS(0.66 - rainWet * 0.16, 0.88 - rainWet * 0.2, samplePuddleField(x, z, seed));
   return pud * wetAmt;
 }

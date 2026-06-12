@@ -92,13 +92,16 @@ const GLOOMY_PRESET: ModsPreset = {
   wetness: 0, rainAmount: 0,
 };
 
-// Fog / mist — the world dissolves into a pale veil; light shafts cut
-// through it (godRay kept meaningful), colours wash toward grey. A whisper
-// of dew dampens the ground but no puddles ripple.
+// Fog / mist — a soft morning haze between the trunks; light shafts cut
+// through it (godRay kept meaningful) and colours mute slightly. Tuned as
+// MIST, not white-out: density ≤ ~2× and a restrained tint, so the map's
+// own palette (forest greens etc.) stays readable — the original 3.1× /
+// 0.42-tint version blanked the ground to fog-white on every map. No
+// wetness: fog doesn't soak the ground or wake the puddle mirrors.
 const FOG_PRESET: ModsPreset = {
-  lightMult: 0.74, ambientMult: 0.98, fogDensityMult: 3.1, saturationMult: 0.8,
-  bloomMult: 1.0, godRayMult: 0.5, skyDarken: 0.1, tintHex: 0xc7ccd4, tintStrength: 0.42,
-  wetness: 0.1, rainAmount: 0,
+  lightMult: 0.8, ambientMult: 0.98, fogDensityMult: 2.0, saturationMult: 0.86,
+  bloomMult: 1.0, godRayMult: 0.45, skyDarken: 0.08, tintHex: 0xb6bdc6, tintStrength: 0.18,
+  wetness: 0, rainAmount: 0,
 };
 
 /** Atmosphere look for each full-strength storm species. */
@@ -160,7 +163,7 @@ function mixPresets(a: ModsPreset, b: ModsPreset, t: number, overrides?: Partial
 // the tundra, a dusty wind in the desert, drifting ash on the wasteland.
 // Roughly 45% of the way to the full storm, with a softer particle load.
 const DRIZZLE_PRESETS: Record<StormKind, ModsPreset> = {
-  rain:      mixPresets(CLEAR_PRESET, STORM_PRESETS.rain, 0.45, { wetness: 0.5, rainAmount: 0.35 }),
+  rain:      mixPresets(CLEAR_PRESET, STORM_PRESETS.rain, 0.45, { wetness: 0.35, rainAmount: 0.35 }),
   sandstorm: mixPresets(CLEAR_PRESET, STORM_PRESETS.sandstorm, 0.4, { rainAmount: 0.3 }),
   blizzard:  mixPresets(CLEAR_PRESET, STORM_PRESETS.blizzard, 0.4, { rainAmount: 0.35 }),
   ashfall:   mixPresets(CLEAR_PRESET, STORM_PRESETS.ashfall, 0.4, { rainAmount: 0.3 }),
