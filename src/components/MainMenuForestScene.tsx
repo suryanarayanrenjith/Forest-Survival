@@ -1439,6 +1439,64 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
       fireflyMaterial.uniforms.uPR.value = renderer.getPixelRatio();
     };
 
+    // ── SHOOTING STARS ─────────────────────────────────────────────────────
+    // Occasional meteors streak across the upper night sky — a quiet, magical
+    // beat layered over the existing starfield + aurora. Fully parametric
+    // (driven by elapsed time, no per-frame delta), additive, and recycled with
+    // a random gap so they stay rare. Geometry + materials are freed by
+    // disposeScene(); the one shared streak TEXTURE is disposed on cleanup.
+    const meteorTexture = (() => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 64;
+      canvas.height = 8;
+      const ctx = canvas.getContext('2d')!;
+      const grad = ctx.createLinearGradient(0, 0, 64, 0);
+      grad.addColorStop(0.0, 'rgba(255,255,255,0)');
+      grad.addColorStop(0.7, 'rgba(255,255,255,0.32)');
+      grad.addColorStop(0.93, 'rgba(255,255,255,0.92)');
+      grad.addColorStop(1.0, 'rgba(255,255,255,1)'); // bright head
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, 64, 8);
+      // Soft vertical falloff so the streak has a rounded, glowing core.
+      ctx.globalCompositeOperation = 'destination-in';
+      const vgrad = ctx.createLinearGradient(0, 0, 0, 8);
+      vgrad.addColorStop(0, 'rgba(255,255,255,0)');
+      vgrad.addColorStop(0.5, 'rgba(255,255,255,1)');
+      vgrad.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = vgrad;
+      ctx.fillRect(0, 0, 64, 8);
+      return new THREE.CanvasTexture(canvas);
+    })();
+    const meteorGeometry = new THREE.PlaneGeometry(7, 0.42);
+    type Meteor = {
+      mesh: THREE.Mesh; mat: THREE.MeshBasicMaterial;
+      startT: number; dur: number; sx: number; sy: number; dx: number; dy: number; z: number;
+    };
+    const meteors: Meteor[] = [];
+    const armMeteor = (m: Meteor, now: number) => {
+      m.startT = now + 2 + Math.random() * 9;          // random gap before the next streak
+      m.dur = 1.1 + Math.random() * 0.9;
+      m.z = -44 - Math.random() * 26;                  // deep in the sky
+      m.sx = (Math.random() - 0.5) * 70;
+      m.sy = 20 + Math.random() * 18;
+      m.dx = (Math.random() < 0.5 ? -1 : 1) * (22 + Math.random() * 20);
+      m.dy = -(12 + Math.random() * 12);               // always rakes downward
+      m.mesh.rotation.z = Math.atan2(m.dy, m.dx);      // align the streak with its path
+    };
+    for (let i = 0; i < 3; i++) {
+      const mat = new THREE.MeshBasicMaterial({
+        map: meteorTexture, color: theme.brightStarColor, transparent: true, opacity: 0,
+        blending: THREE.AdditiveBlending, depthWrite: false, fog: false, toneMapped: false,
+      });
+      const mesh = new THREE.Mesh(meteorGeometry, mat);
+      mesh.renderOrder = 6;
+      mesh.frustumCulled = false;
+      const meteor: Meteor = { mesh, mat, startT: 0, dur: 1, sx: 0, sy: 0, dx: 0, dy: 0, z: -50 };
+      armMeteor(meteor, i * 3.5); // stagger the first appearances
+      scene.add(mesh);
+      meteors.push(meteor);
+    }
+
     const animate = () => {
       animationFrameId = window.requestAnimationFrame(animate);
       if (!isVisible) return;
@@ -1448,9 +1506,23 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
       mouseState.x += (mouseState.targetX - mouseState.x) * 0.02;
       mouseState.y += (mouseState.targetY - mouseState.y) * 0.02;
 
-      camera.position.x = mouseState.x * 3;
-      camera.position.y = 7 - mouseState.y * 0.8;
-      camera.lookAt(mouseState.x * 0.8, 2 - mouseState.y * 0.3, -8);
+      // Gentle autonomous camera breathing layered under the mouse parallax, so
+      // the scene stays alive and cinematic even when the pointer is still.
+      const camDriftX = Math.sin(elapsedTime * 0.12) * 1.05;
+      const camDriftY = Math.cos(elapsedTime * 0.09) * 0.45;
+      camera.position.x = mouseState.x * 3 + camDriftX;
+      camera.position.y = 7 - mouseState.y * 0.8 + camDriftY;
+      camera.lookAt(mouseState.x * 0.8 + camDriftX * 0.25, 2 - mouseState.y * 0.3, -8);
+
+      // Shooting stars — advance each meteor along its arc (or wait out its gap).
+      for (let mi = 0; mi < meteors.length; mi++) {
+        const m = meteors[mi];
+        const p = (elapsedTime - m.startT) / m.dur;
+        if (p < 0) { m.mat.opacity = 0; continue; }
+        if (p >= 1) { armMeteor(m, elapsedTime); m.mat.opacity = 0; continue; }
+        m.mesh.position.set(m.sx + m.dx * p, m.sy + m.dy * p, m.z);
+        m.mat.opacity = Math.sin(p * Math.PI) * 0.9; // fade in, peak mid-arc, fade out
+      }
 
       heroGlowLight.intensity = 2.8 + Math.sin(elapsedTime * 0.2) * 0.22;
       heroGlowLight.position.y = 16 + Math.sin(elapsedTime * 0.16) * 0.45;
@@ -1580,6 +1652,7 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.cancelAnimationFrame(animationFrameId);
       window.cancelAnimationFrame(readyFrame);
+      meteorTexture.dispose(); // shared streak texture isn't owned by any mesh
       disposeScene(scene);
       scene.clear();
       (bloomPass as unknown as { dispose?: () => void }).dispose?.();

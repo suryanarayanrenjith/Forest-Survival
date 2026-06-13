@@ -43,10 +43,14 @@ export const GRAPHICS_PRESETS: Record<GraphicsQuality, GraphicsPreset> = {
     shadowsEnabled: false,
     antialias: false,
     postProcessing: false,
-    particleDensity: 0.40,
+    // Particles (pooled, capped) + grass are the cheapest way to keep the
+    // shadow-less, post-less LOW world from reading as an empty plain, so they
+    // get a small lift; the heavy levers (resolution / shadows / post-FX) stay
+    // off to protect the frame-rate target on integrated GPUs.
+    particleDensity: 0.50,
     maxEnemies: 14,
     viewDistance: 100,
-    terrainDetail: 0.55,
+    terrainDetail: 0.62,
   },
   // MEDIUM — soft shadows + lightweight bloom, ~85% pixel ratio.
   //   • Soft 1024² shadow map (8MB) — visible directional shadows
@@ -76,20 +80,21 @@ export const GRAPHICS_PRESETS: Record<GraphicsQuality, GraphicsPreset> = {
     viewDistance: 200,
     terrainDetail: 1.0,
   },
-  // ULTRA — 1.15× super-sampled, 4096² shadows, every effect maxed.
-  //   • Pixel ratio 1.15 super-samples slightly (sharper edges)
+  // ULTRA — super-sampled, 4096² shadows, every effect maxed.
+  //   • Pixel ratio 1.2 super-samples for the sharpest, most aliasing-free edges
   //   • 4096² shadow map (64MB) — pin-sharp directional shadows
-  //   • viewDistance 260m
+  //   • viewDistance 300m — high-end GPUs have the headroom to see right out to
+  //     the far ridgelines (fog still feathers the cull boundary)
   //   • All effects on (bloom, cinematic grade, SMAA, god rays)
   ultra: {
-    pixelRatio: 1.15,
+    pixelRatio: 1.2,
     shadowMapSize: 4096,
     shadowsEnabled: true,
     antialias: true,
     postProcessing: true,
     particleDensity: 1.0,
     maxEnemies: 40,
-    viewDistance: 260,
+    viewDistance: 300,
     terrainDetail: 1.0,
   },
 };
@@ -102,7 +107,7 @@ export const GRAPHICS_PRESETS: Record<GraphicsQuality, GraphicsPreset> = {
 // (pause) are intentionally NOT rebindable and stay fixed.
 export type GameAction =
   | 'moveForward' | 'moveBackward' | 'moveLeft' | 'moveRight'
-  | 'jump' | 'sprint' | 'crouch' | 'dash' | 'reload' | 'usePower' | 'toggleMap';
+  | 'jump' | 'sprint' | 'crouch' | 'dash' | 'reload' | 'usePower' | 'toggleMap' | 'inspect';
 
 export type KeyBindings = Record<GameAction, string>;
 
@@ -118,6 +123,7 @@ export const defaultKeyBindings: KeyBindings = {
   reload: 'KeyR',
   usePower: 'KeyE',
   toggleMap: 'KeyM',
+  inspect: 'KeyF',
 };
 
 // Codes that may never be assigned to a rebindable action — they're owned by

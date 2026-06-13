@@ -4158,6 +4158,9 @@ const ForestSurvivalGame = () => {
           // from the killstreak airdrop pool today.
           break;
       }
+      // Applying a power-up next to a barrel sets it off too (same rule as
+      // character abilities) — the TNT blasts the player + nearby enemies.
+      detonateBarrelsNear(camera.position.x, camera.position.z, 4.5);
     }
 
     let infiniteAmmoActive = false;
@@ -4237,6 +4240,7 @@ const ForestSurvivalGame = () => {
       const nowMs = Date.now();
       let cd = activeAbility.cooldown;
       const activeMs = activeAbility.duration * 1000;
+      gunModel.cancelInspect(); // an ability cast snaps the gun back from an inspect
 
       switch (activeAbility.id) {
         case 'dash': {
@@ -4395,6 +4399,12 @@ const ForestSurvivalGame = () => {
         case 'cloak':      triggerAbilityCam(-0.03, 0); break;
       }
 
+      // Casting ANY ability next to a barrel sets it off — the surge of energy
+      // ignites the TNT, which then blasts the player + nearby enemies. (The
+      // Ranger's dash additionally lights up every barrel along its charge path,
+      // handled in the dash movement block.)
+      detonateBarrelsNear(camera.position.x, camera.position.z, 4.5);
+
       abilityCooldown = cd;
       abilityCooldownMax = cd;
       abilityActiveUntil = nowMs + Math.max(activeMs, 200);
@@ -4471,6 +4481,7 @@ const ForestSurvivalGame = () => {
       if (ammo >= maxAmmoNow) return false;
       isReloading = true;
       soundManager.play('reload', 0.5);
+      gunModel.cancelInspect(); // a reload overrides an in-progress inspect
       gunModel.triggerReload();
       tutorial.recordAction('reload', 1);
       // Quickdraw skill + Engineer MP passive + Weapon Mastery all speed up
@@ -4599,6 +4610,8 @@ const ForestSurvivalGame = () => {
             const power = heldPower;
             heldPower = null;
             applyPower(power);
+            // Using a held power-up next to a barrel sets it off as well.
+            detonateBarrelsNear(camera.position.x, camera.position.z, 4.5);
           }
         } else {
           showPowerMessage('No power held — defeat enemies to find loot', 1600);
@@ -4637,6 +4650,13 @@ const ForestSurvivalGame = () => {
 
       if (e.code === b.reload) {
         startReload();
+      }
+
+      // Weapon inspect (CS:GO-style) — rebindable (default 'F'). Purely
+      // cosmetic: the gun is drawn in and turned over to show it off, then
+      // settles back. Ignored while paused / dead / mid-reload.
+      if (e.code === b.inspect && !paused && !isGameOver && !isReloading) {
+        gunModel.triggerInspect();
       }
     };
 
@@ -4786,6 +4806,7 @@ const ForestSurvivalGame = () => {
       if (ammo > 0 && !isGameOver && !paused && canShoot && !isReloading && !tutorialActiveRef.current) {
         const weapon = WEAPONS[currentWeapon];
         canShoot = false;
+        gunModel.cancelInspect(); // firing snaps the gun back from an inspect
         // Overcharge × Rapid-Fire (killstreak airdrop) × Wave perks compound on
         // top of the weapon's base fire rate — earn them all, fire blisteringly fast.
         let fireRateMult = perkBonuses.fireRateMult;
@@ -5203,6 +5224,15 @@ const ForestSurvivalGame = () => {
     const _moteColorDay = new THREE.Color(0xfff1cf);
     const _moteColorNight = new THREE.Color(0x8effc6);
     const _moteColor = new THREE.Color();
+    // Reusable snapshot buffers for spatial-grid queries. queryRadius() hands
+    // back a SHARED internal array that a later query overwrites, so callers
+    // that re-query mid-iteration must snapshot it first. These were `.slice()`
+    // (a fresh array per bullet AND per enemy, every frame). Copying into a
+    // persistent buffer keeps the exact same snapshot semantics with zero
+    // allocation. Each is used by a single sequential top-level loop, so they
+    // never alias. Capacity grows as needed and is retained between frames.
+    const _enemyQueryScratch: number[] = [];
+    const _terrainQueryScratch: number[] = [];
 
     // === SPATIAL HASH GRIDS ===
     // Replace O(N²) and O(B×E) per-frame scans with O(near) cell lookups.
@@ -6084,6 +6114,42 @@ const ForestSurvivalGame = () => {
       // be queued for the NEXT frame.
       const queue = pendingBarrelDetonations.splice(0, pendingBarrelDetonations.length);
       for (const b of queue) detonateBarrel(b);
+    };
+
+    // ── BARRELS ARE SOLID (player collision) ─────────────────────────────
+    // The player can't walk through a barrel. Point-vs-circle using the
+    // barrel's hit radius + a small body buffer. Linear scan (≤30 barrels) is
+    // cheap at the handful of calls the movement code makes each frame. Enemies
+    // are intentionally NOT blocked here so their AI/pathing is unchanged.
+    const PLAYER_BODY_RADIUS = 0.6;
+    const overlapsBarrel = (x: number, z: number): boolean => {
+      for (let b = 0; b < barrels.length; b++) {
+        const barrel = barrels[b];
+        if (barrel.detonated) continue;
+        const dx = barrel.mesh.position.x - x;
+        const dz = barrel.mesh.position.z - z;
+        const r = barrel.hitRadius + PLAYER_BODY_RADIUS;
+        if (dx * dx + dz * dz < r * r) return true;
+      }
+      return false;
+    };
+
+    // ── ABILITIES / POWER-UPS SET OFF NEARBY TNT ─────────────────────────
+    // Queue every live barrel within `radius` of (x,z) for detonation. Routed
+    // through the existing chain-reaction pump (not detonated inline) so the
+    // blast cascades naturally and damages the player + enemies caught in it —
+    // e.g. a Ranger dashing over a barrel, or any ability/power cast next to one.
+    const detonateBarrelsNear = (x: number, z: number, radius: number): void => {
+      const r2 = radius * radius;
+      for (let b = 0; b < barrels.length; b++) {
+        const barrel = barrels[b];
+        if (barrel.detonated) continue;
+        const dx = barrel.mesh.position.x - x;
+        const dz = barrel.mesh.position.z - z;
+        if (dx * dx + dz * dz <= r2 && !pendingBarrelDetonations.includes(barrel)) {
+          pendingBarrelDetonations.push(barrel);
+        }
+      }
     };
 
     const explodeRocket = (pos: THREE.Vector3, baseDamage: number) => {
@@ -7180,7 +7246,9 @@ const ForestSurvivalGame = () => {
 
       _moveRight.crossVectors(camera.up, _moveDirection).normalize();
 
-      // DASH movement - override normal movement
+      // DASH movement - override normal movement. The dash is NOT blocked by
+      // barrels — it charges straight THROUGH them, setting off any it passes
+      // over (which then blasts the player + nearby enemies; that's the risk).
       if (isDashing) {
         const newX = camera.position.x + dashDirection.x * currentSpeed;
         const newZ = camera.position.z + dashDirection.z * currentSpeed;
@@ -7188,6 +7256,7 @@ const ForestSurvivalGame = () => {
           camera.position.x = newX;
           camera.position.z = newZ;
         }
+        detonateBarrelsNear(camera.position.x, camera.position.z, 2.8);
 
         // Charge trail — a stream of cyan motion sparks left in the player's
         // wake so the Ranger's lunge reads as a streaking dash, not a teleport.
@@ -7295,7 +7364,7 @@ const ForestSurvivalGame = () => {
       if (!isDashing && moving('moveForward')) {
         const newX = camera.position.x + _moveDirection.x * currentSpeed;
         const newZ = camera.position.z + _moveDirection.z * currentSpeed;
-        if (!checkTerrainCollision(newX, newZ, camera.position.y)) {
+        if (!checkTerrainCollision(newX, newZ, camera.position.y) && !overlapsBarrel(newX, newZ)) {
           camera.position.x = newX;
           camera.position.z = newZ;
         }
@@ -7303,7 +7372,7 @@ const ForestSurvivalGame = () => {
       if (!isDashing && moving('moveBackward')) {
         const newX = camera.position.x - _moveDirection.x * currentSpeed;
         const newZ = camera.position.z - _moveDirection.z * currentSpeed;
-        if (!checkTerrainCollision(newX, newZ, camera.position.y)) {
+        if (!checkTerrainCollision(newX, newZ, camera.position.y) && !overlapsBarrel(newX, newZ)) {
           camera.position.x = newX;
           camera.position.z = newZ;
         }
@@ -7311,7 +7380,7 @@ const ForestSurvivalGame = () => {
       if (!isDashing && moving('moveLeft')) {
         const newX = camera.position.x + _moveRight.x * currentSpeed;
         const newZ = camera.position.z + _moveRight.z * currentSpeed;
-        if (!checkTerrainCollision(newX, newZ, camera.position.y)) {
+        if (!checkTerrainCollision(newX, newZ, camera.position.y) && !overlapsBarrel(newX, newZ)) {
           camera.position.x = newX;
           camera.position.z = newZ;
         }
@@ -7319,7 +7388,7 @@ const ForestSurvivalGame = () => {
       if (!isDashing && moving('moveRight')) {
         const newX = camera.position.x - _moveRight.x * currentSpeed;
         const newZ = camera.position.z - _moveRight.z * currentSpeed;
-        if (!checkTerrainCollision(newX, newZ, camera.position.y)) {
+        if (!checkTerrainCollision(newX, newZ, camera.position.y) && !overlapsBarrel(newX, newZ)) {
           camera.position.x = newX;
           camera.position.z = newZ;
         }
@@ -7340,7 +7409,7 @@ const ForestSurvivalGame = () => {
           const step = currentSpeed * mag;
           const newX = camera.position.x + _touchMove.x * step;
           const newZ = camera.position.z + _touchMove.z * step;
-          if (!checkTerrainCollision(newX, newZ, camera.position.y)) {
+          if (!checkTerrainCollision(newX, newZ, camera.position.y) && !overlapsBarrel(newX, newZ)) {
             camera.position.x = newX;
             camera.position.z = newZ;
           }
@@ -7933,9 +8002,12 @@ const ForestSurvivalGame = () => {
         ) * 0.5;
         const nearbyEnemyIds = enemyGrid.queryRadius(segMidX, segMidZ, segHalf + 3);
         // Snapshot the IDs because queryRadius reuses the returned array
-        // and the next call (terrainGrid lookup inside this loop, etc.)
-        // would overwrite it mid-iteration.
-        const nearbyIds: number[] = nearbyEnemyIds.slice();
+        // and a nested query (terrainGrid lookup inside this loop, etc.) would
+        // overwrite it mid-iteration. Copied into a persistent buffer instead
+        // of `.slice()` so no array is allocated per bullet per frame.
+        const nearbyIds = _enemyQueryScratch;
+        nearbyIds.length = 0;
+        for (let q = 0; q < nearbyEnemyIds.length; q++) nearbyIds.push(nearbyEnemyIds[q]);
         let bulletConsumed = false;
         for (let n = 0; n < nearbyIds.length && !bulletConsumed; n++) {
           const j = nearbyIds[n];
@@ -8489,14 +8561,15 @@ const ForestSurvivalGame = () => {
             const dodgeResult = enemy.cachedDodge;
 
             if (dodgeResult.shouldDodge) {
-              // Enemy is dodging! Override target with dodge direction
+              // Enemy is dodging! Override target with dodge direction.
+              // Reuse the enemy's pre-allocated dodgeDirection + targetPosition
+              // vectors instead of cloning three fresh Vector3s per dodging
+              // enemy per frame — same values (position + dir×8), zero alloc.
               enemy.isDodging = true;
-              enemy.dodgeDirection = dodgeResult.dodgeDirection.clone();
-              // Apply immediate dodge movement (3x normal speed)
-              const dodgeTarget = enemy.mesh.position.clone().add(
-                dodgeResult.dodgeDirection.clone().multiplyScalar(8)
-              );
-              enemy.targetPosition.copy(dodgeTarget);
+              if (enemy.dodgeDirection) enemy.dodgeDirection.copy(dodgeResult.dodgeDirection);
+              else enemy.dodgeDirection = dodgeResult.dodgeDirection.clone();
+              enemy.targetPosition.copy(enemy.mesh.position)
+                .addScaledVector(dodgeResult.dodgeDirection, 8);
             } else if (enemy.isDodging) {
               // Dodge completed, return to normal AI behavior
               enemy.isDodging = false;
@@ -8530,7 +8603,11 @@ const ForestSurvivalGame = () => {
           const desiredNX = desiredX / desiredLen;
           const desiredNZ = desiredZ / desiredLen;
           const nearbyTerrain = terrainGrid.queryRadius(epx, epz, 6);
-          const nearbyTerrainIds = nearbyTerrain.slice();
+          // Snapshot into a persistent buffer (was `.slice()` per enemy per
+          // frame) so a later terrainGrid query can't overwrite it mid-loop.
+          const nearbyTerrainIds = _terrainQueryScratch;
+          nearbyTerrainIds.length = 0;
+          for (let q = 0; q < nearbyTerrain.length; q++) nearbyTerrainIds.push(nearbyTerrain[q]);
           for (let nt = 0; nt < nearbyTerrainIds.length; nt++) {
             const obj = terrainObjects[nearbyTerrainIds[nt]];
             if (!obj || !obj.collidable) continue;
@@ -9320,6 +9397,25 @@ const ForestSurvivalGame = () => {
       // loader hides — readable as a quick flash of blue/yellow balls at
       // the player's position. composePostFX is null-safe on Low preset.
       try { composePostFX(0); } catch { /* best-effort — animate() will fix it next frame */ }
+
+      // ── FORCE THE GPU TO ACTUALLY FINISH (the real "shaders baking" fix) ──
+      // Everything above only QUEUES work: compileAsync + renderer.render submit
+      // GL commands and return immediately. The GPU links/validates each shader
+      // program lazily on the FIRST DRAW that uses it, so on a cold cache the
+      // first few gameplay frames stalled while every post-FX program finished
+      // compiling — exactly the "post-processing applies a few seconds late /
+      // shaders bake in" the user reported. glFinish() BLOCKS until the GPU has
+      // executed every queued command (including the warmup draws that exercise
+      // each program), so by the time the loader hides everything is fully
+      // resident and the first real frame is already at the final graded look.
+      // It runs inside the loader (which holds for MIN_LOADER_MS anyway), so the
+      // wait is hidden. Best-effort: never let a context quirk strand warmup.
+      try {
+        const gl = renderer.getContext();
+        gl.finish();
+      } catch (err) {
+        console.warn('[Warmup] GPU finish failed (non-fatal):', err);
+      }
 
       // Minimum visible loader time so the user actually sees the
       // ShaderProcessingScreen animation. Without this, fast machines

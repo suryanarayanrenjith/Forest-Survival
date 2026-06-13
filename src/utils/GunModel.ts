@@ -28,7 +28,7 @@ function _matKey(color: number, metalness: number, roughness: number, extra: Par
     color,
     metalness.toFixed(3),
     roughness.toFixed(3),
-    (extra.envMapIntensity ?? 1.1).toFixed(2),
+    (extra.envMapIntensity ?? 1.25).toFixed(2),
     extra.emissive ?? '-',
     (extra.emissiveIntensity ?? 0).toFixed(3),
     extra.transparent ? 1 : 0,
@@ -98,6 +98,14 @@ export class GunModel {
   private abilityAnim = 0;
   private dashAnim = 0;
   private equipAnim = 0; // weapon-swap raise (gun rises from low into the ready pose)
+  // ── WEAPON INSPECT (CS:GO-style, bound to F) ──
+  // A cinematic "look at the weapon": the gun is drawn in close and slowly
+  // turned to show both sides of the receiver, tilts the muzzle up, then settles
+  // back to the ready pose. Purely cosmetic — cancelled the instant the player
+  // fires / aims / reloads / swaps so it never gets in the way.
+  private inspectActive = false;
+  private inspectTime = 0;
+  private readonly INSPECT_DURATION = 2.7; // seconds for the full play-out
   // Strafe lean — smoothed [-1..1] (−1 = strafing left, +1 = right). Drives an
   // AAA-style weapon cant/lean when the player moves sideways, amplified while
   // aiming down sights so the ADS pose reads as "leaning into the strafe".
@@ -142,7 +150,11 @@ export class GunModel {
       color,
       metalness,
       roughness,
-      envMapIntensity: 1.1,
+      // Lifted from 1.1 → 1.25: the viewmodel catches a touch more of the
+      // sky/sun environment (IBL), so the metal reads crisper and more premium
+      // and sunlight glints across it as the day cycle turns — without the
+      // grazing-fresnel washout that only afflicts the big ground plane.
+      envMapIntensity: 1.25,
       ...extra,
     });
     fresh.userData.cached = true; // dispose loop will skip this
@@ -1172,6 +1184,34 @@ export class GunModel {
     if (this.abilityAnim > 0) this.abilityAnim = Math.max(0, this.abilityAnim - delta * 3);
     if (this.dashAnim > 0) this.dashAnim = Math.max(0, this.dashAnim - delta * 3.6);
     if (this.equipAnim > 0) this.equipAnim = Math.max(0, this.equipAnim - delta * 3.4);
+    if (this.inspectActive) {
+      this.inspectTime += delta;
+      if (this.inspectTime >= this.INSPECT_DURATION) {
+        this.inspectActive = false;
+        this.inspectTime = 0;
+      }
+    }
+  }
+
+  /** Begin (or restart) the weapon-inspect animation. No-op mid-reload. */
+  triggerInspect() {
+    if (this.isReloading) return;
+    this.inspectActive = true;
+    this.inspectTime = 0;
+  }
+
+  /**
+   * Smoothly abort an in-progress inspect — jumps the playhead into the
+   * fade-out tail so the gun eases back to ready over ~0.3s instead of snapping.
+   * Called when the player fires / aims / reloads / swaps weapons.
+   */
+  cancelInspect() {
+    if (!this.inspectActive) return;
+    this.inspectTime = Math.max(this.inspectTime, this.INSPECT_DURATION * 0.9);
+  }
+
+  isInspecting(): boolean {
+    return this.inspectActive;
   }
 
   /** A quick upward flourish + flick when an ability is cast. */
@@ -1227,25 +1267,47 @@ export class GunModel {
     // Weapon-equip raise — the gun swings up from below + flips level on swap.
     const equip = this.equipAnim; // 1 just-swapped → 0 settled
 
+    // ── INSPECT POSE — draw the gun in close and turn it to show both sides of
+    // the receiver, muzzle tipping up, then settle back. A fade in/out envelope
+    // keeps the move buttery, and (1-aim) lets ADS instantly override it.
+    let inspX = 0, inspY = 0, inspZ = 0, inspPitch = 0, inspYaw = 0, inspRoll = 0;
+    if (this.inspectActive) {
+      const p = Math.min(1, this.inspectTime / this.INSPECT_DURATION);
+      const fadeIn = THREE.MathUtils.smoothstep(p, 0.0, 0.16);
+      const fadeOut = 1 - THREE.MathUtils.smoothstep(p, 0.84, 1.0);
+      const w = fadeIn * fadeOut * (1 - aim) * (1 - sprint);
+      const turn = Math.sin(p * Math.PI * 1.5);        // sweep the side around to the camera
+      const settle = Math.sin(p * Math.PI * 5.0) * 0.035; // tiny hand-held life
+      // Rotate the muzzle toward the LEFT so the gun turns INTO the screen and
+      // its flank faces the camera (the right-hand weapon stays fully visible),
+      // instead of swinging off the right edge.
+      inspYaw = (1.18 - turn * 0.5) * w;               // turn left → flank faces the player
+      inspPitch = (0.30 + Math.sin(p * Math.PI) * 0.20 + settle) * w; // muzzle tips up mid-arc
+      inspRoll = (0.46 - turn * 0.12) * w;             // cant matches the turn direction
+      inspX = -0.10 * w;                               // draw toward screen centre so it reads
+      inspY = (0.05 + settle) * w;                     // lift slightly
+      inspZ = 0.16 * w;                                // bring it closer to the lens
+    }
+
     this.group.position.x =
       baseX + this.walkOffset.x * swayMul + SP_X * sprint + runX - reload * 0.07
-      + leanShift;
+      + leanShift + inspX;
     this.group.position.y =
       baseY + this.walkOffset.y * swayMul + SP_Y * sprint + runY
       + this.jumpOffset.y - land * 0.12 + abil * 0.07 - dash * 0.05 - reload * 0.16
-      - equip * 0.5;
+      - equip * 0.5 + inspY;
     this.group.position.z =
-      baseZ + this.recoilOffset.z + SP_Z * sprint + dash * 0.16 + reload * 0.12;
+      baseZ + this.recoilOffset.z + SP_Z * sprint + dash * 0.16 + reload * 0.12 + inspZ;
 
     this.group.rotation.x =
       (this.swayOffset.rotX + this.walkOffset.rotX) * swayMul
       + this.recoilOffset.rotX + SP_RX * sprint + runRotX
-      + this.jumpOffset.rotX - land * 0.18 - reload * 0.42 + equip * 0.55;
+      + this.jumpOffset.rotX - land * 0.18 - reload * 0.42 + equip * 0.55 + inspPitch;
     this.group.rotation.y =
-      this.swayOffset.rotY * swayMul + SP_RY * sprint + leanYaw;
+      this.swayOffset.rotY * swayMul + SP_RY * sprint + leanYaw + inspYaw;
     this.group.rotation.z =
       this.walkOffset.rotZ * swayMul + this.reloadRotZ + SP_RZ * sprint
-      + runRotZ + abil * 0.22 + leanRoll;
+      + runRotZ + abil * 0.22 + leanRoll + inspRoll;
   }
 
   /**
@@ -1272,5 +1334,7 @@ export class GunModel {
     this.currentWeaponType = type;
     this.createGunModel(type);
     this.equipAnim = 1; // play the raise-from-low equip animation
+    this.inspectActive = false; // a fresh weapon cancels any in-progress inspect
+    this.inspectTime = 0;
   }
 }

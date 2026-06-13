@@ -59,7 +59,7 @@ export interface WeatherMods {
 }
 
 type WeatherState = 'clear' | 'gloomy' | 'storm';
-export type StormKind = 'rain' | 'sandstorm' | 'blizzard' | 'ashfall';
+export type StormKind = 'rain' | 'sandstorm' | 'blizzard' | 'ashfall' | 'spores' | 'wisps';
 
 interface ModsPreset {
   lightMult: number;
@@ -113,6 +113,22 @@ const STORM_PRESETS: Record<StormKind, ModsPreset> = {
     bloomMult: 0.95, godRayMult: 0.1, skyDarken: 0.28, tintHex: 0x55483c, tintStrength: 0.42,
     wetness: 0, rainAmount: 1.0,
   },
+  // Toxic spore bloom (swamp) — the air thickens with a sickly green haze as
+  // glowing spores drift up off the bog. Saturation + bloom lift so the
+  // luminous green really reads against the murk.
+  spores: {
+    lightMult: 0.60, ambientMult: 0.94, fogDensityMult: 1.95, saturationMult: 1.06,
+    bloomMult: 1.10, godRayMult: 0.2, skyDarken: 0.24, tintHex: 0x3f5e36, tintStrength: 0.3,
+    wetness: 0, rainAmount: 1.0,
+  },
+  // Spectral wisps (Twilight Vale) — an ethereal, gentle "front", not a harsh
+  // storm: dim violet light, a soft haze and a faint glow as motes of
+  // otherworldly light drift through the dusk.
+  wisps: {
+    lightMult: 0.78, ambientMult: 0.98, fogDensityMult: 1.5, saturationMult: 1.0,
+    bloomMult: 1.16, godRayMult: 0.42, skyDarken: 0.16, tintHex: 0x6a4a8a, tintStrength: 0.22,
+    wetness: 0, rainAmount: 1.0,
+  },
 };
 
 /** Particle-field shaping per storm species (one Points draw call). */
@@ -135,6 +151,10 @@ const STORM_PARTICLES: Record<StormKind, StormParticles> = {
   sandstorm: { count: 2400, sprite: 'flake',  color: 0xd8b070, size: 1.35, opacity: 0.32, additive: false, fallMin: 2.5, fallVar: 2.5, windX: 30,  windZ: 9 },
   blizzard:  { count: 2600, sprite: 'flake',  color: 0xf2f7ff, size: 0.55, opacity: 0.8,  additive: false, fallMin: 7,   fallVar: 6,   windX: 17,  windZ: 5 },
   ashfall:   { count: 1700, sprite: 'flake',  color: 0x9a948c, size: 0.6,  opacity: 0.55, additive: false, fallMin: 2.2, fallVar: 2.2, windX: 3.5, windZ: 2 },
+  // Glowing green spores — slow, lazy drift; additive so they luminesce.
+  spores:    { count: 1500, sprite: 'flake',  color: 0x86e060, size: 0.5,  opacity: 0.5,  additive: true,  fallMin: 1.4, fallVar: 2.2, windX: 2.6, windZ: 1.6 },
+  // Spectral wisps — big, soft, sparse violet motes drifting through the dusk.
+  wisps:     { count: 850,  sprite: 'flake',  color: 0xc7a0ff, size: 1.15, opacity: 0.5,  additive: true,  fallMin: 1.0, fallVar: 1.6, windX: 2.0, windZ: 1.3 },
 };
 
 /** Per-map climate: which storm, and how storm-prone the map is. */
@@ -149,12 +169,18 @@ interface ClimateProfile {
   storminess: number;
 }
 
+// Every map now has its OWN signature weather, themed to the environment:
+// forest/ruins/outpost get true rain, the desert its sandstorm, the tundra its
+// blizzard, the volcano its ashfall, the swamp a toxic spore bloom and the
+// Twilight Vale spectral wisps. The Markov director (clear-dominant, long clear
+// holds) is identical everywhere — only the storm SPECIES and how storm-prone
+// the map is (storminess) change, exactly like the forest reference.
 const MAP_CLIMATES: Record<MapType, ClimateProfile> = {
   deep_forest:        { storm: 'rain',      storminess: 0.50 },
-  autumn_grove:       { storm: 'rain',      storminess: 0.52 },
-  toxic_swamp:        { storm: 'rain',      storminess: 0.82 },
+  autumn_grove:       { storm: 'wisps',     storminess: 0.56 },
+  toxic_swamp:        { storm: 'spores',    storminess: 0.80 },
   military_outpost:   { storm: 'rain',      storminess: 0.52 },
-  ancient_ruins:      { storm: 'rain',      storminess: 0.44 },
+  ancient_ruins:      { storm: 'rain',      storminess: 0.48 },
   desert_canyon:      { storm: 'sandstorm', storminess: 0.40 },
   frozen_tundra:      { storm: 'blizzard',  storminess: 0.72 },
   scorched_wasteland: { storm: 'ashfall',   storminess: 0.64 },

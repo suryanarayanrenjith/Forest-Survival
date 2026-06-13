@@ -29,6 +29,13 @@ export class DayCycleSystem {
   private cycleSpeed: number = 1.0; // Time multiplier
   private autoCycleEnabled: boolean = false;
   private currentSettings: AtmosphericSettings;
+  // Reusable scratch colours for the per-frame interpolation. update() runs
+  // every frame; allocating fresh THREE.Color/Vector3/objects each time added
+  // ~10 short-lived heap objects/frame (steady GC churn). These temporaries
+  // (plus the persistent currentSettings instance built in the constructor)
+  // let the interpolation produce byte-identical output with zero allocation.
+  private readonly _lc1 = new THREE.Color();
+  private readonly _lc2 = new THREE.Color();
 
   // Predefined settings for each time period.
   //
@@ -155,7 +162,16 @@ export class DayCycleSystem {
   constructor(startTime: number = 12, cycleSpeed: number = 1.0) {
     this.currentTime = startTime;
     this.cycleSpeed = cycleSpeed;
-    this.currentSettings = this.timeSettings.day;
+    // Persistent settings instance the per-frame interpolation writes INTO, so
+    // update() never allocates. Cloned from the day anchor so its colorTint +
+    // lightPosition are its OWN objects — mutating them in place can never
+    // corrupt the shared static anchor table.
+    const day = this.timeSettings.day;
+    this.currentSettings = {
+      ...day,
+      colorTint: day.colorTint.clone(),
+      lightPosition: { ...day.lightPosition },
+    };
   }
 
   enableAutoCycle(enabled: boolean) {
@@ -182,53 +198,43 @@ export class DayCycleSystem {
     return 'night';
   }
 
+  /** Hex lerp via reusable temp colours (identical result to `new Color(a).lerp(new Color(b), t).getHex()`). */
   private lerpColor(color1: number, color2: number, t: number): number {
-    const c1 = new THREE.Color(color1);
-    const c2 = new THREE.Color(color2);
-    return c1.lerp(c2, t).getHex();
+    return this._lc1.setHex(color1).lerp(this._lc2.setHex(color2), t).getHex();
   }
 
-  private lerpVector(v1: THREE.Vector3, v2: THREE.Vector3, t: number): THREE.Vector3 {
-    return new THREE.Vector3().lerpVectors(v1, v2, t);
-  }
-
-  private lerpPosition(
-    p1: { x: number; y: number; z: number },
-    p2: { x: number; y: number; z: number },
-    t: number
-  ): { x: number; y: number; z: number } {
-    return {
-      x: p1.x + (p2.x - p1.x) * t,
-      y: p1.y + (p2.y - p1.y) * t,
-      z: p1.z + (p2.z - p1.z) * t
-    };
-  }
-
+  /**
+   * Interpolate two anchor profiles INTO the persistent `currentSettings`
+   * instance (no allocation). Numerically identical to the old object-literal
+   * version — every field is the same lerp; only the destination is reused.
+   */
   private interpolateSettings(
     settings1: AtmosphericSettings,
     settings2: AtmosphericSettings,
     t: number
   ): AtmosphericSettings {
-    return {
-      skyColor: this.lerpColor(settings1.skyColor, settings2.skyColor, t),
-      fogColor: this.lerpColor(settings1.fogColor, settings2.fogColor, t),
-      fogDensity: settings1.fogDensity + (settings2.fogDensity - settings1.fogDensity) * t,
-      ambientColor: this.lerpColor(settings1.ambientColor, settings2.ambientColor, t),
-      ambientIntensity: settings1.ambientIntensity + (settings2.ambientIntensity - settings1.ambientIntensity) * t,
-      lightColor: this.lerpColor(settings1.lightColor, settings2.lightColor, t),
-      lightIntensity: settings1.lightIntensity + (settings2.lightIntensity - settings1.lightIntensity) * t,
-      lightPosition: this.lerpPosition(settings1.lightPosition, settings2.lightPosition, t),
-      sunVisible: t < 0.5 ? settings1.sunVisible : settings2.sunVisible,
-      moonVisible: t < 0.5 ? settings1.moonVisible : settings2.moonVisible,
-      starIntensity: settings1.starIntensity + (settings2.starIntensity - settings1.starIntensity) * t,
-      cloudOpacity: settings1.cloudOpacity + (settings2.cloudOpacity - settings1.cloudOpacity) * t,
-      bloomStrength: settings1.bloomStrength + (settings2.bloomStrength - settings1.bloomStrength) * t,
-      colorTint: this.lerpVector(settings1.colorTint, settings2.colorTint, t),
-      temperature: settings1.temperature + (settings2.temperature - settings1.temperature) * t,
-      saturation: settings1.saturation + (settings2.saturation - settings1.saturation) * t,
-      contrast: settings1.contrast + (settings2.contrast - settings1.contrast) * t,
-      exposure: settings1.exposure + (settings2.exposure - settings1.exposure) * t,
-    };
+    const o = this.currentSettings;
+    o.skyColor = this.lerpColor(settings1.skyColor, settings2.skyColor, t);
+    o.fogColor = this.lerpColor(settings1.fogColor, settings2.fogColor, t);
+    o.fogDensity = settings1.fogDensity + (settings2.fogDensity - settings1.fogDensity) * t;
+    o.ambientColor = this.lerpColor(settings1.ambientColor, settings2.ambientColor, t);
+    o.ambientIntensity = settings1.ambientIntensity + (settings2.ambientIntensity - settings1.ambientIntensity) * t;
+    o.lightColor = this.lerpColor(settings1.lightColor, settings2.lightColor, t);
+    o.lightIntensity = settings1.lightIntensity + (settings2.lightIntensity - settings1.lightIntensity) * t;
+    o.lightPosition.x = settings1.lightPosition.x + (settings2.lightPosition.x - settings1.lightPosition.x) * t;
+    o.lightPosition.y = settings1.lightPosition.y + (settings2.lightPosition.y - settings1.lightPosition.y) * t;
+    o.lightPosition.z = settings1.lightPosition.z + (settings2.lightPosition.z - settings1.lightPosition.z) * t;
+    o.sunVisible = t < 0.5 ? settings1.sunVisible : settings2.sunVisible;
+    o.moonVisible = t < 0.5 ? settings1.moonVisible : settings2.moonVisible;
+    o.starIntensity = settings1.starIntensity + (settings2.starIntensity - settings1.starIntensity) * t;
+    o.cloudOpacity = settings1.cloudOpacity + (settings2.cloudOpacity - settings1.cloudOpacity) * t;
+    o.bloomStrength = settings1.bloomStrength + (settings2.bloomStrength - settings1.bloomStrength) * t;
+    o.colorTint.lerpVectors(settings1.colorTint, settings2.colorTint, t);
+    o.temperature = settings1.temperature + (settings2.temperature - settings1.temperature) * t;
+    o.saturation = settings1.saturation + (settings2.saturation - settings1.saturation) * t;
+    o.contrast = settings1.contrast + (settings2.contrast - settings1.contrast) * t;
+    o.exposure = settings1.exposure + (settings2.exposure - settings1.exposure) * t;
+    return o;
   }
 
   update(deltaTime: number): AtmosphericSettings {
@@ -285,7 +291,8 @@ export class DayCycleSystem {
     // cubic was noticeable at the endpoints; quintic eases in/out
     // imperceptibly. Equivalent to GLSL's smootherstep.
     const easedT = this.smootherstep(t);
-    this.currentSettings = this.interpolateSettings(settings1, settings2, easedT);
+    // Writes into the persistent currentSettings instance (no allocation).
+    this.interpolateSettings(settings1, settings2, easedT);
 
     // ── CONTINUOUS CELESTIAL ARC ──────────────────────────────────────────
     // The colour profiles above still come from the anchor blend, but the KEY
@@ -296,7 +303,7 @@ export class DayCycleSystem {
     // MOON takes the sky from the opposite side. The same vector drives the
     // directional light, the sky-dome sun, the haze and the god-ray shafts, so
     // every system stays in lock-step and shadows sweep continuously.
-    this.currentSettings.lightPosition = this.getCelestialLightPosition(this.currentTime);
+    this.writeCelestialLightPosition(this.currentSettings.lightPosition, this.currentTime);
 
     return this.currentSettings;
   }
@@ -312,7 +319,7 @@ export class DayCycleSystem {
    * Returns a position whose magnitude sits in the same band the rest of the
    * lighting rig expects (fill lights, shadow camera, sky sun all read it).
    */
-  private getCelestialLightPosition(time: number): { x: number; y: number; z: number } {
+  private writeCelestialLightPosition(out: { x: number; y: number; z: number }, time: number): void {
     // Sun elevation: 0 at 06:00 & 18:00, +1 at noon, −1 at midnight.
     const elev = Math.sin((Math.PI * (time - 6)) / 12);
     // Day weight: ~1 when the sun is well up, ~0 deep at night, smoothly
@@ -327,11 +334,9 @@ export class DayCycleSystem {
     const elevH = Math.max(0, elev) * dayW + Math.max(0, -elev) * (1 - dayW);
 
     const RADIUS = 135;
-    return {
-      x: lx * RADIUS,
-      y: 30 + elevH * 88, // 30 (grazing horizon) … 118 (overhead)
-      z: -0.42 * RADIUS, // steady southerly bias keeps shadow directions legible
-    };
+    out.x = lx * RADIUS;
+    out.y = 30 + elevH * 88; // 30 (grazing horizon) … 118 (overhead)
+    out.z = -0.42 * RADIUS; // steady southerly bias keeps shadow directions legible
   }
 
   getSettings(timeOfDay: TimeOfDay): AtmosphericSettings {
