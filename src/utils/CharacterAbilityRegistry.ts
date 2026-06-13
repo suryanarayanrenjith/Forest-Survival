@@ -86,8 +86,8 @@ export const CHARACTER_ABILITIES: Record<ClassId, CharacterAbility> = {
   medic: {
     id: 'triage', classId: 'medic',
     name: 'Field Triage',
-    description: 'Instantly patch up a third of your maximum health.',
-    cooldown: 16, duration: 0, color: '#19c37d', shadowColor: 0xc91a1a, jumpMult: 1.0,
+    description: 'Patch a little health back — a quick field stabiliser, not a full heal.',
+    cooldown: 14, duration: 0, color: '#19c37d', shadowColor: 0xc91a1a, jumpMult: 1.0,
   },
   engineer: {
     id: 'overclock', classId: 'engineer',

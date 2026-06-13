@@ -2,16 +2,26 @@ import * as THREE from 'three';
 import type { MapType } from './MapSystem';
 
 /**
- * WEATHER SYSTEM v3 — per-map climates with signature storms.
+ * WEATHER SYSTEM v4 — Markov-chain director, clear-dominant.
  *
  * Always-on and fully automatic: there is no weather menu. Every run gets a
- * living sky driven by a weather DIRECTOR that drifts between clear, overcast
- * and the map's signature storm with long cinematic cross-fades. The climate
- * is tuned per environment — the desert is mostly blazing sun broken by
- * sandstorms, the tundra brews white-out blizzards, the volcanic wasteland
- * chokes under ashfall, and the forest/swamp maps get true rain (with growing
- * puddles + reflections, see TerrainSystem). Time of day feeds back into the
- * director: nights run calmer and moodier than days.
+ * living sky driven by a weather DIRECTOR that, the vast majority of the time,
+ * holds a CLEAR sky — and only occasionally lets weather roll in. Crucially the
+ * transitions are SMART, not a coin-flip: the director is a 3-state Markov
+ * chain (clear → gloomy → storm) where a storm can NEVER strike out of a blue
+ * sky. Fronts BUILD — clear softens to overcast gloom, gloom thickens into the
+ * map's signature storm — and DECAY back the same way (storm → gloom → clear).
+ * Clear is a sticky self-loop with long hold times, so the stationary mix is
+ * roughly ~70% clear / ~22% gloom / ~8% storm by roll, and even more clear by
+ * wall-clock once the long clear holds are weighted in.
+ *
+ * The map's signature storm is still per-environment — the desert's rare but
+ * blinding sandstorm, the tundra's white-out blizzard, the volcanic
+ * wasteland's ashfall, and the forest/swamp maps' true rain (with growing
+ * puddles + reflections, see TerrainSystem). A per-map `storminess` scalar only
+ * tunes HOW OFTEN a clear spell gives way to weather, never the clear-dominant
+ * shape of the chain. Time of day feeds back into the director: nights run
+ * calmer and moodier than days.
  *
  * Architecture is atmosphere-first: the primary output is a small struct of
  * ATMOSPHERE MODIFIERS (light / fog / saturation / bloom / god-ray
@@ -127,23 +137,27 @@ const STORM_PARTICLES: Record<StormKind, StormParticles> = {
   ashfall:   { count: 1700, sprite: 'flake',  color: 0x9a948c, size: 0.6,  opacity: 0.55, additive: false, fallMin: 2.2, fallVar: 2.2, windX: 3.5, windZ: 2 },
 };
 
-/** Per-map climate: which storm, and how the director weights its rolls. */
+/** Per-map climate: which storm, and how storm-prone the map is. */
 interface ClimateProfile {
   storm: StormKind;
-  clearWeight: number;
-  gloomyWeight: number;
-  stormWeight: number;
+  /**
+   * 0..1 — how readily a clear spell gives way to weather on this map. Scales
+   * the Markov chain's drift toward gloom and storm. Even at 1.0 the sky stays
+   * clear most of the time; this only changes how often (and how hard) fronts
+   * roll through. Swamps/tundra brood; deserts get rare-but-dramatic storms.
+   */
+  storminess: number;
 }
 
 const MAP_CLIMATES: Record<MapType, ClimateProfile> = {
-  deep_forest:        { storm: 'rain',      clearWeight: 45, gloomyWeight: 29, stormWeight: 26 },
-  autumn_grove:       { storm: 'rain',      clearWeight: 42, gloomyWeight: 32, stormWeight: 26 },
-  toxic_swamp:        { storm: 'rain',      clearWeight: 24, gloomyWeight: 38, stormWeight: 38 },
-  military_outpost:   { storm: 'rain',      clearWeight: 42, gloomyWeight: 32, stormWeight: 26 },
-  ancient_ruins:      { storm: 'rain',      clearWeight: 46, gloomyWeight: 30, stormWeight: 24 },
-  desert_canyon:      { storm: 'sandstorm', clearWeight: 60, gloomyWeight: 16, stormWeight: 24 },
-  frozen_tundra:      { storm: 'blizzard',  clearWeight: 34, gloomyWeight: 30, stormWeight: 36 },
-  scorched_wasteland: { storm: 'ashfall',   clearWeight: 40, gloomyWeight: 26, stormWeight: 34 },
+  deep_forest:        { storm: 'rain',      storminess: 0.50 },
+  autumn_grove:       { storm: 'rain',      storminess: 0.52 },
+  toxic_swamp:        { storm: 'rain',      storminess: 0.82 },
+  military_outpost:   { storm: 'rain',      storminess: 0.52 },
+  ancient_ruins:      { storm: 'rain',      storminess: 0.44 },
+  desert_canyon:      { storm: 'sandstorm', storminess: 0.40 },
+  frozen_tundra:      { storm: 'blizzard',  storminess: 0.72 },
+  scorched_wasteland: { storm: 'ashfall',   storminess: 0.64 },
 };
 
 const DEFAULT_CLIMATE: ClimateProfile = MAP_CLIMATES.deep_forest;
@@ -240,37 +254,55 @@ export class WeatherSystem {
     return state === 'gloomy' ? GLOOMY_PRESET : CLEAR_PRESET;
   }
 
-  /** Storms are intense but bounded; clear spells breathe longer. */
+  /**
+   * Hold times. Clear breathes LONG (it's the resting state and dominates the
+   * run), gloom is a shorter transitional band, storms are intense but bounded.
+   * The long clear holds are what tip the time-weighted mix heavily toward a
+   * clear sky on top of the chain already favouring it.
+   */
   private holdSecondsFor(state: WeatherState): number {
-    if (state === 'storm') return 32 + Math.random() * 34;
-    if (state === 'gloomy') return 38 + Math.random() * 42;
-    return 55 + Math.random() * 60;
+    if (state === 'storm') return 26 + Math.random() * 30;  // 26–56 s
+    if (state === 'gloomy') return 30 + Math.random() * 34; // 30–64 s (transition)
+    return 75 + Math.random() * 80;                          // 75–155 s clear (resting)
   }
 
   /**
-   * Weighted next-state roll. Map climate sets the base odds; night calms
-   * the sky (fewer storms, a touch more brooding gloom) so the environment
-   * tracks both WHERE you are and WHEN it is.
+   * MARKOV next-state roll — the heart of the "smart" weather. Transitions
+   * depend on the CURRENT state so fronts build and decay believably instead
+   * of teleporting:
+   *   • clear  can only soften into gloom (never snap to a storm), and mostly
+   *     re-rolls clear — a sticky, dominant resting state.
+   *   • gloom  either burns back off to clear or thickens into the storm.
+   *   • storm  winds down through gloom, occasionally digs in, rarely clears
+   *     instantly.
+   * `storminess` scales the drift toward weather; night calms the sky (fewer
+   * storms, slightly more brooding gloom) so it tracks WHERE and WHEN you are.
    */
   private rollNextState(previous: WeatherState | null): WeatherState {
-    const nightStorm = this.night ? 0.72 : 1;
-    const nightGloom = this.night ? 1.15 : 1;
-    const entries: Array<[WeatherState, number]> = [
-      ['clear', this.climate.clearWeight],
-      ['gloomy', this.climate.gloomyWeight * nightGloom],
-      ['storm', this.climate.stormWeight * nightStorm],
-    ];
-    let total = 0;
-    for (const [state, weight] of entries) {
-      if (state !== previous) total += weight;
+    // Opening roll: almost always a clear sky, occasionally overcast.
+    if (previous === null) return Math.random() < 0.82 ? 'clear' : 'gloomy';
+
+    const s = this.climate.storminess * (this.night ? 0.6 : 1);
+    const gloomBias = this.night ? 1.25 : 1;
+
+    let pClear: number, pGloomy: number;
+    if (previous === 'clear') {
+      pGloomy = Math.min(0.4, 0.16 * (0.45 + s) * gloomBias);
+      pClear = 1 - pGloomy; // storm probability is 0 — no blue-sky storms
+    } else if (previous === 'gloomy') {
+      const pStorm = 0.5 * s;
+      pClear = 0.42;
+      pGloomy = Math.max(0, 1 - pStorm - pClear);
+    } else { // storm — decay back through gloom
+      const pStorm = 0.36;
+      pClear = 0.14;
+      pGloomy = Math.max(0, 1 - pStorm - pClear);
     }
-    let roll = Math.random() * total;
-    for (const [state, weight] of entries) {
-      if (state === previous) continue;
-      roll -= weight;
-      if (roll <= 0) return state;
-    }
-    return 'clear';
+
+    const roll = Math.random();
+    if (roll < pClear) return 'clear';
+    if (roll < pClear + pGloomy) return 'gloomy';
+    return 'storm';
   }
 
   private snapToTarget(): void {

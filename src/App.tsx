@@ -4,7 +4,7 @@ import { GraduationCap, Play, Home, MousePointerClick } from 'lucide-react';
 import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
 import { GunModel, type WeaponType as GunWeaponType } from './utils/GunModel';
-import { MuzzleFlash, BulletTracer, ImpactEffect, RobotHitSparks, ExplosionEffect, setMuzzleLightPool, setExplosionLightPool } from './utils/Effects';
+import { MuzzleFlash, BulletTracer, ImpactEffect, RobotHitSparks, ExplosionEffect, FireNovaEffect, AbilityCastEffect, setMuzzleLightPool, setExplosionLightPool } from './utils/Effects';
 import { soundManager } from './utils/SoundManager';
 import { gameSettingsManager, type UserSettings, type KeyBindings } from './utils/GameSettingsManager';
 import { PostProcessingPipeline } from './utils/PostProcessing';
@@ -49,7 +49,7 @@ import AchievementNotification from './components/AchievementNotification';
 import KillFeed, { addKillFeedEntry } from './components/KillFeed';
 import HitMarkers, { addHitMarker, addDamageNumber, clearHitMarkers } from './components/HitMarkers';
 import DamageDirectionIndicator, { triggerDamageDirection, clearDamageDirections } from './components/DamageDirectionIndicator';
-import ScreenEffects, { triggerDamageFlash, triggerScreenShake, triggerKillFlash, triggerHeadshotFlash } from './components/ScreenEffects';
+import ScreenEffects, { triggerDamageFlash, triggerScreenShake, triggerKillFlash, triggerHeadshotFlash, triggerAbilityFlash } from './components/ScreenEffects';
 import ComboDisplay from './components/ComboDisplay';
 import { WEAPONS, type Enemy, type Bullet, type PowerUp, type Particle, type TerrainObject, type Keys, type GameState } from './types/game';
 import { AdaptiveDifficultySystem } from './utils/AdaptiveDifficultySystem';
@@ -351,6 +351,12 @@ const ForestSurvivalGame = () => {
   // scene on every render).
   const equipTitleRef = useRef<(args: { title: string | null }) => Promise<unknown>>(async () => null);
   const [powerUpMessage, setPowerUpMessage] = useState<string>('');
+  // Lifecycle metadata for the power-up announcement pill. `ms` is the total
+  // on-screen time (entrance → hold → auto-collapse) so the pill's single CSS
+  // keyframe can scale itself to the message duration; `key` forces a fresh
+  // mount per message so the animation restarts (and the collapse replays)
+  // even when two identical messages fire back-to-back.
+  const [powerUpMeta, setPowerUpMeta] = useState<{ ms: number; key: number }>({ ms: 2000, key: 0 });
   // Tutorial-only "New Threat" banner — announces each enemy species the moment
   // the Tutorial Enemy Director unlocks it, turning the tutorial into a bestiary.
   const [enemyIntro, setEnemyIntro] = useState<EnemyIntro | null>(null);
@@ -2749,6 +2755,11 @@ const ForestSurvivalGame = () => {
     let powerMsgTimer: number | null = null;
     const showPowerMessage = (msg: string, ms = 2000) => {
       setPowerUpMessage(msg);
+      // Bump the render key + publish the duration so the pill restarts its
+      // entrance→hold→collapse keyframe scaled to `ms`. The collapse is the
+      // tail of that animation, so by the time the clear timer fires the pill
+      // has already folded away — no hard pop-out.
+      setPowerUpMeta((m) => ({ ms, key: m.key + 1 }));
       if (powerMsgTimer !== null) window.clearTimeout(powerMsgTimer);
       powerMsgTimer = window.setTimeout(() => {
         powerMsgTimer = null;
@@ -2777,6 +2788,10 @@ const ForestSurvivalGame = () => {
     const impactEffects: ImpactEffect[] = [];
     const robotSparks: RobotHitSparks[] = [];
     const explosionEffects: ExplosionEffect[] = [];
+    // Pyro "Firestorm" fire-nova shockwaves (rare ultimate — own small array).
+    const fireNovas: FireNovaEffect[] = [];
+    // Per-cast ability bursts (tinted ring + pillar + sparks at the caster).
+    const castEffects: AbilityCastEffect[] = [];
 
     // ── Decapitation gibs ────────────────────────────────────────────────
     // A powerful headshot kill (sniper / launcher-tier weapons) pops the
@@ -4179,6 +4194,17 @@ const ForestSurvivalGame = () => {
     // earns every reward tier.
     let lastStreakAwarded = 0;
 
+    // ── ABILITY BALANCE BUDGET ───────────────────────────────────────────
+    // House rules so no character's signature move is "the best":
+    //  • ABILITY_DAMAGE_CAP — the MOST any single ability hit may deal to one
+    //    enemy. It one-shots the basic robots (normal/fast/ranged ≈ 30–50 HP)
+    //    so a Ranger charge or a Pyro blast still feels lethal, but it can
+    //    never delete a tank/boss outright — those are whittled, not skipped.
+    //  • MEDIC_TRIAGE_HEAL — the Medic's active is a small field patch, not a
+    //    burst heal (was a third of max HP, which felt oppressive).
+    const ABILITY_DAMAGE_CAP = 120;
+    const MEDIC_TRIAGE_HEAL = 18;
+
     // CHARACTER ABILITY - bound to the dash/ability key, dispatched per class.
     // The cooldown gate is unified across every ability (so the HUD shows ONE
     // recharge ring); the dash's burst-movement mechanic keeps its own timers.
@@ -4277,37 +4303,53 @@ const ForestSurvivalGame = () => {
           break;
         }
         case 'firestorm': {
-          // Pyro — AoE shockwave nuke. Reusing explodeRocket gives correct
-          // distance-falloff damage AND multiplayer-guest hit reporting for
-          // free. On top of the main blast, a ring of staggered secondary
-          // bursts (pure FX, no extra damage) rolls outward so the cast reads
-          // as a true fire nova instead of a single small explosion.
+          // Pyro — AoE fire-nova ultimate. `explodeRocket` still resolves the
+          // real distance-falloff damage AND multiplayer-guest hit reporting,
+          // so mechanics are untouched. On top of it we cast a single
+          // FireNovaEffect (expanding double fire-ring + flame dome + embers)
+          // for the signature sweep, then roll TWO concentric rings of pure-FX
+          // secondary bursts outward so the shockwave visibly races across the
+          // arena — a true fire nova, not one small pop.
           const fpos = camera.position.clone();
           fpos.y = 1.2; // originate near the ground so the blast hugs the floor
           explodeRocket(fpos, 70);
-          for (let fi = 0; fi < 5; fi++) {
-            const fa = (fi / 5) * Math.PI * 2 + Math.random() * 0.5;
-            const fr = 4.5 + Math.random() * 2.5;
-            const fx = fpos.x + Math.cos(fa) * fr;
-            const fz = fpos.z + Math.sin(fa) * fr;
-            window.setTimeout(() => {
-              if (isSceneDisposed || isGameOver) return;
-              explosionEffects.push(new ExplosionEffect(scene, new THREE.Vector3(fx, 0.4, fz), 4.5));
-              createParticles(new THREE.Vector3(fx, 1.0, fz), 0xff7a2a, 8);
-            }, 70 + fi * 75);
+          fireNovas.push(new FireNovaEffect(scene, new THREE.Vector3(fpos.x, 0.5, fpos.z), 17));
+          createParticles(new THREE.Vector3(fpos.x, 1.5, fpos.z), 0xffb24a, 30);
+          const novaRings = [
+            { r: 7.0, n: 6, delay: 70, size: 4.8 },
+            { r: 12.5, n: 9, delay: 200, size: 4.0 },
+          ];
+          for (const ring of novaRings) {
+            for (let k = 0; k < ring.n; k++) {
+              const fa = (k / ring.n) * Math.PI * 2 + Math.random() * 0.4;
+              const fr = ring.r + (Math.random() - 0.5) * 1.6;
+              const fx = fpos.x + Math.cos(fa) * fr;
+              const fz = fpos.z + Math.sin(fa) * fr;
+              window.setTimeout(() => {
+                if (isSceneDisposed || isGameOver) return;
+                explosionEffects.push(new ExplosionEffect(scene, new THREE.Vector3(fx, 0.4, fz), ring.size, 0xff7a2a));
+                createParticles(new THREE.Vector3(fx, 1.0, fz), 0xff7a2a, 6);
+              }, ring.delay + (k % 3) * 26);
+            }
           }
-          fovPunch = Math.min(fovPunch + 6, 10);
+          fovPunch = Math.min(fovPunch + 9, 14);
+          triggerScreenShake();
           showPowerMessage('Firestorm!');
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Firestorm!', 'powerup');
           break;
         }
         case 'triage': {
-          // Medic — instant self-heal for a third of max HP.
-          health = Math.min(playerMaxHealth, health + playerMaxHealth * 0.35);
+          // Medic — a quick FIELD PATCH, not a burst heal. Previously restored
+          // a third of max HP (~35), which made the Medic feel oppressive /
+          // un-killable on a 16s cooldown. Now it tops up only a small flat
+          // amount (a "few HP") so it's a stabiliser, not a reset button. The
+          // Medic still leans on its passive 0.5 HP/s out-of-combat regen.
+          const triageHeal = Math.min(MEDIC_TRIAGE_HEAL, playerMaxHealth - health);
+          health = Math.min(playerMaxHealth, health + MEDIC_TRIAGE_HEAL);
           updateGameState();
-          showPowerMessage('Field Triage · patched up');
+          showPowerMessage(`Field Triage · +${Math.max(0, Math.round(triageHeal))} HP`);
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Field Triage!', 'powerup');
-          createParticles(camera.position, 0x4dff9e, 18);
+          createParticles(camera.position, 0x4dff9e, 14);
           soundManager.play('powerUp', 0.6);
           break;
         }
@@ -4333,6 +4375,26 @@ const ForestSurvivalGame = () => {
         }
       }
 
+      // ── SIGNATURE-MOVE FX (shared by every ability) ──────────────────────
+      // Tinted screen pulse + a world-space cast burst (ground ring + rising
+      // pillar + sparks) in the ability's own accent colour, plus a per-ability
+      // CAMERA KICK that gives each power a distinct physical "tell" in
+      // first-person — the Ranger dips into a forward lunge, the Heavy braces
+      // into a crouch, the Pyro bucks up off the blast, and so on.
+      triggerAbilityFlash(activeAbility.color);
+      const castColor = parseInt(activeAbility.color.replace('#', ''), 16) || 0x22d3ee;
+      castEffects.push(new AbilityCastEffect(scene, camera.position, castColor));
+      switch (activeAbility.id) {
+        case 'dash':       triggerAbilityCam(0.17, (Math.random() < 0.5 ? 1 : -1) * 0.07); break;
+        case 'bulwark':    triggerAbilityCam(0.13, 0); break;
+        case 'triage':     triggerAbilityCam(0.08, 0); break;
+        case 'firestorm':  triggerAbilityCam(-0.11, 0); break;
+        case 'adrenaline': triggerAbilityCam(-0.07, 0.04); break;
+        case 'overclock':  triggerAbilityCam(-0.05, 0.03); break;
+        case 'focusfire':  triggerAbilityCam(-0.045, 0); break;
+        case 'cloak':      triggerAbilityCam(-0.03, 0); break;
+      }
+
       abilityCooldown = cd;
       abilityCooldownMax = cd;
       abilityActiveUntil = nowMs + Math.max(activeMs, 200);
@@ -4354,6 +4416,20 @@ const ForestSurvivalGame = () => {
     let recoilPitch = 0;
     let recoilYaw = 0;
     const _recoilEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+
+    // ── ABILITY CAMERA KICK ──────────────────────────────────────────────
+    // A transient pitch (dip/lift) + roll layered onto the camera when an
+    // ability fires, then eased back. It's what sells the move in first-person:
+    // the Ranger's Dash DIPS the view down and rolls into a forward lunge ("bend
+    // down and charge"), Bulwark drops into a braced crouch, Firestorm bucks up
+    // from the blast, etc. `triggerAbilityCam(pitch, roll)` sets the target; the
+    // render loop springs the live values toward 0.
+    let abilityKickPitch = 0; // + = view dips DOWN (crouch/charge), − = lifts
+    let abilityKickRoll = 0;
+    const triggerAbilityCam = (pitch: number, roll: number) => {
+      abilityKickPitch = pitch;
+      abilityKickRoll = roll;
+    };
 
     // ─── Photo Mode loop state ───────────────────────────────────────────────
     // `photoActive` mirrors photoModeRef inside the loop so enter/exit side
@@ -5117,6 +5193,16 @@ const ForestSurvivalGame = () => {
     const _assistDir = new THREE.Vector3(); // camera→enemy (aim assist)
     const _tempVec3 = new THREE.Vector3();
     const _tempVec3_2 = new THREE.Vector3();
+    // Bullet's position at the START of the frame — the swept-collision test
+    // sweeps the segment [_bulletPrev → current] so fast bullets can't tunnel
+    // past enemies between frames (see the bullet update loop).
+    const _bulletPrev = new THREE.Vector3();
+    // Ambient-particle tint endpoints — warm pollen/dust in daylight, soft
+    // green-cyan firefly glow after dark. Crossfaded by the day cycle each
+    // frame so the floating ambience tracks the clock automatically.
+    const _moteColorDay = new THREE.Color(0xfff1cf);
+    const _moteColorNight = new THREE.Color(0x8effc6);
+    const _moteColor = new THREE.Color();
 
     // === SPATIAL HASH GRIDS ===
     // Replace O(N²) and O(B×E) per-frame scans with O(near) cell lookups.
@@ -6820,10 +6906,14 @@ const ForestSurvivalGame = () => {
       const recoilRecover = Math.min(1, rawDelta * 9.5);
       recoilPitch += (0 - recoilPitch) * recoilRecover;
       recoilYaw += (0 - recoilYaw) * recoilRecover;
+      // Ability kick eases back a touch slower than recoil for a weightier feel.
+      const abilityRecover = Math.min(1, rawDelta * 6.5);
+      abilityKickPitch += (0 - abilityKickPitch) * abilityRecover;
+      abilityKickRoll += (0 - abilityKickRoll) * abilityRecover;
       _recoilEuler.set(
-        Math.max(-PI_2, Math.min(PI_2, euler.x + recoilPitch)),
+        Math.max(-PI_2, Math.min(PI_2, euler.x + recoilPitch + abilityKickPitch)),
         euler.y + recoilYaw,
-        0,
+        abilityKickRoll,
         'YXZ',
       );
       camera.quaternion.setFromEuler(_recoilEuler);
@@ -6835,6 +6925,22 @@ const ForestSurvivalGame = () => {
         const vels = geoExt._velocities;
         const phs = geoExt._phases;
         const elapsed = clock.getElapsedTime();
+
+        // ── TIME-OF-DAY AMBIENCE ──────────────────────────────────────────
+        // Retint + resize the motes from the live day cycle so the air reads
+        // differently as the clock turns: fine pale dust catching the light by
+        // day → bigger, glowing fireflies that breathe at night, crossfading
+        // through the golden hours. `starIntensity` (0 day → 1 night) is the
+        // natural night factor, so this tracks auto, day AND night modes.
+        if (ambientParticles.material instanceof THREE.PointsMaterial) {
+          const night = THREE.MathUtils.clamp(atmosphericSettings.starIntensity, 0, 1);
+          const mat = ambientParticles.material;
+          mat.size = 0.05 + night * 0.12;
+          mat.color.copy(_moteColor.copy(_moteColorDay).lerp(_moteColorNight, night));
+          // Gentle firefly breathing at night; steady, faint motes by day.
+          const twinkle = night > 0.12 ? 0.78 + Math.sin(elapsed * 1.6) * 0.22 : 1;
+          mat.opacity = (0.28 + night * 0.5) * twinkle;
+        }
 
         for (let i = 0; i < AMBIENT_PARTICLE_COUNT; i++) {
           const ix = i * 3;
@@ -7083,6 +7189,17 @@ const ForestSurvivalGame = () => {
           camera.position.z = newZ;
         }
 
+        // Charge trail — a stream of cyan motion sparks left in the player's
+        // wake so the Ranger's lunge reads as a streaking dash, not a teleport.
+        // Spawned just behind + below the camera, rate-limited to a couple per
+        // frame so it stays cheap.
+        _tempVec3.set(
+          camera.position.x - dashDirection.x * 1.2,
+          camera.position.y - 0.7,
+          camera.position.z - dashDirection.z * 1.2,
+        );
+        createParticles(_tempVec3, 0x66e8ff, 4);
+
         // ── TRAMPLE — the Ranger's charge bowls through robots ────────────
         // Any robot caught within the charge radius takes the full force of
         // the impact: standard chassis are killed outright and launched
@@ -7100,9 +7217,15 @@ const ForestSurvivalGame = () => {
           dashHitEnemies.add(te);
 
           const heavyChassis = te.type === 'tank' || te.type === 'boss' || te.isMiniBoss === true;
-          const trampleDmg = heavyChassis
-            ? Math.max(60, te.maxHealth * 0.3)   // heavy: real damage, not lethal
-            : te.maxHealth + 50;                  // standard robots: flattened
+          // Capped at the ability-damage budget: lethal to the basic robots it
+          // bowls over (the charge fantasy), but a tank/boss only takes a chunk
+          // — the charge can't trivialise the big fights on its 5s cooldown.
+          const trampleDmg = Math.min(
+            ABILITY_DAMAGE_CAP,
+            heavyChassis
+              ? Math.max(60, te.maxHealth * 0.3)   // heavy: real damage, not lethal
+              : te.maxHealth + 50,                  // standard robots: flattened
+          );
 
           // Record the charge direction so the death ragdoll (or survivor
           // shove) launches the way the player is running.
@@ -7393,6 +7516,22 @@ const ForestSurvivalGame = () => {
         }
       }
 
+      // Update Pyro fire-nova shockwaves.
+      for (let i = fireNovas.length - 1; i >= 0; i--) {
+        if (fireNovas[i].update(delta)) {
+          fireNovas[i].dispose(scene);
+          fireNovas.splice(i, 1);
+        }
+      }
+
+      // Update ability-cast bursts.
+      for (let i = castEffects.length - 1; i >= 0; i--) {
+        if (castEffects[i].update(delta)) {
+          castEffects[i].dispose(scene);
+          castEffects.splice(i, 1);
+        }
+      }
+
       // Update decapitated head gibs — gravity, ground bounce + friction,
       // tumble, then shrink away. Shares geo/mat with the pooled head, so the
       // only cleanup on removal is detaching the clone from the scene.
@@ -7657,11 +7796,22 @@ const ForestSurvivalGame = () => {
         }
       }
 
-      // Update bullets
+      // Update bullets.
+      // FRAME-RATE INDEPENDENCE: bullet travel + lifetime are scaled by the
+      // real frame time (normalised to the old 60 fps step), so a bullet moves
+      // the same world distance per SECOND no matter the frame rate. Previously
+      // movement/lifetime were per-FRAME, so combat behaved differently at
+      // different frame rates — e.g. LOW graphics (uncapped/high fps) shifted
+      // where each discrete step landed, which (combined with coarse point
+      // hit-testing) made the 0.8u headshot zone register erratically and could
+      // read as enemies dying in "one shot". `_bulletPrev` + the swept test
+      // below make hit detection exact and identical across every graphics mode.
+      const bulletDt = rawDelta * 60;
       for (let i = bullets.length - 1; i >= 0; i--) {
         const bullet = bullets[i];
-        bullet.mesh.position.add(bullet.velocity);
-        bullet.life--;
+        _bulletPrev.copy(bullet.mesh.position);
+        bullet.mesh.position.addScaledVector(bullet.velocity, bulletDt);
+        bullet.life -= bulletDt;
 
         // Rockets detonate on contact with the ground or any obstacle they
         // are at/below the height of (trees, walls), creating an AoE blast.
@@ -7770,11 +7920,18 @@ const ForestSurvivalGame = () => {
         }
         if (bulletHitBarrel) continue;
 
-        // Grid lookup — only test enemies within a small radius of the bullet
-        // instead of every enemy in the world (was the worst N×M offender).
-        const bpx = bullet.mesh.position.x;
-        const bpz = bullet.mesh.position.z;
-        const nearbyEnemyIds = enemyGrid.queryRadius(bpx, bpz, 3);
+        // Grid lookup — only test enemies near the bullet's TRAVEL SEGMENT this
+        // frame (midpoint + half-length + the 2u hitbox + margin), instead of
+        // every enemy in the world. Querying the whole segment (not just the end
+        // point) is what lets the swept test below catch enemies the bullet
+        // skimmed past mid-step.
+        const segMidX = (_bulletPrev.x + bullet.mesh.position.x) * 0.5;
+        const segMidZ = (_bulletPrev.z + bullet.mesh.position.z) * 0.5;
+        const segHalf = Math.hypot(
+          bullet.mesh.position.x - _bulletPrev.x,
+          bullet.mesh.position.z - _bulletPrev.z,
+        ) * 0.5;
+        const nearbyEnemyIds = enemyGrid.queryRadius(segMidX, segMidZ, segHalf + 3);
         // Snapshot the IDs because queryRadius reuses the returned array
         // and the next call (terrainGrid lookup inside this loop, etc.)
         // would overwrite it mid-iteration.
@@ -7783,7 +7940,35 @@ const ForestSurvivalGame = () => {
         for (let n = 0; n < nearbyIds.length && !bulletConsumed; n++) {
           const j = nearbyIds[n];
           const enemy = enemies[j];
-          if (enemy && !enemy.dead && checkCollision(bullet.mesh.position, enemy.mesh.position, 2)) {
+          if (!enemy || enemy.dead) continue;
+          // ── SWEPT (segment) HIT TEST ────────────────────────────────────
+          // Closest approach of the bullet's path this frame to the enemy
+          // centre (XZ cylinder, radius 2). Tunnel-proof: a sniper round steps
+          // 5u/frame — far bigger than the 2u hitbox — so a per-point test
+          // could skip clean through. We instead project the enemy onto the
+          // travel segment and snap the bullet to that exact CONTACT POINT, so
+          // the headshot test + sparks + splash all use true geometry rather
+          // than wherever a discrete step happened to fall.
+          const segDX = bullet.mesh.position.x - _bulletPrev.x;
+          const segDZ = bullet.mesh.position.z - _bulletPrev.z;
+          const segLen2 = segDX * segDX + segDZ * segDZ;
+          let tHit = 0;
+          if (segLen2 > 1e-8) {
+            tHit = ((enemy.mesh.position.x - _bulletPrev.x) * segDX
+                  + (enemy.mesh.position.z - _bulletPrev.z) * segDZ) / segLen2;
+            tHit = tHit < 0 ? 0 : tHit > 1 ? 1 : tHit;
+          }
+          const closeX = _bulletPrev.x + segDX * tHit;
+          const closeZ = _bulletPrev.z + segDZ * tHit;
+          const closeDX = closeX - enemy.mesh.position.x;
+          const closeDZ = closeZ - enemy.mesh.position.z;
+          if (closeDX * closeDX + closeDZ * closeDZ < 4) {
+            // Snap to the contact point so all downstream effects are exact.
+            bullet.mesh.position.set(
+              closeX,
+              _bulletPrev.y + (bullet.mesh.position.y - _bulletPrev.y) * tHit,
+              closeZ,
+            );
             // Rockets explode on first contact — the blast handles all damage
             if (bullet.isRocket) {
               explodeRocket(bullet.mesh.position.clone(), bullet.damage);
@@ -8424,30 +8609,58 @@ const ForestSurvivalGame = () => {
             // it for the duration of the juke so we don't oscillate.
             let activeSteerX = steerX;
             let activeSteerZ = steerZ;
-            const enemyAsAny = enemy as unknown as {
-              stuckJukeT?: number;
-              stuckJukeDir?: 1 | -1;
+            // ── SMART STUCK RECOVERY — CONTEXT STEERING ─────────────────────
+            // The repulsion/tangent steering above frees an enemy from MOST
+            // pockets, but a robot wedged into a tight notch between two trees
+            // can still have its forces cancel and dead-stop. The old fix juked
+            // a RANDOM way — a 50/50 that often shoved it straight back into
+            // the obstacle, so it stayed stuck. Instead we now run a tiny
+            // CONTEXT-STEERING search: sample directions all around the enemy,
+            // march a short probe down each to measure how far it stays CLEAR
+            // (openness), and score that against how well it points at the
+            // player (interest). The most-open, best-aligned gap wins — which
+            // is reliably the way OUT of the pocket. We commit to it for a
+            // short window so the enemy doesn't dither, and the LONGER it stays
+            // stuck the more it leans on raw openness over chasing the player
+            // (escape at any cost), guaranteeing it works itself free.
+            // Ref: Andrew Fray, "Context Steering" (Game AI Pro 2, ch. 18).
+            const esc = enemy as unknown as {
+              escapeT?: number; escapeX?: number; escapeZ?: number;
             };
             if (enemy.stuckTimer > 0.6) {
-              if (!enemyAsAny.stuckJukeT || enemyAsAny.stuckJukeT <= 0) {
-                // Start a new juke: 0.5s of perpendicular movement.
-                enemyAsAny.stuckJukeT = 0.5;
-                enemyAsAny.stuckJukeDir = (Math.random() < 0.5 ? 1 : -1) as 1 | -1;
+              if (!esc.escapeT || esc.escapeT <= 0) {
+                const SAMPLES = 12;
+                const MARCH = 3;
+                const probe = Math.max(3.0, step * 8); // look-ahead distance (m)
+                // Early stuck → still favour the player; deep stuck → openness.
+                const interestW = Math.max(0.25, 2.0 - (enemy.stuckTimer - 0.6) * 0.7);
+                let bestScore = -Infinity, bestX = -desiredNX, bestZ = -desiredNZ;
+                let openBest = -1, openX = -desiredNX, openZ = -desiredNZ;
+                for (let sIdx = 0; sIdx < SAMPLES; sIdx++) {
+                  const ang = (sIdx / SAMPLES) * Math.PI * 2;
+                  const dx = Math.sin(ang), dz = Math.cos(ang);
+                  let clear = 0;
+                  for (let m = 1; m <= MARCH; m++) {
+                    const d = (probe * m) / MARCH;
+                    if (checkTerrainCollision(px + dx * d, pz + dz * d)) break;
+                    clear = d;
+                  }
+                  // Remember the most-open heading as a guaranteed fallback,
+                  // even if every direction is at least partly blocked.
+                  if (clear > openBest) { openBest = clear; openX = dx; openZ = dz; }
+                  if (clear < step * 1.5) continue; // too blocked to commit to
+                  const interest = dx * desiredNX + dz * desiredNZ; // −1..1
+                  const score = clear * 0.5 + interest * interestW;
+                  if (score > bestScore) { bestScore = score; bestX = dx; bestZ = dz; }
+                }
+                if (bestScore === -Infinity) { bestX = openX; bestZ = openZ; }
+                esc.escapeX = bestX; esc.escapeZ = bestZ;
+                esc.escapeT = 0.4; // commit window before re-evaluating
               }
-              // Sidestep perpendicular to the desired-to-player direction.
-              const jukeSign = enemyAsAny.stuckJukeDir ?? 1;
-              const perpX = -desiredNZ * jukeSign;
-              const perpZ =  desiredNX * jukeSign;
-              activeSteerX = perpX;
-              activeSteerZ = perpZ;
+              activeSteerX = esc.escapeX ?? activeSteerX;
+              activeSteerZ = esc.escapeZ ?? activeSteerZ;
             }
-            if (enemyAsAny.stuckJukeT && enemyAsAny.stuckJukeT > 0) {
-              enemyAsAny.stuckJukeT -= delta;
-              if (enemyAsAny.stuckJukeT <= 0) {
-                enemyAsAny.stuckJukeT = 0;
-                enemyAsAny.stuckJukeDir = undefined;
-              }
-            }
+            if (esc.escapeT && esc.escapeT > 0) esc.escapeT -= delta;
 
             const stepX = activeSteerX * step;
             const stepZ = activeSteerZ * step;
@@ -9318,6 +9531,10 @@ const ForestSurvivalGame = () => {
       // per-instance additive materials; shared geometries persist).
       for (const ex of explosionEffects) ex.dispose(scene);
       explosionEffects.length = 0;
+      for (const fn of fireNovas) fn.dispose(scene);
+      fireNovas.length = 0;
+      for (const ce of castEffects) ce.dispose(scene);
+      castEffects.length = 0;
 
       // Detach any in-flight head gibs (clones share pooled geo/mat — just
       // remove the clone objects from the scene).
@@ -9939,6 +10156,8 @@ const ForestSurvivalGame = () => {
           showWaveComplete={showWaveComplete}
           killStreak={gameState.killStreak >= 5 ? gameState.killStreak : undefined}
           powerUpMessage={powerUpMessage}
+          powerUpMessageMs={powerUpMeta.ms}
+          powerUpMessageKey={powerUpMeta.key}
           t={t}
         />
 

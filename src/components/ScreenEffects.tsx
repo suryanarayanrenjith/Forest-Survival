@@ -11,10 +11,23 @@ let damageFlashCallback: (() => void) | null = null;
 let screenShakeCallback: (() => void) | null = null;
 let killFlashCallback: (() => void) | null = null;
 let headshotFlashCallback: (() => void) | null = null;
+let abilityFlashCallback: ((color: string) => void) | null = null;
 
 export const triggerDamageFlash = () => {
   if (damageFlashCallback) {
     damageFlashCallback();
+  }
+};
+
+/**
+ * Tinted full-screen pulse when a character ability is cast — the colour is the
+ * ability's accent, so each signature move announces itself with its own hue
+ * (cyan dash, amber adrenaline, green triage, …). Pairs with the world-space
+ * AbilityCastEffect for a readable "I just used my power" moment.
+ */
+export const triggerAbilityFlash = (color: string) => {
+  if (abilityFlashCallback) {
+    abilityFlashCallback(color);
   }
 };
 
@@ -41,8 +54,14 @@ const ScreenEffects = ({ health, maxHealth = 100, isVisible }: ScreenEffectsProp
   const [screenShake, setScreenShake] = useState(false);
   const [killFlash, setKillFlash] = useState(false);
   const [headshotFlash, setHeadshotFlash] = useState(false);
+  const [abilityFlash, setAbilityFlash] = useState<{ color: string; key: number } | null>(null);
 
   useEffect(() => {
+    abilityFlashCallback = (color: string) => {
+      setAbilityFlash({ color, key: Date.now() });
+      setTimeout(() => setAbilityFlash(null), 420);
+    };
+
     damageFlashCallback = () => {
       setDamageFlash(true);
       setTimeout(() => setDamageFlash(false), 200);
@@ -68,6 +87,7 @@ const ScreenEffects = ({ health, maxHealth = 100, isVisible }: ScreenEffectsProp
       screenShakeCallback = null;
       killFlashCallback = null;
       headshotFlashCallback = null;
+      abilityFlashCallback = null;
     };
   }, []);
 
@@ -113,6 +133,20 @@ const ScreenEffects = ({ health, maxHealth = 100, isVisible }: ScreenEffectsProp
             </div>
           </div>
         </div>
+      )}
+
+      {/* Ability cast flash — tinted edge pulse in the ability's accent hue. */}
+      {abilityFlash && (
+        <div
+          key={abilityFlash.key}
+          className="fixed inset-0 pointer-events-none z-40"
+          style={{
+            background: `radial-gradient(circle at center, transparent 35%, ${abilityFlash.color}33 100%)`,
+            animation: 'abilityFlash 0.42s ease-out forwards',
+            willChange: 'opacity',
+            transform: 'translateZ(0)',
+          }}
+        />
       )}
 
       {/* Damage Flash */}
@@ -257,6 +291,12 @@ const ScreenEffects = ({ health, maxHealth = 100, isVisible }: ScreenEffectsProp
           100% {
             opacity: 0;
           }
+        }
+
+        @keyframes abilityFlash {
+          0% { opacity: 0; }
+          18% { opacity: 1; }
+          100% { opacity: 0; }
         }
 
         @keyframes headshotFlash {

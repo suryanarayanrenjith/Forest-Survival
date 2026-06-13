@@ -142,6 +142,40 @@ export interface Airdrop {
   collected: boolean;
   powerUpType: PowerUpType;
   smoke: THREE.Points | null;
+  // ── Landed beacon FX (built lazily on touchdown) ──
+  /** Vertical perk-coloured light shaft so a crate reads from across the map. */
+  beam?: THREE.Mesh;
+  /** Flat ground halo ring pulsing under the crate. */
+  halo?: THREE.Mesh;
+  /** ms timestamp of touchdown — drives the landing pop + idle pulses. */
+  landTime?: number;
+  /** Resting Y the crate hovers around once landed. */
+  baseY?: number;
+}
+
+/**
+ * Shared vertical-gradient texture for the loot light-shaft. Bright at the
+ * base, fading to nothing at the top — multiplied by the perk colour so every
+ * crate gets a tinted beam. Built once, reused (and never disposed) forever,
+ * mirroring the rain/snow sprite textures in WeatherSystem.
+ */
+let beamTexture: THREE.CanvasTexture | null = null;
+function getBeamTexture(): THREE.CanvasTexture {
+  if (beamTexture) return beamTexture;
+  const canvas = document.createElement('canvas');
+  canvas.width = 16;
+  canvas.height = 128;
+  const ctx = canvas.getContext('2d')!;
+  // canvas y=0 (top) → beam top (transparent); y=128 (bottom) → beam base.
+  const grad = ctx.createLinearGradient(0, 0, 0, 128);
+  grad.addColorStop(0.0, 'rgba(255,255,255,0)');
+  grad.addColorStop(0.45, 'rgba(255,255,255,0.42)');
+  grad.addColorStop(0.85, 'rgba(255,255,255,0.95)');
+  grad.addColorStop(1.0, 'rgba(255,255,255,0.55)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 16, 128);
+  beamTexture = new THREE.CanvasTexture(canvas);
+  return beamTexture;
 }
 
 export class EnhancedPowerUpSystem {
@@ -433,6 +467,63 @@ export class EnhancedPowerUpSystem {
     airdrop.smoke = smoke;
   }
 
+  /**
+   * Build the landed beacon: a perk-coloured vertical LIGHT SHAFT plus a flat
+   * GROUND HALO, both parented to the crate group so they ride its slow spin.
+   * Created lazily on touchdown (not at spawn) so they never get swept up by
+   * the parachute/tether removal pass — and so a crate falling through the air
+   * isn't trailing a beam. Geometries + materials are per-instance and freed by
+   * disposeAirdrop's traversal; only the gradient TEXTURE is shared.
+   */
+  private buildLandingFX(airdrop: Airdrop): void {
+    const cfg = POWER_UP_CONFIGS[airdrop.powerUpType];
+    const tint = new THREE.Color(cfg.emissiveColor);
+    // Local Y of the ground plane relative to the (crate-centred) group origin.
+    const groundLocalY = -(airdrop.baseY ?? 1);
+
+    // ── LIGHT SHAFT — slightly conical cylinder, wide at the base, fading out
+    // toward the top via the shared gradient texture. Additive + no depth write
+    // so it glows through the scene like a real volumetric beam.
+    const beamGeo = new THREE.CylinderGeometry(0.45, 1.25, 9, 18, 1, true);
+    const beamMat = new THREE.MeshBasicMaterial({
+      map: getBeamTexture(),
+      color: tint,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      fog: false,
+      toneMapped: true,
+    });
+    const beam = new THREE.Mesh(beamGeo, beamMat);
+    beam.position.y = groundLocalY + 4.5; // base on the ground, rising 9 units
+    beam.renderOrder = 990;
+    beam.userData.cannotReceiveAO = true;
+    airdrop.mesh.add(beam);
+    airdrop.beam = beam;
+
+    // ── GROUND HALO — additive ring marking the pickup spot.
+    const haloGeo = new THREE.RingGeometry(1.5, 2.5, 40);
+    haloGeo.rotateX(-Math.PI / 2); // lie flat on the XZ plane
+    const haloMat = new THREE.MeshBasicMaterial({
+      color: tint,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      fog: false,
+      toneMapped: true,
+    });
+    const halo = new THREE.Mesh(haloGeo, haloMat);
+    halo.position.y = groundLocalY + 0.06;
+    halo.renderOrder = 989;
+    halo.userData.cannotReceiveAO = true;
+    airdrop.mesh.add(halo);
+    airdrop.halo = halo;
+  }
+
   updateAirdrops(deltaTime: number, scene: THREE.Scene): Airdrop[] {
     const landedAirdrops: Airdrop[] = [];
 
@@ -484,12 +575,33 @@ export class EnhancedPowerUpSystem {
             scene.add(airdrop.smoke);
           }
 
+          // Spin up the landed beacon FX (light shaft + ground halo) and the
+          // touchdown timestamp that drives the impact pop + idle pulses.
+          airdrop.baseY = airdrop.mesh.position.y;
+          airdrop.landTime = Date.now();
+          this.buildLandingFX(airdrop);
+
           landedAirdrops.push(airdrop);
         }
       } else {
         // Slow Y-rotation for the WHOLE crate group so the priority panel
         // and label sweep into view for any nearby player.
         airdrop.mesh.rotation.y += deltaTime * 0.55;
+
+        // Seconds since touchdown — drives the one-shot landing pop and the
+        // looping idle pulses.
+        const since = airdrop.landTime ? (Date.now() - airdrop.landTime) / 1000 : 1;
+        // Landing pop: 0 → 1 over the first 0.45 s with an overshoot ease so
+        // the beam/halo punch up, then settle.
+        const popRaw = Math.min(1, since / 0.45);
+        const pop = 1 - (1 - popRaw) * (1 - popRaw); // easeOut
+
+        // Idle hover — the crate gently floats so it never looks like dead
+        // geometry sitting on the floor. Tiny amplitude keeps the beacon base
+        // and halo visually anchored to the ground.
+        if (airdrop.baseY !== undefined) {
+          airdrop.mesh.position.y = airdrop.baseY + Math.sin(since * 2.4) * 0.12;
+        }
 
         // Strobe beacon — pulse the red blinker so a landed crate is easy
         // to spot in a forest. Cheap traversal because the group has only
@@ -503,6 +615,24 @@ export class EnhancedPowerUpSystem {
             child.material.emissiveIntensity = strobe;
             break;
           }
+        }
+
+        // Light-shaft beacon — breathe its opacity + swell on landing so it
+        // reads as a living column of light, not a static cone.
+        if (airdrop.beam && airdrop.beam.material instanceof THREE.MeshBasicMaterial) {
+          const breathe = 0.7 + Math.sin(since * 2.0) * 0.3;
+          airdrop.beam.material.opacity = 0.32 * pop * breathe;
+          const sway = 1 + Math.sin(since * 1.7) * 0.04;
+          airdrop.beam.scale.set(pop, sway, pop);
+        }
+
+        // Ground halo — expands out of the impact point then idles with a
+        // slow breathing pulse. (No spin: a symmetric ring reads identically
+        // when rotated, and the group already turns it on its Y axis.)
+        if (airdrop.halo && airdrop.halo.material instanceof THREE.MeshBasicMaterial) {
+          const haloPulse = 0.85 + Math.sin(since * 3.0 + 1.0) * 0.15;
+          airdrop.halo.scale.setScalar(pop * haloPulse);
+          airdrop.halo.material.opacity = 0.55 * pop * (0.7 + Math.sin(since * 3.0) * 0.3);
         }
 
         // Animate smoke

@@ -287,6 +287,17 @@ export class DayCycleSystem {
     const easedT = this.smootherstep(t);
     this.currentSettings = this.interpolateSettings(settings1, settings2, easedT);
 
+    // ── CONTINUOUS CELESTIAL ARC ──────────────────────────────────────────
+    // The colour profiles above still come from the anchor blend, but the KEY
+    // LIGHT POSITION is replaced with a smooth physical arc. Previously the
+    // light lerped between five fixed anchor points, so the sun appeared to
+    // jump between times of day and shadows barely moved. Now the sun rises in
+    // the east, climbs overhead at noon and sets in the west; after dusk the
+    // MOON takes the sky from the opposite side. The same vector drives the
+    // directional light, the sky-dome sun, the haze and the god-ray shafts, so
+    // every system stays in lock-step and shadows sweep continuously.
+    this.currentSettings.lightPosition = this.getCelestialLightPosition(this.currentTime);
+
     return this.currentSettings;
   }
 
@@ -294,6 +305,33 @@ export class DayCycleSystem {
   private smootherstep(t: number): number {
     const c = Math.max(0, Math.min(1, t));
     return c * c * c * (c * (c * 6 - 15) + 10);
+  }
+
+  /**
+   * Smooth sun→moon arc for the key light, parameterised by the 0–24h clock.
+   * Returns a position whose magnitude sits in the same band the rest of the
+   * lighting rig expects (fill lights, shadow camera, sky sun all read it).
+   */
+  private getCelestialLightPosition(time: number): { x: number; y: number; z: number } {
+    // Sun elevation: 0 at 06:00 & 18:00, +1 at noon, −1 at midnight.
+    const elev = Math.sin((Math.PI * (time - 6)) / 12);
+    // Day weight: ~1 when the sun is well up, ~0 deep at night, smoothly
+    // crossfaded across the ±0.12 horizon band so the sun→moon hand-off and
+    // azimuth flip never snap.
+    const dayW = this.smootherstep((elev + 0.12) / 0.24);
+    // East(+x) at sunrise → West(−x) at sunset; the moon rides the opposite
+    // azimuth so it crosses the sky on its own track at night.
+    const sunX = Math.cos((Math.PI * (time - 6)) / 12);
+    const lx = sunX * dayW + -sunX * (1 - dayW);
+    // Height fraction from whichever body is currently above the horizon.
+    const elevH = Math.max(0, elev) * dayW + Math.max(0, -elev) * (1 - dayW);
+
+    const RADIUS = 135;
+    return {
+      x: lx * RADIUS,
+      y: 30 + elevH * 88, // 30 (grazing horizon) … 118 (overhead)
+      z: -0.42 * RADIUS, // steady southerly bias keeps shadow directions legible
+    };
   }
 
   getSettings(timeOfDay: TimeOfDay): AtmosphericSettings {

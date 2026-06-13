@@ -428,6 +428,341 @@ export class ExplosionEffect {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Fire Nova — the Pyro's "Firestorm" ultimate. A single, self-contained,
+// allocation-light effect that reads as a fire shockwave SWEEPING the arena:
+//   • two expanding ground fire-rings (a leading front + a trailing one) for a
+//     double-pulse shockwave,
+//   • a rising flame dome at the heart of the cast,
+//   • a burst of embers thrown outward + up that arc back down under gravity.
+// One effect ≫ cheaper than chaining dozens of explosions, and it borrows a
+// single pooled light (never scene.add's one — that recompiles every material).
+//
+// Refs: expanding-ring shockwave VFX —
+//   https://discourse.threejs.org/t/explosion-shockwave-vfx/54742
+// ─────────────────────────────────────────────────────────────────────────────
+const NOVA_RING_GEO = (() => {
+  const g = new THREE.RingGeometry(0.8, 1.0, 64);
+  g.rotateX(-Math.PI / 2); // lie flat on the XZ plane
+  return g;
+})();
+const NOVA_DOME_GEO = new THREE.IcosahedronGeometry(1, 2);
+
+export class FireNovaEffect {
+  private group: THREE.Group;
+  private ringFront: THREE.Mesh;
+  private ringBack: THREE.Mesh;
+  private dome: THREE.Mesh;
+  private embers: THREE.Points;
+  private emberVel: Float32Array;
+  private ringFrontMat: THREE.MeshBasicMaterial;
+  private ringBackMat: THREE.MeshBasicMaterial;
+  private domeMat: THREE.MeshBasicMaterial;
+  private emberMat: THREE.PointsMaterial;
+  private emberGeo: THREE.BufferGeometry;
+  private light: THREE.PointLight | null;
+  private age = 0;
+  private readonly life = 0.9;
+  private readonly radius: number;
+  private readonly lightPeak: number;
+
+  constructor(scene: THREE.Scene, position: THREE.Vector3, radius = 16) {
+    this.radius = radius;
+    this.lightPeak = Math.min(110, 46 + radius * 3);
+    this.group = new THREE.Group();
+    this.group.position.copy(position);
+
+    // Leading fire-ring — hot orange front of the shockwave.
+    this.ringFrontMat = new THREE.MeshBasicMaterial({
+      color: 0xff7a24, transparent: true, opacity: 0.95,
+      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+    });
+    this.ringFront = new THREE.Mesh(NOVA_RING_GEO, this.ringFrontMat);
+    this.ringFront.position.y = 0.14;
+    this.ringFront.renderOrder = 991;
+    this.ringFront.userData.cannotReceiveAO = true;
+    this.group.add(this.ringFront);
+
+    // Trailing ring — deeper red, lags behind for a double-pulse front.
+    this.ringBackMat = new THREE.MeshBasicMaterial({
+      color: 0xd23a12, transparent: true, opacity: 0.8,
+      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+    });
+    this.ringBack = new THREE.Mesh(NOVA_RING_GEO, this.ringBackMat);
+    this.ringBack.position.y = 0.1;
+    this.ringBack.renderOrder = 990;
+    this.ringBack.userData.cannotReceiveAO = true;
+    this.group.add(this.ringBack);
+
+    // Flame dome — the heart of the cast bursts upward then fades.
+    this.domeMat = new THREE.MeshBasicMaterial({
+      color: 0xffb347, transparent: true, opacity: 1,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    this.dome = new THREE.Mesh(NOVA_DOME_GEO, this.domeMat);
+    this.dome.position.y = radius * 0.12;
+    this.dome.renderOrder = 993;
+    this.dome.userData.cannotReceiveAO = true;
+    this.group.add(this.dome);
+
+    // Ember burst — thrown outward + up, arcing back down under gravity.
+    const emberCount = 60;
+    this.emberGeo = new THREE.BufferGeometry();
+    const positions = new Float32Array(emberCount * 3);
+    const colors = new Float32Array(emberCount * 3);
+    this.emberVel = new Float32Array(emberCount * 3);
+    const EMBER_COLORS = [0xffd24a, 0xff8a1e, 0xff5a1e, 0xfff0b0];
+    for (let i = 0; i < emberCount; i++) {
+      const i3 = i * 3;
+      const ang = Math.random() * Math.PI * 2;
+      const outSpeed = 8 + Math.random() * radius * 0.9;
+      this.emberVel[i3] = Math.cos(ang) * outSpeed;
+      this.emberVel[i3 + 1] = 6 + Math.random() * 9; // upward kick
+      this.emberVel[i3 + 2] = Math.sin(ang) * outSpeed;
+      const c = EMBER_COLORS[(Math.random() * EMBER_COLORS.length) | 0];
+      colors[i3] = ((c >> 16) & 255) / 255;
+      colors[i3 + 1] = ((c >> 8) & 255) / 255;
+      colors[i3 + 2] = (c & 255) / 255;
+    }
+    this.emberGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    this.emberGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    this.emberMat = new THREE.PointsMaterial({
+      size: 0.4, vertexColors: true, transparent: true, opacity: 1,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    this.embers = new THREE.Points(this.emberGeo, this.emberMat);
+    this.embers.userData.cannotReceiveAO = true;
+    this.group.add(this.embers);
+
+    scene.add(this.group);
+
+    this.light = _explosionLightAcquire ? _explosionLightAcquire() : null;
+    if (this.light) {
+      this.light.color.setHex(0xff7a2a);
+      this.light.intensity = this.lightPeak;
+      this.light.distance = Math.max(36, radius * 4.5);
+      this.light.position.set(position.x, position.y + 2, position.z);
+    }
+  }
+
+  update(delta: number): boolean {
+    this.age += delta;
+    const t = this.age / this.life;
+    if (t >= 1) return true;
+
+    // Leading ring sweeps out fast and wide, fading as it goes.
+    const fFront = easeOut(t);
+    const sFront = this.radius * (0.18 + 1.05 * fFront);
+    this.ringFront.scale.set(sFront, 1, sFront);
+    this.ringFrontMat.opacity = 0.95 * Math.max(0, 1 - t);
+
+    // Trailing ring lags ~0.12s behind for the double-pulse look.
+    const tb = Math.max(0, (this.age - 0.12) / (this.life - 0.12));
+    const fBack = easeOut(tb);
+    const sBack = this.radius * (0.12 + 0.92 * fBack);
+    this.ringBack.scale.set(sBack, 1, sBack);
+    this.ringBackMat.opacity = 0.8 * Math.max(0, 1 - tb);
+
+    // Dome punches up in the first third, then dissolves.
+    const domeUp = easeOut(Math.min(1, this.age / 0.26));
+    this.dome.scale.set(this.radius * 0.55 * domeUp, this.radius * 0.42 * domeUp, this.radius * 0.55 * domeUp);
+    this.domeMat.opacity = Math.max(0, 1 - this.age / 0.4);
+    this.dome.visible = this.domeMat.opacity > 0.01;
+
+    // Embers fly out and arc down.
+    const pos = this.emberGeo.getAttribute('position') as THREE.BufferAttribute;
+    const arr = pos.array as Float32Array;
+    for (let i = 0; i < this.emberVel.length; i += 3) {
+      arr[i] += this.emberVel[i] * delta;
+      arr[i + 1] += this.emberVel[i + 1] * delta;
+      arr[i + 2] += this.emberVel[i + 2] * delta;
+      this.emberVel[i + 1] -= 16 * delta; // gravity
+      this.emberVel[i] *= 0.96;
+      this.emberVel[i + 2] *= 0.96;
+    }
+    pos.needsUpdate = true;
+    this.emberMat.opacity = Math.max(0, 1 - t);
+
+    if (this.light) this.light.intensity = this.lightPeak * Math.max(0, 1 - this.age / 0.32);
+
+    return false;
+  }
+
+  dispose(scene: THREE.Scene) {
+    scene.remove(this.group);
+    this.ringFrontMat.dispose();
+    this.ringBackMat.dispose();
+    this.domeMat.dispose();
+    this.emberMat.dispose();
+    this.emberGeo.dispose();
+    if (this.light) {
+      if (_explosionLightRelease) _explosionLightRelease(this.light);
+      else scene.remove(this.light);
+      this.light = null;
+    }
+    // NOVA_* geometries are shared — never dispose here.
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Ability Cast — a generic, tinted "signature move" burst played at the caster
+// the instant ANY character ability fires. It reads as a surge of the
+// ability's accent colour erupting from the player: an expanding ground energy
+// ring, a brief rising pillar of light, a hot core flash and a ring of rising
+// sparks. One reusable effect (recoloured per ability) gives every class a
+// distinct, readable activation without bespoke geometry per power.
+// ─────────────────────────────────────────────────────────────────────────────
+const CAST_PILLAR_GEO = new THREE.CylinderGeometry(0.7, 1.25, 4.4, 24, 1, true);
+
+export class AbilityCastEffect {
+  private group: THREE.Group;
+  private ring: THREE.Mesh;
+  private pillar: THREE.Mesh;
+  private core: THREE.Mesh;
+  private sparks: THREE.Points;
+  private sparkVel: Float32Array;
+  private ringMat: THREE.MeshBasicMaterial;
+  private pillarMat: THREE.MeshBasicMaterial;
+  private coreMat: THREE.MeshBasicMaterial;
+  private sparkMat: THREE.PointsMaterial;
+  private sparkGeo: THREE.BufferGeometry;
+  private light: THREE.PointLight | null;
+  private age = 0;
+  private readonly life = 0.72;
+
+  constructor(scene: THREE.Scene, position: THREE.Vector3, color = 0x22d3ee) {
+    const tint = new THREE.Color(color);
+    this.group = new THREE.Group();
+    this.group.position.set(position.x, 0.05, position.z);
+
+    // Expanding ground ring.
+    this.ringMat = new THREE.MeshBasicMaterial({
+      color: tint, transparent: true, opacity: 0.95,
+      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+    });
+    this.ring = new THREE.Mesh(NOVA_RING_GEO, this.ringMat);
+    this.ring.position.y = 0.12;
+    this.ring.renderOrder = 990;
+    this.ring.userData.cannotReceiveAO = true;
+    this.group.add(this.ring);
+
+    // Rising pillar of light (open cylinder, walls kept off the camera centre).
+    this.pillarMat = new THREE.MeshBasicMaterial({
+      color: tint, transparent: true, opacity: 0.5,
+      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+    });
+    this.pillar = new THREE.Mesh(CAST_PILLAR_GEO, this.pillarMat);
+    this.pillar.position.y = 2.2;
+    this.pillar.renderOrder = 991;
+    this.pillar.userData.cannotReceiveAO = true;
+    this.group.add(this.pillar);
+
+    // Hot core flash.
+    this.coreMat = new THREE.MeshBasicMaterial({
+      color: tint.clone().lerp(new THREE.Color(0xffffff), 0.5), transparent: true, opacity: 0.9,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    this.core = new THREE.Mesh(NOVA_DOME_GEO, this.coreMat);
+    this.core.position.y = 1.1;
+    this.core.renderOrder = 992;
+    this.core.userData.cannotReceiveAO = true;
+    this.group.add(this.core);
+
+    // Rising spark ring.
+    const sparkCount = 30;
+    this.sparkGeo = new THREE.BufferGeometry();
+    const positions = new Float32Array(sparkCount * 3);
+    const colors = new Float32Array(sparkCount * 3);
+    this.sparkVel = new Float32Array(sparkCount * 3);
+    const hot = tint.clone().lerp(new THREE.Color(0xffffff), 0.35);
+    for (let i = 0; i < sparkCount; i++) {
+      const i3 = i * 3;
+      const ang = Math.random() * Math.PI * 2;
+      const out = 1.5 + Math.random() * 2.0;
+      positions[i3] = Math.cos(ang) * 0.6;
+      positions[i3 + 1] = 0.2 + Math.random() * 0.4;
+      positions[i3 + 2] = Math.sin(ang) * 0.6;
+      this.sparkVel[i3] = Math.cos(ang) * out;
+      this.sparkVel[i3 + 1] = 3.5 + Math.random() * 4.0; // strong upward rush
+      this.sparkVel[i3 + 2] = Math.sin(ang) * out;
+      colors[i3] = hot.r; colors[i3 + 1] = hot.g; colors[i3 + 2] = hot.b;
+    }
+    this.sparkGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    this.sparkGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    this.sparkMat = new THREE.PointsMaterial({
+      size: 0.3, vertexColors: true, transparent: true, opacity: 1,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    this.sparks = new THREE.Points(this.sparkGeo, this.sparkMat);
+    this.sparks.userData.cannotReceiveAO = true;
+    this.group.add(this.sparks);
+
+    scene.add(this.group);
+
+    // Brief tinted light so the cast actually illuminates the player + ground.
+    this.light = _explosionLightAcquire ? _explosionLightAcquire() : null;
+    if (this.light) {
+      this.light.color.copy(tint);
+      this.light.intensity = 26;
+      this.light.distance = 22;
+      this.light.position.set(position.x, 1.6, position.z);
+    }
+  }
+
+  update(delta: number): boolean {
+    this.age += delta;
+    const t = this.age / this.life;
+    if (t >= 1) return true;
+
+    // Ground ring sweeps out + fades.
+    const rs = 0.6 + easeOut(t) * 5.4;
+    this.ring.scale.set(rs, 1, rs);
+    this.ringMat.opacity = 0.95 * (1 - t);
+
+    // Pillar rises (scale.y up from the floor) then dissolves.
+    const up = easeOut(Math.min(1, this.age / 0.3));
+    this.pillar.scale.set(0.6 + 0.5 * up, up, 0.6 + 0.5 * up);
+    this.pillarMat.opacity = 0.5 * Math.max(0, 1 - this.age / 0.45);
+
+    // Core flash — quick punch out.
+    const cs = 0.4 + easeOut(Math.min(1, this.age / 0.12)) * 1.3;
+    this.core.scale.setScalar(cs);
+    this.coreMat.opacity = Math.max(0, 1 - this.age / 0.2);
+    this.core.visible = this.coreMat.opacity > 0.01;
+
+    // Sparks rise + spread under light gravity.
+    const pos = this.sparkGeo.getAttribute('position') as THREE.BufferAttribute;
+    const arr = pos.array as Float32Array;
+    for (let i = 0; i < this.sparkVel.length; i += 3) {
+      arr[i] += this.sparkVel[i] * delta;
+      arr[i + 1] += this.sparkVel[i + 1] * delta;
+      arr[i + 2] += this.sparkVel[i + 2] * delta;
+      this.sparkVel[i + 1] -= 6 * delta;
+    }
+    pos.needsUpdate = true;
+    this.sparkMat.opacity = Math.max(0, 1 - t);
+
+    if (this.light) this.light.intensity = 26 * Math.max(0, 1 - this.age / 0.28);
+
+    return false;
+  }
+
+  dispose(scene: THREE.Scene) {
+    scene.remove(this.group);
+    this.ringMat.dispose();
+    this.pillarMat.dispose();
+    this.coreMat.dispose();
+    this.sparkMat.dispose();
+    this.sparkGeo.dispose();
+    if (this.light) {
+      if (_explosionLightRelease) _explosionLightRelease(this.light);
+      else scene.remove(this.light);
+      this.light = null;
+    }
+    // NOVA_* + CAST_PILLAR geometries are shared — never dispose here.
+  }
+}
+
 // Robot hit effect — the enemies are robots, so hits throw off hot sparks and
 // bits of metal (electric yellow/orange/white with the occasional cyan arc),
 // not blood. Sparks fly out from the impact, then arc down under gravity.
