@@ -53,7 +53,7 @@ Pick one of **eight distinct characters** before each run — available in Class
 | Heavy | **Bulwark** | 15s | 5s | Frontal riot shield soaks incoming damage | +20% max HP, −8% speed |
 | Operative | **Focus Fire** | 15s | 5s | Overclock your weapon: faster fire rate + bigger damage | +10% headshot damage |
 | Pyro | **Firestorm** | 13s | Instant | Detonates an AoE shockwave that scorches nearby enemies | Burning bullets (extra damage per hit) |
-| Medic | **Field Triage** | 16s | Instant | Instantly restores ⅓ of max HP | Regenerate 0.5 HP / sec |
+| Medic | **Field Triage** | 14s | Instant | Quick field patch — restores a small amount of HP (a stabiliser, not a full heal) | Regenerate 0.5 HP / sec |
 | Engineer | **Overclock** | 14s | 4s | Snap-reload, then unlimited ammo | −15% reload time |
 | Phantom | **Cloak** | 15s | 4s | Vanish and phase through enemies, breaking their tracking | +15% Phantom power-up duration |
 
@@ -71,12 +71,14 @@ Premium low-poly creatures with chest cores, shoulder plating, knee/elbow pads, 
 | **Sniper (Ranged)** | **Cyan** | **40** | **Wave 4** | **Stops at distance, charges a telegraphed energy bolt, retreats** |
 | Boss | Violet | 300 | Wave 5 | Tactical, coordinates with others |
 
+> Every type now approaches as a **coordinated squad** — fanning out and surrounding you from multiple sides rather than charging single-file (see **AI Systems** below).
+
 ### Mini-bosses & Boss Phases
 - **Crowned Elite** — every wave divisible by 5 (but not boss waves) spawns a tank wearing a yellow crown with **4× HP** and **3× score payout**, announced with a "New Threat" banner.
 - **Boss Enrage** — full bosses transition into **Phase 2** at 50% HP: **+35% speed, +30% damage**, paired with a damage flash, screen shake, low-pitched roar and centred "BOSS ENRAGED" banner.
 
 ### Environmental Threats
-- **Explosive Barrels** — red metal barrels scattered across each map. Bullet hits chip them down; a fatal hit detonates in a radius that damages enemies *and the player*, and **chain-reacts** through any other barrel in the blast.
+- **Explosive Barrels** — red metal barrels scattered across each map. They're **solid** — you can't walk through them, so they double as cover (and a trap). Bullet hits chip them down; a fatal hit detonates in a radius that damages enemies *and the player*, and **chain-reacts** through any other barrel in the blast. **Casting any character ability or using a power-up next to one sets it off** — e.g. a Ranger dashing over a barrel touches off a chain mid-charge.
 - **Ranged Sentinels** — stationary laser turrets (3–4 per map on harder difficulties, dormant until wave 3). Telegraph each shot with a glowing red head before firing a hitscan beam. Trees block line of sight. Destroying one drops **+150 score**.
 
 ---
@@ -138,8 +140,9 @@ Every weapon has its own **L0 → L10 mastery** ladder. Kills grant XP scaled by
 
 **AI Systems**
 - Adaptive difficulty that adjusts to your skill in real time
-- Enemy AI with state-machine behavior: patrol, hunt, ambush, coordinate, retreat
-- Steering-based navigation — repulsion avoidance and wall-sliding so enemies arc around trees instead of getting stuck
+- **Strategic squad approach** — every enemy commits to its *own* stable approach lane, so a wave fans into a two-sided pincer and **spirals in from every side at once** instead of trickling at you in a straight line. Flankers swing wide around the sides, chargers drive a tighter line, ranged snipers hang back and kite, and the ring tightens as they close for the kill. Spawns are spread evenly around the player to feed the surround. The whole behaviour tick is allocation-free so it stays cheap with a full screen of enemies.
+- Per-enemy state machine: hunt · attack · retreat · investigate · patrol
+- **Context-steering navigation** — repulsion + tangential avoidance and wall-sliding arc enemies around trees, with a sampling-based stuck-recovery search that reliably finds the way out of any pocket
 - Bullet dodging on agile enemies
 - Combat coaching with live tips
 - Predictive enemy spawning
@@ -187,7 +190,7 @@ Every weapon has its own **L0 → L10 mastery** ladder. Kills grant XP scaled by
 - Skill tree, mission display, stats gallery
 - Themed tutorial that freezes the world while you read each step
 - **Full settings menu** — Graphics (Low / Medium / High / Ultra), Audio, Gameplay (ragdoll, auto-reload, adaptive difficulty), Controls, UI — all persisted
-- **Key Bindings Editor** — 11 fully rebindable keyboard actions (Move, Jump, Sprint, Crouch, Dash, Reload, Power-Up, Tactical Map)
+- **Key Bindings Editor** — 12 fully rebindable keyboard actions (Move, Jump, Sprint, Crouch, Dash, Reload, Power-Up, Tactical Map, Inspect Weapon)
 - **Colorblind modes** — Protanopia, Deuteranopia and Tritanopia correction filters
 - **Photo Mode** — from the Pause Menu; 8 filter presets (Original, Vivid, Noir, Sepia, Cool, Warm, Dramatic, Faded) + manual Brightness / Contrast / Saturation; captures cloud-saved to Profile → Photos
 - **Shader warmup screen** — circular progress ring + staged phase checklist (Compiling shaders → Warming materials → Priming post-processing → Spawning the world) on game start
@@ -204,7 +207,7 @@ Every weapon has its own **L0 → L10 mastery** ladder. Kills grant XP scaled by
 
 ## 🎁 Power-Ups
 
-Spawn between waves, with a chance to drop from fallen enemies. The player can hold **one looted power at a time** — collect a crate, then press `E` to activate it.
+Power-ups are a **genuine reward, not a stream**: they drop only **rarely** from fallen enemies, with each wave **hard-capped at ~3–4** (just a **single drop in the opening wave**) and the few drops paced out so they never clump. The player can hold **one looted power at a time** — collect a crate, then press `E` to activate it.
 
 - **Ammo Crate** — Refill your current magazine
 - **Speed Boost** — Faster movement (10s)
@@ -236,7 +239,8 @@ Plus **Killstreak Airdrops** delivered straight to you (see Killstreak Airdrops 
 | Q | Dash / Active Ability |
 | R | Reload |
 | 1–7 / Scroll | Switch weapons |
-| E / F / V / B | Abilities |
+| E | Use held power-up |
+| F | Inspect weapon (CS:GO-style — turns the gun in to show it off) |
 | M | Toggle expanded tactical map |
 | ESC | Pause |
 

@@ -2024,7 +2024,13 @@ const ForestSurvivalGame = () => {
       console.warn('[App] Environment map generation failed:', err);
     }
 
-    void loadHDRIEnvironment(renderer, selectedMap, graphicsQuality)
+    // Kicked off now (parallel with everything else), but the promise is
+    // CAPTURED so the shader warmup can await the swap before it hands the
+    // canvas to gameplay — otherwise the async HDRI replaces the local PMREM a
+    // couple of seconds INTO the game and the lit/graded look visibly shifts
+    // right after the loader hides. Awaiting it (capped) in warmup means the
+    // final image-based lighting is already on screen when the loader lifts.
+    const hdriReadyPromise = loadHDRIEnvironment(renderer, selectedMap, graphicsQuality)
       .then((loadedEnvironment) => {
         if (!loadedEnvironment) return;
         if (isSceneDisposed) {
@@ -2724,6 +2730,14 @@ const ForestSurvivalGame = () => {
     // continuous spawner endlessly topping the count back up. (Unused in
     // tutorial mode, which has no wave progression.)
     let waveEnemiesRemaining = 0;
+    // ── PER-WAVE POWER-UP BUDGET ─────────────────────────────────────────
+    // Power-ups are a genuine reward, not a stream. Each wave gets a hard CAP
+    // on how many can appear (counting the milestone wave crate). Wave 1 gets a
+    // single drop; later waves ~3–4. A short "kills since last drop" cooldown
+    // spreads the few drops across the wave instead of clumping at the start.
+    let wavePowerupDrops = 0;
+    let wavePowerupCap = 1;
+    let killsSinceLastDrop = 0;
     let isGameOver = false;
     let paused = false;
     let combo = 0;
@@ -3612,13 +3626,19 @@ const ForestSurvivalGame = () => {
     const mapSpawnReach = mapConfig.enemySpawnRadiusMult || 1.0;
     const mapVisibilityReach = mapConfig.visibilityMult || 1.0;
 
-    const findEnemySpawnSpot = (baseDist: number, radius: number) => {
+    const findEnemySpawnSpot = (baseDist: number, radius: number, preferredAngle?: number) => {
       const ENEMY_RADIUS = radius;
       let lastX = 0, lastZ = 0;
       for (let ring = 0; ring < 4; ring++) {
         const dist = baseDist + ring * 6;
         for (let a = 0; a < 6; a++) {
-          const angle = Math.random() * Math.PI * 2;
+          // With a preferred bearing (batch angular spread), try angles clustered
+          // around it first — jitter widening per attempt — so a spawning squad
+          // fans out around the player from distinct sides instead of bunching
+          // on one flank. Falls back to a random angle if terrain blocks them.
+          const angle = preferredAngle !== undefined
+            ? preferredAngle + (Math.random() - 0.5) * (0.5 + a * 0.28)
+            : Math.random() * Math.PI * 2;
           const x = Math.cos(angle) * dist + camera.position.x;
           const z = Math.sin(angle) * dist + camera.position.z;
           lastX = x; lastZ = z;
@@ -3716,6 +3736,10 @@ const ForestSurvivalGame = () => {
     const spawnEnemyBatch = (count: number, typeOverride?: 'normal' | 'fast' | 'tank' | 'boss' | 'ranged', miniBoss = false): number => {
       const adaptiveMax = smartEnemyManager.getCurrentMaxEnemies();
       const hardish = classicDifficulty === 'hard' || classicDifficulty === 'adaptive';
+      // Spread the batch's spawn bearings evenly around the player (random
+      // start angle + even increments). Combined with the surround AI, the wave
+      // closes in from every side instead of trickling out of one direction.
+      const spreadBase = Math.random() * Math.PI * 2;
       let spawned = 0;
       for (let i = 0; i < count; i++) {
         if (enemies.length >= adaptiveMax || !smartEnemyManager.canSpawnMore()) break;
@@ -3753,7 +3777,9 @@ const ForestSurvivalGame = () => {
         // Bosses are bigger (scale 2.0) so they need a wider clearance.
         const enemyRadius = type === 'boss' ? 2.0 : type === 'tank' ? 1.6 : 1.2;
         const baseDist = (42 + Math.random() * 26) * mapSpawnReach;
-        const spot = findEnemySpawnSpot(baseDist, enemyRadius);
+        // Each enemy in the batch gets its own evenly-spaced bearing slot.
+        const preferredAngle = spreadBase + (i / Math.max(1, count)) * Math.PI * 2;
+        const spot = findEnemySpawnSpot(baseDist, enemyRadius, preferredAngle);
         const enemy = createEnemy(spot.x, spot.z, type);
         if (enemy) {
           // Mini-Boss elevation: quadruple HP, mark the flag, and slap a
@@ -3810,13 +3836,26 @@ const ForestSurvivalGame = () => {
     };
 
     // Wave-start loot drop — a single, truly-random power crate (same pool as
-    // enemy loot). One spawn keeps powers a genuine reward, not a stream.
+    // enemy loot). One spawn keeps powers a genuine reward, not a stream. It
+    // counts against the per-wave power-up budget so the wave's total stays
+    // within the ~3–4 cap.
     const spawnWavePowerUps = () => {
       const spot = findPickupSpot(camera.position.x, camera.position.z, 20, 35);
       powerUps.push(createPowerUp(spot.x, spot.z, randomLoot()));
+      wavePowerupDrops++;
     };
 
     const spawnWave = () => {
+      // Reset the per-wave power-up budget. Wave 1: a single drop (significantly
+      // less). Wave 2: two. Wave 3+: three, occasionally four. Tutorial: a steady
+      // paced trickle. `killsSinceLastDrop` starts negative-ish at 0 so the first
+      // couple of kills can't immediately drop.
+      wavePowerupDrops = 0;
+      killsSinceLastDrop = 0;
+      wavePowerupCap = isTutorialMode ? 99
+        : wave <= 1 ? 1
+        : wave === 2 ? 2
+        : 3 + (Math.random() < 0.4 ? 1 : 0);
       if (isTutorialMode) {
         // Tutorial — no wave progression. A light practice group is seeded
         // here and topped up endlessly by continuousSpawn().
@@ -5539,12 +5578,18 @@ const ForestSurvivalGame = () => {
         // Killing blow came from a guest — hand them the credit.
         mp.broadcastEnemyKillCredit(killerId!, enemy.netId, enemy.scoreValue, isCritical);
       }
-      // Enemy loot — a defeated enemy may drop a single, TRULY RANDOM power
-      // crate (any power, equal odds) instead of the old guaranteed ammo.
-      // The player can only ever hold one looted power at a time, so this is
-      // the sole resupply path now. Scavenger skill nudges the drop rate.
-      // Snap the drop to the nearest clear spot so it isn't buried in a tree.
-      if (Math.random() < 0.26 * (1 + skillBonus('powerupSpawnRate'))) {
+      // Enemy loot — a defeated enemy MAY drop a single, truly-random power
+      // crate, but the whole wave is capped (see the per-wave power-up budget)
+      // so powers stay a real reward, not a stream. Gated by: budget remaining,
+      // a short kills-since-last-drop cooldown (spreads the few drops across the
+      // wave), and a modest per-kill roll (Scavenger skill nudges it up). Snap
+      // the drop to the nearest clear spot so it isn't buried in a tree.
+      killsSinceLastDrop++;
+      if (
+        wavePowerupDrops < wavePowerupCap &&
+        killsSinceLastDrop >= 3 &&
+        Math.random() < 0.22 * (1 + skillBonus('powerupSpawnRate'))
+      ) {
         const ex = enemy.mesh.position.x;
         const ez = enemy.mesh.position.z;
         const PICKUP_RADIUS = 1.0;
@@ -5554,6 +5599,8 @@ const ForestSurvivalGame = () => {
           dropX = spot.x; dropZ = spot.z;
         }
         powerUps.push(createPowerUp(dropX, dropZ, randomLoot()));
+        wavePowerupDrops++;
+        killsSinceLastDrop = 0;
       }
       updateGameState();
       // Wave complete — only once the whole wave budget has spawned AND
@@ -8647,6 +8694,11 @@ const ForestSurvivalGame = () => {
             }
           }
           // Light separation from other enemies — grid lookup, was O(N²).
+          // Scaled DOWN close to the player so a crowd doesn't shove each other
+          // sideways into an endless orbit — near the kill they pack in and
+          // commit to the attack (a touch of overlap reads fine; the wide
+          // attack arc + overlap-damage handle it) rather than circling forever.
+          const sepScale = distance < 5 ? 0.4 : distance < 8 ? 0.7 : 1.0;
           const nearbyEnemies = enemyGrid.queryRadius(epx, epz, 3);
           for (let ne = 0; ne < nearbyEnemies.length; ne++) {
             const otherIdx = nearbyEnemies[ne];
@@ -8658,7 +8710,7 @@ const ForestSurvivalGame = () => {
             if (Math.abs(ox) > 2.6 || Math.abs(oz) > 2.6) continue;
             const od = Math.hypot(ox, oz);
             if (od > 0.001 && od < 2.6) {
-              const push = ((2.6 - od) / 2.6) * 0.95;
+              const push = ((2.6 - od) / 2.6) * 0.95 * sepScale;
               steerX += (ox / od) * push;
               steerZ += (oz / od) * push;
             }
@@ -9334,6 +9386,19 @@ const ForestSurvivalGame = () => {
         clearHitMarkers();
         clearDamageDirections();
       });
+
+      // ── ENVIRONMENT (image-based lighting) ─────────────────────────────
+      // Wait (capped) for the async HDRI to replace the local PMREM fallback
+      // BEFORE the post-FX warmup frames below render — so the GPU uploads the
+      // HDRI and bakes the composed look with the FINAL lighting, and the
+      // canvas the loader hands over already matches gameplay. Without this the
+      // HDRI swapped in a couple of seconds into play and the whole graded /
+      // lit image visibly shifted right after the loader hid. Non-critical:
+      // a slow/failed fetch just falls through to the PMREM fallback.
+      await stage('Environment', false, () =>
+        withTimeout(hdriReadyPromise, 4000, 'HDRI Environment').catch(() => { /* keep PMREM fallback */ }),
+      );
+      await yieldFrame();
 
       // ── STAGE 6: commit a couple of composed frames ────────────────
       // Failure here usually means a post-FX pass blew up — recoverable
