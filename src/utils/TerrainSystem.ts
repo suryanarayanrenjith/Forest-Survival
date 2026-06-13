@@ -414,15 +414,8 @@ export function applyGroundTerrainShader(
       // then slowly recede as the ground dries.
       float wetAmt = max(uTWetness, uRainWet);
       if (wetAmt > 0.001) {
-        float pudNoise = puddleField(gWP);
-        // Thresholds sit ~1σ above the field mean so pools stay distinct
-        // patches in the low spots (≈15% coverage dry, ≈35% fully soaked) —
-        // NOT a floor-wide mirror. The trig field is wider-spread than the
-        // old fbm, so these are deliberately higher than the v3 values; if
-        // the whole arena ever reads white/sky-coloured again, suspect this
-        // pair first. KEEP IN SYNC with samplePuddleMask() below.
-        float pud = smoothstep(0.66 - uRainWet * 0.16, 0.88 - uRainWet * 0.2, pudNoise);
-        pud *= 0.72 + 0.28 * gFbm(gWP * 0.6 + 7.0);
+        float pudNoise = gFbm(gWP * 0.06 + 21.0);
+        float pud = smoothstep(0.54 - uRainWet * 0.16, 0.8 - uRainWet * 0.2, pudNoise);
         gWet = pud * wetAmt;
         diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 0.42, gWet);
         // Rain also soak-darkens the ground BETWEEN the puddles.
@@ -531,25 +524,10 @@ export function applyGroundTerrainShader(
         // Fresnel — grazing angles turn the pool into a true mirror.
         float fres = 0.05 + 0.95 * pow(1.0 - max(dot(viewDirW, puddleN), 0.0), 5.0);
         // Sharpest reflection in a full, still puddle; rain agitation and
-        // partial dryness rough it up. Floor 0.05 keeps the mirror crisp
-        // without resolving to a perfect sky-copy.
-        float mirrorRough = 0.05 + (1.0 - gWet) * 0.20 + uRainRipple * 0.06;
+        // partial dryness rough it up.
+        float mirrorRough = 0.05 + (1.0 - gWet) * 0.22 + uRainRipple * 0.08;
         vec3 reflCol = textureCubeUV(envMap, envMapRotation * refW, mirrorRough).rgb;
-        // uEnvTint folds the live weather into the static HDRI bounce so a
-        // storm-dark sky reflects storm-dark. Energy is BOUNDED (max ≈0.9 at
-        // a fully grazing, fully soaked pixel) — at distance every ground
-        // pixel hits high fresnel, and an uncapped term turns the whole
-        // floor into a white sky-mirror (the "white ground" bug).
-        reflectedLight.indirectSpecular +=
-          reflCol * uEnvTint * envMapIntensity * gWet * (0.22 + 0.68 * fres);
-
-        // Sun glint — a razor-thin specular streak across the water, the
-        // detail that sells "real reflection" at a glance. Day only;
-        // fresnel-weighted so it blazes at grazing angles.
-        vec3 glintHalf = normalize(sunDir + viewDirW);
-        float glint = pow(max(dot(puddleN, glintHalf), 0.0), 720.0);
-        reflectedLight.directSpecular +=
-          uSunColor * glint * gWet * fres * 2.4 * (1.0 - uIsNight);
+        reflectedLight.indirectSpecular += reflCol * envMapIntensity * gWet * (0.30 + 0.70 * fres);
       }
       #endif
 
@@ -566,47 +544,4 @@ export function applyGroundTerrainShader(
       reflectedLight.indirectDiffuse += diffuseColor.rgb * backSpill;
     }`,
   );
-}
-
-// ── CPU twin of the GLSL puddle mask ────────────────────────────────────────
-// The puddle pattern is a band-limited trig field (precision-stable, same
-// value in float64 JS and float32 GLSL), so gameplay can ask "is there water
-// at (x, z)?" and get an answer that agrees with the pixels. Used to place
-// footstep / movement splash VFX on actual puddles.
-// KEEP IN SYNC with the GLSL puddleField() in TERRAIN_FRAG_COMMON.
-
-/** Raw puddle field value (~0..1, puddles pool where it's high). */
-export function samplePuddleField(x: number, z: number, seed: number): number {
-  const qx = x * 0.3;
-  const qz = z * 0.3;
-  let v = Math.sin(qx + seed) * Math.cos(qz * 0.93 + seed * 0.7);
-  v += Math.sin(qx * 1.83 + qz * 0.67 + seed * 1.9) * 0.6;
-  v += Math.cos(qx * 0.49 - qz * 1.27 + seed * 2.6) * 0.75;
-  v += Math.sin((qx + qz) * 1.37 - seed * 1.2) * 0.45;
-  return v * 0.178 + 0.5;
-}
-
-function smoothstepJS(edge0: number, edge1: number, x: number): number {
-  const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
-  return t * t * (3 - 2 * t);
-}
-
-/**
- * Puddle coverage 0..1 at a world position — mirrors the shader's `pud`
- * mask (same thresholds, same rain-growth widening). `rainWet` is the live
- * weather soak (uRainWet); `baseWetness` is the map's static terrain
- * wetness (swamp pools exist even in dry weather). Returns 0 when there is
- * no water at all.
- */
-export function samplePuddleMask(
-  x: number,
-  z: number,
-  seed: number,
-  rainWet: number,
-  baseWetness = 0,
-): number {
-  const wetAmt = Math.max(baseWetness, rainWet);
-  if (wetAmt <= 0.001) return 0;
-  const pud = smoothstepJS(0.66 - rainWet * 0.16, 0.88 - rainWet * 0.2, samplePuddleField(x, z, seed));
-  return pud * wetAmt;
 }

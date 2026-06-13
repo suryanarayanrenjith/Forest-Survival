@@ -139,8 +139,6 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     enemySpawnRadiusMult: 1.0,
     bloomMultiplier: 1.12,
     bloomThresholdBias: -0.04,
-    groundRoughness: 0.86,
-    groundMetalness: 0.02,
     // SHOWCASE GRADE — the forest is the flagship map, pushed slightly past
     // the neutral 1.0 baseline: thicker canopy god rays, a denser breathing
     // haze, richer foliage vibrance and a dewier, more tactile floor. The
@@ -166,15 +164,13 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       volumetricLight: 1.1,            // warm golden bounce under the canopy
       fillLight: 1.0,
       rimLight: 1.1,                   // leaf-edge / trunk-edge sun rim
-      groundSpecular: 0.88,            // mossy sheen; rain now supplies the strong wet look
+      groundSpecular: 1.08,            // dew glint on the moss
       groundNormal: 1.12,              // more tactile root-and-humus relief
       groundPatch: 1.1,
     },
     // Soft, mossy forest floor — gentle rolling humus broken by exposed roots
     // and damp earth. Warm/cool leaf-litter patches over a mossy rock talus.
-    // Kept only lightly damp by default. The weather system now supplies the
-    // strong rain soak; high always-on wetness made clear forest floors behave
-    // like pale sky mirrors and read as accidental snow.
+    // Wetness raised for a dewy, just-rained sheen that catches the god rays.
     terrain: {
       amplitude: 3.0,
       frequency: 0.016,
@@ -186,7 +182,7 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       rockColor: 0x3a4a32,
       detailColor: [0.95, 1.0, 0.82],
       detailScale: 1.15,
-      wetness: 0.08,
+      wetness: 0.3,
     },
   },
 
