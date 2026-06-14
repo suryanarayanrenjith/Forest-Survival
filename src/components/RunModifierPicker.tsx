@@ -1,30 +1,54 @@
 import { useEffect, useState } from 'react';
-import { Skull, Flame, ShieldOff, Users, Crosshair, Zap, ArrowRight, type LucideIcon } from 'lucide-react';
-import { RUN_MODIFIERS, type RunModifierId } from '../utils/RunModifierSystem';
+import { Skull, Flame, ShieldOff, Users, Crosshair, Zap, ArrowRight, Dices, type LucideIcon } from 'lucide-react';
+import { generateStakeOptions, type RunModifier, type RunModifierCategory } from '../utils/RunModifierSystem';
 import { detectIsTouch } from '../hooks/useDeviceInfo';
 
 const IS_TOUCH = detectIsTouch();
 
 interface RunModifierPickerProps {
-  /** Three modifier ids rolled for today by App.tsx. */
-  options: RunModifierId[];
+  /** Initial trio rolled by App.tsx. The picker can re-roll locally. */
+  options: RunModifier[];
   /** Player picked one (or chose to skip). */
-  onChoose: (id: RunModifierId | null) => void;
+  onChoose: (modifier: RunModifier | null) => void;
   onBack: () => void;
 }
 
-const ICON_FOR: Record<RunModifierId, LucideIcon> = {
-  headshots_only: Crosshair,
-  berserker: Flame,
-  glass_cannon: ShieldOff,
-  swarm_mode: Users,
-  one_in_the_chamber: Zap,
-  bullet_hell: Skull,
+const ICON_FOR: Record<RunModifierCategory, LucideIcon> = {
+  offense: Flame,
+  fragility: ShieldOff,
+  horde: Users,
+  scarcity: Zap,
+  precision: Crosshair,
+  chaos: Skull,
 };
 
-const RunModifierPicker = ({ options, onChoose, onBack }: RunModifierPickerProps) => {
+// Per-archetype accent palette — each card reads as visually distinct, not a
+// uniform rose grid. [border, glow rgba, chip bg, icon/text tint].
+const ACCENT_FOR: Record<RunModifierCategory, {
+  ring: string; glow: string; chip: string; text: string; soft: string;
+}> = {
+  offense:   { ring: '#fb923c', glow: 'rgba(251,146,60,0.45)',  chip: 'rgba(251,146,60,0.14)',  text: '#fed7aa', soft: 'rgba(251,146,60,0.07)' },
+  fragility: { ring: '#f472b6', glow: 'rgba(244,114,182,0.45)', chip: 'rgba(244,114,182,0.14)', text: '#fbcfe8', soft: 'rgba(244,114,182,0.07)' },
+  horde:     { ring: '#a78bfa', glow: 'rgba(167,139,250,0.45)', chip: 'rgba(167,139,250,0.14)', text: '#ddd6fe', soft: 'rgba(167,139,250,0.07)' },
+  scarcity:  { ring: '#fbbf24', glow: 'rgba(251,191,36,0.45)',  chip: 'rgba(251,191,36,0.14)',  text: '#fde68a', soft: 'rgba(251,191,36,0.07)' },
+  precision: { ring: '#22d3ee', glow: 'rgba(34,211,238,0.45)',  chip: 'rgba(34,211,238,0.14)',  text: '#a5f3fc', soft: 'rgba(34,211,238,0.07)' },
+  chaos:     { ring: '#f43f5e', glow: 'rgba(244,63,94,0.5)',    chip: 'rgba(244,63,94,0.14)',   text: '#fda4af', soft: 'rgba(244,63,94,0.07)' },
+};
+
+const RunModifierPicker = ({ options: initialOptions, onChoose, onBack }: RunModifierPickerProps) => {
+  // Local copy so the player can re-roll the trio without leaving the screen —
+  // sells the "randomized stakes" fantasy. Seeded fresh from App on mount.
+  const [options, setOptions] = useState<RunModifier[]>(initialOptions);
   // 0/1/2 = mutator cards. -1 = "Play without" (skip).
   const [focusedIdx, setFocusedIdx] = useState(0);
+  const [rerollSpin, setRerollSpin] = useState(false);
+
+  const reroll = () => {
+    setOptions(generateStakeOptions());
+    setFocusedIdx(0);
+    setRerollSpin(true);
+    window.setTimeout(() => setRerollSpin(false), 420);
+  };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -39,6 +63,7 @@ const RunModifierPicker = ({ options, onChoose, onBack }: RunModifierPickerProps
       if (code === 'Digit0' || k === '0' || k === 's' || k === 'S') {
         e.preventDefault(); e.stopPropagation(); setFocusedIdx(-1); return;
       }
+      if (k === 'r' || k === 'R') { e.preventDefault(); e.stopPropagation(); reroll(); return; }
       if (k === 'Escape') { e.preventDefault(); e.stopPropagation(); onBack(); return; }
       if (k === 'ArrowLeft' || k === 'a' || k === 'A') {
         e.preventDefault(); e.stopPropagation();
@@ -75,53 +100,59 @@ const RunModifierPicker = ({ options, onChoose, onBack }: RunModifierPickerProps
           here — subtle enough that the slide doesn't read as a moving sheet. */}
       <div
         className="fixed inset-0 z-[1] pointer-events-none"
-        style={{ background: 'radial-gradient(ellipse 55% 45% at center, rgba(248,113,113,0.22) 0%, transparent 62%)' }}
+        style={{ background: 'radial-gradient(ellipse 55% 45% at center, rgba(248,113,113,0.20) 0%, transparent 62%)' }}
       />
       <div className="relative z-20 w-full max-w-3xl">
         {/* Header */}
-        <div className="mb-8 text-center">
+        <div className="mb-7 text-center">
           <p className="text-[10px] font-bold uppercase tracking-[0.5em] text-rose-300/85">
-            Daily Mutator · {new Date().toISOString().slice(0, 10)}
+            Randomized Stakes · roll the dice
           </p>
           <h2 className="mt-2 text-3xl font-black tracking-tight text-white sm:text-4xl">
             Raise the stakes
           </h2>
           <p className="mt-2 text-[13px] text-gray-400">
-            A risk for a reward. Each card mutates the whole run — and pays out a higher score multiplier.
+            Three freshly-rolled mutators — each warps the run a different way and pays out a higher score multiplier.
           </p>
         </div>
 
         {/* Three modifier cards */}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          {options.map((id, idx) => {
-            const mod = RUN_MODIFIERS[id];
-            const Icon = ICON_FOR[id] ?? Skull;
+          {options.map((mod, idx) => {
+            const Icon = ICON_FOR[mod.category] ?? Skull;
+            const accent = ACCENT_FOR[mod.category];
             const isFocused = idx === focusedIdx;
             return (
               <button
-                key={id}
+                key={mod.id}
                 type="button"
-                onClick={() => onChoose(id)}
+                onClick={() => onChoose(mod)}
                 onMouseEnter={() => setFocusedIdx(idx)}
-                className={`group relative flex flex-col gap-3 rounded-2xl border bg-rose-500/[0.07] p-5 text-left backdrop-blur-md transition-all ${
-                  isFocused
-                    ? 'border-rose-300 scale-[1.03]'
-                    : 'border-rose-400/30 hover:border-rose-300/55 hover:bg-rose-500/[0.13] hover:scale-[1.02]'
-                }`}
-                style={isFocused ? { boxShadow: '0 0 32px rgba(248,113,113,0.45)' } : undefined}
+                className="group relative flex flex-col gap-3 rounded-2xl border p-5 text-left backdrop-blur-md transition-all"
+                style={{
+                  borderColor: isFocused ? accent.ring : `${accent.ring}55`,
+                  background: isFocused ? accent.chip : accent.soft,
+                  transform: isFocused ? 'scale(1.03)' : undefined,
+                  boxShadow: isFocused ? `0 0 34px ${accent.glow}` : undefined,
+                }}
               >
                 <kbd
-                  className={`absolute -top-2 -right-2 flex h-7 w-7 items-center justify-center rounded-lg border bg-[#0b0f15] text-[12px] font-black tabular-nums text-rose-200 shadow-lg ${
-                    isFocused ? 'border-rose-300' : 'border-rose-400/40'
-                  }`}
+                  className="absolute -top-2 -right-2 flex h-7 w-7 items-center justify-center rounded-lg border bg-[#0b0f15] text-[12px] font-black tabular-nums shadow-lg"
+                  style={{ borderColor: isFocused ? accent.ring : `${accent.ring}66`, color: accent.text }}
                 >
                   {idx + 1}
                 </kbd>
                 <div className="flex items-center gap-3">
-                  <span className="flex h-11 w-11 items-center justify-center rounded-xl border border-rose-400/40 bg-rose-500/15">
-                    <Icon className="h-5 w-5 text-rose-200" strokeWidth={2.25} />
+                  <span
+                    className="flex h-11 w-11 items-center justify-center rounded-xl border"
+                    style={{ borderColor: `${accent.ring}66`, background: accent.chip }}
+                  >
+                    <Icon className="h-5 w-5" strokeWidth={2.25} style={{ color: accent.text }} />
                   </span>
-                  <span className="rounded-full border border-rose-400/40 bg-rose-500/10 px-2 py-0.5 text-[10px] font-bold tabular-nums text-rose-200">
+                  <span
+                    className="rounded-full border px-2 py-0.5 text-[11px] font-black tabular-nums"
+                    style={{ borderColor: `${accent.ring}66`, background: accent.chip, color: accent.text }}
+                  >
                     ×{mod.scoreMult.toFixed(2)} score
                   </span>
                 </div>
@@ -129,10 +160,21 @@ const RunModifierPicker = ({ options, onChoose, onBack }: RunModifierPickerProps
                   <p className="text-lg font-black tracking-tight text-white">{mod.name}</p>
                   <p className="mt-1 text-[12px] leading-snug text-gray-400">{mod.blurb}</p>
                 </div>
+                {/* Effect breakdown chips — the concrete stat tweaks. */}
+                <div className="flex flex-wrap gap-1.5">
+                  {mod.effects.map((eff) => (
+                    <span
+                      key={eff}
+                      className="rounded-md border px-1.5 py-0.5 text-[9.5px] font-bold uppercase tracking-wide text-gray-200"
+                      style={{ borderColor: `${accent.ring}40`, background: 'rgba(255,255,255,0.04)' }}
+                    >
+                      {eff}
+                    </span>
+                  ))}
+                </div>
                 <span
-                  className={`mt-auto text-[10px] font-bold uppercase tracking-[0.2em] ${
-                    isFocused ? 'text-rose-200' : 'text-rose-300/80'
-                  }`}
+                  className="mt-auto text-[10px] font-bold uppercase tracking-[0.2em]"
+                  style={{ color: isFocused ? accent.text : `${accent.text}aa` }}
                 >
                   {isFocused ? 'Press Enter' : 'Apply'}
                 </span>
@@ -141,17 +183,28 @@ const RunModifierPicker = ({ options, onChoose, onBack }: RunModifierPickerProps
           })}
         </div>
 
-        {/* Bottom row — skip / back */}
+        {/* Action row — re-roll / skip / back */}
         <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <button
-            type="button"
-            onClick={onBack}
-            onMouseEnter={() => setFocusedIdx(-2)}
-            className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2.5 text-[12px] font-bold uppercase tracking-[0.15em] text-gray-300 transition-all hover:bg-white/[0.08] hover:text-white"
-          >
-            ← Back
-            <kbd className="ml-1 rounded border border-white/15 bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-bold text-gray-400">Esc</kbd>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onBack}
+              onMouseEnter={() => setFocusedIdx(-2)}
+              className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2.5 text-[12px] font-bold uppercase tracking-[0.15em] text-gray-300 transition-all hover:bg-white/[0.08] hover:text-white"
+            >
+              ← Back
+              <kbd className="ml-1 rounded border border-white/15 bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-bold text-gray-400">Esc</kbd>
+            </button>
+            <button
+              type="button"
+              onClick={reroll}
+              className="flex items-center gap-2 rounded-xl border border-violet-400/35 bg-violet-500/[0.08] px-4 py-2.5 text-[12px] font-bold uppercase tracking-[0.15em] text-violet-200 transition-all hover:bg-violet-500/15 hover:text-white"
+            >
+              <Dices className={`h-4 w-4 ${rerollSpin ? 'animate-spin' : ''}`} strokeWidth={2.25} />
+              Re-roll
+              <kbd className="ml-1 rounded border border-violet-400/40 bg-violet-500/15 px-1.5 py-0.5 text-[10px] font-bold text-violet-100">R</kbd>
+            </button>
+          </div>
           <button
             type="button"
             onClick={() => onChoose(null)}
@@ -169,7 +222,7 @@ const RunModifierPicker = ({ options, onChoose, onBack }: RunModifierPickerProps
 
         {/* Keyboard legend — number highlights, Enter confirms. Desktop only;
             on touch the cards/buttons are tapped directly. */}
-        <div className={`mt-5 flex items-center justify-center gap-4 text-[11px] text-gray-500 ${IS_TOUCH ? 'hidden' : ''}`}>
+        <div className={`mt-5 flex flex-wrap items-center justify-center gap-4 text-[11px] text-gray-500 ${IS_TOUCH ? 'hidden' : ''}`}>
           <span className="flex items-center gap-1.5">
             <kbd className="rounded border border-white/15 bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-bold text-gray-300">1</kbd>
             <kbd className="rounded border border-white/15 bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-bold text-gray-300">2</kbd>
@@ -181,12 +234,12 @@ const RunModifierPicker = ({ options, onChoose, onBack }: RunModifierPickerProps
             <span className="text-emerald-300">confirm</span>
           </span>
           <span className="flex items-center gap-1.5">
-            <kbd className="rounded border border-white/15 bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-bold text-gray-300">S</kbd>
-            <span>skip</span>
+            <kbd className="rounded border border-violet-400/40 bg-violet-500/[0.10] px-1.5 py-0.5 text-[10px] font-bold text-violet-200">R</kbd>
+            <span className="text-violet-300">re-roll</span>
           </span>
           <span className="flex items-center gap-1.5">
-            <kbd className="rounded border border-white/15 bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-bold text-gray-300">Esc</kbd>
-            <span>back</span>
+            <kbd className="rounded border border-white/15 bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-bold text-gray-300">S</kbd>
+            <span>skip</span>
           </span>
         </div>
       </div>

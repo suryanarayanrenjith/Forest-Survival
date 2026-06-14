@@ -77,47 +77,50 @@ type ForestSceneTheme = {
   mushroomStemColor: number;
 };
 
+// Overhauled "enchanted bioluminescent forest under a teal aurora" palette —
+// deeper, jewel-toned midnight blues against luminous emerald-cyan glow, for a
+// far more cinematic, breathtaking menu vista than the flatter original.
 const MAIN_FOREST_SCENE_THEME: ForestSceneTheme = {
-  fogColor: 0x071a0e,
-  clearColor: 0x001a00,
-  skyDeepColor: 0x020603,
-  skyMidColor: 0x030a05,
-  skyTopColor: 0x010405,
-  nebulaColor: 0x06331f,
-  starColor: 0xb7d1f0,
-  brightStarColor: 0xa8d4ff,
-  ambientColor: 0x3a5a3a,
-  ambientIntensity: 0.7,
-  moonLightColor: 0x7788cc,
-  moonLightIntensity: 3.5,
-  fillLightColor: 0x4a8a5a,
-  fillLightIntensity: 1.8,
-  backLightColor: 0x2a6a5a,
-  hemisphereSkyColor: 0x4a6a5a,
-  hemisphereGroundColor: 0x1a3a1a,
-  hemisphereIntensity: 0.7,
-  cameraFillColor: 0x4a8a6a,
-  cameraFillIntensity: 2.5,
-  clearLightColor: 0x3a9a6a,
-  clearLightIntensity: 2.5,
-  glowColors: [0x2dd4a0, 0x40d080, 0x20c0a0, 0x4a90ff],
-  groundColor: 0x2a5a2a,
-  groundGlowColor: 0x2dd4a0,
-  puddleColor: 0x0a2a1a,
-  moonColor: 0xd0d8ff,
-  haloColors: [0x6677bb, 0x4455aa],
-  fireflyColor: 0x2dd4a0,
-  dustColor: 0x5aaa7a,
-  leafColor: 0x3a6a2a,
-  rayColor: 0x4466aa,
-  glowVeilColor: 0x3aa4d8,
-  shardColor: 0x0b1f14,
-  shardEmissive: 0x2ad8a0,
-  mistColor: 0x0a3a18,
-  mushroomGlowColor: 0x2dd4a0,
-  mushroomCapColor: 0x1a6b4a,
-  mushroomCapEmissive: 0x18b878,
-  mushroomStemColor: 0x2a4a35,
+  fogColor: 0x05140d,
+  clearColor: 0x01070a,
+  skyDeepColor: 0x02050d,
+  skyMidColor: 0x04110f,
+  skyTopColor: 0x010309,
+  nebulaColor: 0x0a4038,
+  starColor: 0xd2e6ff,
+  brightStarColor: 0xc2e8ff,
+  ambientColor: 0x2c5046,
+  ambientIntensity: 0.6,
+  moonLightColor: 0x8aa2e6,
+  moonLightIntensity: 4.0,
+  fillLightColor: 0x2fb091,
+  fillLightIntensity: 1.7,
+  backLightColor: 0x1f8a86,
+  hemisphereSkyColor: 0x386c66,
+  hemisphereGroundColor: 0x10281c,
+  hemisphereIntensity: 0.62,
+  cameraFillColor: 0x37a884,
+  cameraFillIntensity: 2.4,
+  clearLightColor: 0x36caa0,
+  clearLightIntensity: 2.7,
+  glowColors: [0x2ee8b4, 0x33d6ea, 0x22c4a6, 0x5aa6ff],
+  groundColor: 0x214a30,
+  groundGlowColor: 0x2ee8b4,
+  puddleColor: 0x06231b,
+  moonColor: 0xdfeaff,
+  haloColors: [0x63c6e6, 0x3f93d6],
+  fireflyColor: 0x3cf4c4,
+  dustColor: 0x4eb491,
+  leafColor: 0x347a3c,
+  rayColor: 0x4ccae6,
+  glowVeilColor: 0x39d0e6,
+  shardColor: 0x07231b,
+  shardEmissive: 0x2ef0b6,
+  mistColor: 0x09402e,
+  mushroomGlowColor: 0x35f4c4,
+  mushroomCapColor: 0x1a7e5c,
+  mushroomCapEmissive: 0x1ce6a6,
+  mushroomStemColor: 0x234a3a,
 };
 
 const TUTORIAL_FOREST_SCENE_THEME: ForestSceneTheme = {
@@ -170,23 +173,24 @@ const FOREST_SCENE_THEMES: Record<SceneVariant, ForestSceneTheme> = {
 };
 
 const FOREST_SCENE_DEFAULTS = {
-  // Softer forest-grade pass — keeps the scene moody but avoids the
-  // hard-edged contrast of the crystal look.
-  bloomStrength: 0.98,
-  bloomThreshold: 0.74,
-  exposure: 1.68,
-  glowStrength: 0.72,
-  glowThreshold: 0.6,
-  glowRadius: 2.0,
-  vignetteStrength: 0.44,
-  grainIntensity: 0.012,
-  contrast: 1.08,
-  dofFocus: 26,
-  dofAperture: 0.00084,
-  ssaoRadius: 15,
+  // Cinematic forest grade — richer bloom + deeper vignette + stronger filmic
+  // contrast and split-tone (handled in the final pass) for a moodier, more
+  // premium vista than the original softer pass.
+  bloomStrength: 1.12,
+  bloomThreshold: 0.70,
+  exposure: 1.62,
+  glowStrength: 0.82,
+  glowThreshold: 0.56,
+  glowRadius: 2.2,
+  vignetteStrength: 0.54,
+  grainIntensity: 0.011,
+  contrast: 1.13,
+  dofFocus: 27,
+  dofAperture: 0.0009,
+  ssaoRadius: 16,
   ssaoMinDistance: 0.004,
   ssaoMaxDistance: 0.12,
-  chromaticAberration: 0.0021,
+  chromaticAberration: 0.0026,
 } as const;
 
 function randomRange(minimum: number, maximum: number): number {
@@ -1310,20 +1314,107 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
       rayGroup.add(rayMesh);
       rayMeshes.push(rayMesh);
     }
+
+    // ── CATHEDRAL MOON-SHAFTS — dramatic volumetric light from the moon ──
+    // A cluster of large, bright god-ray shafts raking down through the canopy
+    // from the moon's direction (upper-right). Folded into rayMeshes so the
+    // existing ray loop drives their shimmer + pulse with zero extra per-frame
+    // code. This is the centrepiece of the overhaul — the "light pouring
+    // through the trees" beat that makes the vista feel alive and cinematic.
+    const shaftColor = new THREE.Color(theme.glowVeilColor);
+    for (let shaftIndex = 0; shaftIndex < 6; shaftIndex++) {
+      const shaftWidth = 3.5 + Math.random() * 3.5;
+      const shaftHeight = 52 + Math.random() * 24;
+      const shaftMaterial = new THREE.ShaderMaterial({
+        uniforms: {
+          uTime: { value: 0 },
+          uColor: { value: shaftColor.clone() },
+          uOpacity: { value: 0.05 + Math.random() * 0.045 },
+        },
+        vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+        fragmentShader: `
+          uniform float uTime;
+          uniform vec3 uColor;
+          uniform float uOpacity;
+          varying vec2 vUv;
+          float rand(vec2 c){ return fract(sin(dot(c, vec2(12.9898, 78.233))) * 43758.5453); }
+          void main() {
+            float edge = pow(smoothstep(0.0, 0.5, 1.0 - abs(vUv.x - 0.5) * 2.0), 1.6);
+            float fade = smoothstep(0.0, 0.22, vUv.y) * (1.0 - smoothstep(0.45, 1.0, vUv.y));
+            float beams = 0.78 + 0.22 * sin(vUv.x * 26.0 + uTime * 0.2);
+            float shimmer = 0.85 + rand(vec2(vUv.y * 5.0, floor(uTime * 1.5))) * 0.15;
+            gl_FragColor = vec4(uColor, uOpacity * edge * fade * beams * shimmer);
+          }
+        `,
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide,
+      });
+      const shaft = new THREE.Mesh(new THREE.PlaneGeometry(shaftWidth, shaftHeight), shaftMaterial) as PulsingRay;
+      shaft.position.set(-18 + shaftIndex * 8 + Math.random() * 4, 22 + Math.random() * 8, -30 - Math.random() * 16);
+      shaft.rotation.x = -0.12;
+      shaft.rotation.z = 0.32 + Math.random() * 0.14;   // slant down-left from the moon
+      shaft.rotation.y = (Math.random() - 0.5) * 0.3;
+      shaft.baseOpacity = shaftMaterial.uniforms.uOpacity.value;
+      shaft.phase = Math.random() * Math.PI * 2;
+      shaft.speed = 0.08 + Math.random() * 0.15;
+      rayGroup.add(shaft);
+      rayMeshes.push(shaft);
+    }
     scene.add(rayGroup);
 
-    for (let mistIndex = 0; mistIndex < 3; mistIndex++) {
+    // ── DISTANT RIDGELINE SILHOUETTES — layered depth behind the backdrop ──
+    // Two faint rows of dark, jagged pine silhouettes far beyond the backdrop
+    // trees, dissolving into the fog — the vista now reads as an endless forest
+    // stretching to the horizon instead of ending at the backdrop tree-line.
+    // Instanced (2 draw calls), far enough back to need no shadows.
+    const ridgeMaterial = new THREE.MeshStandardMaterial({
+      color: 0x041710,
+      roughness: 1,
+      metalness: 0,
+      emissive: new THREE.Color(theme.backLightColor),
+      emissiveIntensity: 0.025,
+    });
+    const ridgeConeGeo = new THREE.ConeGeometry(1, 1, 5);
+    const ridgeLayers = [
+      { z: -101, count: 30, spread: 240, baseH: 20, varH: 16, radius: 7 },
+      { z: -122, count: 34, spread: 310, baseH: 28, varH: 22, radius: 9 },
+    ];
+    for (const ridgeLayer of ridgeLayers) {
+      const ridge = new THREE.InstancedMesh(ridgeConeGeo, ridgeMaterial, ridgeLayer.count);
+      ridge.frustumCulled = false;
+      const dummy = new THREE.Object3D();
+      for (let i = 0; i < ridgeLayer.count; i++) {
+        const h = ridgeLayer.baseH + Math.random() * ridgeLayer.varH;
+        const r = ridgeLayer.radius * (0.7 + Math.random() * 0.6);
+        const x = -ridgeLayer.spread / 2 + (i / (ridgeLayer.count - 1)) * ridgeLayer.spread + (Math.random() - 0.5) * 8;
+        const z = ridgeLayer.z + (Math.random() - 0.5) * 14;
+        dummy.position.set(x, h * 0.5 - 2, z);
+        dummy.scale.set(r, h, r);
+        dummy.rotation.y = Math.random() * Math.PI;
+        dummy.updateMatrix();
+        ridge.setMatrixAt(i, dummy.matrix);
+      }
+      ridge.instanceMatrix.needsUpdate = true;
+      scene.add(ridge);
+    }
+
+    // Layered low ground fog — denser + wider than the original three strips so
+    // the forest floor dissolves into a soft luminous haze that catches the
+    // moon-shafts.
+    for (let mistIndex = 0; mistIndex < 5; mistIndex++) {
       const mistMesh = new THREE.Mesh(
-        new THREE.PlaneGeometry(150, 6),
+        new THREE.PlaneGeometry(230, 9),
         new THREE.MeshBasicMaterial({
           color: theme.mistColor,
           transparent: true,
-          opacity: 0.038 + mistIndex * 0.015,
+          opacity: 0.034 + mistIndex * 0.013,
           side: THREE.DoubleSide,
           depthWrite: false,
         }),
       );
-      mistMesh.position.set(0, 0.3 + mistIndex * 0.6, -3 - mistIndex * 12);
+      mistMesh.position.set(0, 0.3 + mistIndex * 0.7, -3 - mistIndex * 11);
       mistMesh.rotation.x = -Math.PI / 2;
       scene.add(mistMesh);
     }
@@ -1390,6 +1481,14 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
           color.b += luminance * 0.015;
           color.g += (1.0 - luminance) * 0.015;
           color = (color - 0.5) * uContrast + 0.5 + 0.025;
+          // ── Cinematic split-tone: teal shadows, warm highlights ──
+          float gradeLuma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+          vec3 coolShadow = vec3(0.90, 1.00, 1.07);
+          vec3 warmHigh = vec3(1.07, 1.01, 0.92);
+          color *= mix(coolShadow, warmHigh, smoothstep(0.18, 0.82, gradeLuma));
+          // ── Filmic micro-contrast S-curve for snap ──
+          vec3 sCurve = clamp(color, 0.0, 1.0);
+          color = mix(color, sCurve * sCurve * (3.0 - 2.0 * sCurve), 0.14);
           vec2 texel = uGlowRadius / uResolution;
           vec3 glowSample = texture2D(tDiffuse, uv).rgb * 0.24;
           glowSample += texture2D(tDiffuse, uv + vec2(texel.x, 0.0)).rgb * 0.19;

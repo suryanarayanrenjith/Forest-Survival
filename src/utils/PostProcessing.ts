@@ -66,8 +66,8 @@ const CinematicGradeShader = {
     scanlineStrength: { value: 0.08 },
     shadowLift: { value: 0.05 },
     vibrance: { value: 0.28 },
-    vignetteOffset: { value: 0.48 },
-    vignetteDarkness: { value: 0.26 },
+    vignetteOffset: { value: 0.46 },
+    vignetteDarkness: { value: 0.32 },
     chromaticAberration: { value: 0.00038 },
     sunUV: { value: new THREE.Vector2(0.5, 0.5) },
     sunIntensity: { value: 0.0 },
@@ -82,6 +82,8 @@ const CinematicGradeShader = {
     halationStrength: { value: 0.0 },     // warm highlight diffusion bleed
     splitToneStrength: { value: 0.0 },    // warm highs / cool shadows grade
     dreamDiffusion: { value: 0.0 },       // wide soft-light veil (2014 "dreamy" look)
+    clarity: { value: 0.0 },              // local-contrast / midtone "definition" (Control-grade depth)
+    lensDirt: { value: 0.0 },             // procedural dirty-lens bloom scatter
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -117,6 +119,8 @@ const CinematicGradeShader = {
     uniform float halationStrength;
     uniform float splitToneStrength;
     uniform float dreamDiffusion;
+    uniform float clarity;
+    uniform float lensDirt;
     varying vec2  vUv;
 
     // ACES Filmic tonemap — Narkowicz fit; the curve used by Cyberpunk,
@@ -273,6 +277,33 @@ const CinematicGradeShader = {
         hdr += veil * veilMask * dreamDiffusion * headroom;
       }
 
+      // ─── DIRTY-LENS BLOOM SCATTER (cinematic smudge) ───────────────
+      // Real camera optics are never perfectly clean — bright light scatters
+      // across micro-smudges + dust on the front element, throwing soft
+      // blooms across the frame wherever the lens is dirty. The signature
+      // "shot through a real lens" look of Control / Battlefield / Cyberpunk.
+      // We gather only the HIGHLIGHT energy (value > 1.0) from a wide ring,
+      // then deposit it through a screen-locked procedural dirt mask (a few
+      // soft smudge blobs + fine speckle). HDR-additive, so it's tonemap-safe
+      // and energy-guarded by the highlight threshold (dark frames stay clean).
+      if (lensDirt > 0.001) {
+        vec3 he = vec3(0.0);
+        for (int i = 0; i < 6; i++) {
+          float a = float(i) * 1.0471975512 + 0.4;
+          vec2 off = vec2(cos(a), sin(a)) * texelSize * 18.0;
+          he += max(clamp(texture2D(tDiffuse, vUv + off).rgb, vec3(0.0), vec3(64.0)) - 1.0, 0.0);
+        }
+        he *= (1.0 / 6.0);
+        // Procedural dirt: aspect-corrected soft smudge blobs + fine speckle.
+        float dirt = 0.0;
+        dirt += smoothstep(0.34, 0.0, length((vUv - vec2(0.27, 0.62)) * vec2(aspect, 1.0))) * 0.85;
+        dirt += smoothstep(0.40, 0.0, length((vUv - vec2(0.74, 0.34)) * vec2(aspect, 1.0))) * 0.70;
+        dirt += smoothstep(0.30, 0.0, length((vUv - vec2(0.55, 0.80)) * vec2(aspect, 1.0))) * 0.60;
+        dirt += smoothstep(0.26, 0.0, length((vUv - vec2(0.12, 0.20)) * vec2(aspect, 1.0))) * 0.50;
+        dirt += filmHash(floor(vUv * 240.0)) * 0.22;   // fine dust speckle
+        hdr += he * dirt * lensDirt;
+      }
+
       // ─── AERIAL PERSPECTIVE — warm tint on bright distant pixels ────
       // Approximates atmospheric Mie scattering: bright pixels that are
       // already sun-coloured get pushed slightly more toward the sun's
@@ -347,6 +378,27 @@ const CinematicGradeShader = {
       vec3 chromaH = ldr - vec3(lumaH);
       ldr = vec3(lumaH) + chromaH * (1.0 + smoothstep(0.5, 1.2, lumaH) * 0.32);
 
+      // ─── CLARITY — local-contrast / midtone "definition" ───────────
+      // The single biggest lever for the grounded, sculpted, contact-shadowed
+      // feel of Control: an unsharp high-pass on the scene luminance darkens
+      // crevices + recesses and crisps up edges, so surfaces read as having
+      // real depth + occlusion instead of flat shading. We sample the source
+      // (pre-tonemap) luma at a wide hex ring, blur it, take the high-pass
+      // (centre − blur), and multiply it back in (hue-preserving). Cheap
+      // (6 taps), gated, and clamped so it never rings or blows out.
+      if (clarity > 0.001) {
+        float cLum = dot(clamp(texture2D(tDiffuse, vUv).rgb, vec3(0.0), vec3(8.0)), vec3(0.2126, 0.7152, 0.0722));
+        float bLum = 0.0;
+        for (int i = 0; i < 6; i++) {
+          float a = float(i) * 1.0471975512;
+          vec2 off = vec2(cos(a), sin(a)) * texelSize * 6.0;
+          bLum += dot(clamp(texture2D(tDiffuse, vUv + off).rgb, vec3(0.0), vec3(8.0)), vec3(0.2126, 0.7152, 0.0722));
+        }
+        bLum *= (1.0 / 6.0);
+        float detail = clamp(cLum - bLum, -0.55, 0.55);
+        ldr *= 1.0 + detail * clarity;
+      }
+
       // ─── FILMIC SPLIT-TONE (cool shadows, warm highlights) ─────────
       // The colour-grade signature of graded film + AAA cinematics: push
       // shadows subtly toward teal and highlights toward amber so the image
@@ -372,7 +424,7 @@ const CinematicGradeShader = {
       // ─── FILMIC MICRO-CONTRAST S-CURVE (LDR — now safe!) ───────────
       ldr = clamp(ldr, vec3(0.0), vec3(1.0));
       vec3 contrasted = ldr * ldr * (3.0 - 2.0 * ldr);
-      ldr = mix(ldr, contrasted, 0.08);
+      ldr = mix(ldr, contrasted, 0.12);
 
       // ─── VIGNETTE (LDR multiplicative) ──────────────────────────────
       float vig = smoothstep(vignetteOffset, 1.0, dist);
@@ -587,6 +639,15 @@ export class PostProcessingPipeline {
     // restores the micro-detail the diffusion softens.
     this.cinematic.uniforms.dreamDiffusion.value =
       isUltra ? 0.30 : quality === 'high' ? 0.25 : quality === 'medium' ? 0.18 : 0.10;
+    // Clarity (local-contrast) — the grounded, sculpted Control-grade depth.
+    // Cheap (6 taps) so it runs on every post-FX tier, subtle so it adds
+    // definition without crunch. CAS at the end of the chain complements it.
+    this.cinematic.uniforms.clarity.value =
+      isUltra ? 0.30 : quality === 'high' ? 0.26 : quality === 'medium' ? 0.20 : 0.12;
+    // Dirty-lens bloom scatter — reserved for High+ (6 wide highlight taps);
+    // gives the "shot through a real lens" smudge bloom on bright sources.
+    this.cinematic.uniforms.lensDirt.value =
+      isUltra ? 0.55 : quality === 'high' ? 0.40 : 0.0;
     this.composer.addPass(this.cinematic);
 
     // ─── 4. SMAA AA (Medium+) ───────────────────────────────────────

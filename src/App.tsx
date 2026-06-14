@@ -66,7 +66,7 @@ import EnemyIntroBanner from './components/EnemyIntroBanner';
 import WavePerkPicker from './components/WavePerkPicker';
 import { aggregatePerkBonuses, NEUTRAL_PERK_BONUSES, rollMysteryBox, isPerkPoolExhausted, WAVE_PERKS, type WavePerkId, type PerkBonuses } from './utils/WavePerkRegistry';
 import RunModifierPicker from './components/RunModifierPicker';
-import { RUN_MODIFIERS, getDailyTrio, type RunModifierId } from './utils/RunModifierSystem';
+import { generateStakeOptions, type RunModifier } from './utils/RunModifierSystem';
 import { spawnBarrels, type ExplosiveBarrel } from './utils/HazardSystem';
 import { spawnRangedSentinels, updateSentinelGlow, type RangedSentinel } from './utils/RangedSentinelSystem';
 import { CHARACTER_PASSIVES } from './utils/CharacterPassiveRegistry';
@@ -333,9 +333,9 @@ const ForestSurvivalGame = () => {
   // so the player gets one last "raise the stakes" choice before the world
   // initialises. Selected modifier is stored as a ref so the game loop's
   // closure can read it once on init without forcing a re-render dependency.
-  const [runModifierPickerOptions, setRunModifierPickerOptions] = useState<RunModifierId[] | null>(null);
+  const [runModifierPickerOptions, setRunModifierPickerOptions] = useState<RunModifier[] | null>(null);
   const pendingClassicStartRef = useRef<{ difficulty: 'easy' | 'medium' | 'hard' | 'adaptive'; timeOfDay: 'day' | 'night' | 'auto'; map: MapType; isRandom: boolean } | null>(null);
-  const activeRunModifierRef = useRef<RunModifierId | null>(null);
+  const activeRunModifierRef = useRef<RunModifier | null>(null);
   // Per-weapon mastery XP snapshot, read out of player stats once before
   // the scene useEffect mounts. The scene loop only sees this REF (so a
   // refetch on the way in is fine); the persisted total is updated by the
@@ -2598,8 +2598,7 @@ const ForestSurvivalGame = () => {
     // Read once on scene init. The modifier is locked for the whole run so
     // the per-frame loop doesn't have to keep checking. `runModifier` may be
     // null (the player picked "Play without").
-    const runModifierId = activeRunModifierRef.current;
-    const runModifier = runModifierId ? RUN_MODIFIERS[runModifierId] : null;
+    const runModifier = activeRunModifierRef.current;
     const runMods = runModifier?.mods ?? {};
     const runModifierScoreMult = runModifier?.scoreMult ?? 1.0;
 
@@ -9855,12 +9854,12 @@ const ForestSurvivalGame = () => {
   const handleClassicGameStart = (difficulty: 'easy' | 'medium' | 'hard' | 'adaptive', timeOfDay: 'day' | 'night' | 'auto', map: MapType, isRandom: boolean = false) => {
     pendingClassicStartRef.current = { difficulty, timeOfDay, map, isRandom };
     setShowClassicMenu(false);
-    setRunModifierPickerOptions(getDailyTrio());
+    setRunModifierPickerOptions(generateStakeOptions());
   };
 
   // Called by the RunModifierPicker once the player picks a modifier (or
   // skips). Picks up the pending classic-start params and launches the run.
-  const beginClassicWithModifier = (modifier: RunModifierId | null) => {
+  const beginClassicWithModifier = (modifier: RunModifier | null) => {
     const pending = pendingClassicStartRef.current;
     if (!pending) {
       // Defensive — shouldn't be reachable from the picker UI, but if it
@@ -10334,7 +10333,7 @@ const ForestSurvivalGame = () => {
             <div className="flex items-center gap-2 rounded-full border border-rose-400/40 bg-rose-950/75 px-3 py-1">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-rose-300" />
               <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-rose-200">
-                {RUN_MODIFIERS[activeRunModifierRef.current].name} · ×{RUN_MODIFIERS[activeRunModifierRef.current].scoreMult.toFixed(2)}
+                {activeRunModifierRef.current.name} · ×{activeRunModifierRef.current.scoreMult.toFixed(2)}
               </span>
             </div>
           </div>
