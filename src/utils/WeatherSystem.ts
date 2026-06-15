@@ -84,7 +84,11 @@ const CLEAR_PRESET: ModsPreset = {
 const GLOOMY_PRESET: ModsPreset = {
   lightMult: 0.58, ambientMult: 0.88, fogDensityMult: 1.55, saturationMult: 0.78,
   bloomMult: 0.92, godRayMult: 0.22, skyDarken: 0.3, tintHex: 0x8d97a2, tintStrength: 0.16,
-  wetness: 0.15, rainAmount: 0,
+  // wetness 0: an overcast sky alone never wets the ground. Puddles form ONLY
+  // from an actual rain storm (and only on the deep forest — see the App.tsx
+  // uRainWet gate). This stops the dry maps (desert, tundra, ash, etc.) from
+  // sprouting reflective "potholes" every time a gloomy front rolls through.
+  wetness: 0, rainAmount: 0,
 };
 
 /** Atmosphere look for each storm species. */

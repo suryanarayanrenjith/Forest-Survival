@@ -170,7 +170,11 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     },
     // Soft, mossy forest floor — gentle rolling humus broken by exposed roots
     // and damp earth. Warm/cool leaf-litter patches over a mossy rock talus.
-    // Wetness raised for a dewy, just-rained sheen that catches the god rays.
+    // NOTE: no static `wetness` — the deep forest is the ONLY map that grows
+    // puddles, and only while/after its rain storm soaks the ground (driven
+    // live by the weather system via uRainWet, gated to this map in App.tsx).
+    // A dry forest floor in clear weather, a glistening rain-soaked one after
+    // a storm — puddles never appear on any other map.
     terrain: {
       amplitude: 3.0,
       frequency: 0.016,
@@ -182,7 +186,6 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       rockColor: 0x3a4a32,
       detailColor: [0.95, 1.0, 0.82],
       detailScale: 1.15,
-      wetness: 0.3,
     },
   },
 
@@ -320,7 +323,7 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       fillLight: 0.6,
       rimLight: 0.68,                     // snow-edge rim sparkle
       groundSpecular: 0.45,               // crystalline glint, not mirror
-      groundNormal: 0.72,
+      groundNormal: 0.82,                 // sculpted wind-packed snowdrift relief (toward forest's 1.12)
       groundPatch: 0.8,
     },
     groundRoughness: 0.88,
@@ -408,7 +411,7 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       fillLight: 0.55,
       rimLight: 0.6,
       groundSpecular: 0.35,               // mica glints in the hardpan
-      groundNormal: 0.85,
+      groundNormal: 0.96,                 // tactile wind-rippled sand relief (toward forest's 1.12)
       groundPatch: 0.95,
     },
     groundRoughness: 0.94,
@@ -490,9 +493,12 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       groundNormal: 1.05,
       groundPatch: 1.05,
     },
-    // Sodden wetland — near-flat with low silt mounds, threaded with dark
-    // pooled water. Heavy wetness gives the ground that black, reflective
-    // bog sheen; mossy muck on the rare raised banks.
+    // Sodden wetland — near-flat with low silt mounds of dark, sodden muck.
+    // The damp bog sheen comes from the glossy base material (default
+    // roughness 0.52) + the strong groundSpecular grade above + the bubbling
+    // toxic POOLS (standalone biome features), NOT from the rain-puddle
+    // pattern — discrete reflective puddles are reserved for the deep forest
+    // after rain, so the swamp reads wet without spawning stray "potholes".
     terrain: {
       amplitude: 1.9,
       frequency: 0.018,
@@ -504,7 +510,6 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       rockColor: 0x22301c,
       detailColor: [0.85, 1.0, 0.78],
       detailScale: 1.1,
-      wetness: 0.75,
     },
   },
 
@@ -564,8 +569,10 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       groundPatch: 1.12,
     },
     // Compacted dirt-and-gravel parade ground with cracked asphalt aprons and
-    // low blast berms. Mostly flat (a real base) with gritty micro-relief and
-    // faint oil-slick sheen pooling in the ruts.
+    // low blast berms. Mostly flat (a real base) with gritty micro-relief. Dry
+    // hardpan — no standing water on an active outpost (puddles are reserved
+    // for the rained-on deep forest); the gritty detail + crisp sun specular
+    // carry the surface read instead.
     terrain: {
       amplitude: 1.6,
       frequency: 0.02,
@@ -577,7 +584,6 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       rockColor: 0x3c3c38,
       detailColor: [1.0, 0.98, 0.92],
       detailScale: 1.35,
-      wetness: 0.2,
     },
   },
 
@@ -645,8 +651,10 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       groundNormal: 1.0,
       groundPatch: 1.0,
     },
-    // Haunted vale floor — soft rolling violet earth, dew-damp, with charred
-    // dark-purple rock breaking the slopes. Quiet and otherworldly.
+    // Haunted vale floor — soft rolling violet earth with charred dark-purple
+    // rock breaking the slopes. Quiet and otherworldly. Dry dusk soil (no
+    // puddle pattern — those live only in the rained-on deep forest); the
+    // moody violet macro tints + soft specular carry the floor.
     terrain: {
       amplitude: 3.2,
       frequency: 0.015,
@@ -658,7 +666,6 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       rockColor: 0x271836,
       detailColor: [0.94, 0.86, 1.1],
       detailScale: 1.0,
-      wetness: 0.16,
     },
   },
 
@@ -718,8 +725,10 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       groundPatch: 1.06,
     },
     // Worn flagstone plaza heaved by centuries of root and frost — broken
-    // tiles, rubble ridges, rain pooling in the hollows between cracked
-    // pavers (heavy wetness sheen).
+    // tiles and rubble ridges. Rain glistens the stone through the strong
+    // groundSpecular grade (a clean wet sheen), NOT the discrete rain-puddle
+    // pattern — pooled puddles are reserved for the deep forest, so the ruins
+    // stay free of stray ground "potholes".
     terrain: {
       amplitude: 2.6,
       frequency: 0.017,
@@ -731,7 +740,6 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       rockColor: 0x4c4840,
       detailColor: [1.0, 0.98, 0.9],
       detailScale: 1.3,
-      wetness: 0.55,
     },
   },
 };

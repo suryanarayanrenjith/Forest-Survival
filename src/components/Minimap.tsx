@@ -96,18 +96,35 @@ function draw(r: RadarReg, f: MinimapFrame): void {
   c.fill();
   c.clip();
 
-  // Range rings + crosshair grid (subtle).
+  // Range rings + crosshair grid (subtle). Rings sit at FIXED world distances
+  // so they read as real engagement ranges; the large (expanded) radar labels
+  // them so the player can gauge how far blips are at a glance.
+  const big = s > 220;
+  const ringDists = [40, 80];
   c.strokeStyle = 'rgba(120,180,200,0.10)';
   c.lineWidth = 1;
-  for (let i = 1; i <= 2; i++) {
+  for (let i = 0; i < ringDists.length; i++) {
+    const rr = ringDists[i] * scale;
+    if (rr >= R) continue;
     c.beginPath();
-    c.arc(cx, cy, (R * i) / 2.6, 0, TWO_PI);
+    c.arc(cx, cy, rr, 0, TWO_PI);
     c.stroke();
   }
   c.beginPath();
   c.moveTo(cx, cy - R); c.lineTo(cx, cy + R);
   c.moveTo(cx - R, cy); c.lineTo(cx + R, cy);
   c.stroke();
+  if (big) {
+    c.fillStyle = 'rgba(150,195,215,0.38)';
+    c.font = `600 ${Math.round(8.5 * k)}px "Inter", system-ui, sans-serif`;
+    c.textAlign = 'left';
+    c.textBaseline = 'middle';
+    for (let i = 0; i < ringDists.length; i++) {
+      const rr = ringDists[i] * scale;
+      if (rr >= R) continue;
+      c.fillText(`${ringDists[i]}m`, cx + 3 * k, cy - rr);
+    }
+  }
 
   // ── Enemy blips (drawn first so allies/self sit on top) ──
   for (let i = 0; i < f.blips.length; i++) {
@@ -261,15 +278,16 @@ const Legend = ({ className = '', soloMode = false }: { className?: string; solo
   </div>
 );
 
-/** Expanded radar — a MEDIUM centred panel, NOT a full-screen takeover. The
- *  overlay layer is pointer-events-none with no dark backdrop, so the game (and
- *  enemies) stay fully visible and playable around it. Press M (or the X) to
- *  close. Portaled to <body> so it always paints above the rest of the HUD. */
+/** Expanded radar — a large centred panel that stays SHORT of a full-screen
+ *  takeover. The overlay layer is pointer-events-none with no dark backdrop, so
+ *  the game (and enemies) stay fully visible and playable around it. Press M (or
+ *  the X) to close. Portaled to <body> so it always paints above the rest of the
+ *  HUD. */
 const ExpandedRadar = ({ onClose, soloMode = false }: { onClose: () => void; soloMode?: boolean }) => createPortal(
   <div className="pointer-events-none fixed inset-0 z-[140] flex items-center justify-center p-4">
-    <div className="pointer-events-auto flex flex-col items-center gap-2.5 rounded-2xl border border-white/15 bg-[#0b0f15]/95 p-3 shadow-2xl">
-      <div className="flex w-full items-center justify-between gap-4">
-        <span className="flex items-center gap-2 text-xs font-semibold tracking-[0.15em] text-gray-300 uppercase">
+    <div className="pointer-events-auto flex flex-col items-center gap-3 rounded-2xl border border-white/15 bg-[#0b0f15]/95 p-4 shadow-2xl backdrop-blur-sm">
+      <div className="flex w-full items-center justify-between gap-6">
+        <span className="flex items-center gap-2 text-sm font-semibold tracking-[0.15em] text-gray-200 uppercase">
           <Radar className="w-4 h-4 text-emerald-400" strokeWidth={2.25} />
           Tactical Map
         </span>
@@ -284,14 +302,20 @@ const ExpandedRadar = ({ onClose, soloMode = false }: { onClose: () => void; sol
         </button>
       </div>
       {/* Canvas fills a fixed-size wrapper (the div owns the min() sizing) so
-          its on-screen size is unambiguous — a medium radar, not a takeover. */}
+          its on-screen size is unambiguous — a big, easy-to-read radar that
+          still leaves the action visible around its edges. */}
       <div
-        className="overflow-hidden rounded-xl"
-        style={{ width: 'min(248px, 58vw, 52dvh)', height: 'min(248px, 58vw, 52dvh)' }}
+        className="overflow-hidden rounded-xl ring-1 ring-emerald-400/10"
+        style={{ width: 'min(420px, 84vw, 74dvh)', height: 'min(420px, 84vw, 74dvh)' }}
       >
         <RadarCanvas className="block h-full w-full" />
       </div>
-      <Legend soloMode={soloMode} />
+      <div className="flex w-full items-center justify-between gap-4">
+        <Legend soloMode={soloMode} />
+        <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">
+          Range <span className="text-gray-300">{RANGE} m</span>
+        </span>
+      </div>
     </div>
   </div>,
   document.body,

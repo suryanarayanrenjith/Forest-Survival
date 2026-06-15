@@ -6415,11 +6415,17 @@ const ForestSurvivalGame = () => {
       renderAtmosphere.saturation *= weatherMods.saturationMult;
       renderAtmosphere.bloomStrength *= weatherMods.bloomMult;
       // Live rain → terrain shader: puddles grow with the soak and ripple
-      // while precipitation is actually falling (storm puddles only form in
-      // rain climates — sand/snow/ash storms keep wetness at 0).
-      groundShaderUniforms.uRainWet.value = weatherMods.wetness;
+      // while precipitation is actually falling. Puddles are intentionally
+      // confined to the DEEP FOREST — it is the only map whose floor pools with
+      // rainwater. Every other map is forced dry here (groundWetness = 0) so no
+      // desert / tundra / ruins "potholes" can ever appear, even if that map's
+      // climate happens to run a rain storm. The forest floor therefore reads
+      // dry in clear weather and glistens with lingering puddles only after a
+      // storm soaks it (the soak dries ~3× slower than it forms).
+      const groundWetness = selectedMap === 'deep_forest' ? weatherMods.wetness : 0;
+      groundShaderUniforms.uRainWet.value = groundWetness;
       groundShaderUniforms.uRainRipple.value =
-        weatherMods.wetness > 0.001 ? weatherMods.rainAmount * weatherMods.wetness : 0;
+        groundWetness > 0.001 ? weatherMods.rainAmount * groundWetness : 0;
 
       const sunDirection = computeSunDirection();
       const lowLight = sunDirection.y < 0.18;
@@ -6451,7 +6457,7 @@ const ForestSurvivalGame = () => {
       groundShaderUniforms.uSpecularStrength.value = (isNightShader
         ? 0.14 * (renderProfile.groundSpecular ?? 1.0)
         : (0.28 + sunAlt * 0.26) * (renderProfile.groundSpecular ?? 1.0))
-        * (1 + weatherMods.wetness * 1.6);
+        * (1 + groundWetness * 1.6);
       groundShaderUniforms.uNormalStrength.value = 0.26 * (renderProfile.groundNormal ?? 1.0);
       groundShaderUniforms.uPatchStrength.value = 0.18 * (renderProfile.groundPatch ?? 1.0);
       groundShaderUniforms.uIsNight.value = isNightShader ? 1.0 : 0.0;
