@@ -84,6 +84,7 @@ const CinematicGradeShader = {
     dreamDiffusion: { value: 0.0 },       // wide soft-light veil (2014 "dreamy" look)
     clarity: { value: 0.0 },              // local-contrast / midtone "definition" (Control-grade depth)
     lensDirt: { value: 0.0 },             // procedural dirty-lens bloom scatter
+    shadowDepth: { value: 0.0 },          // detail-preserving shadow deepening (premium contrast)
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -121,6 +122,7 @@ const CinematicGradeShader = {
     uniform float dreamDiffusion;
     uniform float clarity;
     uniform float lensDirt;
+    uniform float shadowDepth;
     varying vec2  vUv;
 
     // ACES Filmic tonemap — Narkowicz fit; the curve used by Cyberpunk,
@@ -359,6 +361,17 @@ const CinematicGradeShader = {
       float lumaShadow = dot(ldr, vec3(0.2126, 0.7152, 0.0722));
       float liftMask = 1.0 - smoothstep(0.0, 0.25, lumaShadow);
       ldr += vec3(shadowLift) * liftMask;
+
+      // ─── SHADOW DEEPENING (premium contrast — detail-preserving) ───
+      // The opposite of a wash: pull the low-mids DOWN so cast shadows and
+      // shaded faces read as genuine, weighty shadow instead of flat grey.
+      // Masked to the shadow band only (mids + highlights untouched) and
+      // gentle, so detail survives — the signature grounded, contrasty,
+      // "premium" look. Scaled down at night by the driver for visibility.
+      if (shadowDepth > 0.001) {
+        float sdMask = 1.0 - smoothstep(0.0, 0.42, lumaShadow);
+        ldr *= 1.0 - sdMask * shadowDepth;
+      }
 
       // ─── VIBRANCE (LDR — selective sat on mid-saturation pixels) ────
       float maxC = max(max(ldr.r, ldr.g), ldr.b);
@@ -707,7 +720,7 @@ export class PostProcessingPipeline {
     u.saturation.value = THREE.MathUtils.clamp((g.saturation - 1.0) * 0.5, -0.30, 0.45);
     // Contrast: tiny baseline bias for visual snap, capped low so warm
     // bright scenes don't pull the highlight into the bloom threshold.
-    u.contrast.value = THREE.MathUtils.clamp((g.contrast - 1.0) * 0.30 + 0.04, -0.15, 0.32);
+    u.contrast.value = THREE.MathUtils.clamp((g.contrast - 1.0) * 0.30 + 0.07, -0.15, 0.40);
     // Brightness: pure temperature tilt, no baseline lift. The main
     // directional × 1.6 + ambient × 0.8 already give Krunker brightness;
     // adding more pushed warm maps into yellow blowout.
@@ -760,16 +773,20 @@ export class PostProcessingPipeline {
     const shadowLiftScale = THREE.MathUtils.clamp(g.shadowLiftScale ?? 1.0, 0.45, 1.25);
     const vibranceScale = THREE.MathUtils.clamp(g.vibranceScale ?? 1.0, 0.35, 1.2);
     if (this.isNightMode) {
-      // Night: meaningful lift so the player can still SEE — moody but
-      // playable. Krunker's night vibe, not pitch black.
-      u.shadowLift.value = (0.10 + lowLight * 0.04) * shadowLiftScale;
-      u.vibrance.value = 0.56 * vibranceScale;
+      // Night: keep a meaningful lift so the player can still SEE — moody but
+      // playable. Shadow deepening stays gentle so darkness reads without
+      // swallowing detail.
+      u.shadowLift.value = (0.085 + lowLight * 0.04) * shadowLiftScale;
+      u.vibrance.value = 0.58 * vibranceScale;
+      u.shadowDepth.value = 0.06;
     } else {
-      // Day: clean Krunker-bright shadows — visible detail in shaded
-      // areas, no crushed blacks. Vibrance bumped for richer foliage
-      // greens + sky blues without crushing mids into yellow.
-      u.shadowLift.value = (0.07 + lowLight * 0.02) * shadowLiftScale;
-      u.vibrance.value = 0.52 * vibranceScale;
+      // Day: deeper, weightier shadows for a premium, grounded look — the lift
+      // is pulled back (less wash) and the shadow band is actively deepened so
+      // cast shadows + shaded faces read with real contrast instead of flat
+      // grey. Richer vibrance for premium foliage greens + sky blues.
+      u.shadowLift.value = (0.04 + lowLight * 0.02) * shadowLiftScale;
+      u.vibrance.value = 0.56 * vibranceScale;
+      u.shadowDepth.value = 0.17;
     }
 
     // ─── SCREEN-SPACE LIGHT SHAFTS (god rays) ───────────────────────

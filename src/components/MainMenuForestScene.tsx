@@ -285,6 +285,12 @@ function createPoissonDiskPoints(
     if (Math.abs(point.x) < 5 && point.z > 8 && point.z < 35) {
       return false;
     }
+    // Keep a clear bubble around the camera (~0, 28) so no foreground tree
+    // spawns right beside the lens — those near-camera low-poly trees clip the
+    // frame edge and read as glitched green shards.
+    if (Math.hypot(point.x, point.z - 27) < 17) {
+      return false;
+    }
     if (isUiClearZone(point.x, point.z)) {
       return false;
     }
@@ -628,22 +634,33 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
     }
     scene.add(backdropGroup);
 
+    // Left framing pine — rebuilt as a proper multi-tier conifer. The old
+    // version was a SINGLE oversized 5-sided cone sitting close to the camera's
+    // left edge; its big flat low-poly faces read as broken green shards. A
+    // stack of decreasing canopy tiers pushed back into the tree-line reads
+    // cleanly as a tree and frames the vista instead of glitching it.
     const leftFeatureTree = new THREE.Group();
+    const leftFeatureTrunkHeight = 16;
     const leftFeatureTrunk = new THREE.Mesh(backdropTrunkGeo, backdropMaterial);
-    leftFeatureTrunk.scale.set(0.75, 20, 0.75);
-    leftFeatureTrunk.position.y = 10;
-    const leftFeatureCanopy = new THREE.Mesh(backdropCanopyGeo, backdropMaterial);
-    leftFeatureCanopy.scale.set(6.2, 15.5, 6.2);
-    leftFeatureCanopy.position.y = 18.2;
-    leftFeatureCanopy.rotation.y = 0.5;
-    const leftFeatureCrown = new THREE.Mesh(backdropCanopyGeo, backdropMaterial);
-    leftFeatureCrown.scale.set(4.3, 8.4, 4.3);
-    leftFeatureCrown.position.y = 25.2;
-    leftFeatureCrown.rotation.y = 1.1;
-    leftFeatureTree.add(leftFeatureTrunk, leftFeatureCanopy, leftFeatureCrown);
-    leftFeatureTree.position.set(-61, heightAt(-61, -28) + 0.8, -28);
+    leftFeatureTrunk.scale.set(0.6, leftFeatureTrunkHeight, 0.6);
+    leftFeatureTrunk.position.y = leftFeatureTrunkHeight / 2;
+    leftFeatureTree.add(leftFeatureTrunk);
+    const leftFeatureTiers = [
+      { radius: 5.4, height: 9.5, y: 11.0 },
+      { radius: 4.4, height: 8.5, y: 15.0 },
+      { radius: 3.4, height: 7.0, y: 18.8 },
+      { radius: 2.3, height: 5.5, y: 22.4 },
+    ];
+    for (const tier of leftFeatureTiers) {
+      const tierCone = new THREE.Mesh(backdropCanopyGeo, backdropMaterial);
+      tierCone.scale.set(tier.radius, tier.height, tier.radius);
+      tierCone.position.y = tier.y;
+      tierCone.rotation.y = Math.random() * Math.PI;
+      leftFeatureTree.add(tierCone);
+    }
+    leftFeatureTree.position.set(-66, heightAt(-66, -42) + 0.5, -42);
     leftFeatureTree.rotation.y = 0.35;
-    leftFeatureTree.scale.setScalar(1.05);
+    leftFeatureTree.scale.setScalar(1.0);
     scene.add(leftFeatureTree);
 
     const glowLights: PulsingLight[] = [];

@@ -67,8 +67,12 @@ export function buildExplosiveBarrel(): ExplosiveBarrel {
     position: group.position.clone(),
     hp: 28, // ~1 rifle hit or 2 pistol hits
     hitRadius: 0.85,
-    blastRadius: 6.5,
-    blastDamage: 65,
+    // A TNT blast should reliably wipe out the cluster of enemies around it.
+    // Centre damage (150) one-shots normals / fast / ranged at any realistic
+    // wave and heavily chunks tanks; the gentle falloff (resolved in App's
+    // detonateBarrel) keeps enemies a few metres out still lethal-or-close.
+    blastRadius: 7.5,
+    blastDamage: 150,
     detonated: false,
   };
 }

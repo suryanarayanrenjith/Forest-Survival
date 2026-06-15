@@ -6119,7 +6119,10 @@ const ForestSurvivalGame = () => {
         if (e.dead) continue;
         const dist = e.mesh.position.distanceTo(epos);
         if (dist > barrel.blastRadius) continue;
-        const falloff = 1 - (dist / barrel.blastRadius) * 0.75;
+        // Gentle falloff (×0.5, not ×0.75) so an enemy a few metres from the
+        // barrel still eats most of the blast and actually dies — the whole
+        // point of detonating a barrel next to a cluster.
+        const falloff = 1 - (dist / barrel.blastRadius) * 0.5;
         const dmg = barrel.blastDamage * falloff;
         if (isMpGuest && mp) {
           if (e.netId !== undefined) mp.sendEnemyHit(e.netId, dmg, false);
@@ -6142,7 +6145,10 @@ const ForestSurvivalGame = () => {
       const playerDist = Math.hypot(camera.position.x - epos.x, camera.position.z - epos.z);
       if (playerDist <= barrel.blastRadius) {
         const falloff = 1 - (playerDist / barrel.blastRadius) * 0.75;
-        takeEnemyDamage(barrel.blastDamage * falloff, 'Explosive Barrel', null);
+        // Player takes half the (now much higher) enemy-facing blast — keeps
+        // friendly fire dangerous (~75 at point blank) without it being an
+        // instant unavoidable death whenever a barrel pops near you.
+        takeEnemyDamage(barrel.blastDamage * falloff * 0.5, 'Explosive Barrel', null);
       }
       // Yank from world + free up the slot.
       scene.remove(barrel.mesh);
