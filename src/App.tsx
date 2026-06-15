@@ -4256,6 +4256,38 @@ const ForestSurvivalGame = () => {
           triggerKillFlash();
           break;
         }
+        case 'frenzy': {
+          // 25-streak reward — an all-out offensive surge: rapid fire AND
+          // doubled damage at once. Reuses the existing timed-effect states so
+          // it inherits their expiry + HUD wiring with no new bookkeeping.
+          rapidFireActive = true;
+          rapidFireEndTime = nowMs + rapidFireDuration;
+          damageBoostActive = true;
+          damageBoostEndTime = nowMs + damageBoostDuration;
+          showPowerMessage('Frenzy · rapid fire + double damage · 15s', 2400);
+          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Frenzy!', 'powerup');
+          createParticles(camera.position, 0xff5a2a, 36);
+          triggerKillFlash();
+          break;
+        }
+        case 'juggernaut': {
+          // 30-streak reward — a tanky rampage: a full riot shield, a speed
+          // surge and an overcharge offensive burst together. Pure reuse of the
+          // existing timed states, so no fresh expiry path is introduced.
+          shieldActive = true;
+          shieldEndTime = nowMs + shieldDuration;
+          shieldAbsorb = SHIELD_ABSORB_MAX;
+          shieldBreakFlash = 0;
+          speedBoostActive = true;
+          speedBoostEndTime = nowMs + speedBoostDuration;
+          overchargeActive = true;
+          overchargeEndTime = nowMs + overchargeDuration;
+          showPowerMessage('Juggernaut · shield · speed · overcharge · 15s', 2600);
+          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Juggernaut!', 'powerup');
+          createParticles(camera.position, 0x66e0ff, 44);
+          triggerKillFlash();
+          break;
+        }
         default:
           // The other PowerUpType values (health/ammo/speed/damage/shield/
           // infinite_ammo) are handled via the held-power slot; not reachable
@@ -4342,7 +4374,18 @@ const ForestSurvivalGame = () => {
     // during play, long after every closed-over `const` is initialised.
     function triggerCharacterAbility() {
       const nowMs = Date.now();
-      let cd = activeAbility.cooldown;
+      // GENERAL ability-recharge reduction — applies to WHATEVER signature power
+      // this character has, not just the Ranger's dash. The "−30% ability
+      // recharge" wave perk (perkBonuses.dashCooldownMult), the Cooldown-Mastery
+      // skill and the class passive / MP mods all fold in here so every class
+      // benefits identically. Floored at 15% of the base so stacked reductions
+      // can speed a power up dramatically but never make it spammable. (Field
+      // name stays `dashCooldownMult` for back-compat; it now means "ability
+      // cooldown".)
+      const cd = activeAbility.cooldown
+        * Math.max(0.15, 1 + skillBonus('dashCooldown'))
+        * perkBonuses.dashCooldownMult
+        * (mpMods.dashCooldownMult ?? 1);
       const activeMs = activeAbility.duration * 1000;
       gunModel.cancelInspect(); // an ability cast snaps the gun back from an inspect
 
@@ -4355,11 +4398,7 @@ const ForestSurvivalGame = () => {
           // FOV surge — the lens pulls wide for the burst, then the existing
           // per-frame decay eases it back. Reads as raw acceleration.
           fovPunch = Math.min(fovPunch + 8, 10);
-          // Dash Mastery skill / perks / Ranger passive shrink the cooldown.
-          cd = activeAbility.cooldown
-            * Math.max(0.15, 1 + skillBonus('dashCooldown'))
-            * perkBonuses.dashCooldownMult
-            * (mpMods.dashCooldownMult ?? 1);
+          // (Cooldown reduction is now applied once for every ability up top.)
           const dir = new THREE.Vector3();
           camera.getWorldDirection(dir);
           dir.y = 0; dir.normalize();
@@ -4593,7 +4632,8 @@ const ForestSurvivalGame = () => {
       // → 10% off) so we subtract it from 1 in the multiplier chain.
       const reloadMs = (weapon.reloadTime / (1 + skillBonus('reloadSpeed')))
         * (mpMods.reloadSpeedMult ?? 1)
-        * (1 - masteryBonus.reloadSpeedup);
+        * (1 - masteryBonus.reloadSpeedup)
+        * perkBonuses.reloadTimeMult;
       setReloadDurationUI(reloadMs); // drives the crosshair reload indicator
       if (reloadTimeoutId !== null) window.clearTimeout(reloadTimeoutId);
       reloadTimeoutId = window.setTimeout(() => {
@@ -5318,6 +5358,17 @@ const ForestSurvivalGame = () => {
     const _assistDir = new THREE.Vector3(); // camera→enemy (aim assist)
     const _tempVec3 = new THREE.Vector3();
     const _tempVec3_2 = new THREE.Vector3();
+    // ── ENEMY ENGAGEMENT CULLING (anti-snipe-through-fog) ──────────────────
+    // Reused each frame to decide which enemies are "engageable": a bullet can
+    // only damage — and an enemy can only shoot — when the enemy is genuinely
+    // rendered on the player's screen (inside the view frustum AND within the
+    // map's visible draw distance) OR close enough to matter. This stops the
+    // player sniping fog-culled enemies off in the distance, and stops unseen
+    // far enemies plinking the player from beyond the render horizon.
+    const _engageFrustum = new THREE.Frustum();
+    const _engageProjMat = new THREE.Matrix4();
+    const _engageSphere = new THREE.Sphere(new THREE.Vector3(), 2.4);
+    const ENGAGE_CLOSE = 16;   // always engageable within this radius (m)
     // Bullet's position at the START of the frame — the swept-collision test
     // sweeps the segment [_bulletPrev → current] so fast bullets can't tunnel
     // past enemies between frames (see the bullet update loop).
@@ -5543,6 +5594,8 @@ const ForestSurvivalGame = () => {
             killStreak === 10 ? 'invincible' :
             killStreak === 15 ? 'random_weapon' :
             killStreak === 20 ? 'nuke' :
+            killStreak === 25 ? 'frenzy' :
+            killStreak === 30 ? 'juggernaut' :
             null
           );
           if (streakReward && killStreak > lastStreakAwarded) {
@@ -5562,6 +5615,8 @@ const ForestSurvivalGame = () => {
               streakReward === 'invincible'    ? 'Invincibility' :
               streakReward === 'random_weapon' ? 'Mystery Box' :
               streakReward === 'nuke'          ? 'Tactical Nuke' :
+              streakReward === 'frenzy'        ? 'Frenzy' :
+              streakReward === 'juggernaut'    ? 'Juggernaut' :
               'Airdrop'
             );
             if (gameSettingsManager.getSetting('killFeed')) {
@@ -5836,7 +5891,7 @@ const ForestSurvivalGame = () => {
     const takeEnemyDamage = (incoming: number, enemyLabel: string, enemyPos: THREE.Vector3 | null) => {
       if (phantomActive || invincibleActive || isTutorialMode || playerEliminated) return;
 
-      let damage = incoming * Math.max(0, 1 - skillBonus('damageReduction'));
+      let damage = incoming * Math.max(0, 1 - skillBonus('damageReduction')) * perkBonuses.damageTakenMult;
 
       if (shieldActive && damage > 0) {
         camera.getWorldDirection(_shieldFwd);
@@ -7021,7 +7076,11 @@ const ForestSurvivalGame = () => {
         // locks — a deliberate swipe always overrides it — and stays idle when
         // the player isn't interacting, so the camera never drifts on its own.
         const firing = mouseDown || touchControls.aiming;
-        if (firing || looked) {
+        // Hardened gate: the camera magnetism runs ONLY in a genuine touch
+        // session (real hardware + a trusted touch). On desktop — or if someone
+        // flips `touchControls.enabled` in the console — assistAllowed() is
+        // false, so the assist never engages and a mouse aims with zero help.
+        if (touchControls.assistAllowed() && (firing || looked)) {
           camera.getWorldDirection(_assistFwd);
           const ACQUIRE_COS = 0.978; // ~12° cone
           const ASSIST_RANGE = 75;
@@ -7326,7 +7385,7 @@ const ForestSurvivalGame = () => {
       // Apply crouch speed reduction
       const crouchMult = isCrouching ? crouchSpeedMultiplier : 1.0;
 
-      const baseSpeed = moveSpeed * weightSpeedMultiplier * abilityEffects.speedMultiplier * powerupSpeedMult * crouchMult * (1 + skillBonus('moveSpeed')) * (mpMods.speedMult ?? 1);
+      const baseSpeed = moveSpeed * weightSpeedMultiplier * abilityEffects.speedMultiplier * powerupSpeedMult * crouchMult * (1 + skillBonus('moveSpeed')) * (mpMods.speedMult ?? 1) * perkBonuses.moveSpeedMult;
       let currentSpeed = isRunning ? baseSpeed * sprintMultiplier : baseSpeed;
 
       // Apply dash speed if dashing
@@ -7960,9 +8019,35 @@ const ForestSurvivalGame = () => {
       // and enemy-vs-enemy separation below.
       rebuildTerrainGridIfStale();
       enemyGrid.clear();
+      // Forgiving aim (magnetism + wide hitbox) is mobile-only — resolved once
+      // per frame through the hardened gate so the hot bullet loop just reads a
+      // boolean (and a tampered desktop flag can't unlock it; see touchControls).
+      const aimAssist = touchControls.assistAllowed();
+      // View frustum for this frame's engagement-culling test.
+      _engageProjMat.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+      _engageFrustum.setFromProjectionMatrix(_engageProjMat);
+      // Visible draw distance for THIS map — past it, fog/cull hide the enemy.
+      const engageFarSq = mapConfig.fogFar * mapConfig.fogFar;
+      const engageCloseSq = ENGAGE_CLOSE * ENGAGE_CLOSE;
       for (let k = 0; k < enemies.length; k++) {
         const e = enemies[k];
-        if (!e.dead) enemyGrid.insert(k, e.mesh.position.x, e.mesh.position.z);
+        if (e.dead) continue;
+        enemyGrid.insert(k, e.mesh.position.x, e.mesh.position.z);
+        // Engageable = close enough to matter, OR genuinely rendered on screen
+        // (inside the frustum AND within the map's visible draw distance). A
+        // fog-culled enemy off in the distance is neither shootable nor able to
+        // shoot until it actually comes into view / range.
+        const edx = e.mesh.position.x - camera.position.x;
+        const edz = e.mesh.position.z - camera.position.z;
+        const edistSq = edx * edx + edz * edz;
+        if (edistSq < engageCloseSq) {
+          e.engageable = true;
+        } else if (edistSq > engageFarSq) {
+          e.engageable = false;
+        } else {
+          _engageSphere.center.set(e.mesh.position.x, e.mesh.position.y + 1.0, e.mesh.position.z);
+          e.engageable = _engageFrustum.intersectsSphere(_engageSphere);
+        }
       }
 
       // === ENEMY BULLET UPDATE (ranged sniper bolts) ===
@@ -8142,6 +8227,10 @@ const ForestSurvivalGame = () => {
           const j = nearbyIds[n];
           const enemy = enemies[j];
           if (!enemy || enemy.dead) continue;
+          // Can't snipe an enemy that isn't actually rendered on screen (fogged
+          // out in the distance) — it must be engageable first. `=== false`
+          // so an enemy not yet evaluated this frame defaults to hittable.
+          if (enemy.engageable === false) continue;
           // ── SWEPT (segment) HIT TEST ────────────────────────────────────
           // Closest approach of the bullet's path this frame to the enemy
           // centre (XZ cylinder, radius 2). Tunnel-proof: a sniper round steps
@@ -8163,7 +8252,32 @@ const ForestSurvivalGame = () => {
           const closeZ = _bulletPrev.z + segDZ * tHit;
           const closeDX = closeX - enemy.mesh.position.x;
           const closeDZ = closeZ - enemy.mesh.position.z;
-          if (closeDX * closeDX + closeDZ * closeDZ < 4) {
+          const closeXZsq = closeDX * closeDX + closeDZ * closeDZ;
+          // FORGIVING (genuine touch only): the old wide 2m XZ cylinder with NO
+          // height test — the mobile aim-assist that lets thumb-aim connect.
+          // PRECISE (desktop / untampered): a tight body radius that ALSO
+          // requires the bullet to pass through the enemy's vertical extent, so
+          // firing over the head or wide of the body genuinely whiffs instead of
+          // magnetically landing.
+          let bodyHit: boolean;
+          if (aimAssist) {
+            bodyHit = closeXZsq < 4;
+          } else {
+            const eScale = enemy.type === 'fast' ? 0.7
+              : enemy.type === 'tank' ? 1.5
+              : enemy.type === 'boss' ? 2.0
+              : enemy.type === 'ranged' ? 1.05
+              : 1.0;
+            const bodyR = Math.max(1.1, 1.1 * eScale);
+            const contactY = _bulletPrev.y + (bullet.mesh.position.y - _bulletPrev.y) * tHit;
+            const footY = enemy.mesh.position.y - 0.4;
+            // Up to the TOP of the head (head centre ≈1.9·scale + ~0.8·scale
+            // radius) so legit top-of-skull headshots still land; anything fired
+            // clearly above that genuinely sails over.
+            const headY = enemy.mesh.position.y + 2.8 * eScale;
+            bodyHit = closeXZsq < bodyR * bodyR && contactY >= footY && contactY <= headY;
+          }
+          if (bodyHit) {
             // Snap to the contact point so all downstream effects are exact.
             bullet.mesh.position.set(
               closeX,
@@ -9059,7 +9173,14 @@ const ForestSurvivalGame = () => {
           }
           const COOLDOWN_MS = 2400;
           const CHARGE_MS   = 750;
-          if (los) {
+          // Hold fire unless the sniper is genuinely rendered on the player's
+          // screen (or right on top of them) — no shots from beyond the fog/cull
+          // horizon where the player can't even see the shooter. (`!== false` so
+          // an unevaluated enemy still behaves normally.) In MP, a host-owned
+          // sniper aiming at a REMOTE player is judged by THAT player's view, not
+          // the host's camera, so the local engageable gate is skipped for it.
+          const engageGate = enemy.engageable !== false || (isMpHost && focusPlayerId !== null);
+          if (los && engageGate) {
             if ((enemy.rangedNextShotAt ?? 0) <= frameNowMs) {
               enemy.rangedChargeMs = (enemy.rangedChargeMs ?? 0) + delta * 1000;
               if (enemy.rangedChargeMs >= CHARGE_MS) {

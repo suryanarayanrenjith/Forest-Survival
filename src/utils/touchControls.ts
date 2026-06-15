@@ -17,6 +17,46 @@ class TouchControlsBridge {
   /** True only on detected touch phones/tablets. Set from useDeviceInfo. */
   enabled = false;
 
+  // ── TAMPER-RESISTANT "GENUINE TOUCH" GATE ───────────────────────────────
+  // `enabled` is a plain flag derived from device detection — a determined
+  // desktop user could flip it in the console to try to unlock the mobile
+  // aim-assist + forgiving hitbox (an unfair advantage). So those features do
+  // NOT trust `enabled` alone: they require `assistAllowed()`, which also
+  // demands real touch HARDWARE *and* a browser-TRUSTED touch event this
+  // session. A mouse cannot synthesise a trusted touch (`isTrusted === false`
+  // on any dispatched/forged event), so a desktop player can never satisfy
+  // this no matter what flags they poke. These fields are private so there's
+  // no public setter to abuse, and the listeners self-install once at load.
+  private _hardwareTouch = false;
+  private _sawTrustedTouch = false;
+
+  constructor() {
+    if (typeof window === 'undefined') return;
+    try {
+      const nav = typeof navigator !== 'undefined' ? navigator : undefined;
+      this._hardwareTouch =
+        (nav?.maxTouchPoints ?? 0) > 0 || 'ontouchstart' in window;
+      // Capture-phase + passive so the mark can't be suppressed by a
+      // stopPropagation handler and never blocks scrolling. Only a genuine,
+      // browser-dispatched touch (isTrusted) flips the latch.
+      const mark = (e: Event) => { if (e.isTrusted) this._sawTrustedTouch = true; };
+      window.addEventListener('touchstart', mark, { capture: true, passive: true });
+      window.addEventListener('touchmove', mark, { capture: true, passive: true });
+    } catch {
+      /* defensive: any detection failure simply leaves the assist disabled */
+    }
+  }
+
+  /**
+   * The hardened gate for the mobile-only aim-assist + forgiving hitbox.
+   * Requires ALL of: the device flagged as touch, real touch hardware, and a
+   * genuine trusted touch having occurred. Desktop (mouse) can never pass it,
+   * even with `enabled` forced true — so the assist cannot be unlocked there.
+   */
+  assistAllowed(): boolean {
+    return this.enabled && this._hardwareTouch && this._sawTrustedTouch;
+  }
+
   // ── Analog movement (left joystick) ──
   // Range -1..1. x = strafe (+right), y = forward (+forward).
   moveX = 0;

@@ -10,7 +10,9 @@ export type PowerUpType =
   | 'infinite_ammo'
   | 'rapid_fire'
   | 'nuke'
-  | 'random_weapon';
+  | 'random_weapon'
+  | 'frenzy'
+  | 'juggernaut';
 
 export interface PowerUpConfig {
   type: PowerUpType;
@@ -130,6 +132,28 @@ export const POWER_UP_CONFIGS: Record<PowerUpType, PowerUpConfig> = {
     emissiveColor: 0xbb33ff,
     rarity: 'rare',
     spawnChance: 0.06
+  },
+  frenzy: {
+    type: 'frenzy',
+    name: 'Frenzy',
+    description: 'Rapid fire + 2x damage for 15s',
+    icon: '🔥',
+    color: 0xff3a1e,
+    emissiveColor: 0xff6a2e,
+    rarity: 'epic',
+    duration: 15000,
+    spawnChance: 0
+  },
+  juggernaut: {
+    type: 'juggernaut',
+    name: 'Juggernaut',
+    description: 'Shield + speed + overcharge rampage',
+    icon: '🛡️',
+    color: 0x33ccff,
+    emissiveColor: 0x66e0ff,
+    rarity: 'legendary',
+    duration: 15000,
+    spawnChance: 0
   }
 };
 

@@ -84,7 +84,10 @@ export class GunModel {
   private supportGrip: { x: number; y: number; z: number } | null = null;
 
   // Animation offsets (accumulated and applied each frame)
-  private recoilOffset = { z: 0, rotX: 0 };
+  private recoilOffset = { z: 0, rotX: 0, rotY: 0 };
+  // Per-shot random lateral muzzle flick (sign + magnitude), so sustained fire
+  // walks the viewmodel left/right organically instead of kicking dead-straight.
+  private recoilFlick = 0;
   private swayOffset = { rotX: 0, rotY: 0 };
   private walkOffset = { x: 0, y: 0, rotZ: 0, rotX: 0 };
   private reloadRotZ: number = 0;
@@ -972,6 +975,7 @@ export class GunModel {
       // weightier, more realistic feel across all weapons.
       this.recoilOffset.z = this.recoilAnimation * 0.34;
       this.recoilOffset.rotX = -this.recoilAnimation * 0.8;
+      this.recoilOffset.rotY = this.recoilAnimation * this.recoilFlick;
 
       // Slide / pump blowback
       if (this.slide) {
@@ -984,6 +988,7 @@ export class GunModel {
     } else {
       this.recoilOffset.z *= 0.85;
       this.recoilOffset.rotX *= 0.85;
+      this.recoilOffset.rotY *= 0.85;
 
       if (this.slide) {
         this.slide.position.z += (this.slideRest - this.slide.position.z) * 0.3;
@@ -1183,7 +1188,7 @@ export class GunModel {
   updateActions(delta: number) {
     if (this.abilityAnim > 0) this.abilityAnim = Math.max(0, this.abilityAnim - delta * 3);
     if (this.dashAnim > 0) this.dashAnim = Math.max(0, this.dashAnim - delta * 3.6);
-    if (this.equipAnim > 0) this.equipAnim = Math.max(0, this.equipAnim - delta * 3.4);
+    if (this.equipAnim > 0) this.equipAnim = Math.max(0, this.equipAnim - delta * 3.05);
     if (this.inspectActive) {
       this.inspectTime += delta;
       if (this.inspectTime >= this.INSPECT_DURATION) {
@@ -1264,8 +1269,12 @@ export class GunModel {
     // Reload pulls the weapon down and in toward the player
     const reload = this.reloadDip;
 
-    // Weapon-equip raise — the gun swings up from below + flips level on swap.
+    // Weapon-equip DRAW — a cinematic raise: the gun swings up from low AND
+    // cants in from the right with the muzzle tipped up, then rolls level into
+    // the ready pose with a small settle-bounce so the swap reads as a real,
+    // weighted hand motion rather than a straight vertical pop.
     const equip = this.equipAnim; // 1 just-swapped → 0 settled
+    const equipSettle = Math.sin(equip * Math.PI); // 0→1→0 overshoot bump
 
     // ── INSPECT POSE — draw the gun in close and turn it to show both sides of
     // the receiver, muzzle tipping up, then settle back. A fade in/out envelope
@@ -1291,23 +1300,25 @@ export class GunModel {
 
     this.group.position.x =
       baseX + this.walkOffset.x * swayMul + SP_X * sprint + runX - reload * 0.07
-      + leanShift + inspX;
+      + leanShift + inspX + equip * 0.12;
     this.group.position.y =
       baseY + this.walkOffset.y * swayMul + SP_Y * sprint + runY
       + this.jumpOffset.y - land * 0.12 + abil * 0.07 - dash * 0.05 - reload * 0.16
-      - equip * 0.5 + inspY;
+      - equip * 0.5 + equipSettle * 0.05 + inspY;
     this.group.position.z =
-      baseZ + this.recoilOffset.z + SP_Z * sprint + dash * 0.16 + reload * 0.12 + inspZ;
+      baseZ + this.recoilOffset.z + SP_Z * sprint + dash * 0.16 + reload * 0.12
+      + equip * 0.10 + inspZ;
 
     this.group.rotation.x =
       (this.swayOffset.rotX + this.walkOffset.rotX) * swayMul
       + this.recoilOffset.rotX + SP_RX * sprint + runRotX
       + this.jumpOffset.rotX - land * 0.18 - reload * 0.42 + equip * 0.55 + inspPitch;
     this.group.rotation.y =
-      this.swayOffset.rotY * swayMul + SP_RY * sprint + leanYaw + inspYaw;
+      this.swayOffset.rotY * swayMul + SP_RY * sprint + leanYaw + inspYaw + equip * 0.26
+      + this.recoilOffset.rotY;
     this.group.rotation.z =
       this.walkOffset.rotZ * swayMul + this.reloadRotZ + SP_RZ * sprint
-      + runRotZ + abil * 0.22 + leanRoll + inspRoll;
+      + runRotZ + abil * 0.22 + leanRoll + inspRoll + equip * 0.42;
   }
 
   /**
@@ -1323,6 +1334,9 @@ export class GunModel {
   triggerRecoil(strength: number = 1.0) {
     const kick = THREE.MathUtils.clamp(0.78 * strength, 0.32, 1.0);
     this.recoilAnimation = Math.min(1.0, this.recoilAnimation + kick);
+    // Fresh random lateral flick each shot — heavier weapons throw the muzzle
+    // wider. Purely a viewmodel flourish (the camera owns the real aim-walk).
+    this.recoilFlick = (Math.random() - 0.5) * 0.11 * THREE.MathUtils.clamp(strength, 0.5, 2.2);
   }
 
   triggerReload() {

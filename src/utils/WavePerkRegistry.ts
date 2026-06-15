@@ -24,7 +24,11 @@ export type WavePerkId =
   | 'pickup_radius_2x'
   | 'explosive_bullets'
   | 'vampiric_kill'
-  | 'streak_keeper';
+  | 'streak_keeper'
+  | 'move_speed_15'
+  | 'reload_30'
+  | 'armor_20'
+  | 'glass_cannon';
 
 export interface WavePerk {
   id: WavePerkId;
@@ -46,12 +50,16 @@ export const WAVE_PERKS: Record<WavePerkId, WavePerk> = {
   crit_chance_10:    { id: 'crit_chance_10',   name: 'Eagle Eye',            blurb: '+10% headshot crit chance on body hits', rarity: 'common', weight: 4 },
   headshot_dmg_25:   { id: 'headshot_dmg_25',  name: 'Skull Splitter',       blurb: '+25% headshot damage',                  rarity: 'rare',   weight: 3 },
   max_ammo_50:       { id: 'max_ammo_50',      name: 'Drum Magazine',        blurb: '+50% max ammo per weapon',              rarity: 'common', weight: 4 },
-  dash_cd_30:        { id: 'dash_cd_30',       name: 'Quick Step',           blurb: '−30% dash cooldown',                    rarity: 'common', weight: 4 },
+  dash_cd_30:        { id: 'dash_cd_30',       name: 'Adrenal Surge',        blurb: '−30% ability recharge (your class power)', rarity: 'common', weight: 4 },
   max_hp_25:         { id: 'max_hp_25',        name: 'Iron Lung',            blurb: '+25 max HP (and heal that much now)',   rarity: 'rare',   weight: 3 },
   pickup_radius_2x:  { id: 'pickup_radius_2x', name: 'Magnet',               blurb: '2× pickup radius',                      rarity: 'common', weight: 4 },
   explosive_bullets: { id: 'explosive_bullets',name: 'Detonators',           blurb: 'Bullets explode on hit · small AOE',    rarity: 'epic',   weight: 1 },
   vampiric_kill:    { id: 'vampiric_kill',    name: 'Vampiric Edge',        blurb: 'Heal 10 HP on headshot kills',          rarity: 'epic',   weight: 1 },
   streak_keeper:    { id: 'streak_keeper',    name: 'Streak Keeper',        blurb: 'Killstreak survives wave transitions',  rarity: 'epic',   weight: 1 },
+  move_speed_15:    { id: 'move_speed_15',    name: 'Fleet Footed',         blurb: '+15% movement speed',                   rarity: 'common', weight: 4 },
+  reload_30:        { id: 'reload_30',        name: 'Fast Hands',           blurb: '−30% reload time',                      rarity: 'common', weight: 4 },
+  armor_20:         { id: 'armor_20',         name: 'Bulletproof',          blurb: '−20% damage taken',                     rarity: 'rare',   weight: 3 },
+  glass_cannon:     { id: 'glass_cannon',     name: 'Glass Cannon',         blurb: '+45% bullet damage · +30% damage taken', rarity: 'epic',   weight: 1 },
 };
 
 /**
@@ -75,6 +83,9 @@ export interface PerkBonuses {
   dashCooldownMult: number;   // 1.0 baseline (lower = faster)
   maxHpBonus: number;         // flat additive
   pickupRadiusMult: number;   // 1.0 baseline
+  moveSpeedMult: number;      // 1.0 baseline (higher = faster on foot)
+  reloadTimeMult: number;     // 1.0 baseline (lower = snappier reloads)
+  damageTakenMult: number;    // 1.0 baseline (lower = tankier; >1 = glass cannon)
   explosiveBullets: boolean;
   streakKeeper: boolean;
 }
@@ -91,6 +102,9 @@ export const NEUTRAL_PERK_BONUSES: PerkBonuses = {
   dashCooldownMult: 1,
   maxHpBonus: 0,
   pickupRadiusMult: 1,
+  moveSpeedMult: 1,
+  reloadTimeMult: 1,
+  damageTakenMult: 1,
   explosiveBullets: false,
   streakKeeper: false,
 };
@@ -115,6 +129,10 @@ export function aggregatePerkBonuses(picks: WavePerkId[]): PerkBonuses {
       case 'explosive_bullets': out.explosiveBullets = true; break;
       case 'vampiric_kill':     out.vampiricKillHeal += 10; break;
       case 'streak_keeper':     out.streakKeeper = true; break;
+      case 'move_speed_15':     out.moveSpeedMult *= 1.15; break;
+      case 'reload_30':         out.reloadTimeMult *= 0.70; break;
+      case 'armor_20':          out.damageTakenMult *= 0.80; break;
+      case 'glass_cannon':      out.damageMult *= 1.45; out.damageTakenMult *= 1.30; break;
     }
   }
   return out;

@@ -127,6 +127,11 @@ export interface Enemy {
   type: 'normal' | 'fast' | 'tank' | 'boss' | 'ranged';
   damage: number;
   scoreValue: number;
+  // Recomputed each frame: is the enemy on-screen-within-draw-distance OR close
+  // enough to engage? Bullets only damage it, and it only attacks, when true —
+  // so neither side can fight through the fog/cull horizon. Undefined ≙ engageable
+  // (safe default for the first frame before the cull pass has run).
+  engageable?: boolean;
   // Animation state
   walkTime: number;
   damageFlashTime: number;

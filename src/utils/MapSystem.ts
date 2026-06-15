@@ -120,14 +120,16 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     description: 'A thick, ancient forest with towering trees, fallen logs, and mushroom clusters.',
     icon: '🌲',
     primaryBiome: 'forest',
-    skyColor: 0x1a2f1a,
-    fogColor: 0x0a1f0a,
+    // Moderate-sunny daylight forest: a warmer gold-green sun streams through
+    // the canopy over a brighter sky, instead of the old dim neon-green murk.
+    skyColor: 0x33503a,
+    fogColor: 0x16301c,
     fogNear: 20,
     fogFar: 150,
-    ambientLightColor: 0x4a7a4a,
-    ambientLightIntensity: 0.5,
-    directionalLightColor: 0x88ff88,
-    directionalLightIntensity: 0.8,
+    ambientLightColor: 0x5e8a5c,
+    ambientLightIntensity: 0.58,
+    directionalLightColor: 0xe9f4c2,
+    directionalLightIntensity: 0.95,
     groundColor: 0x1a4a1a,
     groundEmissive: 0x0a2a0a,
     groundSize: 640,
@@ -152,8 +154,10 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       bloomStrength: 1.05,
       godRayStrength: 1.15,            // sunbeams pour through the canopy
       aerialPerspective: 1.0,
-      highlightRecovery: 0.14,
-      highlightDesaturation: 0.14,
+      // Highlight guard raised alongside the brighter sun so the lifted daylight
+      // never clips to white — sun-struck leaves roll off, they don't blow out.
+      highlightRecovery: 0.2,
+      highlightDesaturation: 0.2,
       vibrance: 1.08,                  // lusher greens, deeper sky blues
       shadowLift: 1.0,
       hazeDensity: 1.12,               // morning-mist body between the trunks
@@ -279,14 +283,18 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     description: 'A frozen expanse of ice spires, snow-laden pines, and frozen ponds.',
     icon: '❄️',
     primaryBiome: 'tundra',
-    skyColor: 0x435b72,                   // cold overcast blue, not white
-    fogColor: 0x334657,                   // dark slate haze preserves silhouettes
+    // Crisp, moderately-sunny winter day — a brighter cold-blue sky and a
+    // stronger sun off the snow. Brightness stays controlled by the LOW exposure
+    // (0.72) + very high highlightRecovery (0.78) below, so the snowfield reads
+    // sun-lit, NOT blown to white.
+    skyColor: 0x587aa4,                   // brighter sunny cold sky
+    fogColor: 0x3c5167,                   // slate haze, slightly lifted
     fogNear: 50,                          // was 40
     fogFar: 480,                          // was 320 — long sightlines
-    ambientLightColor: 0x526a82,
-    ambientLightIntensity: 0.34,          // snow reflects a lot; keep fill modest
-    directionalLightColor: 0x9fb0bd,      // dim cool sun, not pure white
-    directionalLightIntensity: 0.58,
+    ambientLightColor: 0x61788e,
+    ambientLightIntensity: 0.4,           // snow reflects a lot; keep fill modest
+    directionalLightColor: 0xe8eef4,      // bright cool sun (still not pure white)
+    directionalLightIntensity: 0.74,
     groundColor: 0x7f929e,                // blue-gray snow with readable value
     groundEmissive: 0x2f4352,
     groundSize: 736,
@@ -493,12 +501,13 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       groundNormal: 1.05,
       groundPatch: 1.05,
     },
-    // Sodden wetland — near-flat with low silt mounds of dark, sodden muck.
-    // The damp bog sheen comes from the glossy base material (default
-    // roughness 0.52) + the strong groundSpecular grade above + the bubbling
-    // toxic POOLS (standalone biome features), NOT from the rain-puddle
-    // pattern — discrete reflective puddles are reserved for the deep forest
-    // after rain, so the swamp reads wet without spawning stray "potholes".
+    // Sodden wetland — near-flat with low silt mounds threaded with black,
+    // standing bog water. The swamp is the ONE map (besides a rained-on deep
+    // forest) that keeps a PERMANENT soaked look: a high STATIC `wetness`
+    // floods the low spots with dark, mirror-still pools all run long. This is
+    // baked terrain identity (uTWetness), independent of the live-rain puddle
+    // gate — it never needs a storm and never spreads to the dry maps. Reads as
+    // a genuine bog: black reflective water between mossy muck banks.
     terrain: {
       amplitude: 1.9,
       frequency: 0.018,
@@ -510,6 +519,7 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       rockColor: 0x22301c,
       detailColor: [0.85, 1.0, 0.78],
       detailScale: 1.1,
+      wetness: 0.8,
     },
   },
 
@@ -520,14 +530,16 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     description: 'An abandoned base with concrete walls, sandbag bunkers, and watchtower frames.',
     icon: '🪖',
     primaryBiome: 'military',
-    skyColor: 0x2a2a28,
-    fogColor: 0x383832,                    // mildly darker for atmosphere
+    // Clear, moderately-sunny day over the compound — a soft blue sky and a
+    // warm sun replace the old flat overcast (the dust haze still grounds it).
+    skyColor: 0x5b6f80,
+    fogColor: 0x53606a,                    // lighter haze, still below mid-luma
     fogNear: 35,
     fogFar: 240,                           // was 180 — better engagement distance
-    ambientLightColor: 0x6a6a60,
-    ambientLightIntensity: 0.5,
-    directionalLightColor: 0xccccbb,
-    directionalLightIntensity: 0.85,
+    ambientLightColor: 0x8a93a0,
+    ambientLightIntensity: 0.56,
+    directionalLightColor: 0xffeecf,
+    directionalLightIntensity: 1.0,
     groundColor: 0x4a4a42,
     groundEmissive: 0x2a2a24,
     groundSize: 672,
@@ -552,8 +564,10 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       bloomStrength: 0.85,
       godRayStrength: 0.92,             // crisp sun shafts across the compound
       aerialPerspective: 0.85,
-      highlightRecovery: 0.16,
-      highlightDesaturation: 0.16,
+      // Brighter sun → stronger highlight roll-off so concrete + sand stay
+      // readable instead of clipping to white.
+      highlightRecovery: 0.24,
+      highlightDesaturation: 0.2,
       vibrance: 0.85,
       shadowLift: 0.98,
       hazeDensity: 1.0,                 // dusty parade-ground air
@@ -676,14 +690,17 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     description: 'Crumbling stone columns, broken walls, arched doorways, and forgotten statues.',
     icon: '🏛️',
     primaryBiome: 'ruins',
-    skyColor: 0x303028,
-    fogColor: 0x3a3a32,
+    // Warm, moderately-sunny day over the ruins by default — sun-warmed stone
+    // and a soft sky. The 'rain' storm still rolls in to darken + soak it
+    // situationally, so the wet-stone drama is earned, not the constant state.
+    skyColor: 0x6a7488,
+    fogColor: 0x5a6470,
     fogNear: 25,
     fogFar: 220,                           // was 150 — more atmospheric depth
-    ambientLightColor: 0x7a7a6a,
-    ambientLightIntensity: 0.5,
-    directionalLightColor: 0xbbbbaa,
-    directionalLightIntensity: 0.8,
+    ambientLightColor: 0x97a0a6,
+    ambientLightIntensity: 0.56,
+    directionalLightColor: 0xffeccc,
+    directionalLightIntensity: 0.95,
     groundColor: 0x5a5548,
     groundEmissive: 0x3a3530,
     groundSize: 672,
@@ -708,8 +725,9 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       bloomStrength: 1.0,
       godRayStrength: 0.8,              // storm-light shafts between columns
       aerialPerspective: 0.78,
-      highlightRecovery: 0.2,
-      highlightDesaturation: 0.18,
+      // Sunnier base → firmer highlight roll-off so pale flagstones don't clip.
+      highlightRecovery: 0.26,
+      highlightDesaturation: 0.22,
       vibrance: 0.95,
       shadowLift: 1.0,
       hazeDensity: 1.0,
