@@ -2086,14 +2086,34 @@ const ForestSurvivalGame = () => {
     // Bumped on EVERY add/remove so spatial-grid rebuilds can't be fooled by
     // an add+remove in the same frame leaving the array length unchanged.
     let terrainVersion = 0;
+    // ── Incremental collidable-prop index ──────────────────────────────────
+    // overlapsTerrain() (the scatter-time anti-clipping test) used to linear-
+    // scan EVERY loaded terrain object — ~1000+ props across the 5×5 chunk
+    // grid — up to 8× per scattered tree/rock. Generating one chunk's worth of
+    // props did millions of distance checks, and a boundary cross builds 5-9
+    // chunks at once: the main source of the streaming hitch. This grid is
+    // maintained incrementally on add/remove and lets overlapsTerrain() test
+    // only the handful of props that could actually overlap, so placement
+    // decisions are byte-for-byte identical at O(near) cost. It stores object
+    // refs (not array indices) so it survives the terrainObjects splice below.
+    const collidableGrid = new SpatialGrid<TerrainObject>(8);
+    // Largest collidable radius seen so far — overlapsTerrain widens its query
+    // by this so it can never miss a big boulder/tree it should test against.
+    // Only ever grows (an over-estimate just widens the query → still correct).
+    let maxCollidableRadius = 0;
     const addTerrainObject = (obj: TerrainObject) => {
       if (!terrainInstancer.add(obj.mesh)) scene.add(obj.mesh);
       terrainObjects.push(obj);
+      if (obj.collidable) {
+        if (obj.radius > maxCollidableRadius) maxCollidableRadius = obj.radius;
+        collidableGrid.insert(obj, obj.x, obj.z);
+      }
       terrainVersion++;
     };
     const removeTerrainObjectAt = (index: number) => {
       const obj = terrainObjects[index];
       if (!terrainInstancer.remove(obj.mesh)) scene.remove(obj.mesh);
+      if (obj.collidable) collidableGrid.remove(obj, obj.x, obj.z);
       terrainObjects.splice(index, 1);
       terrainVersion++;
     };
@@ -2102,8 +2122,14 @@ const ForestSurvivalGame = () => {
     // would overlap an existing collidable terrain object. Used to keep rocks,
     // trees and boulders from clipping into one another when scattered.
     const overlapsTerrain = (x: number, z: number, radius: number): boolean => {
-      for (const obj of terrainObjects) {
-        if (!obj.collidable) continue;
+      // Query a superset of everything that could overlap: any collidable prop
+      // whose centre is within (radius + the largest collidable radius) of
+      // (x, z). Anything outside that band is too far to overlap by definition,
+      // so the exact circle test below yields the SAME answer as the old
+      // full-array scan — just over the few nearby props instead of all ~1000+.
+      const candidates = collidableGrid.queryRadius(x, z, radius + maxCollidableRadius);
+      for (let i = 0; i < candidates.length; i++) {
+        const obj = candidates[i];
         const dx = obj.x - x;
         const dz = obj.z - z;
         const minDist = obj.radius + radius;
@@ -2207,6 +2233,38 @@ const ForestSurvivalGame = () => {
       biomeSystem.updateGroundMaterial(ground, biome, getGroundOverride());
     };
 
+    // ── Budgeted chunk streaming ───────────────────────────────────────────
+    // Building the new outer ring synchronously on a boundary cross (5-9 chunks
+    // × ~100+ props each) stalled a whole frame. Those chunks sit 200+ units
+    // away behind fog, so we enqueue them and materialise a small budget per
+    // frame instead — identical world, no hitch. enqueueChunk skips anything
+    // already loaded or already queued; drainPendingChunks runs each frame.
+    const pendingChunks: { cx: number; cz: number }[] = [];
+    const pendingChunkKeys = new Set<string>();
+    const enqueueChunk = (cx: number, cz: number) => {
+      const key = `${cx},${cz}`;
+      if (loadedChunks.has(key) || pendingChunkKeys.has(key)) return;
+      pendingChunkKeys.add(key);
+      pendingChunks.push({ cx, cz });
+    };
+    const drainPendingChunks = (budget: number) => {
+      if (pendingChunks.length === 0) return;
+      // Re-sort nearest-first against the player's CURRENT chunk so the closest
+      // pending terrain always fills in first as they move (cheap — ≤25 items).
+      if (pendingChunks.length > 1) {
+        const pcx = Math.floor(camera.position.x / CHUNK_SIZE);
+        const pcz = Math.floor(camera.position.z / CHUNK_SIZE);
+        pendingChunks.sort((a, b) =>
+          ((a.cx - pcx) * (a.cx - pcx) + (a.cz - pcz) * (a.cz - pcz)) -
+          ((b.cx - pcx) * (b.cx - pcx) + (b.cz - pcz) * (b.cz - pcz)));
+      }
+      for (let n = 0; n < budget && pendingChunks.length > 0; n++) {
+        const c = pendingChunks.shift()!;
+        pendingChunkKeys.delete(`${c.cx},${c.cz}`);
+        generateChunk(c.cx, c.cz);
+      }
+    };
+
     const updateWorldGeneration = (playerX: number, playerZ: number) => {
       const chunkX = Math.floor(playerX / CHUNK_SIZE);
       const chunkZ = Math.floor(playerZ / CHUNK_SIZE);
@@ -2217,9 +2275,10 @@ const ForestSurvivalGame = () => {
       // of the streamed terrain. The fog density was bumped 25 % in
       // getRenderAtmosphere so the new far chunks blend smoothly into the
       // sky tone instead of revealing the missing 6th-chunk band.
+      // Enqueued (not built inline) so the per-frame drain spreads the cost.
       for (let dx = -2; dx <= 2; dx++) {
         for (let dz = -2; dz <= 2; dz++) {
-          generateChunk(chunkX + dx, chunkZ + dz);
+          enqueueChunk(chunkX + dx, chunkZ + dz);
         }
       }
 
@@ -2339,14 +2398,16 @@ const ForestSurvivalGame = () => {
       }
     };
 
-    // Initial world generation
-    generateChunk(0, 0);
-    generateChunk(0, 1);
-    generateChunk(1, 0);
-    generateChunk(1, 1);
-    generateChunk(-1, 0);
-    generateChunk(0, -1);
-    generateChunk(-1, -1);
+    // Initial world generation — the full 3×3 around spawn (everything within
+    // the visible/fog distance) is built synchronously so collision and the
+    // forest are solid on frame one. The outer rings of the 5×5 stream in via
+    // the budgeted queue below (they sit 200+ units away behind fog, so the
+    // player never sees them materialise).
+    for (let _cx = -1; _cx <= 1; _cx++) {
+      for (let _cz = -1; _cz <= 1; _cz++) {
+        generateChunk(_cx, _cz);
+      }
+    }
 
     // === EXPLOSIVE BARRELS ===
     // Scatter red barrels across the map. Density per-map (MapConfig).
@@ -3249,9 +3310,14 @@ const ForestSurvivalGame = () => {
     // Reference: https://discourse.threejs.org/t/scene-freezes-when-adding-dynamically-pointlight/28281
     // ═══════════════════════════════════════════════════════════════════
 
-    // ── PointLight pool (8 lights, eight is comfortably above peak
-    //    concurrent visible pickups in typical play) ────────────────────
-    const PICKUP_LIGHT_POOL_SIZE = 8;
+    // ── PointLight pool ───────────────────────────────────────────────────
+    // Every resident light is shaded per-pixel on every lit surface in forward
+    // rendering, EVEN at intensity 0 — so the pool size is a flat per-frame GPU
+    // tax across the whole screen. 5 still sits above the realistic peak of
+    // glowing pickups within a light's 9-unit reach of the camera, and the
+    // overflow path degrades invisibly: an un-lit pickup keeps its bright
+    // emissive core, it just doesn't cast dynamic light onto nearby ground.
+    const PICKUP_LIGHT_POOL_SIZE = 5;
     const pickupLightPool: { light: THREE.PointLight; inUse: boolean }[] = [];
     for (let _li = 0; _li < PICKUP_LIGHT_POOL_SIZE; _li++) {
       const poolLight = new THREE.PointLight(0xffffff, 0, 9, 1.6);
@@ -7601,6 +7667,11 @@ const ForestSurvivalGame = () => {
           updateWorldGeneration(camera.position.x, camera.position.z);
         }
       }
+      // Materialise a single queued chunk per frame. The grid-accelerated
+      // overlap test makes one chunk cheap, and capping at one guarantees the
+      // streamer can never spike a frame; the queue drains far faster than the
+      // player can reach the (fog-hidden, 200+ unit) outer ring.
+      drainPendingChunks(1);
       updateGroundPosition(camera.position.x, camera.position.z);
 
 

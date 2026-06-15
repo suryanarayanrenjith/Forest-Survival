@@ -44,6 +44,24 @@ export class SpatialGrid<T> {
   }
 
   /**
+   * Remove `item` from the cell for (x, z). The caller must pass the SAME
+   * coordinates used at insert time (the cell is derived from them). Returns
+   * true if the item was found and removed. Used by incrementally-maintained
+   * grids (e.g. the chunk streamer's collidable-prop index) so a removed
+   * object stops being reported by queryRadius without a full rebuild.
+   */
+  remove(item: T, x: number, z: number): boolean {
+    const bucket = this.cells.get(this.keyFor(x, z));
+    if (!bucket) return false;
+    const i = bucket.indexOf(item);
+    if (i === -1) return false;
+    // Swap-pop — order within a cell is irrelevant to neighbour queries.
+    bucket[i] = bucket[bucket.length - 1];
+    bucket.pop();
+    return true;
+  }
+
+  /**
    * Return every item within `radius` of (x, z).
    *
    * The returned array is REUSED — callers must read it before the next
