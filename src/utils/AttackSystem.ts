@@ -204,6 +204,14 @@ export class AttackSystem {
     return { ...this.state };
   }
 
+  /** Allocation-free attack-state probes for the per-enemy animation loop. */
+  public isAttacking(): boolean {
+    return this.state.isAttacking;
+  }
+  public getAttackPhase(): AttackState['attackPhase'] {
+    return this.state.attackPhase;
+  }
+
   /**
    * Check if can move during attack
    */
@@ -212,13 +220,20 @@ export class AttackSystem {
     return this.config.canMoveWhileAttacking;
   }
 
+  // Reused so the per-frame animation read doesn't allocate a fresh object for
+  // every attacking enemy each frame.
+  private readonly _armRot = { left: 0, right: 0 };
+
   /**
    * Get arm rotation for attack animation
-   * Returns rotation in radians for left and right arms
+   * Returns rotation in radians for left and right arms (reused object — read
+   * it immediately, don't retain the reference).
    */
   public getArmRotation(): { left: number; right: number } {
     if (!this.state.isAttacking) {
-      return { left: 0, right: 0 };
+      this._armRot.left = 0;
+      this._armRot.right = 0;
+      return this._armRot;
     }
 
     const progress = this.state.attackProgress;
@@ -227,34 +242,33 @@ export class AttackSystem {
       case 'windup': {
         // Pull arms back
         const windupAmount = progress / (this.config.attackWindup / this.config.attackDuration);
-        return {
-          left: -Math.PI / 3 * windupAmount,
-          right: -Math.PI / 3 * windupAmount
-        };
+        this._armRot.left = -Math.PI / 3 * windupAmount;
+        this._armRot.right = -Math.PI / 3 * windupAmount;
+        break;
       }
 
       case 'strike': {
         // Swing arms forward
         const strikeProgress = (progress - (this.config.attackWindup / this.config.attackDuration)) / 0.3;
         const swingAngle = -Math.PI / 2 + Math.sin(strikeProgress * Math.PI) * Math.PI / 3;
-        return {
-          left: swingAngle,
-          right: swingAngle
-        };
+        this._armRot.left = swingAngle;
+        this._armRot.right = swingAngle;
+        break;
       }
 
       case 'recovery': {
         // Return to neutral
         const recoveryProgress = 1 - ((1 - progress) / 0.3);
-        return {
-          left: -Math.PI / 6 * (1 - recoveryProgress),
-          right: -Math.PI / 6 * (1 - recoveryProgress)
-        };
+        this._armRot.left = -Math.PI / 6 * (1 - recoveryProgress);
+        this._armRot.right = -Math.PI / 6 * (1 - recoveryProgress);
+        break;
       }
 
       default:
-        return { left: 0, right: 0 };
+        this._armRot.left = 0;
+        this._armRot.right = 0;
     }
+    return this._armRot;
   }
 
   /**

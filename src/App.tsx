@@ -8896,10 +8896,16 @@ const ForestSurvivalGame = () => {
               enemy.stuckTimer = 0;
             }
 
-            // Face the actual direction of travel for natural walking; when
-            // essentially blocked, keep facing the player.
+            // Facing: far out the enemy faces its actual travel direction for a
+            // natural walk, but once it closes into engagement range (or is
+            // blocked) it SQUARES UP to the player. Up close the travel vector
+            // is usually sideways — the flank arc from buildHunt plus crowd
+            // separation — which is exactly what read as the enemy "looking off
+            // to the side". Facing the player here also lets the melee arc check
+            // in AttackSystem.checkHit actually land instead of whiffing.
+            const ENGAGE_FACE_DIST = 9;
             let faceX: number, faceZ: number;
-            if (movedLen > 0.0005) { faceX = movedX; faceZ = movedZ; }
+            if (movedLen > 0.0005 && distance > ENGAGE_FACE_DIST) { faceX = movedX; faceZ = movedZ; }
             else { faceX = focusPos.x - enemy.mesh.position.x; faceZ = focusPos.z - enemy.mesh.position.z; }
             const targetAngle = Math.atan2(faceX, faceZ);
             let angleDiff = targetAngle - enemy.mesh.rotation.y;
@@ -8958,20 +8964,40 @@ const ForestSurvivalGame = () => {
             if (enemy.torso) {
               enemy.torso.rotation.x = THREE.MathUtils.lerp(enemy.torso.rotation.x, 0, 0.08);
             }
+
+            // Square up to the player while idle / attacking. The body used to
+            // freeze facing wherever it last walked in (usually a sideways flank
+            // approach), so a stopped or mid-attack enemy appeared to stare off
+            // to the side — and its frontal attack arc could miss. Now it always
+            // turns to face you whenever it isn't actively walking somewhere.
+            const idleFaceX = focusPos.x - enemy.mesh.position.x;
+            const idleFaceZ = focusPos.z - enemy.mesh.position.z;
+            if (idleFaceX * idleFaceX + idleFaceZ * idleFaceZ > 1e-6) {
+              const idleTargetAngle = Math.atan2(idleFaceX, idleFaceZ);
+              let idleAngleDiff = idleTargetAngle - enemy.mesh.rotation.y;
+              while (idleAngleDiff > Math.PI) idleAngleDiff -= Math.PI * 2;
+              while (idleAngleDiff < -Math.PI) idleAngleDiff += Math.PI * 2;
+              enemy.mesh.rotation.y += idleAngleDiff * Math.min(1, delta * 7);
+            }
           }
 
           // === HEAD TRACKING — look at player ===
           if (enemy.head) {
             const headDx = focusPos.x - enemy.mesh.position.x;
             const headDz = focusPos.z - enemy.mesh.position.z;
-            // Local-space rotation: subtract body rotation to get relative angle
-            const headTargetY = Math.atan2(headDx, headDz) - enemy.mesh.rotation.y;
-            // Clamp head turn to ±45°
-            const clampedHeadY = Math.max(-0.78, Math.min(0.78, headTargetY));
-            enemy.head.rotation.y = THREE.MathUtils.lerp(enemy.head.rotation.y, clampedHeadY, 0.08);
+            // Local-space rotation: subtract body rotation to get relative angle,
+            // wrapped to the shortest arc so a body mid-turn doesn't make the head
+            // briefly snap the long way round.
+            let headTargetY = Math.atan2(headDx, headDz) - enemy.mesh.rotation.y;
+            while (headTargetY > Math.PI) headTargetY -= Math.PI * 2;
+            while (headTargetY < -Math.PI) headTargetY += Math.PI * 2;
+            // Clamp head turn to ±70° and track faster so it stays locked on the
+            // player instead of lagging behind and reading as "looking away".
+            const clampedHeadY = Math.max(-1.22, Math.min(1.22, headTargetY));
+            enemy.head.rotation.y = THREE.MathUtils.lerp(enemy.head.rotation.y, clampedHeadY, 0.16);
             // Slight head pitch toward player (look down if close, up if far)
             const headPitch = distance < 5 ? 0.15 : distance < 15 ? 0.05 : -0.05;
-            enemy.head.rotation.x = THREE.MathUtils.lerp(enemy.head.rotation.x, headPitch, 0.06);
+            enemy.head.rotation.x = THREE.MathUtils.lerp(enemy.head.rotation.x, headPitch, 0.1);
           }
 
           // === HIT STAGGER — visual feedback when damaged ===
@@ -9109,37 +9135,29 @@ const ForestSurvivalGame = () => {
             }
           }
 
-          // Update arm animations from attack system
-          const armRotations = enemy.attackSystem.getArmRotation();
-          const atkState = enemy.attackSystem.getAttackState();
-          if (enemy.leftArm && enemy.rightArm) {
-            if (atkState.isAttacking) {
-              enemy.leftArm.rotation.x = armRotations.left;
-              enemy.rightArm.rotation.x = armRotations.right;
-
-              if (enemy.torso) {
-                enemy.torso.rotation.x = enemy.attackSystem.getTorsoRotation();
-              }
-
-              // Attack lunge — lean forward and lurch toward player during strike
-              if (atkState.attackPhase === 'strike') {
-                const lungeDx = focusPos.x - enemy.mesh.position.x;
-                const lungeDz = focusPos.z - enemy.mesh.position.z;
-                const lungeDist = Math.sqrt(lungeDx * lungeDx + lungeDz * lungeDz);
-                if (lungeDist > 0.5) {
-                  const lungeStrength = 0.15 * baseScale;
-                  enemy.mesh.position.x += (lungeDx / lungeDist) * lungeStrength;
-                  enemy.mesh.position.z += (lungeDz / lungeDist) * lungeStrength;
-                }
-              }
-            } else {
-              // Idle arm animation
-              enemy.leftArm.rotation.x = Math.sin(enemy.walkTime + Math.PI) * 0.3;
-              enemy.rightArm.rotation.x = Math.sin(enemy.walkTime) * 0.3;
-
-              if (enemy.torso) {
-                enemy.torso.position.y = 0.2 + Math.sin(enemy.walkTime * 2) * 0.05;
-                enemy.torso.rotation.x *= 0.9;
+          // Melee swing — drive the arms + torso from the attack system ONLY
+          // while a swing is in progress. When not attacking we deliberately
+          // leave the limbs to the stride-synced walk / idle animation set
+          // earlier; the old `else` here overwrote that with a coarse
+          // fixed-amplitude swing that made even a standing enemy flail its
+          // arms. (isAttacking()/getAttackPhase() are allocation-free.)
+          if (enemy.attackSystem.isAttacking() && enemy.leftArm && enemy.rightArm) {
+            const armRotations = enemy.attackSystem.getArmRotation();
+            enemy.leftArm.rotation.x = armRotations.left;
+            enemy.rightArm.rotation.x = armRotations.right;
+            if (enemy.torso) {
+              enemy.torso.rotation.x = enemy.attackSystem.getTorsoRotation();
+            }
+            // Attack lunge — lurch toward the player on the strike so the hit
+            // reads as a committed swing, not a passive bump.
+            if (enemy.attackSystem.getAttackPhase() === 'strike') {
+              const lungeDx = focusPos.x - enemy.mesh.position.x;
+              const lungeDz = focusPos.z - enemy.mesh.position.z;
+              const lungeDist = Math.sqrt(lungeDx * lungeDx + lungeDz * lungeDz);
+              if (lungeDist > 0.5) {
+                const lungeStrength = 0.15 * baseScale;
+                enemy.mesh.position.x += (lungeDx / lungeDist) * lungeStrength;
+                enemy.mesh.position.z += (lungeDz / lungeDist) * lungeStrength;
               }
             }
           }

@@ -118,9 +118,12 @@ export class AIBehaviorSystem {
     const aware = context.canSeePlayer || context.hearPlayerShooting || this.alertLevel > 50;
 
     let state: AIState;
-    if (this.personality === 'defensive' && context.health < context.maxHealth * 0.06) {
-      state = 'retreat';                                       // a hair from death — peel off briefly
-    } else if (context.canSeePlayer && context.distanceToPlayer < 4.5 && this.personality !== 'support') {
+    // NOTE: enemies NEVER flee. The old "retreat a hair from death" branch made
+    // a defensive (tank) enemy peel away the moment a hit — most visibly a TNT
+    // blast — dropped it to low HP, which read as a bug ("I damage it and it
+    // runs off"). Damaged enemies now keep pressing the attack; the only thing
+    // that ever moves an enemy away from you is its own kiting standoff (ranged).
+    if (context.canSeePlayer && context.distanceToPlayer < 4.5 && this.personality !== 'support') {
       state = 'attack';                                        // melee in the kill pocket (ranged kite instead)
     } else if (aware) {
       state = 'hunt';                                          // strategic surround-and-close
@@ -135,7 +138,6 @@ export class AIBehaviorSystem {
 
     switch (state) {
       case 'attack':      this.buildAttack(context); break;
-      case 'retreat':     this.buildRetreat(context); break;
       case 'patrol':      this.buildPatrol(context); break;
       case 'investigate': this.buildInvestigate(context); break;
       default:            this.buildHunt(context); break;
@@ -234,20 +236,6 @@ export class AIBehaviorSystem {
   }
 
   /** RETREAT — a short peel-off away from the player, then re-engage. */
-  private buildRetreat(context: AIBehaviorContext) {
-    const dx = context.enemyPosition.x - context.playerPosition.x;
-    const dz = context.enemyPosition.z - context.playerPosition.z;
-    const len = Math.hypot(dx, dz) || 1;
-    this._target.set(
-      context.enemyPosition.x + (dx / len) * 9,
-      0,
-      context.enemyPosition.z + (dz / len) * 9,
-    );
-    this._decision.shouldAttack = false;
-    this._decision.moveSpeed = 1.2 * this.speedTrim;
-    this._decision.priority = 70;
-  }
-
   /** PATROL — wander the local patrol ring when totally unaware. */
   private buildPatrol(context: AIBehaviorContext) {
     const currentPoint = this.patrolPoints[this.currentPatrolIndex];

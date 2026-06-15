@@ -68,7 +68,7 @@ Premium low-poly creatures with chest cores, shoulder plating, knee/elbow pads, 
 | Normal | Crimson | 50 | Wave 1 | Balanced aggression — closes for melee |
 | Fast | Blue | 30 | Wave 2 | Quick, agile, dodges bullets |
 | Tank | Green | 150 | Wave 3 | Slow, heavy hitter |
-| **Sniper (Ranged)** | **Cyan** | **40** | **Wave 4** | **Stops at distance, charges a telegraphed energy bolt, retreats** |
+| **Sniper (Ranged)** | **Cyan** | **40** | **Wave 4** | **Holds a standoff ring, kites to keep its distance, charges a telegraphed energy bolt** |
 | Boss | Violet | 300 | Wave 5 | Tactical, coordinates with others |
 
 > Every type now approaches as a **coordinated squad** — fanning out and surrounding you from multiple sides rather than charging single-file (see **AI Systems** below).
@@ -141,7 +141,9 @@ Every weapon has its own **L0 → L10 mastery** ladder. Kills grant XP scaled by
 **AI Systems**
 - Adaptive difficulty that adjusts to your skill in real time
 - **Strategic squad approach** — every enemy commits to its *own* stable approach lane, so a wave fans into a two-sided pincer and **spirals in from every side at once** instead of trickling at you in a straight line. Flankers swing wide around the sides, chargers drive a tighter line, ranged snipers hang back and kite, and the ring tightens as they close for the kill. Spawns are spread evenly around the player to feed the surround. The whole behaviour tick is allocation-free so it stays cheap with a full screen of enemies.
-- Per-enemy state machine: hunt · attack · retreat · investigate · patrol
+- Per-enemy state machine: hunt · attack · investigate · patrol — **enemies never flee.** Damaging one (even a near-fatal TNT/barrel blast) no longer makes it peel away; it keeps pressing the attack to the last hit point.
+- **Always squares up to you** — once an enemy closes into engagement range, gets blocked, or stops to attack, its whole body turns to face the player instead of staring off to the side along its flank-approach lane, and its head stays locked on with a wide ±70° track. (Facing you also means its frontal melee arc actually lands instead of whiffing past.)
+- **Telegraphed melee** — a readable wind-up → strike → recovery arm swing with a forward lunge on the strike telegraphs every hit, so a melee strike is always signposted rather than landing from a passive bump.
 - **Context-steering navigation** — repulsion + tangential avoidance and wall-sliding arc enemies around trees, with a sampling-based stuck-recovery search that reliably finds the way out of any pocket
 - Bullet dodging on agile enemies
 - Combat coaching with live tips
@@ -153,7 +155,7 @@ Every weapon has its own **L0 → L10 mastery** ladder. Kills grant XP scaled by
 - Volumetric custom sky shader with day/night cycle, drifting clouds, stars and moon
 - Image-based lighting — environment reflections that make metals read as real metal
 - 8 distinct biomes with unique palettes, fog and atmosphere
-- **Seamless world streaming** — 5 × 5 chunk grid (~350m visible) with tightened distance fog that blends new chunks into the sky tone, so the player never sees a "world ends here" pop-in
+- **Seamless world streaming** — 5 × 5 chunk grid (~350m visible) with tightened distance fog that blends new chunks into the sky tone, so the player never sees a "world ends here" pop-in. New chunks are **budgeted in over several frames** (and prop placement uses an incremental spatial hash instead of an O(N) scan), so crossing a chunk boundary no longer hitches the frame
 - **Procedural terrain** — GPU vertex-displaced rolling hills and ridges in the mid/far field; the player's combat arena stays perfectly flat so gameplay is unaffected
 - **Per-biome ground materials** — macro earth-tone patches, cavity AO, micro grain, slope→rock blending, normal-mapped micro-relief, and per-map identity layers (sand ripples, snow drift + sparkle, lava cracks, wet swamp puddles)
 - **Full-body player shadow** — a class-specific humanoid silhouette (holding the current weapon) is invisible to the camera but casts a believable shadow on the ground
