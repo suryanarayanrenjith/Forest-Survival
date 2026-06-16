@@ -132,6 +132,11 @@ export interface Enemy {
   // so neither side can fight through the fog/cull horizon. Undefined ≙ engageable
   // (safe default for the first frame before the cull pass has run).
   engageable?: boolean;
+  // Recomputed each frame: has the enemy's DETAILED model streamed in (HIGH or
+  // MEDIUM LOD)? Bullets only register when true, so the player can't kill the
+  // distant single-box "minimal" stand-in (LOW LOD) — the enemy must close to a
+  // believable range first. Undefined means detail-ready (safe first-frame default).
+  detailReady?: boolean;
   // Animation state
   walkTime: number;
   damageFlashTime: number;

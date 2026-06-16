@@ -4,7 +4,7 @@ import { GraduationCap, Play, Home, MousePointerClick } from 'lucide-react';
 import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
 import { GunModel, type WeaponType as GunWeaponType } from './utils/GunModel';
-import { MuzzleFlash, BulletTracer, ImpactEffect, RobotHitSparks, ExplosionEffect, FireNovaEffect, AbilityCastEffect, setMuzzleLightPool, setExplosionLightPool } from './utils/Effects';
+import { MuzzleFlash, BulletTracer, ImpactEffect, RobotHitSparks, ExplosionEffect, FireNovaEffect, AbilityCastEffect, ImpactBurst, setMuzzleLightPool, setExplosionLightPool } from './utils/Effects';
 import { soundManager } from './utils/SoundManager';
 import { gameSettingsManager, type UserSettings, type KeyBindings } from './utils/GameSettingsManager';
 import { PostProcessingPipeline } from './utils/PostProcessing';
@@ -235,7 +235,7 @@ const MENU_MUSIC_URL = '/audio/Beyond_The_Overgrowth.mp3';
 const SYNCED_SETTING_KEYS: (keyof UserSettings)[] = [
   'masterVolume', 'sfxVolume', 'musicVolume', 'sensitivity', 'fov',
   'showFPS', 'screenShake', 'haptics', 'hitMarkers', 'killFeed', 'damageNumbers',
-  'ragdollPhysics', 'crosshairStyle', 'crosshairColor', 'graphicsQuality', 'keyBindings',
+  'impactFeedback', 'ragdollPhysics', 'crosshairStyle', 'crosshairColor', 'graphicsQuality', 'keyBindings',
 ];
 
 function serializeSettings(s: UserSettings): string {
@@ -2861,6 +2861,9 @@ const ForestSurvivalGame = () => {
     const bulletTracers: BulletTracer[] = [];
     const impactEffects: ImpactEffect[] = [];
     const robotSparks: RobotHitSparks[] = [];
+    // Cinematic hit-confirm flashes (gated by the "Impact Feedback" setting) —
+    // a world-space core flash + shockring at each point of contact.
+    const impactBursts: ImpactBurst[] = [];
     const explosionEffects: ExplosionEffect[] = [];
     // Pyro "Firestorm" fire-nova shockwaves (rare ultimate — own small array).
     const fireNovas: FireNovaEffect[] = [];
@@ -2949,6 +2952,67 @@ const ForestSurvivalGame = () => {
         spin: new THREE.Vector3((Math.random() - 0.5) * 20, (Math.random() - 0.5) * 20, (Math.random() - 0.5) * 20),
         life: 2.4,
       });
+    };
+
+    // ── Bullet shatter shards (deflection debris) ──
+    // When a round bites into an enemy it doesn't just vanish — it SHATTERS,
+    // throwing a handful of angular metal fragments that spray back off the
+    // armour, tumble through the air, bounce once on the ground and settle
+    // before shrinking away. Three shard silhouettes (so no two fragments look
+    // identical) + one shared metallic material, all module-scoped and pooled
+    // behind a hard cap, keep the whole effect nearly free even on full-auto.
+    // Gated by the "Impact Feedback" gameplay setting.
+    interface BulletShard { mesh: THREE.Mesh; vel: THREE.Vector3; spin: THREE.Vector3; life: number; restY: number; scale: number; }
+    const bulletShards: BulletShard[] = [];
+    const MAX_SHARDS = 110;
+    const shardGeos = [
+      new THREE.TetrahedronGeometry(0.06),
+      new THREE.OctahedronGeometry(0.05),
+      new THREE.BoxGeometry(0.05, 0.05, 0.11),
+    ];
+    // Spent-round metal: warm gun-metal with a faint hot emissive so fragments
+    // catch a glint of bloom as they tumble, without reading as "glowing".
+    const shardMat = new THREE.MeshStandardMaterial({
+      color: 0xb9bec6, metalness: 0.92, roughness: 0.34,
+      emissive: 0x3a2410, emissiveIntensity: 0.45,
+    });
+    const _shardDir = new THREE.Vector3();
+    // Scatter shards off an impact at `pos`, deflecting back along `-shotDir`
+    // (the direction the round was travelling) with a wide upward cone.
+    const spawnBulletShards = (pos: THREE.Vector3, shotDir: THREE.Vector3, count: number) => {
+      // Deflection bias points back toward the shooter + slightly up.
+      _shardDir.copy(shotDir).normalize().multiplyScalar(-1);
+      for (let s = 0; s < count; s++) {
+        if (bulletShards.length >= MAX_SHARDS) {
+          const old = bulletShards.shift();
+          if (old) scene.remove(old.mesh);
+        }
+        const geo = shardGeos[(Math.random() * shardGeos.length) | 0];
+        const m = new THREE.Mesh(geo, shardMat);
+        m.castShadow = false;
+        m.position.copy(pos);
+        m.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+        const sc = 0.7 + Math.random() * 0.9;
+        m.scale.setScalar(sc);
+        scene.add(m);
+        // Spray in a cone around the deflection direction, with a real upward
+        // kick so fragments arc before falling.
+        const spread = 2.6;
+        const speed = 2.4 + Math.random() * 3.2;
+        const vel = new THREE.Vector3(
+          _shardDir.x * speed + (Math.random() - 0.5) * spread,
+          1.8 + Math.random() * 2.6,
+          _shardDir.z * speed + (Math.random() - 0.5) * spread,
+        );
+        bulletShards.push({
+          mesh: m,
+          vel,
+          spin: new THREE.Vector3((Math.random() - 0.5) * 26, (Math.random() - 0.5) * 26, (Math.random() - 0.5) * 26),
+          life: 1.3 + Math.random() * 0.5,
+          restY: 0.03 + Math.random() * 0.04,
+          scale: sc,
+        });
+      }
     };
 
     // Temporary explosion craters left by the rocket launcher
@@ -4100,6 +4164,10 @@ const ForestSurvivalGame = () => {
     const _shieldFwd = new THREE.Vector3();
     const _shieldToEnemy = new THREE.Vector3();
     const _shieldHitPos = new THREE.Vector3();
+    // Reused world-space point + direction for the first-person "you got hit"
+    // impact flash (dedicated temps so they never clobber the loop's _tempVec3).
+    const _impactPos = new THREE.Vector3();
+    const _impactDir = new THREE.Vector3();
 
     // ── HELD POWER-UP INVENTORY (one slot, loot-driven) ──────────────────────
     // The player holds AT MOST ONE looted power at a time. Walking over a loot
@@ -5947,6 +6015,29 @@ const ForestSurvivalGame = () => {
           const rightDot = -_shieldFwd.z * _shieldToEnemy.x + _shieldFwd.x * _shieldToEnemy.z;
           triggerDamageDirection(Math.atan2(rightDot, fwdDot));
         }
+        // ── CINEMATIC IMPACT FEEDBACK (toggleable) ──
+        // A visceral, first-person "you got hit" punch: a hot impact flash +
+        // spark burst snaps just in front of the camera, biased toward the
+        // bearing the blow came from, so a strike off-screen still reads
+        // directionally. Gated by the "Impact Feedback" gameplay setting.
+        if (gameSettingsManager.getSetting('impactFeedback')) {
+          // Contact point sits a touch in front of the eyes, nudged toward the
+          // bearing the blow came from. Kept small + close so it reads as a
+          // punchy hit spark rather than a sprite filling the screen.
+          camera.getWorldDirection(_shieldFwd);
+          _shieldFwd.normalize();
+          _impactPos.copy(camera.position).addScaledVector(_shieldFwd, 1.7);
+          if (enemyPos) {
+            _shieldToEnemy.subVectors(enemyPos, camera.position).normalize();
+            _impactPos.addScaledVector(_shieldToEnemy, 0.4);
+          } else {
+            _shieldToEnemy.copy(_shieldFwd);
+          }
+          impactBursts.push(new ImpactBurst(scene, _impactPos.clone(), 0xff5a3a, damage >= 15 ? 0.62 : 0.46));
+          // Sparks fly back toward the player (opposite the incoming blow).
+          _impactDir.copy(_shieldToEnemy).multiplyScalar(-1);
+          robotSparks.push(new RobotHitSparks(scene, _impactPos.clone(), _impactDir, damage >= 15 ? 12 : 8));
+        }
         if (damage >= 15 && gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
         if (combo > 0) combo = Math.max(0, combo - 1);
         tookDamageThisWave = true;
@@ -7498,6 +7589,10 @@ const ForestSurvivalGame = () => {
           createParticles(te.mesh.position, 0x66e8ff, 18); // dash-cyan energy burst
           _tempVec3_2.set(dashDirection.x, 0.25, dashDirection.z).normalize();
           robotSparks.push(new RobotHitSparks(scene, te.mesh.position.clone(), _tempVec3_2.clone(), 24));
+          if (gameSettingsManager.getSetting('impactFeedback')) {
+            _tempVec3.set(te.mesh.position.x, te.mesh.position.y + 1.0, te.mesh.position.z);
+            impactBursts.push(new ImpactBurst(scene, _tempVec3.clone(), 0x8be8ff, 1.6));
+          }
           if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
           haptic('hit');
           if (gameSettingsManager.getSetting('hitMarkers')) addHitMarker(false);
@@ -7517,22 +7612,24 @@ const ForestSurvivalGame = () => {
 
           if (!isMpGuest && te.health <= 0) {
             handleEnemyKilled(te, false);
-            // Override the standard ragdoll with the full-force "run over"
-            // launch — bowled hard forward along the charge, tumbling.
-            if (gameSettingsManager.getSetting('ragdollPhysics')) {
-              const launch = te.type === 'tank' ? 9 : 14;
-              te.deathVel = new THREE.Vector3(
-                dashDirection.x * launch,
-                6.5 + Math.random() * 2,
-                dashDirection.z * launch,
-              );
-              te.deathSpin = new THREE.Vector3(
-                (Math.random() - 0.5) * 14,
-                (Math.random() - 0.5) * 9,
-                (Math.random() - 0.5) * 16,
-              );
-              te.deathStarted = true;
-            }
+            // Override the standard death with a full-force "run over" launch —
+            // bowled hard forward along the charge, tumbling through the air.
+            // This ALWAYS flings (independent of the ragdoll-physics toggle) so
+            // the trample always reads as a body sent flying, and runs with extra
+            // airtime + a higher arc so the launch is unmistakably visible.
+            const launch = (te.type === 'tank' ? 12 : 18) + Math.random() * 3;
+            te.deathVel = new THREE.Vector3(
+              dashDirection.x * launch,
+              9 + Math.random() * 2.5,
+              dashDirection.z * launch,
+            );
+            te.deathSpin = new THREE.Vector3(
+              (Math.random() - 0.5) * 18,
+              (Math.random() - 0.5) * 11,
+              (Math.random() - 0.5) * 20,
+            );
+            te.deathStarted = true;
+            te.deathTime = 1.7; // longer than the standard 1.0s so the full arc shows
             if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Trampled!', 'combo');
           } else if (!isMpGuest && heavyChassis) {
             // Survivor: hard shove along the charge — the player barges
@@ -7765,6 +7862,14 @@ const ForestSurvivalGame = () => {
         }
       }
 
+      // Update cinematic impact-confirm bursts (flash + shockring).
+      for (let i = impactBursts.length - 1; i >= 0; i--) {
+        if (impactBursts[i].update(delta)) {
+          impactBursts[i].dispose(scene);
+          impactBursts.splice(i, 1);
+        }
+      }
+
       // Update explosion fireballs (rocket + barrel blasts).
       for (let i = explosionEffects.length - 1; i >= 0; i--) {
         if (explosionEffects[i].update(delta)) {
@@ -7840,6 +7945,34 @@ const ForestSurvivalGame = () => {
         if (c.life <= 0) {
           scene.remove(c.mesh);
           shellCasings.splice(i, 1);
+        }
+      }
+
+      // Update bullet shatter shards — gravity, ground bounce + friction,
+      // tumble, then shrink away. Shared geo/material so the only per-shard
+      // cleanup is detaching from the scene.
+      for (let i = bulletShards.length - 1; i >= 0; i--) {
+        const s = bulletShards[i];
+        s.life -= delta;
+        s.vel.y -= 16 * delta; // gravity
+        s.mesh.position.addScaledVector(s.vel, delta);
+        if (s.mesh.position.y <= s.restY) {
+          s.mesh.position.y = s.restY;
+          if (s.vel.y < 0) {
+            s.vel.y *= -0.34;             // bounce restitution
+            s.vel.x *= 0.55; s.vel.z *= 0.55; // ground friction
+            s.spin.multiplyScalar(0.5);
+            if (Math.abs(s.vel.y) < 0.4) s.vel.y = 0; // settle
+          }
+        }
+        s.mesh.rotation.x += s.spin.x * delta;
+        s.mesh.rotation.y += s.spin.y * delta;
+        s.mesh.rotation.z += s.spin.z * delta;
+        // Shrink out in the last 0.35s (shared material → no per-mesh opacity).
+        if (s.life < 0.35) s.mesh.scale.setScalar(Math.max(0.01, s.scale * (s.life / 0.35)));
+        if (s.life <= 0) {
+          scene.remove(s.mesh);
+          bulletShards.splice(i, 1);
         }
       }
 
@@ -8023,6 +8156,9 @@ const ForestSurvivalGame = () => {
       // per frame through the hardened gate so the hot bullet loop just reads a
       // boolean (and a tampered desktop flag can't unlock it; see touchControls).
       const aimAssist = touchControls.assistAllowed();
+      // Cinematic combat impact FX (hit flashes, bullet shatter, hurt sparks) —
+      // resolved once per frame so the hot bullet/damage paths just read a bool.
+      const impactFeedbackOn = gameSettingsManager.getSetting('impactFeedback');
       // View frustum for this frame's engagement-culling test.
       _engageProjMat.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
       _engageFrustum.setFromProjectionMatrix(_engageProjMat);
@@ -8048,6 +8184,11 @@ const ForestSurvivalGame = () => {
           _engageSphere.center.set(e.mesh.position.x, e.mesh.position.y + 1.0, e.mesh.position.z);
           e.engageable = _engageFrustum.intersectsSphere(_engageSphere);
         }
+        // Detail-ready gate: a round can't bite into the distant single-box
+        // "minimal" stand-in (LOW LOD) — the enemy's full model must have
+        // streamed in (HIGH/MEDIUM) at a believable range first. Pooled enemies
+        // only; anything without a pool slot stays hittable by default.
+        e.detailReady = e.poolId === undefined ? true : smartEnemyManager.isDetailReady(e.poolId);
       }
 
       // === ENEMY BULLET UPDATE (ranged sniper bolts) ===
@@ -8214,6 +8355,56 @@ const ForestSurvivalGame = () => {
           bullet.mesh.position.x - _bulletPrev.x,
           bullet.mesh.position.z - _bulletPrev.z,
         ) * 0.5;
+
+        // ── SWEPT BULLET-vs-TERRAIN (solid cover blocks shots) ─────────────
+        // Trees, rocks, boulders and walls are cover: a round can't punch
+        // through them to kill an enemy on the far side. Sweep the bullet's
+        // travel segment against nearby COLLIDABLE props (the same grid + radii
+        // the player physically collides with) and record the NEAREST blocking
+        // hit as a fraction `tTerrain` along the segment. The enemy test below
+        // rejects any contact past that point, and a bullet that reaches the
+        // cover is stopped there (post-loop). Bushes / soft dressing are
+        // non-collidable so shots still pass through foliage; rockets keep their
+        // own contact-detonation handling above and skip this sweep. Computed
+        // and fully consumed BEFORE the enemy grid query so the reused grid
+        // result arrays never alias.
+        let tTerrain = 1.1; // > 1 ⇒ no terrain hit this frame
+        let terrainHitX = 0, terrainHitY = 0, terrainHitZ = 0;
+        if (!bullet.isRocket) {
+          const segTX = bullet.mesh.position.x - _bulletPrev.x;
+          const segTZ = bullet.mesh.position.z - _bulletPrev.z;
+          const segTLen2 = segTX * segTX + segTZ * segTZ;
+          const nearbyProps = collidableGrid.queryRadius(segMidX, segMidZ, segHalf + maxCollidableRadius + 1);
+          for (let t = 0; t < nearbyProps.length; t++) {
+            const obj = nearbyProps[t];
+            let tt = 0;
+            if (segTLen2 > 1e-8) {
+              tt = ((obj.x - _bulletPrev.x) * segTX + (obj.z - _bulletPrev.z) * segTZ) / segTLen2;
+              tt = tt < 0 ? 0 : tt > 1 ? 1 : tt;
+            }
+            const cxT = _bulletPrev.x + segTX * tt;
+            const czT = _bulletPrev.z + segTZ * tt;
+            const ddx = cxT - obj.x;
+            const ddz = czT - obj.z;
+            // Trees carry a wide CANOPY footprint as their navigation radius
+            // (~2.5 m) so the player doesn't clip the leaves — but a round at body
+            // height only meets the solid TRUNK. Blocking on the full canopy made
+            // a forest eat nearly every shot (combat felt dead + no hits landed),
+            // so trees block on a trunk-sized core; rocks / boulders / walls are
+            // solid all the way out and keep their full radius.
+            const blockR = obj.type === 'tree' ? Math.min(obj.radius, 0.95) : obj.radius;
+            if (ddx * ddx + ddz * ddz >= blockR * blockR) continue;
+            const cyT = _bulletPrev.y + (bullet.mesh.position.y - _bulletPrev.y) * tt;
+            // Bullets clear short cover (low rocks) — only blocked below the
+            // prop's collidable height; undefined height = full-height block.
+            if (obj.height !== undefined && cyT > obj.height) continue;
+            if (tt < tTerrain) {
+              tTerrain = tt;
+              terrainHitX = cxT; terrainHitY = cyT; terrainHitZ = czT;
+            }
+          }
+        }
+
         const nearbyEnemyIds = enemyGrid.queryRadius(segMidX, segMidZ, segHalf + 3);
         // Snapshot the IDs because queryRadius reuses the returned array
         // and a nested query (terrainGrid lookup inside this loop, etc.) would
@@ -8231,6 +8422,11 @@ const ForestSurvivalGame = () => {
           // out in the distance) — it must be engageable first. `=== false`
           // so an enemy not yet evaluated this frame defaults to hittable.
           if (enemy.engageable === false) continue;
+          // Can't snipe the distant low-detail "minimal" stand-in either — the
+          // enemy's full model has to have streamed in (HIGH/MEDIUM LOD) at a
+          // believable range first. The bullet sails on past (it isn't consumed)
+          // so it can still strike a detail-ready enemy nearer along its path.
+          if (enemy.detailReady === false) continue;
           // ── SWEPT (segment) HIT TEST ────────────────────────────────────
           // Closest approach of the bullet's path this frame to the enemy
           // centre (XZ cylinder, radius 2). Tunnel-proof: a sniper round steps
@@ -8248,6 +8444,9 @@ const ForestSurvivalGame = () => {
                   + (enemy.mesh.position.z - _bulletPrev.z) * segDZ) / segLen2;
             tHit = tHit < 0 ? 0 : tHit > 1 ? 1 : tHit;
           }
+          // Behind solid cover this frame — the bullet hits the tree/rock/wall
+          // first, so this enemy can't be tagged through it.
+          if (tHit > tTerrain) continue;
           const closeX = _bulletPrev.x + segDX * tHit;
           const closeZ = _bulletPrev.z + segDZ * tHit;
           const closeDX = closeX - enemy.mesh.position.x;
@@ -8429,6 +8628,23 @@ const ForestSurvivalGame = () => {
             );
             robotSparks.push(sparks);
 
+            // ── CINEMATIC IMPACT FEEDBACK (toggleable) ──
+            // A world-space hit-confirm flash + shockring snaps at the exact
+            // point of contact, and the round SHATTERS into metal shrapnel that
+            // sprays back off the armour and tumbles to the ground. Purely feel
+            // — damage numbers are unchanged. Gated by the "Impact Feedback"
+            // gameplay setting, resolved once per frame into `impactFeedbackOn`.
+            if (impactFeedbackOn) {
+              impactBursts.push(new ImpactBurst(
+                scene,
+                bullet.mesh.position.clone(),
+                isCritical ? 0xffcf4a : 0xffe6b0,
+                isCritical ? 1.5 : 1.0,
+              ));
+              const shardCount = Math.max(2, Math.round((isCritical ? 8 : 5) * graphicsPreset.particleDensity));
+              spawnBulletShards(bullet.mesh.position, bullet.velocity, shardCount);
+            }
+
             if (!isMpGuest && enemy.health <= 0) {
               handleEnemyKilled(enemy, isCritical);
             }
@@ -8459,6 +8675,22 @@ const ForestSurvivalGame = () => {
             }
             break;
           }
+        }
+
+        // Bullet reached solid cover (tree / rock / wall) without hitting an
+        // enemy first — it's stopped dead by the prop instead of flying through
+        // it. Spark off the surface + (optionally) a small impact flash, then
+        // consume the round. Rockets keep tTerrain > 1 (they handle terrain via
+        // their own contact-detonation above), so they never enter this branch.
+        if (!bulletConsumed && tTerrain <= 1) {
+          _tempVec3.set(terrainHitX, terrainHitY, terrainHitZ);
+          createParticles(_tempVec3, 0x9a8a72, 5);
+          if (impactFeedbackOn) {
+            impactBursts.push(new ImpactBurst(scene, _tempVec3.clone(), 0xcbb890, 0.6));
+          }
+          soundManager.play('hit', 0.3);
+          scene.remove(bullet.mesh);
+          bullets.splice(i, 1);
         }
       }
 
@@ -8639,11 +8871,18 @@ const ForestSurvivalGame = () => {
           const bob = Math.abs(Math.sin(enemy.walkTime)) * 0.07 * (movedLen > 0.002 ? 1 : 0);
           enemy.mesh.position.y = groundY + bob;
 
-          // Hit flash (driven by enemy_hit feedback) — scale pulse only.
+          // Hit reaction (driven by host-synced enemy_hit feedback) — same
+          // chassis rock-back + scale punch as the solo/host path so guests see
+          // the same satisfying impact.
           if (enemy.damageFlashTime > 0) {
             enemy.damageFlashTime -= delta;
-            if (enemy.torso) enemy.torso.scale.setScalar(1 + Math.max(0, enemy.damageFlashTime) * 0.3);
+            const r = Math.min(1, enemy.damageFlashTime / 0.3);
+            const e2 = 1 - r;
+            enemy.mesh.rotation.x = -Math.cos(e2 * 8) * r * 0.34;
+            enemy.mesh.scale.setScalar(baseScale * (1 + r * 0.16));
+            if (enemy.torso) enemy.torso.scale.setScalar(1 + r * 0.22);
           } else {
+            if (enemy.mesh.rotation.x !== 0) enemy.mesh.rotation.x = 0;
             if (enemy.torso && enemy.torso.scale.x !== 1) enemy.torso.scale.setScalar(1);
             enemy.mesh.scale.setScalar(baseScale);
           }
@@ -9290,22 +9529,29 @@ const ForestSurvivalGame = () => {
           }
         }
 
-        // Damage flash animation - using scale pulse instead of material changes
-        // (materials are SHARED with object pooling, so we can't modify them per-enemy)
+        // ── HIT REACTION (the satisfying "thunk" when a round lands) ──
+        // The WHOLE chassis reacts so it reads at every range — the old version
+        // only scaled `torso`, which lives in the HIGH-LOD group and is hidden
+        // past 30 m, so a hit at normal engagement distance looked like nothing.
+        // Now the body rocks BACK along the shot then springs forward and settles
+        // (a damped back-and-forth on enemy.mesh.rotation.x — visible at MEDIUM/
+        // LOW too) with a quick scale punch for impact weight. Driven off
+        // damageFlashTime so every damage source feeds it. This block is the
+        // authoritative writer of mesh.scale/rotation.x for living enemies (runs
+        // last), so it cleanly overrides the lighter pulses set earlier.
         if (enemy.damageFlashTime > 0) {
           enemy.damageFlashTime -= delta;
-          const flashIntensity = Math.max(0, enemy.damageFlashTime);
-
-          // Scale pulse effect: enemy briefly expands then contracts when hit
-          const pulseScale = 1.0 + flashIntensity * 0.3;
-
-          // Only scale the torso/body for the hit reaction
-          if (enemy.torso) {
-            enemy.torso.scale.setScalar(pulseScale);
-          }
-        } else if (enemy.torso && enemy.torso.scale.x !== 1) {
-          // Reset scale when flash is done
-          enemy.torso.scale.setScalar(1);
+          const r = Math.min(1, enemy.damageFlashTime / 0.3); // 1 at impact → 0
+          const e2 = 1 - r;
+          // Damped rock: hardest kick at impact, ~1.3 oscillations as it decays.
+          enemy.mesh.rotation.x = -Math.cos(e2 * 8) * r * 0.34;
+          enemy.mesh.scale.setScalar(baseScale * (1 + r * 0.16));
+          if (enemy.torso) enemy.torso.scale.setScalar(1 + r * 0.22);
+        } else if (enemy.mesh.rotation.x !== 0 || enemy.mesh.scale.x !== baseScale) {
+          // Settle back to rest once the reaction is done.
+          enemy.mesh.rotation.x = 0;
+          enemy.mesh.scale.setScalar(baseScale);
+          if (enemy.torso && enemy.torso.scale.x !== 1) enemy.torso.scale.setScalar(1);
         }
       }
 
@@ -9908,6 +10154,17 @@ const ForestSurvivalGame = () => {
       shellCasings.length = 0;
       casingGeo.dispose();
       casingMat.dispose();
+
+      // Cleanup bullet shatter shards (shared geos + material across all shards).
+      for (const s of bulletShards) scene.remove(s.mesh);
+      bulletShards.length = 0;
+      shardGeos.forEach((g) => g.dispose());
+      shardMat.dispose();
+
+      // Cleanup any in-flight impact-confirm bursts (per-instance sprite
+      // materials; shared textures persist for the session).
+      for (const ib of impactBursts) ib.dispose(scene);
+      impactBursts.length = 0;
 
       // Cleanup any in-flight explosion fireballs (releases pooled lights +
       // per-instance additive materials; shared geometries persist).

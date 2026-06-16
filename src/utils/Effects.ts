@@ -843,3 +843,123 @@ export class RobotHitSparks {
     // Material is shared — never dispose here.
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Impact Burst — the premium, AAA-grade "hit confirm" played in WORLD SPACE at
+// the exact point a round connects (enemy armour, or in front of the camera
+// when the player is struck). It's a quick two-part flash:
+//   • a hot white-gold CORE that pops and snaps out (the spark of contact), and
+//   • an expanding SHOCKRING that sweeps outward and thins to nothing.
+// Both are camera-facing sprites (always read clean from any angle) drawn
+// additively so bloom catches them. Textures are generated once and shared;
+// only the two tiny per-instance SpriteMaterials are allocated per hit, so it
+// stays cheap enough to fire on full-auto. Pairs with the existing spark burst
+// for a layered, weighty impact rather than a flat particle puff.
+// ─────────────────────────────────────────────────────────────────────────────
+let _impactCoreTex: THREE.CanvasTexture | null = null;
+function getImpactCoreTexture(): THREE.CanvasTexture {
+  if (_impactCoreTex) return _impactCoreTex;
+  const c = document.createElement('canvas');
+  c.width = 128; c.height = 128;
+  const ctx = c.getContext('2d')!;
+  const g = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+  g.addColorStop(0, 'rgba(255,255,255,1)');
+  g.addColorStop(0.32, 'rgba(255,251,236,0.9)');
+  g.addColorStop(0.68, 'rgba(255,236,200,0.28)');
+  g.addColorStop(1, 'rgba(255,236,200,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 128, 128);
+  _impactCoreTex = new THREE.CanvasTexture(c);
+  return _impactCoreTex;
+}
+
+let _impactRingTex: THREE.CanvasTexture | null = null;
+function getImpactRingTexture(): THREE.CanvasTexture {
+  if (_impactRingTex) return _impactRingTex;
+  const c = document.createElement('canvas');
+  c.width = 128; c.height = 128;
+  const ctx = c.getContext('2d')!;
+  const g = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+  g.addColorStop(0, 'rgba(255,255,255,0)');
+  g.addColorStop(0.55, 'rgba(255,255,255,0)');
+  g.addColorStop(0.79, 'rgba(255,255,255,0.95)');
+  g.addColorStop(0.92, 'rgba(255,255,255,0.32)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 128, 128);
+  _impactRingTex = new THREE.CanvasTexture(c);
+  return _impactRingTex;
+}
+
+export class ImpactBurst {
+  private core: THREE.Sprite;
+  private ring: THREE.Sprite;
+  private coreMat: THREE.SpriteMaterial;
+  private ringMat: THREE.SpriteMaterial;
+  private age = 0;
+  private readonly life = 0.24;
+  private readonly size: number;
+
+  constructor(scene: THREE.Scene, position: THREE.Vector3, color = 0xffe6b0, size = 1) {
+    this.size = size;
+    const tint = new THREE.Color(color);
+
+    // depthTest off so the flash reads cleanly even though its centre sits at
+    // the body's mid-depth (the front faces would otherwise clip it); the
+    // sub-quarter-second life makes any "through cover" peek imperceptible.
+    this.coreMat = new THREE.SpriteMaterial({
+      map: getImpactCoreTexture(),
+      color: tint.clone().lerp(new THREE.Color(0xffffff), 0.55),
+      transparent: true, opacity: 1,
+      blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false,
+      fog: false, toneMapped: false,
+    });
+    this.core = new THREE.Sprite(this.coreMat);
+    this.core.position.copy(position);
+    this.core.scale.setScalar(0.2 * size);
+    this.core.renderOrder = 997;
+    this.core.userData.cannotReceiveAO = true;
+    scene.add(this.core);
+
+    this.ringMat = new THREE.SpriteMaterial({
+      map: getImpactRingTexture(),
+      color: tint,
+      transparent: true, opacity: 1,
+      blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false,
+      fog: false, toneMapped: false,
+    });
+    this.ring = new THREE.Sprite(this.ringMat);
+    this.ring.position.copy(position);
+    this.ring.scale.setScalar(0.3 * size);
+    this.ring.renderOrder = 996;
+    this.ring.userData.cannotReceiveAO = true;
+    scene.add(this.ring);
+  }
+
+  update(delta: number): boolean {
+    this.age += delta;
+    const t = this.age / this.life;
+    if (t >= 1) return true;
+
+    // Core: snaps out big, then fades fast — the spark of contact.
+    const coreT = Math.min(1, this.age / 0.1);
+    this.core.scale.setScalar((0.2 + 0.72 * easeOut(coreT)) * this.size);
+    this.coreMat.opacity = Math.max(0, 1 - this.age / 0.1);
+    this.core.visible = this.coreMat.opacity > 0.01;
+
+    // Ring: sweeps outward + thins to nothing.
+    const ringS = (0.3 + 2.0 * easeOut(t)) * this.size;
+    this.ring.scale.setScalar(ringS);
+    this.ringMat.opacity = 0.9 * Math.max(0, 1 - t);
+
+    return false;
+  }
+
+  dispose(scene: THREE.Scene) {
+    scene.remove(this.core);
+    scene.remove(this.ring);
+    this.coreMat.dispose();
+    this.ringMat.dispose();
+    // Textures are shared — never dispose here.
+  }
+}

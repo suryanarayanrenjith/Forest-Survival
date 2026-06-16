@@ -154,6 +154,11 @@ export interface UserSettings {
   hitMarkers: boolean;
   killFeed: boolean;
   damageNumbers: boolean;
+  /** Cinematic combat impact FX — world-space hit flashes + shockrings when you
+   *  land a shot, bullets that shatter into shrapnel off enemy armour, and a
+   *  visceral directional impact spark when an enemy lands a hit on you. Purely
+   *  feel/feedback — gameplay numbers are unchanged. */
+  impactFeedback: boolean;
   /** Enemy death ragdoll physics (launch + gravity + bounce + tumble). When
    *  off, enemies use a lightweight shrink-out death instead. */
   ragdollPhysics: boolean;
@@ -175,6 +180,7 @@ export const defaultUserSettings: UserSettings = {
   hitMarkers: true,
   killFeed: true,
   damageNumbers: true,
+  impactFeedback: true,
   ragdollPhysics: true,
   crosshairStyle: 'cross',
   crosshairColor: '#22c55e',

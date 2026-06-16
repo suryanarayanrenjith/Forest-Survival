@@ -1278,6 +1278,21 @@ class SmartEnemyManager {
   }
 
   /**
+   * True once the enemy's DETAILED model has streamed in — i.e. it's rendering
+   * at HIGH or MEDIUM LOD, not the distant single-box "minimal" stand-in (LOW)
+   * or culled. Bullets only register on a detail-ready enemy, so the player
+   * can't snipe a barely-resolved blob at the fog horizon; they must let it
+   * close to a believable engagement range where the full model is shown.
+   * Unknown / un-pooled ids default to true (don't accidentally make an enemy
+   * un-killable if it isn't manager-tracked).
+   */
+  isDetailReady(poolId: number): boolean {
+    if (poolId < 0 || poolId >= this.enemyPool.length) return true;
+    const lod = this.enemyPool[poolId].currentLOD;
+    return lod === LODLevel.HIGH || lod === LODLevel.MEDIUM;
+  }
+
+  /**
    * Check if spawning is allowed (adaptive limit check)
    */
   canSpawnMore(): boolean {

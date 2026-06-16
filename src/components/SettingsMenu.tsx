@@ -3,7 +3,7 @@ import {
   Settings, X, Gamepad2, Volume2, SlidersHorizontal, Monitor,
   ChevronsUp, ChevronsDown, ChevronsRight, Wind, Zap,
   Crosshair, Target, RotateCcw, Grid3x3, Pause, Music, MousePointer2,
-  Eye, Activity, Skull, Hash, Check, Headphones, Sparkles, Hand, Radar, Bone, type LucideIcon,
+  Eye, Activity, Skull, Hash, Check, Headphones, Sparkles, Hand, Radar, Bone, Flame, type LucideIcon,
 } from 'lucide-react';
 import { soundManager } from '../utils/SoundManager';
 import { gameSettingsManager } from '../utils/GameSettingsManager';
@@ -27,6 +27,7 @@ interface GameSettings {
   hitMarkers: boolean;
   killFeed: boolean;
   damageNumbers: boolean;
+  impactFeedback: boolean;
   ragdollPhysics: boolean;
   crosshairStyle: 'dot' | 'cross' | 'circle' | 'dynamic';
   crosshairColor: string;
@@ -45,6 +46,7 @@ const defaultSettings: GameSettings = {
   hitMarkers: true,
   killFeed: true,
   damageNumbers: true,
+  impactFeedback: true,
   ragdollPhysics: true,
   crosshairStyle: 'cross',
   crosshairColor: '#22c55e',
@@ -218,6 +220,7 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
                 <Toggle label="Hit Markers" desc="Feedback when you land hits" icon={Crosshair} value={settings.hitMarkers} onChange={(v) => updateSetting('hitMarkers', v)} />
                 <Toggle label="Kill Feed" desc="Elimination notifications" icon={Skull} value={settings.killFeed} onChange={(v) => updateSetting('killFeed', v)} />
                 <Toggle label="Damage Numbers" desc="Show damage dealt" icon={Hash} value={settings.damageNumbers} onChange={(v) => updateSetting('damageNumbers', v)} />
+                <Toggle label="Impact Feedback" desc="Hit flashes, bullet shatter & impact sparks" icon={Flame} value={settings.impactFeedback} onChange={(v) => updateSetting('impactFeedback', v)} />
                 <Toggle label="Ragdoll Physics" desc="Enemies fly & tumble on death" icon={Bone} value={settings.ragdollPhysics} onChange={(v) => updateSetting('ragdollPhysics', v)} />
                 {isTouch && (
                   <Toggle label="Haptics" desc="Vibration on fire, hits & damage" icon={Hand} value={settings.haptics} onChange={(v) => updateSetting('haptics', v)} />

@@ -159,8 +159,9 @@ const HitMarkers = () => {
         ))}
       </div>
 
-      {/* Floating Damage Numbers */}
-      <div className="fixed inset-0 pointer-events-none z-40">
+      {/* Floating Damage Numbers — z-[45] so the damage/kill/headshot screen
+          flashes (z-40..42 in ScreenEffects) can never paint over the numbers. */}
+      <div className="fixed inset-0 pointer-events-none z-[45]">
         {damageNumbers.map((dmg) => {
           const age = now - dmg.timestamp;
           const progress = Math.min(1, age / DAMAGE_TTL);
