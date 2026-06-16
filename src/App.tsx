@@ -2294,6 +2294,29 @@ const ForestSurvivalGame = () => {
           removeTerrainObjectAt(i);
         }
       }
+
+      // ── FORGET FULLY-CULLED CHUNKS ────────────────────────────────────────
+      // BUG FIX: chunks were marked in `loadedChunks` forever, but their props
+      // get culled once they're far away. If the player then WANDERED BACK into
+      // such a chunk, `generateChunk` early-returned ("already loaded") and the
+      // forest never came back — leaving a stark treeless patch (the reported
+      // "forest disappears / a region without forest appears"). We now drop the
+      // key of any chunk whose props are guaranteed already culled, so revisiting
+      // REGENERATES it. The forget radius is one chunk beyond the object cull so
+      // a chunk is only forgotten once every one of its props is gone (no risk of
+      // doubling props on regen). This also keeps `loadedChunks` bounded over a
+      // long run. Applies to EVERY map (shared streamer), not just the forest.
+      const forgetRadius = CHUNK_SIZE * 7;
+      const forgetR2 = forgetRadius * forgetRadius;
+      const half = CHUNK_SIZE / 2;
+      for (const key of loadedChunks) {
+        const comma = key.indexOf(',');
+        const ccx = parseInt(key.slice(0, comma), 10) * CHUNK_SIZE + half;
+        const ccz = parseInt(key.slice(comma + 1), 10) * CHUNK_SIZE + half;
+        const ddx = ccx - playerX;
+        const ddz = ccz - playerZ;
+        if (ddx * ddx + ddz * ddz > forgetR2) loadedChunks.delete(key);
+      }
     };
 
     // Collision detection helper.
@@ -2461,6 +2484,66 @@ const ForestSurvivalGame = () => {
     const gunModel = new GunModel('pistol');
     camera.add(gunModel.group);
     scene.add(camera);
+
+    // ── ENGINEER LEFT-HAND DETONATOR (viewmodel) ─────────────────────────
+    // A handheld remote trigger held in the player's LEFT hand (mirror of the
+    // right-hand gun) while a demolition bomb is armed. It rises into view once
+    // the engineer finishes wiring, the plunger punches down on detonation, then
+    // it drops back out of sight. Parented to the camera like the gun so it
+    // tracks the view. All per-instance materials/geos (disposed on cleanup).
+    const _detoMats: THREE.Material[] = [];
+    const _detoGeos: THREE.BufferGeometry[] = [];
+    const buildDetonatorViewmodel = (): { group: THREE.Group; plunger: THREE.Mesh; led: THREE.Mesh } => {
+      const group = new THREE.Group();
+      const reg = <T extends THREE.BufferGeometry>(g: T): T => { _detoGeos.push(g); return g; };
+      const regM = <T extends THREE.Material>(m: T): T => { _detoMats.push(m); return m; };
+      const bodyMat = regM(new THREE.MeshStandardMaterial({ color: 0x2a2e35, metalness: 0.6, roughness: 0.45 }));
+      const body = new THREE.Mesh(reg(new THREE.BoxGeometry(0.5, 0.3, 0.66)), bodyMat);
+      group.add(body);
+      // Grip handle under the body.
+      const grip = new THREE.Mesh(reg(new THREE.BoxGeometry(0.18, 0.34, 0.18)), bodyMat);
+      grip.position.set(0, -0.3, 0.12);
+      group.add(grip);
+      // Glowing status screen on the back face (faces the player).
+      const screen = new THREE.Mesh(
+        reg(new THREE.PlaneGeometry(0.32, 0.16)),
+        regM(new THREE.MeshBasicMaterial({ color: 0x1affc6, toneMapped: false })),
+      );
+      screen.position.set(0, 0.06, 0.34);
+      group.add(screen);
+      // Red plunger button on top (pressed on detonate).
+      const plunger = new THREE.Mesh(
+        reg(new THREE.CylinderGeometry(0.12, 0.14, 0.16, 14)),
+        regM(new THREE.MeshStandardMaterial({ color: 0xe23b2a, metalness: 0.3, roughness: 0.4, emissive: 0x4a0d06, emissiveIntensity: 0.6 })),
+      );
+      plunger.position.set(0, 0.22, -0.05);
+      group.add(plunger);
+      // Antenna + blinking tip LED.
+      const ant = new THREE.Mesh(reg(new THREE.CylinderGeometry(0.02, 0.02, 0.4, 6)), regM(new THREE.MeshStandardMaterial({ color: 0x53585f, metalness: 0.85, roughness: 0.3 })));
+      ant.position.set(0.2, 0.28, -0.22);
+      group.add(ant);
+      const led = new THREE.Mesh(reg(new THREE.SphereGeometry(0.05, 10, 8)), regM(new THREE.MeshBasicMaterial({ color: 0xff3324, toneMapped: false })));
+      led.position.set(0.2, 0.5, -0.22);
+      group.add(led);
+      group.traverse((o) => { o.userData.cannotReceiveAO = true; if (o instanceof THREE.Mesh) o.castShadow = false; });
+      return { group, plunger, led };
+    };
+    const detonatorVM = buildDetonatorViewmodel();
+    const detonatorPlunger = detonatorVM.plunger;
+    const detonatorLed = detonatorVM.led;
+    const detonatorGroup = detonatorVM.group;
+    detonatorGroup.scale.setScalar(0.14);
+    detonatorGroup.visible = false;
+    camera.add(detonatorGroup);
+    // Left-hand rest pose (mirror of the right-hand gun) + animation state.
+    const DETO_BASE = { x: -0.34, y: -0.32, z: -0.52 };
+    const detoPlungerBaseY = detonatorPlunger.position.y;
+    let detonatorRaise = 0;  // 0 hidden (below view) → 1 fully held
+    let detonatorPress = 0;  // 1 = plunger just slammed on detonate, decays to 0
+    // Wiring "bend over the barrel" animation (engineer demolition).
+    let wiringTime = 0;      // counts down while the bend-and-wire animation plays
+    let wiringPitch = 0;     // smoothed downward camera bend applied during wiring
+    const DEMO_BEND = 0.42;  // radians the view dips toward the barrel while wiring
     // Initialise the per-weapon key/rim light profile for the starting
     // weapon. Subsequent switches call this from the keybind / unlock
     // paths above so the gun fill always matches the active weapon.
@@ -4383,6 +4466,16 @@ const ForestSurvivalGame = () => {
     let phantomEndTime = 0;
     const phantomDuration = 5000; // 5 seconds
 
+    // ── ENGINEER REMOTE BOMB (Demolition ability) ────────────────────────
+    // The engineer wires a nearby explosive barrel into a remote-detonated bomb:
+    // the first ability press ARMS the closest barrel (wiring animation + a
+    // detonator/antenna/wire kit grafted onto it); a second press DETONATES it.
+    // Only one bomb is armed at a time. Declared here (before detonateBarrel) so
+    // the detonation path can clear the reference if the bomb goes off any way.
+    let armedBomb: ExplosiveBarrel | null = null;
+    const DEMO_WIRE_RANGE = 5.5;   // how close the engineer must stand to a barrel
+    const DEMO_ARM_TIME = 0.85;    // seconds the wiring animation takes
+
     // ── KILLSTREAK AIRDROP REWARDS ───────────────────────────────────────
     // Earned by chaining kills without dying. Effects are INSTANT (no held
     // slot) and INTENTIONALLY stack with the regular timed powers — they're
@@ -4432,6 +4525,10 @@ const ForestSurvivalGame = () => {
     // Enemies already hit by the CURRENT charge — cleared on each dash so one
     // robot can't be re-trampled every frame of the same charge.
     const dashHitEnemies = new Set<Enemy>();
+    // A charge gets exactly ONE outright kill — the enemy closest to the point
+    // of impact. Everything else it bowls through is heavily damaged but lives.
+    // Reset on each dash.
+    let dashLethalUsed = false;
 
     // Dispatch the selected character's signature ability (bound ability key).
     // Wherever possible this reuses the game's already-balanced timed-effect
@@ -4457,12 +4554,67 @@ const ForestSurvivalGame = () => {
       const activeMs = activeAbility.duration * 1000;
       gunModel.cancelInspect(); // an ability cast snaps the gun back from an inspect
 
+      // ── ENGINEER: REMOTE DEMOLITION (two-step — wire, then detonate) ─────
+      // First press WIRES the nearest barrel into a remote bomb (cheap, short
+      // cooldown so the arm animation finishes before the next press); a later
+      // press DETONATES the armed bomb for an engineer-tuned lethal blast (full
+      // cooldown). Handled here and returned early so it bypasses the generic
+      // cast FX + the "cast near a barrel detonates it" rule (which would blow
+      // the bomb we're trying to arm).
+      if (activeAbility.id === 'demolition') {
+        if (armedBomb) {
+          const bomb = armedBomb;
+          armedBomb = null;
+          // Engineer modification: a bigger, reliably-lethal blast vs a stray shot.
+          bomb.blastRadius = Math.max(bomb.blastRadius, 9.5);
+          bomb.blastDamage = Math.max(bomb.blastDamage, 220);
+          detonateBarrel(bomb); // strips the kit + cascades via the chain pump
+          detonatorPress = 1;   // slam the plunger; the detonator then drops away
+          triggerAbilityFlash(activeAbility.color);
+          if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
+          fovPunch = Math.min(fovPunch + 6, 12);
+          showPowerMessage('Bomb detonated!');
+          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Remote Detonation!', 'powerup');
+          gunModel.triggerAbility();
+          abilityCooldown = cd;
+          abilityCooldownMax = cd;
+          abilityActiveUntil = nowMs + 200;
+          tutorial.recordAction('use_ability', 1);
+          return;
+        }
+        const target = findNearestBarrel(camera.position.x, camera.position.z, DEMO_WIRE_RANGE);
+        if (!target) {
+          showPowerMessage('No barrel nearby — stand next to a red barrel', 1600);
+          return; // a whiff costs no cooldown
+        }
+        wireBomb(target);
+        armedBomb = target;
+        // Play the "bend over the barrel and wire it up" animation instead of
+        // arming instantly: the view dips toward the TNT + the gun drops into a
+        // wiring pose for DEMO_ARM_TIME, then the detonator rises into the left
+        // hand (driven per-frame from `wiringTime` + `armedBomb`).
+        wiringTime = DEMO_ARM_TIME;
+        triggerAbilityFlash(activeAbility.color);
+        castEffects.push(new AbilityCastEffect(scene, target.mesh.position, 0xff5a36));
+        soundManager.play('reload', 0.7); // ratcheting "wiring" click
+        showPowerMessage('Bomb armed · press again to detonate');
+        if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Bomb Wired!', 'powerup');
+        // Brief cooldown so the wiring animation lands before the detonate press;
+        // the full cooldown only applies once the bomb actually goes off (above).
+        abilityCooldown = Math.max(1.2, DEMO_ARM_TIME + 0.3);
+        abilityCooldownMax = abilityCooldown;
+        abilityActiveUntil = nowMs + 200;
+        tutorial.recordAction('use_ability', 1);
+        return;
+      }
+
       switch (activeAbility.id) {
         case 'dash': {
           // Ranger — a trampling charge + a brief cinematic time-warp.
           isDashing = true;
           dashTimer = dashDuration;
           dashHitEnemies.clear();
+          dashLethalUsed = false;
           // FOV surge — the lens pulls wide for the burst, then the existing
           // per-frame decay eases it back. Reads as raw acceleration.
           fovPunch = Math.min(fovPunch + 8, 10);
@@ -4506,15 +4658,6 @@ const ForestSurvivalGame = () => {
           shieldBreakFlash = 0;
           showPowerMessage('Bulwark · frontal shield raised');
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Bulwark Raised!', 'powerup');
-          break;
-        }
-        case 'focusfire': {
-          // Operative — fire-rate + damage burst (reuses overcharge).
-          overchargeActive = true;
-          overchargeEndTime = nowMs + activeMs;
-          showPowerMessage('Focus Fire · faster, harder shots');
-          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Focus Fire!', 'powerup');
-          createParticles(camera.position, 0xffcc33, 18);
           break;
         }
         case 'firestorm': {
@@ -4569,14 +4712,18 @@ const ForestSurvivalGame = () => {
           break;
         }
         case 'overclock': {
-          // Engineer — snap-reload, then unlimited ammo for a few seconds.
+          // Operative — OVERCLOCK the gun: snap-reload to full, then unlimited
+          // ammo PLUS the overcharge buff (faster fire rate + bigger damage) for
+          // the duration. "Overclocked gun with unlimited ammo."
           infiniteAmmoActive = true;
           infiniteAmmoEndTime = nowMs + activeMs;
+          overchargeActive = true;
+          overchargeEndTime = nowMs + activeMs;
           ammo = effectiveMaxAmmo(currentWeapon);
           updateGameState();
-          showPowerMessage('Overclock · unlimited ammo');
+          showPowerMessage('Overclock · unlimited ammo + overdrive');
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Overclock!', 'powerup');
-          createParticles(camera.position, 0xffd54a, 18);
+          createParticles(camera.position, 0xfbbf24, 18);
           break;
         }
         case 'cloak': {
@@ -4606,7 +4753,6 @@ const ForestSurvivalGame = () => {
         case 'firestorm':  triggerAbilityCam(-0.11, 0); break;
         case 'adrenaline': triggerAbilityCam(-0.07, 0.04); break;
         case 'overclock':  triggerAbilityCam(-0.05, 0.03); break;
-        case 'focusfire':  triggerAbilityCam(-0.045, 0); break;
         case 'cloak':      triggerAbilityCam(-0.03, 0); break;
       }
 
@@ -5714,6 +5860,9 @@ const ForestSurvivalGame = () => {
         // announcing each new species the moment it's earned.
         if (isTutorialMode) updateTutorialRoster(enemiesKilled);
         if (isCritical) triggerHeadshotFlash(); else triggerKillFlash();
+        // Crosshair KILL confirm — a bold X + sweeping ring at centre screen so
+        // every elimination lands with a satisfying, AAA-grade punch.
+        if (gameSettingsManager.getSetting('hitMarkers')) addHitMarker(isCritical, true);
         // Skill points are no longer earned per kill — they're awarded at the end
         // of a Solo run (server-side) so the tree is a real, competitive grind.
         if (gameSettingsManager.getSetting('killFeed')) {
@@ -6089,6 +6238,7 @@ const ForestSurvivalGame = () => {
       }
       lastKillTime = currentTime;
       if (isCritical) triggerHeadshotFlash(); else triggerKillFlash();
+      if (gameSettingsManager.getSetting('hitMarkers')) addHitMarker(isCritical, true);
       if (gameSettingsManager.getSetting('killFeed')) {
         addKillFeedEntry(isCritical ? 'HEADSHOT!' : 'Enemy Eliminated', isCritical ? 'headshot' : 'kill');
       }
@@ -6321,6 +6471,10 @@ const ForestSurvivalGame = () => {
     const detonateBarrel = (barrel: ExplosiveBarrel) => {
       if (barrel.detonated) return;
       barrel.detonated = true;
+      // If this was the Engineer's armed remote bomb, release the reference and
+      // strip the detonator kit (it goes off however it was triggered).
+      if (barrel === armedBomb) armedBomb = null;
+      if (barrel.bombKit) disposeBombKit(barrel);
       const epos = barrel.mesh.position.clone();
       spawnExplosionFX(epos, barrel.blastRadius);
       if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
@@ -6414,6 +6568,99 @@ const ForestSurvivalGame = () => {
           pendingBarrelDetonations.push(barrel);
         }
       }
+    };
+
+    // ── ENGINEER DEMOLITION HELPERS ──────────────────────────────────────
+    // Build the detonator/antenna/wire "kit" that visually turns a plain red
+    // barrel into an armed remote bomb. All per-instance materials/geometries
+    // (disposed when the bomb goes off) so the look is distinct without touching
+    // the shared barrel material. Returns the animated bits for the blink loop.
+    const _bombDetGeo = new THREE.BoxGeometry(0.5, 0.28, 0.42);
+    const _bombAntGeo = new THREE.CylinderGeometry(0.025, 0.025, 0.5, 6);
+    const _bombSphGeo = new THREE.SphereGeometry(1, 10, 8);
+    const _bombWireGeo = new THREE.CylinderGeometry(0.022, 0.022, 0.95, 5);
+    const _bombBandGeo = new THREE.TorusGeometry(0.6, 0.045, 6, 24);
+    const buildBombKit = (): { group: THREE.Group; led: THREE.Mesh; tip: THREE.Mesh; band: THREE.Mesh } => {
+      const group = new THREE.Group();
+      group.userData.cannotReceiveAO = true;
+      // Detonator box clamped on top of the barrel (barrel top ≈ local y +0.65).
+      const det = new THREE.Mesh(_bombDetGeo, new THREE.MeshStandardMaterial({ color: 0x23272e, metalness: 0.7, roughness: 0.4 }));
+      det.position.set(0, 0.82, 0);
+      group.add(det);
+      // Antenna + glowing tip.
+      const ant = new THREE.Mesh(_bombAntGeo, new THREE.MeshStandardMaterial({ color: 0x4a4f57, metalness: 0.85, roughness: 0.3 }));
+      ant.position.set(0.17, 1.12, -0.08);
+      group.add(ant);
+      const tip = new THREE.Mesh(_bombSphGeo, new THREE.MeshBasicMaterial({ color: 0xff4a2a, toneMapped: false }));
+      tip.scale.setScalar(0.05);
+      tip.position.set(0.17, 1.4, -0.08);
+      group.add(tip);
+      // Blinking LED on the detonator face.
+      const led = new THREE.Mesh(_bombSphGeo, new THREE.MeshBasicMaterial({ color: 0xff2a1e, toneMapped: false }));
+      led.scale.setScalar(0.07);
+      led.position.set(0, 0.92, 0.22);
+      group.add(led);
+      // Three coloured wires draped down the front face.
+      const wireColors = [0xd23636, 0xf2c14e, 0x3fa66e];
+      for (let i = 0; i < 3; i++) {
+        const w = new THREE.Mesh(_bombWireGeo, new THREE.MeshStandardMaterial({ color: wireColors[i], roughness: 0.6, metalness: 0.1 }));
+        w.position.set(-0.16 + i * 0.16, 0.32, 0.5);
+        w.rotation.x = 0.18;
+        group.add(w);
+      }
+      // Pulsing "armed" energy band around the barrel waist.
+      const band = new THREE.Mesh(_bombBandGeo, new THREE.MeshBasicMaterial({
+        color: 0xff6a3d, transparent: true, opacity: 0.55, toneMapped: false,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+      }));
+      band.rotation.x = Math.PI / 2;
+      group.add(band);
+      return { group, led, tip, band };
+    };
+
+    const disposeBombKit = (barrel: ExplosiveBarrel): void => {
+      const kit = barrel.bombKit;
+      if (!kit) return;
+      barrel.mesh.remove(kit);
+      kit.traverse((o) => {
+        if (o instanceof THREE.Mesh) {
+          const m = o.material;
+          if (Array.isArray(m)) m.forEach((mm) => mm.dispose());
+          else m.dispose();
+        }
+      });
+      barrel.bombKit = undefined;
+      barrel.bombLight = undefined;
+      barrel.bombTip = undefined;
+      barrel.bombBand = undefined;
+    };
+
+    // Graft the bomb kit onto a barrel + flag it armed (animation drives in loop).
+    const wireBomb = (barrel: ExplosiveBarrel): void => {
+      if (barrel.bombKit) return; // already wired
+      const { group, led, tip, band } = buildBombKit();
+      barrel.mesh.add(group);
+      barrel.bombKit = group;
+      barrel.bombLight = led;
+      barrel.bombTip = tip;
+      barrel.bombBand = band;
+      barrel.wired = true;
+      barrel.armProgress = 0;
+    };
+
+    // Nearest non-detonated, not-yet-wired barrel within `range` of (x,z).
+    const findNearestBarrel = (x: number, z: number, range: number): ExplosiveBarrel | null => {
+      let best: ExplosiveBarrel | null = null;
+      let bestD = range * range;
+      for (let b = 0; b < barrels.length; b++) {
+        const barrel = barrels[b];
+        if (barrel.detonated || barrel.wired) continue;
+        const dx = barrel.mesh.position.x - x;
+        const dz = barrel.mesh.position.z - z;
+        const d = dx * dx + dz * dz;
+        if (d < bestD) { bestD = d; best = barrel; }
+      }
+      return best;
     };
 
     const explodeRocket = (pos: THREE.Vector3, baseDamage: number) => {
@@ -6858,11 +7105,15 @@ const ForestSurvivalGame = () => {
 
         setAbilityHud([
           {
-            key: 'Q', name: activeAbility.name, kind: 'dash',
+            // Engineer's slot reads "Detonate" while a bomb is wired so the
+            // player knows the next press triggers it.
+            key: 'Q',
+            name: armedBomb ? 'Detonate' : activeAbility.name,
+            kind: 'dash',
             abilityId: activeAbility.id,
             accent: activeAbility.color,
             cooldown: abilityCooldown <= 0 ? 1 : Math.max(0, 1 - abilityCooldown / abilityCooldownMax),
-            active: isDashing || Date.now() < abilityActiveUntil,
+            active: isDashing || !!armedBomb || Date.now() < abilityActiveUntil,
           },
           {
             key: 'E', kind: 'power',
@@ -7251,7 +7502,7 @@ const ForestSurvivalGame = () => {
       abilityKickPitch += (0 - abilityKickPitch) * abilityRecover;
       abilityKickRoll += (0 - abilityKickRoll) * abilityRecover;
       _recoilEuler.set(
-        Math.max(-PI_2, Math.min(PI_2, euler.x + recoilPitch + abilityKickPitch)),
+        Math.max(-PI_2, Math.min(PI_2, euler.x + recoilPitch + abilityKickPitch + wiringPitch)),
         euler.y + recoilYaw,
         abilityKickRoll,
         'YXZ',
@@ -7304,6 +7555,58 @@ const ForestSurvivalGame = () => {
       // Update ability cooldown (real-time, shared by every character ability)
       if (abilityCooldown > 0) {
         abilityCooldown -= rawDelta;
+      }
+
+      // ── ENGINEER ARMED BOMB — wiring animation + blinking detonator ──
+      // Drives the visual "coming online" of a wired barrel: the detonator kit
+      // snaps into place as it arms, then the LED + antenna tip + energy band
+      // pulse with an urgent blink so the player can spot their live bomb.
+      const ab = armedBomb;
+      if (ab && ab.bombKit) {
+        const kit = ab.bombKit;
+        ab.armProgress = Math.min(1, (ab.armProgress ?? 0) + rawDelta / DEMO_ARM_TIME);
+        const ap = ab.armProgress;
+        kit.scale.setScalar(0.5 + 0.5 * ap);  // snap into place while arming
+        const blinkHz = ap < 1 ? 4 : 7;        // urgent blink once armed
+        const blink = 0.5 + 0.5 * Math.sin(clock.getElapsedTime() * blinkHz * Math.PI * 2);
+        if (ab.bombLight) ab.bombLight.scale.setScalar(0.05 + blink * 0.055);
+        if (ab.bombTip) ab.bombTip.scale.setScalar(0.04 + blink * 0.03);
+        if (ab.bombBand) {
+          (ab.bombBand.material as THREE.MeshBasicMaterial).opacity = 0.28 + blink * 0.45;
+          ab.bombBand.scale.setScalar(1 + blink * 0.06);
+        }
+      }
+
+      // ── ENGINEER WIRING POSE + LEFT-HAND DETONATOR ──────────────────────
+      // While the wiring animation plays, the view dips toward the barrel and
+      // the gun drops into a wiring pose; once the bomb is armed the detonator
+      // rises into the LEFT hand and is held there, and it drops away (after the
+      // plunger slams) the instant the bomb is detonated or otherwise destroyed.
+      if (wiringTime > 0) wiringTime = Math.max(0, wiringTime - rawDelta);
+      const wiringOn = wiringTime > 0;
+      gunModel.setWiring(wiringOn);
+      wiringPitch += ((wiringOn ? DEMO_BEND : 0) - wiringPitch) * Math.min(1, rawDelta * 9);
+      // The detonator only rises AFTER the bend-and-wire finishes — bend over the
+      // barrel → wire it → stand up with the detonator now in the left hand.
+      const detoTarget = (armedBomb && !wiringOn) ? 1 : 0;
+      detonatorRaise += (detoTarget - detonatorRaise) * Math.min(1, rawDelta * 8);
+      if (detonatorPress > 0) detonatorPress = Math.max(0, detonatorPress - rawDelta * 4);
+      // Hidden alongside the gun (e.g. photo mode hides the whole viewmodel).
+      detonatorGroup.visible = detonatorRaise > 0.01 && gunModel.group.visible;
+      if (detonatorGroup.visible) {
+        // Draw up from below the view as it's raised; settle into the held pose.
+        detonatorGroup.position.set(
+          DETO_BASE.x,
+          DETO_BASE.y - (1 - detonatorRaise) * 0.5,
+          DETO_BASE.z,
+        );
+        // Held tilt: top/screen angled toward the player (thumb on the plunger).
+        detonatorGroup.rotation.set(-0.5 - (1 - detonatorRaise) * 0.6, 0.35, 0.12);
+        // Plunger punches down on a press, then springs back.
+        detonatorPlunger.position.y = detoPlungerBaseY - detonatorPress * 0.12;
+        // Status LED blinks in time with the armed bomb.
+        const dblink = 0.5 + 0.5 * Math.sin(clock.getElapsedTime() * 7 * Math.PI * 2);
+        detonatorLed.scale.setScalar(0.7 + dblink * 0.8);
       }
 
       // Update dash timer
@@ -7544,13 +7847,30 @@ const ForestSurvivalGame = () => {
         createParticles(_tempVec3, 0x66e8ff, 4);
 
         // ── TRAMPLE — the Ranger's charge bowls through robots ────────────
-        // Any robot caught within the charge radius takes the full force of
-        // the impact: standard chassis are killed outright and launched
-        // forward along the charge (run-over ragdoll); heavy chassis (tank /
-        // boss / mini-boss) survive with chunk damage + a hard shove so the
-        // 5s-cooldown charge can't trivialise the big fights. Each enemy is
-        // hit at most once per charge (dashHitEnemies).
+        // The charge claims exactly ONE outright kill: the enemy CLOSEST to the
+        // point of impact is flattened + launched (run-over ragdoll). Every
+        // other robot it ploughs through is heavily damaged but SURVIVES (health
+        // is clamped so it can never be the second kill) and gets shoved aside —
+        // so a dash into a crowd punches a hole through it without wiping it.
+        // Each enemy is hit at most once per charge (dashHitEnemies).
         const TRAMPLE_RADIUS_SQ = 2.6 * 2.6;
+        // First find the lethal target this frame: the nearest fresh, non-boss
+        // contact (only while the charge's single kill is still unspent).
+        let lethalTarget: Enemy | null = null;
+        if (!dashLethalUsed) {
+          let bestD2 = Infinity;
+          for (let di = 0; di < enemies.length; di++) {
+            const te = enemies[di];
+            if (te.dead || dashHitEnemies.has(te)) continue;
+            // Bosses are never trample-killed (too important for a 5s cooldown).
+            if (te.type === 'boss') continue;
+            const tdx = te.mesh.position.x - camera.position.x;
+            const tdz = te.mesh.position.z - camera.position.z;
+            const d2 = tdx * tdx + tdz * tdz;
+            if (d2 > TRAMPLE_RADIUS_SQ) continue;
+            if (d2 < bestD2) { bestD2 = d2; lethalTarget = te; }
+          }
+        }
         for (let di = 0; di < enemies.length; di++) {
           const te = enemies[di];
           if (te.dead || dashHitEnemies.has(te)) continue;
@@ -7559,16 +7879,13 @@ const ForestSurvivalGame = () => {
           if (tdx * tdx + tdz * tdz > TRAMPLE_RADIUS_SQ) continue;
           dashHitEnemies.add(te);
 
-          const heavyChassis = te.type === 'tank' || te.type === 'boss' || te.isMiniBoss === true;
-          // Capped at the ability-damage budget: lethal to the basic robots it
-          // bowls over (the charge fantasy), but a tank/boss only takes a chunk
-          // — the charge can't trivialise the big fights on its 5s cooldown.
-          const trampleDmg = Math.min(
-            ABILITY_DAMAGE_CAP,
-            heavyChassis
-              ? Math.max(60, te.maxHealth * 0.3)   // heavy: real damage, not lethal
-              : te.maxHealth + 50,                  // standard robots: flattened
-          );
+          const isLethal = !dashLethalUsed && te === lethalTarget;
+          // The one kill is flattened; everyone else takes a brutal chunk that
+          // is CLAMPED to leave them alive (≥1 HP) so the charge never wipes
+          // more than its single victim.
+          const trampleDmg = isLethal
+            ? Math.min(ABILITY_DAMAGE_CAP, te.maxHealth + 50)
+            : Math.min(ABILITY_DAMAGE_CAP, te.maxHealth * 0.55);
 
           // Record the charge direction so the death ragdoll (or survivor
           // shove) launches the way the player is running.
@@ -7580,18 +7897,22 @@ const ForestSurvivalGame = () => {
             // Guests don't own enemy health — report the trample to the host
             // (same path as bullets); local feedback below stays snappy.
             if (te.netId !== undefined) mp.sendEnemyHit(te.netId, trampleDmg, false);
-          } else {
+          } else if (isLethal) {
             te.health -= trampleDmg;
+          } else {
+            // Survivors never drop below 1 HP from the charge itself.
+            te.health = Math.max(1, te.health - trampleDmg);
           }
+          if (isLethal) dashLethalUsed = true;
 
           // ── Crunchy impact feedback ──
           soundManager.play('enemyHit', 0.9, false, 0.7); // low-pitched metal thud
-          createParticles(te.mesh.position, 0x66e8ff, 18); // dash-cyan energy burst
+          createParticles(te.mesh.position, 0x66e8ff, isLethal ? 18 : 12); // dash-cyan energy burst
           _tempVec3_2.set(dashDirection.x, 0.25, dashDirection.z).normalize();
-          robotSparks.push(new RobotHitSparks(scene, te.mesh.position.clone(), _tempVec3_2.clone(), 24));
+          robotSparks.push(new RobotHitSparks(scene, te.mesh.position.clone(), _tempVec3_2.clone(), isLethal ? 24 : 14));
           if (gameSettingsManager.getSetting('impactFeedback')) {
             _tempVec3.set(te.mesh.position.x, te.mesh.position.y + 1.0, te.mesh.position.z);
-            impactBursts.push(new ImpactBurst(scene, _tempVec3.clone(), 0x8be8ff, 1.6));
+            impactBursts.push(new ImpactBurst(scene, _tempVec3.clone(), 0x8be8ff, isLethal ? 1.6 : 1.1));
           }
           if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
           haptic('hit');
@@ -7602,7 +7923,7 @@ const ForestSurvivalGame = () => {
               Math.floor(trampleDmg),
               (_tempVec3_2.x * 0.5 + 0.5) * 100,
               (-_tempVec3_2.y * 0.5 + 0.5) * 100,
-              true,
+              isLethal,
               false,
             );
           }
@@ -7610,7 +7931,7 @@ const ForestSurvivalGame = () => {
           timeScale = 0.35;
           setTimeout(() => { timeScale = 1.0; }, 90);
 
-          if (!isMpGuest && te.health <= 0) {
+          if (!isMpGuest && isLethal && te.health <= 0) {
             handleEnemyKilled(te, false);
             // Override the standard death with a full-force "run over" launch —
             // bowled hard forward along the charge, tumbling through the air.
@@ -7631,11 +7952,13 @@ const ForestSurvivalGame = () => {
             te.deathStarted = true;
             te.deathTime = 1.7; // longer than the standard 1.0s so the full arc shows
             if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Trampled!', 'combo');
-          } else if (!isMpGuest && heavyChassis) {
-            // Survivor: hard shove along the charge — the player barges
-            // through rather than face-planting into a stationary tank.
-            te.mesh.position.x += dashDirection.x * 2.6;
-            te.mesh.position.z += dashDirection.z * 2.6;
+          } else if (!isMpGuest) {
+            // Survivor: shoved aside along the charge so the player barges
+            // through rather than stalling on the body. Heavies dig in harder.
+            const heavyChassis = te.type === 'tank' || te.type === 'boss' || te.isMiniBoss === true;
+            const shove = heavyChassis ? 2.6 : 1.6;
+            te.mesh.position.x += dashDirection.x * shove;
+            te.mesh.position.z += dashDirection.z * shove;
           }
         }
       }
@@ -8184,10 +8507,10 @@ const ForestSurvivalGame = () => {
           _engageSphere.center.set(e.mesh.position.x, e.mesh.position.y + 1.0, e.mesh.position.z);
           e.engageable = _engageFrustum.intersectsSphere(_engageSphere);
         }
-        // Detail-ready gate: a round can't bite into the distant single-box
-        // "minimal" stand-in (LOW LOD) — the enemy's full model must have
-        // streamed in (HIGH/MEDIUM) at a believable range first. Pooled enemies
-        // only; anything without a pool slot stays hittable by default.
+        // Detail-ready gate: a round can't bite into the distant "minimal"
+        // single-box (LOW) NOR the simplified "half texture" mesh (MEDIUM) — the
+        // enemy's FULL model must have streamed in (HIGH LOD, ≤45 m) first.
+        // Pooled enemies only; anything without a pool slot stays hittable.
         e.detailReady = e.poolId === undefined ? true : smartEnemyManager.isDetailReady(e.poolId);
       }
 
@@ -8422,10 +8745,10 @@ const ForestSurvivalGame = () => {
           // out in the distance) — it must be engageable first. `=== false`
           // so an enemy not yet evaluated this frame defaults to hittable.
           if (enemy.engageable === false) continue;
-          // Can't snipe the distant low-detail "minimal" stand-in either — the
-          // enemy's full model has to have streamed in (HIGH/MEDIUM LOD) at a
-          // believable range first. The bullet sails on past (it isn't consumed)
-          // so it can still strike a detail-ready enemy nearer along its path.
+          // Can't damage the distant "minimal" single-box or the simplified
+          // "half texture" mesh — the enemy's FULL model must have streamed in
+          // (HIGH LOD) first. The bullet sails on past (it isn't consumed) so it
+          // can still strike a full-detail enemy nearer along its path.
           if (enemy.detailReady === false) continue;
           // ── SWEPT (segment) HIT TEST ────────────────────────────────────
           // Closest approach of the bullet's path this frame to the enemy
@@ -9253,6 +9576,40 @@ const ForestSurvivalGame = () => {
               enemy.stuckTimer = (enemy.stuckTimer || 0) + delta;
             } else {
               enemy.stuckTimer = 0;
+            }
+
+            // ── HARD UNSTUCK (guaranteed recovery) ──────────────────────────
+            // The context-steering escape above frees a robot from almost every
+            // pocket, but one genuinely WEDGED between two rocks can have every
+            // sampled direction blocked AND both wall-slide axes blocked, leaving
+            // it vibrating in place forever. As an absolute last resort, once it
+            // has been stuck long enough we relocate it to the nearest OPEN spot
+            // — a small ring search biased toward the player so it reads as the
+            // robot squeezing free, not teleporting across the map. This makes
+            // recovery from any trap GUARANTEED.
+            if (enemy.stuckTimer > 1.5) {
+              const toPlayerAng = Math.atan2(
+                focusPos.x - enemy.mesh.position.x,
+                focusPos.z - enemy.mesh.position.z,
+              );
+              let freed = false;
+              for (let ring = 0; ring < 4 && !freed; ring++) {
+                const rr = 1.6 + ring * 1.2; // 1.6 → 5.2 m
+                for (let a = 0; a < 8 && !freed; a++) {
+                  // Scan toward the player first, then fan out to both sides.
+                  const off = ((a + 1) >> 1) * (Math.PI / 4) * (a % 2 === 0 ? 1 : -1);
+                  const ang = toPlayerAng + off;
+                  const nx = enemy.mesh.position.x + Math.sin(ang) * rr;
+                  const nz = enemy.mesh.position.z + Math.cos(ang) * rr;
+                  if (!checkTerrainCollision(nx, nz)) {
+                    enemy.mesh.position.x = nx;
+                    enemy.mesh.position.z = nz;
+                    freed = true;
+                  }
+                }
+              }
+              enemy.stuckTimer = 0;
+              (enemy as unknown as { escapeT?: number }).escapeT = 0;
             }
 
             // Facing: far out the enemy faces its actual travel direction for a
@@ -10160,6 +10517,20 @@ const ForestSurvivalGame = () => {
       bulletShards.length = 0;
       shardGeos.forEach((g) => g.dispose());
       shardMat.dispose();
+
+      // Cleanup the Engineer's armed remote bomb kit + its shared geometries.
+      if (armedBomb) disposeBombKit(armedBomb);
+      armedBomb = null;
+      _bombDetGeo.dispose();
+      _bombAntGeo.dispose();
+      _bombSphGeo.dispose();
+      _bombWireGeo.dispose();
+      _bombBandGeo.dispose();
+
+      // Cleanup the left-hand detonator viewmodel (per-instance geos + mats).
+      camera.remove(detonatorGroup);
+      _detoGeos.forEach((g) => g.dispose());
+      _detoMats.forEach((m) => m.dispose());
 
       // Cleanup any in-flight impact-confirm bursts (per-instance sprite
       // materials; shared textures persist for the session).

@@ -22,10 +22,10 @@ export type CharacterAbilityId =
   | 'dash'        // ranger    — mobility burst
   | 'adrenaline'  // scout     — speed surge
   | 'bulwark'     // heavy     — frontal damage shield
-  | 'focusfire'   // operative — fire-rate + damage burst
+  | 'overclock'   // operative — overclocked gun: fire-rate + damage + unlimited ammo
   | 'firestorm'   // pyro      — AoE shockwave nuke
   | 'triage'      // medic     — instant self-heal
-  | 'overclock'   // engineer  — instant reload + unlimited ammo
+  | 'demolition'  // engineer  — wire a barrel into a remote bomb, detonate on demand
   | 'cloak';      // phantom   — intangible stealth
 
 export interface CharacterAbility {
@@ -72,10 +72,10 @@ export const CHARACTER_ABILITIES: Record<ClassId, CharacterAbility> = {
     cooldown: 15, duration: 5, color: '#e0564f', shadowColor: 0xb02b2b, jumpMult: 0.94,
   },
   operative: {
-    id: 'focusfire', classId: 'operative',
-    name: 'Focus Fire',
-    description: 'Overclock your weapon — faster fire rate and bigger damage.',
-    cooldown: 15, duration: 5, color: '#9aa3b2', shadowColor: 0x3a3f4a, jumpMult: 1.02,
+    id: 'overclock', classId: 'operative',
+    name: 'Overclock',
+    description: 'Overclock your weapon — relentless fire rate, bigger hits and unlimited ammo.',
+    cooldown: 15, duration: 5, color: '#fbbf24', shadowColor: 0x3a3f4a, jumpMult: 1.02,
   },
   pyro: {
     id: 'firestorm', classId: 'pyro',
@@ -90,10 +90,10 @@ export const CHARACTER_ABILITIES: Record<ClassId, CharacterAbility> = {
     cooldown: 14, duration: 0, color: '#19c37d', shadowColor: 0xc91a1a, jumpMult: 1.0,
   },
   engineer: {
-    id: 'overclock', classId: 'engineer',
-    name: 'Overclock',
-    description: 'Snap-reload, then fire with unlimited ammo for a few seconds.',
-    cooldown: 14, duration: 4, color: '#e0a84a', shadowColor: 0xc78a2a, jumpMult: 0.96,
+    id: 'demolition', classId: 'engineer',
+    name: 'Demolition',
+    description: 'Wire a nearby barrel into a remote bomb — then trigger it when robots crowd in.',
+    cooldown: 12, duration: 0, color: '#ff5a36', shadowColor: 0xc78a2a, jumpMult: 0.96,
   },
   phantom: {
     id: 'cloak', classId: 'phantom',

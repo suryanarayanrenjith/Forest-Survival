@@ -100,6 +100,11 @@ export class GunModel {
   // One-shot action flourishes (1 = just triggered, decays to 0)
   private abilityAnim = 0;
   private dashAnim = 0;
+  // Engineer "wire the bomb" pose — while ON, the gun dips low and tucks across
+  // the body as if the free hand is working at the barrel. Smoothed toward
+  // `wiringTarget` in updateActions so the bend eases in and out.
+  private wireAnim = 0;
+  private wiringTarget = 0;
   private equipAnim = 0; // weapon-swap raise (gun rises from low into the ready pose)
   // ── WEAPON INSPECT (CS:GO-style, bound to F) ──
   // A cinematic "look at the weapon": the gun is drawn in close and slowly
@@ -1189,6 +1194,9 @@ export class GunModel {
     if (this.abilityAnim > 0) this.abilityAnim = Math.max(0, this.abilityAnim - delta * 3);
     if (this.dashAnim > 0) this.dashAnim = Math.max(0, this.dashAnim - delta * 3.6);
     if (this.equipAnim > 0) this.equipAnim = Math.max(0, this.equipAnim - delta * 3.05);
+    // Ease the wiring bend toward its target (engineer demolition).
+    this.wireAnim += (this.wiringTarget - this.wireAnim) * Math.min(1, delta * 8);
+    if (this.wiringTarget === 0 && this.wireAnim < 0.001) this.wireAnim = 0;
     if (this.inspectActive) {
       this.inspectTime += delta;
       if (this.inspectTime >= this.INSPECT_DURATION) {
@@ -1222,6 +1230,11 @@ export class GunModel {
   /** A quick upward flourish + flick when an ability is cast. */
   triggerAbility() {
     this.abilityAnim = 1;
+  }
+
+  /** Engineer demolition: hold the gun low in a "wiring the barrel" pose. */
+  setWiring(on: boolean) {
+    this.wiringTarget = on ? 1 : 0;
   }
 
   /** A sharp braced pull-back when the player dashes. */
@@ -1298,27 +1311,32 @@ export class GunModel {
       inspZ = 0.16 * w;                                // bring it closer to the lens
     }
 
+    // Engineer "wiring the barrel" pose — drop the gun low and tuck it across
+    // the body (muzzle dips, slight cant) while the free hand works at the TNT.
+    const wire = this.wireAnim;
+
     this.group.position.x =
       baseX + this.walkOffset.x * swayMul + SP_X * sprint + runX - reload * 0.07
-      + leanShift + inspX + equip * 0.12;
+      + leanShift + inspX + equip * 0.12 + wire * 0.05;
     this.group.position.y =
       baseY + this.walkOffset.y * swayMul + SP_Y * sprint + runY
       + this.jumpOffset.y - land * 0.12 + abil * 0.07 - dash * 0.05 - reload * 0.16
-      - equip * 0.5 + equipSettle * 0.05 + inspY;
+      - equip * 0.5 + equipSettle * 0.05 + inspY - wire * 0.28;
     this.group.position.z =
       baseZ + this.recoilOffset.z + SP_Z * sprint + dash * 0.16 + reload * 0.12
-      + equip * 0.10 + inspZ;
+      + equip * 0.10 + inspZ + wire * 0.06;
 
     this.group.rotation.x =
       (this.swayOffset.rotX + this.walkOffset.rotX) * swayMul
       + this.recoilOffset.rotX + SP_RX * sprint + runRotX
-      + this.jumpOffset.rotX - land * 0.18 - reload * 0.42 + equip * 0.55 + inspPitch;
+      + this.jumpOffset.rotX - land * 0.18 - reload * 0.42 + equip * 0.55 + inspPitch
+      + wire * 0.62;
     this.group.rotation.y =
       this.swayOffset.rotY * swayMul + SP_RY * sprint + leanYaw + inspYaw + equip * 0.26
       + this.recoilOffset.rotY;
     this.group.rotation.z =
       this.walkOffset.rotZ * swayMul + this.reloadRotZ + SP_RZ * sprint
-      + runRotZ + abil * 0.22 + leanRoll + inspRoll + equip * 0.42;
+      + runRotZ + abil * 0.22 + leanRoll + inspRoll + equip * 0.42 + wire * 0.28;
   }
 
   /**

@@ -184,10 +184,14 @@ interface PerformanceMetrics {
   consecutiveHighFPSFrames: number;
 }
 
-// LOD distance thresholds
+// LOD distance thresholds.
+// HIGH_TO_MEDIUM is pushed out to 45 m so the FULL-detail model (the only state
+// in which an enemy is damageable — see isDetailReady) covers a believable
+// engagement range; below this an enemy is the simplified "half texture" mesh
+// the player is not allowed to damage.
 const LOD_DISTANCES = {
-  HIGH_TO_MEDIUM: 30,
-  MEDIUM_TO_LOW: 60,
+  HIGH_TO_MEDIUM: 45,
+  MEDIUM_TO_LOW: 70,
   LOW_TO_CULLED: 100,
 };
 
@@ -1278,18 +1282,16 @@ class SmartEnemyManager {
   }
 
   /**
-   * True once the enemy's DETAILED model has streamed in — i.e. it's rendering
-   * at HIGH or MEDIUM LOD, not the distant single-box "minimal" stand-in (LOW)
-   * or culled. Bullets only register on a detail-ready enemy, so the player
-   * can't snipe a barely-resolved blob at the fog horizon; they must let it
-   * close to a believable engagement range where the full model is shown.
-   * Unknown / un-pooled ids default to true (don't accidentally make an enemy
-   * un-killable if it isn't manager-tracked).
+   * True only once the enemy's FULL-detail model has streamed in (HIGH LOD).
+   * Bullets register on a detail-ready enemy ONLY — so the player can't damage
+   * the distant single-box "minimal" stand-in (LOW) NOR the simplified "half
+   * texture" mesh (MEDIUM); the enemy must close to full-detail range (≤45 m,
+   * HIGH_TO_MEDIUM) where its complete model is shown. Unknown / un-pooled ids
+   * default to true (don't accidentally make an untracked enemy un-killable).
    */
   isDetailReady(poolId: number): boolean {
     if (poolId < 0 || poolId >= this.enemyPool.length) return true;
-    const lod = this.enemyPool[poolId].currentLOD;
-    return lod === LODLevel.HIGH || lod === LODLevel.MEDIUM;
+    return this.enemyPool[poolId].currentLOD === LODLevel.HIGH;
   }
 
   /**

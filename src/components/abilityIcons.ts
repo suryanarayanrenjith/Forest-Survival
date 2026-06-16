@@ -1,6 +1,6 @@
 import {
-  ChevronsRight, Wind, Shield, Crosshair, Flame, Heart,
-  Infinity as InfinityIcon, Ghost, type LucideIcon,
+  ChevronsRight, Wind, Shield, Flame, Heart,
+  Infinity as InfinityIcon, Ghost, Bomb, type LucideIcon,
 } from 'lucide-react';
 import type { CharacterAbilityId } from '../utils/CharacterAbilityRegistry';
 
@@ -14,10 +14,10 @@ export const ABILITY_ICONS: Record<CharacterAbilityId, LucideIcon> = {
   dash: ChevronsRight,
   adrenaline: Wind,
   bulwark: Shield,
-  focusfire: Crosshair,
+  overclock: InfinityIcon,
   firestorm: Flame,
   triage: Heart,
-  overclock: InfinityIcon,
+  demolition: Bomb,
   cloak: Ghost,
 };
 

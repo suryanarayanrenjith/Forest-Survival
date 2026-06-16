@@ -22,6 +22,17 @@ export interface ExplosiveBarrel {
   /** Centre damage. Tunable per map if we ever want stronger barrels. */
   blastDamage: number;
   detonated: boolean;
+  // ── Engineer "Demolition" wiring (set when armed into a remote bomb) ──
+  /** Armed into a remote bomb by the Engineer's ability. */
+  wired?: boolean;
+  /** Wiring-animation progress 0→1; the bomb is detonatable once it reaches 1. */
+  armProgress?: number;
+  /** Detonator/wire kit parented to the barrel mesh (disposed on detonation). */
+  bombKit?: THREE.Group;
+  /** Blinking LED + antenna tip + glow band, animated each frame while armed. */
+  bombLight?: THREE.Mesh;
+  bombTip?: THREE.Mesh;
+  bombBand?: THREE.Mesh;
 }
 
 const BARREL_GEOMETRY = new THREE.CylinderGeometry(0.55, 0.55, 1.3, 12, 1);

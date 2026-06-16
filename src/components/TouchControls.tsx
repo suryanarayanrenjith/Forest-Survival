@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Crosshair, ChevronsUp, ChevronsRight, ChevronsDown, RotateCw, Zap, Pause,
-  Wind, Shield as ShieldIcon, Flame, Heart, Infinity as InfinityIcon, Ghost,
+  Wind, Shield as ShieldIcon, Flame, Heart, Infinity as InfinityIcon, Ghost, Bomb,
   Boxes, Swords, PackageSearch, ChevronDown, Lock,
   type LucideIcon,
 } from 'lucide-react';
@@ -63,8 +63,8 @@ const TouchControls = ({
   // Per-character ability icon (the touch button still dispatches the bound
   // ability key, so any class's signature move fires from here).
   const ABILITY_ICONS: Record<string, LucideIcon> = {
-    dash: ChevronsRight, adrenaline: Wind, bulwark: ShieldIcon, focusfire: Crosshair,
-    firestorm: Flame, triage: Heart, overclock: InfinityIcon, cloak: Ghost,
+    dash: ChevronsRight, adrenaline: Wind, bulwark: ShieldIcon, overclock: InfinityIcon,
+    firestorm: Flame, triage: Heart, demolition: Bomb, cloak: Ghost,
   };
   const abilityIcon = ABILITY_ICONS[dash?.abilityId ?? 'dash'] ?? ChevronsRight;
   const powerHeld = power?.state === 'held';
