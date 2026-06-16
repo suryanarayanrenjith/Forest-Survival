@@ -384,7 +384,7 @@ export const setSettings = mutation({
 // server can sanity-check (no negative, no jumbo grants). Mastery XP caps at
 // the max-level threshold per weapon so the record never bloats.
 const VALID_WEAPON_IDS = new Set([
-  "pistol", "rifle", "shotgun", "smg", "sniper", "minigun", "launcher",
+  "pistol", "rifle", "shotgun", "smg", "sniper", "minigun", "launcher", "subverter",
 ]);
 const MASTERY_MAX_XP_PER_WEAPON = 4000;
 const MASTERY_MAX_XP_DELTA = 200; // single mutation can grant at most 200 XP

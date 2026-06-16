@@ -5,6 +5,7 @@ import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
 import { GunModel, type WeaponType as GunWeaponType } from './utils/GunModel';
 import { MuzzleFlash, BulletTracer, ImpactEffect, RobotHitSparks, ExplosionEffect, FireNovaEffect, AbilityCastEffect, ImpactBurst, setMuzzleLightPool, setExplosionLightPool } from './utils/Effects';
+import { HackBeam, buildHackVisuals, updateHackVisuals, disposeHackVisuals } from './utils/HackVisuals';
 import { soundManager } from './utils/SoundManager';
 import { gameSettingsManager, type UserSettings, type KeyBindings } from './utils/GameSettingsManager';
 import { PostProcessingPipeline } from './utils/PostProcessing';
@@ -1133,6 +1134,10 @@ const ForestSurvivalGame = () => {
     const mpTgtIndex = new Map<string, number>();
     let mpDesiredCap = 0;
     const _focusVec = new THREE.Vector3();
+    // Subverter: reused vectors so a hacked enemy can re-point its "focus" at a
+    // victim enemy (and emit overclock sparks) without per-frame allocation.
+    const _hackFocus = new THREE.Vector3();
+    const _hackSparkDir = new THREE.Vector3();
     const TARGET_EVAL_MS = 2000; // sticky-target re-evaluation cadence
     const mpAddTarget = (id: string, x: number, y: number, z: number) => {
       const idx = mpTgtIds.length;
@@ -1808,6 +1813,7 @@ const ForestSurvivalGame = () => {
           break;
         case 'rifle':
         case 'smg':
+        case 'subverter':
           gunKeyLight.position.set(0.32, -0.12, -0.10);
           gunKeyLight.intensity = 0.55;
           gunKeyLight.distance = 1.9;
@@ -2436,10 +2442,16 @@ const ForestSurvivalGame = () => {
     // Scatter red barrels across the map. Density per-map (MapConfig).
     // Bullet hit → AOE damage to everything within blastRadius (player +
     // enemies). Tactical pop: kite a tank into one for a free wipe.
-    const barrelDensity = mapConfig.barrelDensity ?? 0.35;
-    const barrelCount = Math.round(barrelDensity * 30); // 0–30 across the world
+    //
+    // Barrels are now COMMON and spread right across the playfield: the
+    // default density was bumped (0.35 → 0.55), the count multiplier raised
+    // (30 → 70) and the scatter widened (±120 → ±185) so wherever the fight
+    // drifts there's usually a barrel within tactical reach instead of the
+    // old sparse central cluster. Per-map overrides still scale on top.
+    const barrelDensity = mapConfig.barrelDensity ?? 0.55;
+    const barrelCount = Math.round(barrelDensity * 70); // ~39 default · up to ~53 (military)
     const barrels: ExplosiveBarrel[] = barrelCount > 0
-      ? spawnBarrels(scene, barrelCount, overlapsTerrain, 240)
+      ? spawnBarrels(scene, barrelCount, overlapsTerrain, 370)
       : [];
 
     // === RANGED SENTINELS (NEW ENEMY ARCHETYPE — TURRETS) ===
@@ -2952,6 +2964,20 @@ const ForestSurvivalGame = () => {
     const fireNovas: FireNovaEffect[] = [];
     // Per-cast ability bursts (tinted ring + pillar + sparks at the caster).
     const castEffects: AbilityCastEffect[] = [];
+    // Subverter intrusion beams — the bolt fired from the deck into a target.
+    const hackBeams: HackBeam[] = [];
+
+    // ── SUBVERTER (robot-hacking) tuning ─────────────────────────────────
+    // Short engagement range; the player must get in close to deploy a chip.
+    // A hacked enemy hunts its own kind for HACK_DURATION seconds, hitting
+    // them for the enemy's melee × HACK_VICTIM_DMG_MULT, then burns out in an
+    // EMP blast (HACK_BLAST_*) that fries everything around it.
+    const HACK_RANGE = 17;            // metres — must be close to deploy
+    const HACK_CONE = 0.25;           // min dot(forward, →enemy): roughly aimed at
+    const HACK_DURATION = 6.5;        // seconds of overclocked chaos
+    const HACK_VICTIM_DMG_MULT = 2.4; // hacked enemies hit HARD vs their kin
+    const HACK_BLAST_RADIUS = 6.8;    // overclock EMP radius
+    const HACK_BLAST_DAMAGE = 110;    // EMP centre damage (falls off to ~50%)
 
     // ── Decapitation gibs ────────────────────────────────────────────────
     // A powerful headshot kill (sniper / launcher-tier weapons) pops the
@@ -4984,7 +5010,8 @@ const ForestSurvivalGame = () => {
         'Digit4': 'smg',
         'Digit5': 'sniper',
         'Digit6': 'minigun',
-        'Digit7': 'launcher'
+        'Digit7': 'launcher',
+        'Digit8': 'subverter'
       };
 
       if (weaponKeys[e.code] && !isReloading) {
@@ -5150,6 +5177,71 @@ const ForestSurvivalGame = () => {
       return body;
     };
 
+    // ── SUBVERTER: deploy an intrusion chip into a nearby enemy ──────────
+    // Finds the closest living, not-already-hacked enemy that's in range AND
+    // roughly in front of the player, then overclocks it: a beam snaps from
+    // the deck's emitter into the target, a virus chip clamps onto its back,
+    // and it turns on its own kind for a few seconds before burning out.
+    // Returns true if a chip was actually deployed (so the caller consumes one).
+    const deploySubverterChip = (): boolean => {
+      const fwd = new THREE.Vector3();
+      camera.getWorldDirection(fwd);
+      let best: Enemy | null = null;
+      let bestScore = -Infinity;
+      for (let k = 0; k < enemies.length; k++) {
+        const e = enemies[k];
+        if (e.dead || e.hacked || e.health <= 0) continue;
+        // Don't hack an enemy that hasn't even streamed in its detailed model
+        // (the distant minimal stand-in) — same fairness gate bullets use.
+        if (e.detailReady === false) continue;
+        const dx = e.mesh.position.x - camera.position.x;
+        const dz = e.mesh.position.z - camera.position.z;
+        const dist = Math.hypot(dx, dz);
+        if (dist > HACK_RANGE) continue;
+        // Must be roughly aimed at (cone test on the horizontal plane).
+        const inv = 1 / (dist || 1);
+        const dot = (dx * inv) * fwd.x + (dz * inv) * fwd.z;
+        if (dot < HACK_CONE) continue;
+        // Prefer closest + best-aligned target.
+        const score = dot * 2 - dist * 0.08;
+        if (score > bestScore) { bestScore = score; best = e; }
+      }
+
+      if (!best) {
+        soundManager.play('hack_fail', 0.6);
+        showPowerMessage('No target in range — get closer', 1300);
+        return false;
+      }
+
+      // ── Overclock the target ──
+      best.hacked = true;
+      best.hackTimeLeft = HACK_DURATION;
+      best.hackDuration = HACK_DURATION;
+      best.hackNextSparkAt = 0;
+      const vis = buildHackVisuals();
+      best.mesh.add(vis);
+      best.hackVisuals = vis;
+
+      // Beam from the deck emitter (just in front of the held weapon) to the
+      // target's chest, plus a spark burst + chip-clamp pop.
+      const gunWorldPos = new THREE.Vector3();
+      gunModel.group.getWorldPosition(gunWorldPos);
+      gunWorldPos.addScaledVector(fwd, 0.6);
+      const tgt = best.mesh.position.clone();
+      tgt.y += 1.0;
+      hackBeams.push(new HackBeam(scene, gunWorldPos, tgt));
+      const sparkDir = new THREE.Vector3().subVectors(tgt, gunWorldPos).normalize();
+      robotSparks.push(new RobotHitSparks(scene, tgt.clone(), sparkDir, 16));
+      createParticles(tgt, 0x39ff14, 14);
+
+      gunModel.triggerDeploy();
+      soundManager.play('hack_deploy', 0.8);
+      haptic('fire');
+      showPowerMessage('⚡ ENEMY HACKED — turning on its own', 1500);
+      tutorial.recordAction('shoot', 1);
+      return true;
+    };
+
     // Enhanced shooting
     const shoot = () => {
       // Empty magazine — dry-fire click + auto-reload so pulling the trigger on
@@ -5172,6 +5264,15 @@ const ForestSurvivalGame = () => {
         if (rapidFireActive) fireRateMult *= rapidFireMultiplier;
         const fireDelay = weapon.fireRate / fireRateMult;
         setTimeout(() => { canShoot = true; }, fireDelay);
+
+        // ── SUBVERTER: not a gun — deploy a hacking chip and bail out of the
+        // projectile path entirely. Only consumes a chip on a successful hack.
+        if (currentWeapon === 'subverter') {
+          const deployed = deploySubverterChip();
+          if (deployed && !infiniteAmmoActive) ammo--;
+          updateGameState();
+          return;
+        }
 
         // Only consume ammo if infinite ammo powerup is not active
         if (!infiniteAmmoActive) {
@@ -5450,7 +5551,7 @@ const ForestSurvivalGame = () => {
         // Update weapon
         const weapon = WEAPONS[currentWeapon];
         ammo = weapon.maxAmmo;
-        gunModel.switchWeapon(currentWeapon as 'pistol' | 'rifle' | 'shotgun' | 'smg' | 'sniper' | 'minigun' | 'launcher');
+        gunModel.switchWeapon(currentWeapon as GunWeaponType);
         setGunFillForWeapon(currentWeapon);
         tutorial.recordAction('switch_weapon', 1);
         updateGameState();
@@ -5691,10 +5792,27 @@ const ForestSurvivalGame = () => {
       isCritical && enemy.type !== 'boss' && !!enemy.head && enemy.head.visible
       && WEAPONS[currentWeapon].damage >= 60;
 
+    // Tear down a hacked enemy's overclock state + visuals. Safe to call on a
+    // non-hacked enemy (no-op). Called whenever a hacked enemy dies / recycles
+    // so the pooled mesh never carries a stale virus chip into its next life.
+    const clearHackState = (enemy: Enemy) => {
+      if (enemy.hackVisuals) {
+        disposeHackVisuals(enemy.hackVisuals);
+        enemy.hackVisuals = undefined;
+      }
+      if (!enemy.hacked) return;
+      enemy.hacked = false;
+      enemy.hackTimeLeft = undefined;
+      enemy.hackDuration = undefined;
+      enemy.mesh.rotation.z = 0; // clear any leftover instability roll
+    };
+
     // Extracted enemy-kill handler — shared by direct bullet hits and the
     // rocket launcher's area-of-effect so score, combos, drops, achievements
     // and wave progression all behave identically however an enemy dies.
     const handleEnemyKilled = (enemy: Enemy, isCritical: boolean, killerId?: string) => {
+      // A dying enemy is no longer hacked — strip the chip/indicator first.
+      clearHackState(enemy);
       // ── DECAPITATION ── pop the head off before the corpse flies (so the
       // gib launches from the head's pre-ragdoll position).
       if (canDecapitate(enemy, isCritical)) spawnHeadGib(enemy);
@@ -6457,6 +6575,49 @@ const ForestSurvivalGame = () => {
       createParticles(pos, 0x222222, 22);
       explosionEffects.push(new ExplosionEffect(scene, pos, radius));
       createCrater(pos);
+    };
+
+    // ── SUBVERTER hack helpers ──────────────────────────────────────────
+    // Nearest living, NOT-already-hacked enemy a hacked unit can hunt. Linear
+    // scan (≤~30 enemies, only a handful hacked at once) bounded to a search
+    // radius so a hacked enemy doesn't sprint across the whole map.
+    const findHackVictim = (hackerIdx: number): Enemy | null => {
+      const hacker = enemies[hackerIdx];
+      let best: Enemy | null = null;
+      let bestD = Infinity;
+      const MAX = 50;
+      for (let k = 0; k < enemies.length; k++) {
+        if (k === hackerIdx) continue;
+        const o = enemies[k];
+        if (o.dead || o.hacked || o.health <= 0) continue;
+        const d = o.mesh.position.distanceToSquared(hacker.mesh.position);
+        if (d < bestD && d < MAX * MAX) { bestD = d; best = o; }
+      }
+      return best;
+    };
+
+    // Overclock burnout: the hacked enemy detonates in a green EMP that fries
+    // nearby enemies (NOT the player — it's their own tech going up), then the
+    // unit itself dies and is credited to the player.
+    const detonateHackedEnemy = (enemy: Enemy) => {
+      const epos = enemy.mesh.position.clone();
+      epos.y = Math.max(0.4, epos.y);
+      spawnExplosionFX(epos, HACK_BLAST_RADIUS);
+      soundManager.play('hack_overclock', 0.9);
+      createParticles(epos, 0x39ff14, 34);
+      createParticles(epos, 0x9dff6a, 18);
+      for (let j = enemies.length - 1; j >= 0; j--) {
+        const e = enemies[j];
+        if (e === enemy || e.dead) continue;
+        const d = e.mesh.position.distanceTo(epos);
+        if (d > HACK_BLAST_RADIUS) continue;
+        const falloff = 1 - (d / HACK_BLAST_RADIUS) * 0.5;
+        e.health -= HACK_BLAST_DAMAGE * falloff;
+        e.damageFlashTime = 0.4;
+        if (e.health <= 0) handleEnemyKilled(e, false);
+      }
+      // The hacked unit burns out — counts as a player kill (clears its visuals).
+      handleEnemyKilled(enemy, false);
     };
 
     // Detonates a rocket — area-of-effect damage with distance falloff.
@@ -8307,6 +8468,14 @@ const ForestSurvivalGame = () => {
         }
       }
 
+      // Update Subverter intrusion beams
+      for (let i = hackBeams.length - 1; i >= 0; i--) {
+        if (hackBeams[i].update(delta)) {
+          hackBeams[i].dispose(scene);
+          hackBeams.splice(i, 1);
+        }
+      }
+
       // Update explosion craters — fade out, then dispose
       for (let i = craters.length - 1; i >= 0; i--) {
         const crater = craters[i];
@@ -9135,6 +9304,10 @@ const ForestSurvivalGame = () => {
             // whole again for the next enemy that reuses this slot (idempotent
             // for enemies that were never decapitated).
             if (enemy.head && !enemy.head.visible) enemy.head.visible = true;
+            // Safety net: strip any hack chip/indicator before the pooled mesh
+            // is recycled, so the next enemy in this slot never inherits one.
+            if (enemy.hackVisuals) { disposeHackVisuals(enemy.hackVisuals); enemy.hackVisuals = undefined; }
+            enemy.hacked = false;
             // Release mesh back to pool for reuse (SmartEnemyManager handles scene removal)
             if (enemy.poolId !== undefined) {
               smartEnemyManager.releaseMeshById(enemy.poolId);
@@ -9244,6 +9417,47 @@ const ForestSurvivalGame = () => {
           }
           focusPos = _focusVec.set(mpTgtX[tIdx], mpTgtY[tIdx], mpTgtZ[tIdx]);
           if (mpTgtIds[tIdx] !== mp.getLocalPlayer().id) { focusPlayerId = mpTgtIds[tIdx]; focusVel = _zeroVel; }
+        }
+
+        // ── HACK OVERRIDE ──────────────────────────────────────────────────
+        // A hacked (overclocked) enemy abandons the player and hunts the
+        // nearest non-hacked enemy: we re-point focusPos at that victim so the
+        // existing steering / facing / attack pipeline targets it instead. The
+        // overclock timer ticks down to a self-destruct EMP. Visuals + erratic
+        // sparks are driven here every frame.
+        let hackVictim: Enemy | null = null;
+        if (enemy.hacked) {
+          enemy.hackTimeLeft = (enemy.hackTimeLeft ?? 0) - delta;
+          if (enemy.hackVisuals) {
+            const frac = (enemy.hackTimeLeft ?? 0) / (enemy.hackDuration || HACK_DURATION);
+            // Bounded time base (0–100s) keeps the sin() animations precise.
+            updateHackVisuals(enemy.hackVisuals, delta, (frameNowMs % 100000) * 0.001, frac);
+          }
+          // Erratic overclock sparks spitting off the chassis.
+          if ((enemy.hackNextSparkAt ?? 0) <= frameNowMs) {
+            _hackSparkDir.set(Math.random() - 0.5, 1, Math.random() - 0.5);
+            _tempVec3.copy(enemy.mesh.position); _tempVec3.y += 1.0;
+            robotSparks.push(new RobotHitSparks(scene, _tempVec3.clone(), _hackSparkDir, 5));
+            enemy.hackNextSparkAt = frameNowMs + 240 + Math.random() * 180;
+          }
+          // Overclock burnout → EMP self-destruct.
+          if ((enemy.hackTimeLeft ?? 0) <= 0) {
+            detonateHackedEnemy(enemy);
+            continue; // now dead; the death-animation branch handles cleanup
+          }
+          hackVictim = findHackVictim(i);
+          if (hackVictim) {
+            focusPos = _hackFocus.set(
+              hackVictim.mesh.position.x, hackVictim.mesh.position.y, hackVictim.mesh.position.z,
+            );
+            focusVel = _zeroVel;
+            focusPlayerId = null;
+          } else {
+            // No other enemies left to hunt — thrash in place until burnout.
+            focusPos = _hackFocus.copy(enemy.mesh.position);
+            focusVel = _zeroVel;
+            focusPlayerId = null;
+          }
         }
 
         // Performance optimization: Skip AI update for distant enemies
@@ -9483,7 +9697,11 @@ const ForestSurvivalGame = () => {
 
           if (isMoving) {
             // Frame-rate independent step (×60 keeps the original 60fps feel)
-            const speedMul = enemy.isDodging ? 3.0 : aiDecision.moveSpeed;
+            // Hacked units are overclocked — they rush their victims faster
+            // and more erratically than a normal chase.
+            const speedMul = enemy.isDodging ? 3.0
+              : enemy.hacked ? aiDecision.moveSpeed * 1.7
+              : aiDecision.moveSpeed;
             const step = enemy.speed * speedMul * delta * 60;
             const px = enemy.mesh.position.x;
             const pz = enemy.mesh.position.z;
@@ -9737,7 +9955,7 @@ const ForestSurvivalGame = () => {
         // ~750ms when the player is in its sweet spot AND has line of
         // sight (no tree in the way), then launches a cyan energy bolt
         // travelling at moderate speed so the player can side-step it.
-        if (enemy.type === 'ranged' && !enemy.dead && enemy.health > 0) {
+        if (enemy.type === 'ranged' && !enemy.hacked && !enemy.dead && enemy.health > 0) {
           const RANGED_MIN = 6;   // back off in the player's face
           const RANGED_MAX = 50;  // can't see past this in dense maps
           const dxR = focusPos.x - enemy.mesh.position.x;
@@ -9812,7 +10030,9 @@ const ForestSurvivalGame = () => {
 
         // === ATTACK SYSTEM ===
         // Skipped for 'ranged' — they don't melee, they shoot above.
-        if (enemy.type !== 'ranged' && enemy.attackSystem) {
+        // Ranged enemies normally skip melee — but a HACKED one becomes a
+        // melee berserker (its bolt-firing is disabled above), so let it swing.
+        if ((enemy.type !== 'ranged' || enemy.hacked) && enemy.attackSystem) {
           enemy.attackSystem.update(delta);
 
           // Try to attack if in range (increased range)
@@ -9842,19 +10062,28 @@ const ForestSurvivalGame = () => {
           );
 
           if (hitPlayer || overlapDamage) {
-            const enemyLabel = enemyLabelOf(enemy.type);
             const raw = enemy.attackSystem.getDamage();
             enemy.lastAttackTime = frameNowMs; // Update for overlap cooldown
-            if (isMpHost && mp && focusPlayerId !== null) {
+            if (enemy.hacked) {
+              // ── HACKED: the strike lands on its victim enemy, not the player.
+              if (hackVictim && !hackVictim.dead && hackVictim.health > 0) {
+                hackVictim.health -= raw * HACK_VICTIM_DMG_MULT;
+                hackVictim.damageFlashTime = 0.3;
+                _tempVec3.copy(hackVictim.mesh.position); _tempVec3.y += 0.9;
+                createParticles(_tempVec3, 0x39ff14, 5);
+                soundManager.play('hit', 0.35, false, 1.4);
+                if (hackVictim.health <= 0) handleEnemyKilled(hackVictim, false);
+              }
+            } else if (isMpHost && mp && focusPlayerId !== null) {
               // SHARED ENEMY struck a REMOTE player. The host owns the enemy,
               // so it tells that player's client to take the hit — this is how
               // an enemy attacking one player is reflected on their screen.
-              mp.sendPlayerDamage(focusPlayerId, raw, enemyLabel);
+              mp.sendPlayerDamage(focusPlayerId, raw, enemyLabelOf(enemy.type));
             } else {
               // Local player takes the hit (solo, or the host's own avatar).
               // All the shield / effects / death / spectate handling lives in
               // takeEnemyDamage, shared with the guest `player_damaged` path.
-              takeEnemyDamage(raw, enemyLabel, enemy.mesh.position);
+              takeEnemyDamage(raw, enemyLabelOf(enemy.type), enemy.mesh.position);
             }
           }
 
@@ -9909,6 +10138,18 @@ const ForestSurvivalGame = () => {
           enemy.mesh.rotation.x = 0;
           enemy.mesh.scale.setScalar(baseScale);
           if (enemy.torso && enemy.torso.scale.x !== 1) enemy.torso.scale.setScalar(1);
+        }
+
+        // ── INSTABILITY TWITCH (hacked / overclocked) ──
+        // A hacked unit is glitching out: it jitters its position and rolls its
+        // chassis erratically — reads as "uncontrollable". Runs last so it sits
+        // on top of the walk / hit-reaction transforms. Intensifies near burnout.
+        if (enemy.hacked && !enemy.dead) {
+          const urgency = 1 + (1 - (enemy.hackTimeLeft ?? 0) / (enemy.hackDuration || HACK_DURATION)) * 1.5;
+          const amt = 0.045 * urgency;
+          enemy.mesh.position.x += (Math.random() - 0.5) * amt;
+          enemy.mesh.position.z += (Math.random() - 0.5) * amt;
+          enemy.mesh.rotation.z = (Math.random() - 0.5) * 0.14 * urgency;
         }
       }
 
@@ -10171,8 +10412,8 @@ const ForestSurvivalGame = () => {
       // Populates the GunModel material cache so subsequent in-game
       // weapon switches reuse cached shader programs and never stutter.
       const originalWeapon = currentWeapon;
-      const allWeapons: Array<'pistol' | 'rifle' | 'shotgun' | 'smg' | 'sniper' | 'minigun' | 'launcher'>
-        = ['pistol', 'rifle', 'shotgun', 'smg', 'sniper', 'minigun', 'launcher'];
+      const allWeapons: GunWeaponType[]
+        = ['pistol', 'rifle', 'shotgun', 'smg', 'sniper', 'minigun', 'launcher', 'subverter'];
       for (const w of allWeapons) {
         if (continueAnywayRef.current) break;
         await stage(`Weapon: ${w}`, false, () => gunModel.switchWeapon(w));
@@ -10489,6 +10730,14 @@ const ForestSurvivalGame = () => {
 
       // Cleanup floating effect indicators
       effectIndicators.dispose(scene);
+
+      // Cleanup any in-flight Subverter beams + live hacked-enemy visuals so
+      // their per-instance materials don't leak when the run tears down.
+      hackBeams.forEach((b) => b.dispose(scene));
+      hackBeams.length = 0;
+      for (const e of enemies) {
+        if (e.hackVisuals) { disposeHackVisuals(e.hackVisuals); e.hackVisuals = undefined; }
+      }
 
       // Cleanup SmartEnemyManager (releases pooled resources)
       smartEnemyManager.dispose();

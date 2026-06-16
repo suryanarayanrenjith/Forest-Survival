@@ -62,8 +62,12 @@ export const WEAPONS: Record<string, Weapon> = {
   },
   smg: {
     name: 'SMG',
+    // Restricted fire rate: 100ms (10 shots/s, ~200 DPS held) was an
+    // overpowered hold-to-mulch hose for a tier-4 weapon. 165ms (~6 shots/s,
+    // ~121 DPS) keeps the spray identity but brings it back in line — below
+    // the rifle's potential and meaningfully tactical rather than a win button.
     damage: 20,
-    fireRate: 100,
+    fireRate: 165,
     maxAmmo: 40,
     reloadTime: 1200,
     bulletSpeed: 2.5,
@@ -115,6 +119,27 @@ export const WEAPONS: Record<string, Weapon> = {
     autoFire: false,
     weight: 2.5, // Very heavy
     canAim: true
+  },
+  // ── SUBVERTER — robot-hacking deck (8th loadout slot) ──────────────────
+  // Not a gun: a rugged combat tablet loaded with intrusion chips. The
+  // player gets in close and "fires" a chip into a nearby enemy, which
+  // overclocks its AI — it turns on its own kind, goes unstable, and burns
+  // out in an EMP blast after a few seconds. `damage` is 0 (no projectile);
+  // the hack is resolved entirely in App's shoot()/enemy loop. `maxAmmo` is
+  // the chip count. Short range, no ADS. Unlocks AFTER the launcher (4800).
+  subverter: {
+    name: 'Subverter',
+    damage: 0,
+    fireRate: 850,        // brief cooldown between chip deploys
+    maxAmmo: 4,           // 4 intrusion chips per cartridge
+    reloadTime: 2800,     // swap the chip cartridge
+    bulletSpeed: 0,
+    bulletColor: 0x39ff14, // cyber-green virus glow
+    spread: 0,
+    unlockScore: 6800,
+    autoFire: false,
+    weight: 1.0,          // light tablet — full movement speed
+    canAim: false         // it's a deploy tool, not a sighted weapon
   }
 };
 
@@ -226,6 +251,19 @@ export interface Enemy {
   // so the player sees a glowing muzzle build before the bolt launches.
   rangedNextShotAt?: number;
   rangedChargeMs?: number;
+  // ── Hacking (Subverter tool) ─────────────────────────────────────────
+  // A hacked enemy is overclocked by an intrusion chip: it ignores the
+  // player and hunts/melees the nearest non-hacked enemy, jitters
+  // erratically ("unstable"), and self-destructs in an EMP blast when
+  // hackTimeLeft hits zero. hackVisuals is the chip + indicator + aura group
+  // attached to the mesh; hackNextSparkAt rate-limits the overclock sparks.
+  hacked?: boolean;
+  hackTimeLeft?: number;   // seconds remaining until overclock death
+  hackDuration?: number;   // total hack window (drives the indicator ring)
+  hackVisuals?: THREE.Group;
+  hackNextSparkAt?: number;
+  // Twitch offsets so the instability jitter can be cleanly zeroed out.
+  hackJitter?: THREE.Vector3;
 }
 
 export interface Bullet {

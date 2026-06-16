@@ -103,6 +103,14 @@ class SoundManager {
     this.sounds.set('shoot_sniper',   W({ duration: 0.40, punchFreq: 70,  punchDecay: 9,  sweep: 1.0, bodyLevel: 0.78, noiseLevel: 0.60, noiseDecay: 13, crackLevel: 0.92, crackDecay: 120, lowpass: 0.40 }));
     this.sounds.set('shoot_minigun',  W({ duration: 0.10, punchFreq: 135, punchDecay: 30, sweep: 1.6, bodyLevel: 0.45, noiseLevel: 0.55, noiseDecay: 32, crackLevel: 0.60, crackDecay: 170, lowpass: 0.60 }));
     this.sounds.set('shoot_launcher', W({ duration: 0.45, punchFreq: 55,  punchDecay: 8,  sweep: 0.8, bodyLevel: 0.82, noiseLevel: 0.60, noiseDecay: 9,  crackLevel: 0.45, crackDecay: 70,  lowpass: 0.28 }));
+
+    // ── Subverter (robot-hacking deck) ───────────────────────────────────
+    // Deploy: a glitchy digital "zap + datastream" as the chip launches.
+    this.sounds.set('hack_deploy', this.createHackDeploy(ctx, sampleRate));
+    // Overclock death: a rising bit-crushed scream that detonates into noise.
+    this.sounds.set('hack_overclock', this.createHackOverclock(ctx, sampleRate));
+    // No-target error: a short dull "denied" buzz.
+    this.sounds.set('hack_fail', this.createHackFail(ctx, sampleRate));
   }
 
   private createShootSound(ctx: AudioContext, sampleRate: number): AudioBuffer {
@@ -342,6 +350,66 @@ class SoundManager {
       const sweepFreq = o.punchFreq * (1 + o.sweep * Math.exp(-t * 35));
       const punch = Math.sin(2 * Math.PI * sweepFreq * t) * Math.exp(-t * o.punchDecay) * o.bodyLevel;
       data[i] = Math.tanh((crack + body + punch) * 1.4) * 0.6;
+    }
+    return buffer;
+  }
+
+  // Subverter chip deploy — a sharp digital "zap" with a glitchy bit-crushed
+  // datastream tail: a fast upward FM chirp gated by a stepped (sample-and-hold)
+  // pattern so it reads as "code being injected", not a gunshot.
+  private createHackDeploy(ctx: AudioContext, sampleRate: number): AudioBuffer {
+    const duration = 0.34;
+    const buffer = ctx.createBuffer(1, Math.floor(sampleRate * duration), sampleRate);
+    const data = buffer.getChannelData(0);
+    let hold = 0; // sample-and-hold value for the bit-crush
+    for (let i = 0; i < buffer.length; i++) {
+      const t = i / sampleRate;
+      const env = Math.exp(-t * 7);
+      // Rising carrier with a fast modulator (FM "digital" timbre).
+      const carrier = 420 + t * 1900;
+      const mod = Math.sin(2 * Math.PI * 90 * t) * 220;
+      const tone = Math.sin(2 * Math.PI * (carrier + mod) * t);
+      // Stepped glitch — re-sample the value ~22 times so it sounds quantised.
+      if ((i % Math.floor(sampleRate / 2200)) === 0) hold = Math.random() * 2 - 1;
+      const glitch = hold * 0.4 * Math.exp(-t * 5);
+      data[i] = Math.tanh((tone * 0.6 + glitch) * env * 1.5) * 0.5;
+    }
+    return buffer;
+  }
+
+  // Overclock death — a rising, increasingly distorted digital scream that
+  // tips over into a noise burst as the enemy burns out. Long-ish so it lands.
+  private createHackOverclock(ctx: AudioContext, sampleRate: number): AudioBuffer {
+    const duration = 0.6;
+    const buffer = ctx.createBuffer(1, Math.floor(sampleRate * duration), sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < buffer.length; i++) {
+      const t = i / sampleRate;
+      const p = t / duration;
+      // Pitch climbs then the whole thing erupts.
+      const freq = 180 + p * p * 1400;
+      const scream = Math.sin(2 * Math.PI * freq * t);
+      const harsh = Math.sin(2 * Math.PI * freq * 1.5 * t) * 0.5;
+      // Noise erupts in the final third (the detonation).
+      const burst = p > 0.6 ? (Math.random() * 2 - 1) * (p - 0.6) * 2.5 : 0;
+      const env = p < 0.85 ? 1 : Math.max(0, (1 - p) / 0.15);
+      data[i] = Math.tanh((scream + harsh + burst) * 1.6) * env * 0.45;
+    }
+    return buffer;
+  }
+
+  // No-target "denied" — a short, dull descending buzz (intrusion failed).
+  private createHackFail(ctx: AudioContext, sampleRate: number): AudioBuffer {
+    const duration = 0.18;
+    const buffer = ctx.createBuffer(1, Math.floor(sampleRate * duration), sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < buffer.length; i++) {
+      const t = i / sampleRate;
+      const decay = Math.exp(-t * 12);
+      const freq = 220 - t * 120;
+      // Square-ish buzz via tanh saturation.
+      const buzz = Math.tanh(Math.sin(2 * Math.PI * freq * t) * 3) * 0.3;
+      data[i] = buzz * decay;
     }
     return buffer;
   }

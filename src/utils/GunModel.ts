@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-export type WeaponType = 'pistol' | 'rifle' | 'shotgun' | 'smg' | 'sniper' | 'minigun' | 'launcher';
+export type WeaponType = 'pistol' | 'rifle' | 'shotgun' | 'smg' | 'sniper' | 'minigun' | 'launcher' | 'subverter';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SHARED MATERIAL CACHE
@@ -63,6 +63,19 @@ export class GunModel {
 
   // Spinning part (minigun barrel cluster)
   private spinningPart: THREE.Group | null = null;
+
+  // ── Subverter (hacking deck) animated parts ──
+  // The screen and emitter glow are driven per-frame: an idle data-scroll
+  // flicker, and a bright surge when a chip is deployed. These materials are
+  // created NON-cached (per build) so we can animate emissiveIntensity freely
+  // without touching the shared gun-material pool. subDeploy is a one-shot
+  // 1→0 envelope set by triggerDeploy() (the "fire a chip" flourish).
+  private subScreenMat: THREE.MeshStandardMaterial | null = null;
+  private subEmitterMat: THREE.MeshStandardMaterial | null = null;
+  private subCodeMats: THREE.MeshStandardMaterial[] = [];
+  private subAntennaTip: THREE.Mesh | null = null;
+  private subTime = 0;
+  private subDeploy = 0;
 
   // Phantom (stealth) cloak state — fades the whole held weapon while active.
   private phantomActive = false;
@@ -221,6 +234,14 @@ export class GunModel {
     this.bolt = null;
     this.ejectedMag = null;
     this.spinningPart = null;
+    // Subverter animated-part refs (the old materials were just disposed above
+    // if they weren't cached) — cleared so updateActions never touches stale GPU
+    // resources after a switch away from the hacking deck.
+    this.subScreenMat = null;
+    this.subEmitterMat = null;
+    this.subCodeMats = [];
+    this.subAntennaTip = null;
+    this.subDeploy = 0;
     this.slideRest = -1.5;
     this.boltRest = 0.5;
     this.magRestY = -1;
@@ -239,6 +260,7 @@ export class GunModel {
       case 'sniper': this.createSniper(); break;
       case 'minigun': this.createMinigun(); break;
       case 'launcher': this.createLauncher(); break;
+      case 'subverter': this.createSubverter(); break;
     }
 
     // Attach the first-person arms last, so they sit on top of the weapon.
@@ -858,6 +880,118 @@ export class GunModel {
   }
 
   // ====================================================================
+  // SUBVERTER — rugged robot-hacking deck (a combat tablet + intrusion chips)
+  // Held flat, screen tilted up toward the player; an emitter prong on the
+  // front fires the intrusion beam. The screen scrolls "code" and surges on
+  // each chip deploy. Not a gun — there's no barrel or magazine.
+  // ====================================================================
+  private createSubverter() {
+    const frameMat   = this.mat(0x1b1e24, 0.78, 0.34);              // dark composite chassis
+    const rubber     = this.mat(0x0c0d10, 0.2, 0.9, { envMapIntensity: 0.4 }); // grip armor
+    const trim       = this.mat(0x2a2f3a, 0.85, 0.3);              // bezel / rails
+    const gold        = this.mat(0xc8a23a, 0.9, 0.28, { emissive: 0x3a2c08, emissiveIntensity: 0.3 }); // chip contacts
+    const antennaMat = this.mat(0x14161b, 0.85, 0.35);
+
+    // The whole deck is tilted up so the player sees the lit screen. Built into
+    // a child group so the tilt is baked in independent of the animation pose.
+    const deck = new THREE.Group();
+    deck.rotation.x = -0.5;
+    deck.position.set(0, -0.1, -0.4);
+    this.group.add(deck);
+    const add = (m: THREE.Mesh, parent: THREE.Object3D = deck): THREE.Mesh => {
+      m.castShadow = true; m.receiveShadow = true; parent.add(m); return m;
+    };
+
+    // ── Chassis: a chunky slab with a raised bezel ──
+    add(new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.42, 4.7), frameMat));
+    // Rubberized corner bumpers (rugged "field" look)
+    for (const cx of [-1.6, 1.6]) {
+      for (const cz of [-2.2, 2.2]) {
+        add(new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.6, 0.5), rubber)).position.set(cx, 0, cz);
+      }
+    }
+    // Raised bezel frame around the screen
+    add(new THREE.Mesh(new THREE.BoxGeometry(3.0, 0.16, 0.28), trim)).position.set(0, 0.26, -1.9);
+    add(new THREE.Mesh(new THREE.BoxGeometry(3.0, 0.16, 0.28), trim)).position.set(0, 0.26,  1.9);
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.16, 4.1), trim)).position.set(-1.5, 0.26, 0);
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.16, 4.1), trim)).position.set( 1.5, 0.26, 0);
+
+    // ── Screen: glowing cyber-green display (animated emissive) ──
+    this.subScreenMat = new THREE.MeshStandardMaterial({
+      color: 0x041b10, metalness: 0.1, roughness: 0.35,
+      emissive: 0x39ff14, emissiveIntensity: 0.85, envMapIntensity: 0.6,
+    });
+    add(new THREE.Mesh(new THREE.BoxGeometry(2.75, 0.08, 3.7), this.subScreenMat)).position.set(0, 0.27, 0);
+    // Scrolling "code" lines — thin emissive bars across the screen. Each gets
+    // its own material so updateActions can ripple their brightness in sequence.
+    this.subCodeMats = [];
+    for (let i = 0; i < 6; i++) {
+      const cm = new THREE.MeshStandardMaterial({
+        color: 0x062a16, metalness: 0, roughness: 0.4,
+        emissive: 0x6effa6, emissiveIntensity: 0.5,
+      });
+      this.subCodeMats.push(cm);
+      const w = 1.4 + Math.random() * 1.0;
+      const bar = add(new THREE.Mesh(new THREE.BoxGeometry(w, 0.06, 0.16), cm));
+      bar.position.set((Math.random() - 0.5) * 0.6, 0.33, -1.55 + i * 0.6);
+    }
+
+    // ── Chip bay: a row of intrusion chips slotted along the near edge ──
+    const chipCores = [0x39ff14, 0x16d6ff, 0xff3df0, 0xffc83a];
+    for (let i = 0; i < 4; i++) {
+      const slotX = -1.05 + i * 0.7;
+      // chip body
+      add(new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.18, 0.62), trim)).position.set(slotX, 0.3, 2.45);
+      // glowing virus core on the chip
+      const coreMat = this.mat(chipCores[i], 0.2, 0.4, { emissive: chipCores[i], emissiveIntensity: 0.9 });
+      add(new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.1, 0.3), coreMat)).position.set(slotX, 0.41, 2.45);
+      // gold contact pins
+      add(new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.06, 0.1), gold)).position.set(slotX, 0.27, 2.78);
+    }
+
+    // ── Emitter prong (front): the intrusion beam launches from its glowing tip ──
+    const prongBase = add(new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.5, 0.9), frameMat));
+    prongBase.position.set(0, 0.2, -2.5);
+    const prong = add(new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.22, 1.7, 10), antennaMat));
+    prong.rotation.x = Math.PI / 2;
+    prong.position.set(0, 0.35, -3.4);
+    this.subEmitterMat = new THREE.MeshStandardMaterial({
+      color: 0x062a16, metalness: 0.2, roughness: 0.3,
+      emissive: 0x39ff14, emissiveIntensity: 1.4, envMapIntensity: 0.8,
+    });
+    // glowing emitter dish at the tip
+    const dish = add(new THREE.Mesh(new THREE.ConeGeometry(0.46, 0.7, 12, 1, true), this.subEmitterMat));
+    dish.rotation.x = -Math.PI / 2;
+    dish.position.set(0, 0.35, -4.25);
+    // emitter core bead
+    add(new THREE.Mesh(new THREE.SphereGeometry(0.2, 12, 12), this.subEmitterMat)).position.set(0, 0.35, -4.0);
+
+    // ── Side grips the hands hold + a blinking status antenna ──
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.85, 2.2), rubber)).position.set(-1.85, -0.05, 0.6);
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.85, 2.2), rubber)).position.set( 1.85, -0.05, 0.6);
+    // ridged grip texture
+    for (let i = 0; i < 5; i++) {
+      add(new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.1, 0.14), trim)).position.set(-1.85, 0.18, -0.1 + i * 0.34);
+      add(new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.1, 0.14), trim)).position.set( 1.85, 0.18, -0.1 + i * 0.34);
+    }
+    // status antenna + blinking tip
+    const ant = add(new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 1.1, 6), antennaMat));
+    ant.position.set(1.3, 0.55, 2.1);
+    this.subAntennaTip = add(new THREE.Mesh(
+      new THREE.SphereGeometry(0.12, 8, 8),
+      new THREE.MeshBasicMaterial({ color: 0x39ff14, toneMapped: false }),
+    ));
+    this.subAntennaTip.position.set(1.3, 1.15, 2.1);
+
+    this.subTime = 0;
+    this.subDeploy = 0;
+
+    // Both hands cup the rugged side grips.
+    this.triggerGrip = { x: 1.4, y: -0.55, z: 0.9 };
+    this.supportGrip = { x: -1.4, y: -0.55, z: 0.9 };
+  }
+
+  // ====================================================================
   // FIRST-PERSON ARMS — gloved hands + forearms holding the weapon
   // ====================================================================
   private addArms() {
@@ -1204,6 +1338,40 @@ export class GunModel {
         this.inspectTime = 0;
       }
     }
+
+    // ── Subverter screen / emitter life ──
+    if (this.currentWeaponType === 'subverter') {
+      this.subTime += delta;
+      if (this.subDeploy > 0) this.subDeploy = Math.max(0, this.subDeploy - delta * 2.2);
+      const t = this.subTime;
+      const deploy = this.subDeploy; // 1 just-fired → 0
+      // Screen breathes + flickers; surges bright white-green on a deploy.
+      if (this.subScreenMat) {
+        const flicker = 0.82 + Math.sin(t * 7.3) * 0.1 + Math.sin(t * 23.0) * 0.05;
+        this.subScreenMat.emissiveIntensity = flicker + deploy * 2.6;
+      }
+      // Emitter dish charges hard while a chip launches, idles dim otherwise.
+      if (this.subEmitterMat) {
+        this.subEmitterMat.emissiveIntensity = 0.8 + Math.sin(t * 9) * 0.25 + deploy * 4.0;
+      }
+      // Code lines ripple in sequence like scrolling output.
+      for (let i = 0; i < this.subCodeMats.length; i++) {
+        const phase = t * 4.5 - i * 0.6;
+        this.subCodeMats[i].emissiveIntensity = 0.35 + Math.max(0, Math.sin(phase)) * 0.9 + deploy * 1.6;
+      }
+      // Status antenna tip blinks (and pops on deploy).
+      if (this.subAntennaTip) {
+        const blink = (Math.sin(t * 5) > 0.4 ? 1 : 0.25) + deploy;
+        this.subAntennaTip.scale.setScalar(0.7 + blink * 0.5);
+      }
+    }
+  }
+
+  /** Subverter: one-shot deploy flourish — surges the screen/emitter glow and
+   *  drives a forward "jab" of the deck (see applyAnimations). */
+  triggerDeploy() {
+    this.subDeploy = 1;
+    this.abilityAnim = Math.max(this.abilityAnim, 0.6); // a small upward flick
   }
 
   /** Begin (or restart) the weapon-inspect animation. No-op mid-reload. */
@@ -1269,6 +1437,8 @@ export class GunModel {
     const abil = Math.sin(this.abilityAnim * Math.PI);
     const dash = Math.sin(this.dashAnim * Math.PI);
     const land = Math.sin(this.landAnim * Math.PI);
+    // Subverter deploy "jab" — thrusts the deck forward as a chip launches.
+    const deployJab = Math.sin(this.subDeploy * Math.PI);
 
     // Strafe lean — cant the weapon toward the movement direction. Suppressed
     // during the sprint pose (which already cants the gun across the body), and
@@ -1324,13 +1494,13 @@ export class GunModel {
       - equip * 0.5 + equipSettle * 0.05 + inspY - wire * 0.28;
     this.group.position.z =
       baseZ + this.recoilOffset.z + SP_Z * sprint + dash * 0.16 + reload * 0.12
-      + equip * 0.10 + inspZ + wire * 0.06;
+      + equip * 0.10 + inspZ + wire * 0.06 - deployJab * 0.16;
 
     this.group.rotation.x =
       (this.swayOffset.rotX + this.walkOffset.rotX) * swayMul
       + this.recoilOffset.rotX + SP_RX * sprint + runRotX
       + this.jumpOffset.rotX - land * 0.18 - reload * 0.42 + equip * 0.55 + inspPitch
-      + wire * 0.62;
+      + wire * 0.62 - deployJab * 0.14;
     this.group.rotation.y =
       this.swayOffset.rotY * swayMul + SP_RY * sprint + leanYaw + inspYaw + equip * 0.26
       + this.recoilOffset.rotY;

@@ -241,7 +241,7 @@ export class AchievementSystem {
         icon: '🔫',
         unlocked: false,
         progress: 0,
-        target: 7,
+        target: 8, // 8 weapons now (incl. the Subverter hacking deck)
         reward: 'Epic Badge',
         rarity: 'epic',
       },

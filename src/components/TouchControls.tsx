@@ -40,7 +40,7 @@ const dispatchMouse = (type: 'mousedown' | 'mouseup', button = 0) => {
 
 const WEAPON_DIGIT: Record<string, string> = {
   pistol: 'Digit1', rifle: 'Digit2', shotgun: 'Digit3', smg: 'Digit4',
-  sniper: 'Digit5', minigun: 'Digit6', launcher: 'Digit7',
+  sniper: 'Digit5', minigun: 'Digit6', launcher: 'Digit7', subverter: 'Digit8',
 };
 
 const JOYSTICK_RADIUS = 46; // px of thumb travel

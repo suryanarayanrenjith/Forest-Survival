@@ -6,7 +6,7 @@
 // convex/playerStats.ts::addWeaponMasteryXp; the level bonus snapshot is
 // computed client-side and refreshed once per weapon switch.
 
-export const WEAPON_IDS = ['pistol', 'rifle', 'shotgun', 'smg', 'sniper', 'minigun', 'launcher'] as const;
+export const WEAPON_IDS = ['pistol', 'rifle', 'shotgun', 'smg', 'sniper', 'minigun', 'launcher', 'subverter'] as const;
 export type WeaponId = typeof WEAPON_IDS[number];
 
 /** XP thresholds — index = level achieved (0 = unranked, 10 = max). */
@@ -99,4 +99,5 @@ export const WEAPON_DISPLAY_NAMES: Record<WeaponId, string> = {
   sniper:   'Sniper',
   minigun:  'Minigun',
   launcher: 'Launcher',
+  subverter: 'Subverter',
 };
