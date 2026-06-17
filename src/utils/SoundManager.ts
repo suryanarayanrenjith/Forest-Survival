@@ -111,6 +111,9 @@ class SoundManager {
     this.sounds.set('hack_overclock', this.createHackOverclock(ctx, sampleRate));
     // No-target error: a short dull "denied" buzz.
     this.sounds.set('hack_fail', this.createHackFail(ctx, sampleRate));
+    // Chip-cartridge reload: a layered mechanical clack + four ascending data
+    // "seat" blips as the intrusion chips slam back into the deck.
+    this.sounds.set('hack_reload', this.createHackReload(ctx, sampleRate));
   }
 
   private createShootSound(ctx: AudioContext, sampleRate: number): AudioBuffer {
@@ -394,6 +397,38 @@ class SoundManager {
       const burst = p > 0.6 ? (Math.random() * 2 - 1) * (p - 0.6) * 2.5 : 0;
       const env = p < 0.85 ? 1 : Math.max(0, (1 - p) / 0.15);
       data[i] = Math.tanh((scream + harsh + burst) * 1.6) * env * 0.45;
+    }
+    return buffer;
+  }
+
+  // Chip-cartridge reload — a heavy cartridge clack up front, then four short
+  // ascending "data seat" blips as each intrusion chip locks back into the deck.
+  // Reads as a deliberate, mechanical reload rather than a gunshot/reload click.
+  private createHackReload(ctx: AudioContext, sampleRate: number): AudioBuffer {
+    const duration = 0.5;
+    const buffer = ctx.createBuffer(1, Math.floor(sampleRate * duration), sampleRate);
+    const data = buffer.getChannelData(0);
+    // Four chip-seat blips at rising pitches, spaced across the reload.
+    const blips = [
+      { at: 0.10, f: 520 }, { at: 0.22, f: 640 },
+      { at: 0.34, f: 780 }, { at: 0.44, f: 940 },
+    ];
+    for (let i = 0; i < buffer.length; i++) {
+      const t = i / sampleRate;
+      // Cartridge clack at the very start: a short filtered noise thunk.
+      const clackEnv = Math.exp(-t * 26);
+      const clack = (Math.random() * 2 - 1) * clackEnv * 0.28;
+      let blip = 0;
+      for (const b of blips) {
+        const dt = t - b.at;
+        if (dt >= 0 && dt < 0.07) {
+          const env = Math.exp(-dt * 55);
+          // Bit-crushed-ish digital seat: tone + a hard click transient.
+          blip += Math.sin(2 * Math.PI * b.f * dt) * env * 0.32;
+          blip += (Math.random() * 2 - 1) * Math.exp(-dt * 160) * 0.12;
+        }
+      }
+      data[i] = Math.tanh((clack + blip) * 1.2) * 0.5;
     }
     return buffer;
   }

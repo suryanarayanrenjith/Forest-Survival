@@ -14,7 +14,7 @@ A 3D first-person survival shooter built entirely through vibe coding — powere
 
 ## 🎮 Gameplay
 
-Survive endless, escalating waves of enemies across **eight distinct biome maps**. Fight 5 enemy types with 7 unlockable weapons, gamble on a Mystery Box between waves, chase per-weapon mastery levels, hunt today's mutator + daily challenge, and push your wave count and score as high as you can.
+Survive endless, escalating waves of enemies across **eight distinct biome maps**. Fight 5 enemy types with 8 unlockable weapons, gamble on a Mystery Box between waves, chase per-weapon mastery levels, hunt today's mutator + daily challenge, and push your wave count and score as high as you can.
 
 ### Objective
 Endless survival — every cleared wave spawns a harder one. Climb the waves, build your score, and stay alive as long as you can.
@@ -32,13 +32,23 @@ Weapons unlock as your score climbs:
 |--------|-------------|------|-----------|
 | Pistol | 0 | 12 | 300ms |
 | Rifle | 100 | 30 | 150ms |
-| Shotgun | 200 | 8 | 800ms |
-| SMG | 300 | 40 | 100ms |
-| Sniper | 500 | 5 | 1200ms |
-| Minigun | 800 | 100 | 50ms |
-| Rocket Launcher | 1200 | 3 | 2000ms |
+| Shotgun | 250 | 8 | 800ms |
+| SMG | 450 | 40 | 165ms |
+| Sniper | 700 | 5 | 1200ms |
+| Minigun | 1100 | 100 | 50ms |
+| Rocket Launcher | 1600 | 3 | 2000ms |
+| **Subverter** | 2200 | 4 chips | 850ms |
 
 Every weapon earns its own **mastery XP** as you kill with it (see **Weapon Mastery** below).
+
+### 🖥️ Subverter — the robot-hacking deck
+
+The eighth loadout slot isn't a gun at all — it's a rugged combat tablet that fires **intrusion chips** into nearby robots. A hacked enemy overclocks, turns on its own kind for a few seconds, then burns out in a green EMP blast that fries everything around it. Get in close (no scope, short range), line up a target and deploy. **Bosses are immune** — their hardened cores reject the chip entirely.
+
+- **Live code-rain display** — the deck's screen is a real animated console (scrolling cyber glyphs over scanlines) that flares white-hot on every deploy and runs a load-scan during a reload. Machined carbon chassis, glowing accent piping and a focusing emitter prong complete the look.
+- **Four physical intrusion chips** ride the deck. **Each fired chip visibly launches off the deck** — it lifts from its slot, accelerates into the emitter and vanishes down the beam — so the bay empties one chip at a time as you hack.
+- **When the bay hits zero, reload slams a fresh chip cartridge in** and the four chips snap back into their slots one-by-one with a layered mechanical "data-seat" sound and a screen wash. Pickups top chips straight back in mid-fight.
+- **Next-level intrusion beam** — deploying fires a jagged, flickering lightning bolt that arcs to the target with branching forks and glowing data-packets streaming down it. The hacked enemy gets a gyroscopic twin-ring containment field, a "violently installed" chip-pop, a body scanline glitch and a green→amber→red burnout tint.
 
 ---
 
@@ -69,12 +79,15 @@ Premium low-poly creatures with chest cores, shoulder plating, knee/elbow pads, 
 | Fast | Blue | 30 | Wave 2 | Quick, agile, dodges bullets |
 | Tank | Green | 150 | Wave 3 | Slow, heavy hitter |
 | **Sniper (Ranged)** | **Cyan** | **40** | **Wave 4** | **Holds a standoff ring, kites to keep its distance, charges a telegraphed energy bolt** |
-| Boss | Violet | 300 | Wave 5 | Tactical, coordinates with others |
+| **Boss (Overlord)** | **Violet** | **300** | **Wave 10** | **Apex summoner — calls in reinforcements, immune to the Subverter** |
 
 > Every type now approaches as a **coordinated squad** — fanning out and surrounding you from multiple sides rather than charging single-file (see **AI Systems** below).
 
 ### Mini-bosses & Boss Phases
-- **Crowned Elite** — every wave divisible by 5 (but not boss waves) spawns a tank wearing a yellow crown with **4× HP** and **3× score payout**, announced with a "New Threat" banner.
+- **Crowned Elite** — wave 5 spawns a tank wearing a yellow crown with **4× HP** and **3× score payout**, announced with a "New Threat" banner. (From wave 10 the 5-wave milestone becomes a full boss instead.)
+- **The Boss era begins at wave 10.** From wave 10 onward, **Overlords** start appearing — a guaranteed one every 5th wave (10, 15, 20…) plus random spawns in between — heralded by an "Overlord — Apex · Summoner" banner.
+- **Boss Summoner** — an Overlord periodically **rears up (arms thrown overhead, rising purple motes) then bursts a pack of minions into the arena**: mostly **Red (Normal)** + **Blue (Fast)** shock troops, with a **rare Sniper (Ranged)**. Each minion portals in with a coloured flash; the boss emits a purple summon shockwave. **Kill the boss to stop the adds.** Enraged (Phase 2) bosses summon bigger packs more often.
+- **Subverter-proof** — bosses are **immune to the Subverter in every way**: they can't be hacked, a hacked minion will never turn on them, and the overclock EMP can't touch them.
 - **Boss Enrage** — full bosses transition into **Phase 2** at 50% HP: **+35% speed, +30% damage**, paired with a damage flash, screen shake, low-pitched roar and centred "BOSS ENRAGED" banner.
 
 ### Environmental Threats
@@ -160,6 +173,7 @@ Every weapon has its own **L0 → L10 mastery** ladder. Kills grant XP scaled by
 - **Per-biome ground materials** — macro earth-tone patches, cavity AO, micro grain, slope→rock blending, normal-mapped micro-relief, and per-map identity layers (sand ripples, snow drift + sparkle, lava cracks, wet swamp puddles)
 - **Full-body player shadow** — a class-specific humanoid silhouette (holding the current weapon) is invisible to the camera but casts a believable shadow on the ground
 - Full cinematic post-processing pipeline: GTAO · Unreal Bloom · ACES filmic tonemap · SMAA · HDR chromatic aberration · multi-tap volumetric god rays · anamorphic lens streaks (Ultra) · film halation · aerial perspective · CAS adaptive sharpening — all in a single custom fragment shader pass
+- **Detailed first-person viewmodels with manual reloads** — every weapon is a fully animated, gloved-hands viewmodel (idle sway, walk/run bob, ADS, strafe lean, jump inertia, recoil and a CS:GO-style inspect). **Reloads are now hand-driven and paced to the real reload time**: the support hand dives to the magazine well to swap a mag and rack the action, **thumbs shells into the shotgun one-by-one** before pumping it, or seats a fresh chip cartridge into the Subverter — so the player always reloads "manually" within the reload window
 - **Ragdoll death physics** — enemies crumple with physical joint constraints on death (toggleable in Settings)
 - Cinematic direction-aware menu transitions — pure CSS compositor animation, zero JS per-frame cost
 - Blood splatter, muzzle flash and impact effects
@@ -240,7 +254,7 @@ Plus **Killstreak Airdrops** delivered straight to you (see Killstreak Airdrops 
 | C | Crouch |
 | Q | Dash / Active Ability |
 | R | Reload |
-| 1–7 / Scroll | Switch weapons |
+| 1–8 / Scroll | Switch weapons |
 | E | Use held power-up |
 | F | Inspect weapon (CS:GO-style — turns the gun in to show it off) |
 | M | Toggle expanded tactical map |

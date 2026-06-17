@@ -76,6 +76,52 @@ export class GunModel {
   private subAntennaTip: THREE.Mesh | null = null;
   private subTime = 0;
   private subDeploy = 0;
+  // Live, animated screen + emitter-core materials carry a canvas "code-rain"
+  // texture that scrolls each frame for a believable hacking-deck display.
+  private subScreenTex: THREE.CanvasTexture | null = null;
+  private subScreenCtx: CanvasRenderingContext2D | null = null;
+  private subScreenScroll = 0;
+  // Per-chip rig: each intrusion chip can eject (fired → flies into the emitter
+  // and vanishes) and re-insert (reload → slams back into its slot). `offset`
+  // 0 = fully seated, 1 = gone; `target` is what it eases toward; `flash` is a
+  // transient core flare on eject/seat. `subLoaded` mirrors the live ammo so
+  // updateSubverterAmmo only triggers a transition when the count actually moves.
+  private subChips: {
+    group: THREE.Group;
+    core: THREE.MeshStandardMaterial;
+    glow: THREE.Mesh;
+    glowMat: THREE.MeshBasicMaterial;
+    baseY: number;
+    baseZ: number;
+    offset: number;
+    target: number;
+    flash: number;
+  }[] = [];
+  private subLoaded = 0;
+  private subReloadGlow = 0; // 0..1 reload "scanning" wash over the deck
+  private subEmitterCharge = 0; // 0..1 emitter spin-up while a chip seats into it
+  // After a reload completes the chips are visually full, but App may take a
+  // frame or two to push the live ammo back to max. This grace window stops
+  // updateSubverterAmmo from instantly re-ejecting the freshly-loaded chips
+  // during that gap (it only allows the count to RISE while grace is active).
+  private subReloadGrace = 0;
+
+  // ── Animated first-person hand groups ──
+  // Captured so the reload routine can drive a believable manual reload: the
+  // support hand drops to the magazine well, swaps the mag (or thumbs shells
+  // into a shotgun, or a chip cartridge into the deck), then racks the action.
+  private triggerHandGroup: THREE.Group | null = null;
+  private supportHandGroup: THREE.Group | null = null;
+  private triggerHandRest = { x: 0, y: 0, z: 0, rx: 0, ry: 0 };
+  private supportHandRest = { x: 0, y: 0, z: 0, rx: 0, ry: 0 };
+
+  // Reload pacing — the whole animation now fills the *actual* reload time so
+  // the hands work the weapon for the entire window instead of snapping done in
+  // ~0.5s. reloadDuration is the wall-clock length (seconds) handed in by the
+  // caller; reloadShells is how many discrete "load" beats a shell-fed reload
+  // (shotgun) plays across that window.
+  private reloadDuration = 0.5;
+  private reloadShells = 8;
 
   // Phantom (stealth) cloak state — fades the whole held weapon while active.
   private phantomActive = false;
@@ -242,6 +288,21 @@ export class GunModel {
     this.subCodeMats = [];
     this.subAntennaTip = null;
     this.subDeploy = 0;
+    // Dispose the per-build canvas screen texture (the material referencing it
+    // is freed by the traverse dispose loop above, but disposing a material
+    // never frees its texture, so do it explicitly). Chip materials are also
+    // freed by that loop — here we only drop the references.
+    this.subScreenTex?.dispose();
+    this.subScreenTex = null;
+    this.subScreenCtx = null;
+    this.subChips = [];
+    this.subLoaded = 0;
+    this.subReloadGlow = 0;
+    this.subEmitterCharge = 0;
+    this.subReloadGrace = 0;
+    // Hand-group refs belong to the model we just cleared.
+    this.triggerHandGroup = null;
+    this.supportHandGroup = null;
     this.slideRest = -1.5;
     this.boltRest = 0.5;
     this.magRestY = -1;
@@ -886,11 +947,15 @@ export class GunModel {
   // each chip deploy. Not a gun — there's no barrel or magazine.
   // ====================================================================
   private createSubverter() {
-    const frameMat   = this.mat(0x1b1e24, 0.78, 0.34);              // dark composite chassis
-    const rubber     = this.mat(0x0c0d10, 0.2, 0.9, { envMapIntensity: 0.4 }); // grip armor
-    const trim       = this.mat(0x2a2f3a, 0.85, 0.3);              // bezel / rails
-    const gold        = this.mat(0xc8a23a, 0.9, 0.28, { emissive: 0x3a2c08, emissiveIntensity: 0.3 }); // chip contacts
+    const frameMat   = this.mat(0x14171d, 0.7, 0.42, { envMapIntensity: 1.1 }); // dark composite chassis
+    const frameLit   = this.mat(0x20242d, 0.82, 0.32);             // raised brushed panels
+    const rubber     = this.mat(0x0a0b0e, 0.18, 0.92, { envMapIntensity: 0.35 }); // grip armor
+    const trim       = this.mat(0x2a2f3a, 0.88, 0.26);             // bezel / rails
+    const carbon     = this.mat(0x101319, 0.55, 0.55, { envMapIntensity: 0.7 }); // carbon underbelly
+    const gold       = this.mat(0xd8b24a, 0.95, 0.22, { emissive: 0x4a3608, emissiveIntensity: 0.4 }); // chip contacts
     const antennaMat = this.mat(0x14161b, 0.85, 0.35);
+    // Cyber accent — thin glowing piping that traces the chassis seams.
+    const accentMat  = this.mat(0x062a16, 0.3, 0.4, { emissive: 0x18e0a0, emissiveIntensity: 1.1 });
 
     // The whole deck is tilted up so the player sees the lit screen. Built into
     // a child group so the tilt is baked in independent of the animation pose.
@@ -902,8 +967,18 @@ export class GunModel {
       m.castShadow = true; m.receiveShadow = true; parent.add(m); return m;
     };
 
-    // ── Chassis: a chunky slab with a raised bezel ──
+    // ── Chassis: a chunky slab with a raised bezel + machined detail ──
     add(new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.42, 4.7), frameMat));
+    // Carbon-fibre underbelly + bevelled front lip read as a milled chassis.
+    add(new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.2, 4.5), carbon)).position.set(0, -0.22, 0);
+    add(new THREE.Mesh(new THREE.BoxGeometry(3.0, 0.34, 0.5), frameLit)).position.set(0, 0.02, -2.3);
+    // Glowing accent piping down both long edges of the chassis.
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.07, 4.2), accentMat)).position.set(-1.62, 0.16, 0);
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.07, 4.2), accentMat)).position.set( 1.62, 0.16, 0);
+    // Heat-vent louvres milled into the rear deck.
+    for (let i = 0; i < 5; i++) {
+      add(new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.06, 0.1), trim)).position.set(0, 0.24, 1.35 + i * 0.16);
+    }
     // Rubberized corner bumpers (rugged "field" look)
     for (const cx of [-1.6, 1.6]) {
       for (const cz of [-2.2, 2.2]) {
@@ -916,55 +991,114 @@ export class GunModel {
     add(new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.16, 4.1), trim)).position.set(-1.5, 0.26, 0);
     add(new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.16, 4.1), trim)).position.set( 1.5, 0.26, 0);
 
-    // ── Screen: glowing cyber-green display (animated emissive) ──
+    // ── Screen: a live canvas "code-rain" display (animated map + emissive) ──
+    // A scrolling matrix of glyphs is rendered to a canvas texture and used as
+    // both the colour and emissive map, so the screen reads as a real running
+    // intrusion console rather than a flat green slab. The scroll + flicker are
+    // driven per-frame in updateActions.
+    const { tex, ctx } = this.makeScreenTexture();
+    this.subScreenTex = tex;
+    this.subScreenCtx = ctx;
     this.subScreenMat = new THREE.MeshStandardMaterial({
-      color: 0x041b10, metalness: 0.1, roughness: 0.35,
-      emissive: 0x39ff14, emissiveIntensity: 0.85, envMapIntensity: 0.6,
+      color: 0x0a1f14, map: tex, emissiveMap: tex,
+      metalness: 0.1, roughness: 0.3,
+      emissive: 0xffffff, emissiveIntensity: 1.05, envMapIntensity: 0.5,
     });
-    add(new THREE.Mesh(new THREE.BoxGeometry(2.75, 0.08, 3.7), this.subScreenMat)).position.set(0, 0.27, 0);
-    // Scrolling "code" lines — thin emissive bars across the screen. Each gets
-    // its own material so updateActions can ripple their brightness in sequence.
+    const screen = add(new THREE.Mesh(new THREE.BoxGeometry(2.75, 0.08, 3.7), this.subScreenMat));
+    screen.position.set(0, 0.27, 0);
+    // The cube-map UVs put the canvas on every face; only the top face is seen,
+    // which is exactly what we want — the display faces the player.
+    // A faint glass sheen plate floats just above the display.
+    add(new THREE.Mesh(
+      new THREE.BoxGeometry(2.78, 0.02, 3.74),
+      this.glassMat(0x183226),
+    )).position.set(0, 0.33, 0);
+    // Thin emissive "code" rails kept for the rippling sequencer light at the
+    // screen edges (subtle now that the canvas carries the detail).
     this.subCodeMats = [];
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 4; i++) {
       const cm = new THREE.MeshStandardMaterial({
         color: 0x062a16, metalness: 0, roughness: 0.4,
         emissive: 0x6effa6, emissiveIntensity: 0.5,
       });
       this.subCodeMats.push(cm);
-      const w = 1.4 + Math.random() * 1.0;
-      const bar = add(new THREE.Mesh(new THREE.BoxGeometry(w, 0.06, 0.16), cm));
-      bar.position.set((Math.random() - 0.5) * 0.6, 0.33, -1.55 + i * 0.6);
+      const bar = add(new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.07, 3.4), cm));
+      bar.position.set(i < 2 ? -1.32 : 1.32, 0.32, 0);
+      // two short cross rails top/bottom give the sequencer a frame
+      bar.scale.z = (i % 2 === 0) ? 1 : 0.96;
     }
 
-    // ── Chip bay: a row of intrusion chips slotted along the near edge ──
+    // ── Chip bay: a row of FOUR intrusion chips slotted along the near edge ──
+    // Each chip is its own group so it can eject (fired) and re-insert (reload)
+    // independently — tracked in this.subChips and animated in updateActions.
     const chipCores = [0x39ff14, 0x16d6ff, 0xff3df0, 0xffc83a];
+    this.subChips = [];
     for (let i = 0; i < 4; i++) {
       const slotX = -1.05 + i * 0.7;
-      // chip body
-      add(new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.18, 0.62), trim)).position.set(slotX, 0.3, 2.45);
-      // glowing virus core on the chip
-      const coreMat = this.mat(chipCores[i], 0.2, 0.4, { emissive: chipCores[i], emissiveIntensity: 0.9 });
-      add(new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.1, 0.3), coreMat)).position.set(slotX, 0.41, 2.45);
-      // gold contact pins
-      add(new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.06, 0.1), gold)).position.set(slotX, 0.27, 2.78);
+      const baseY = 0.34, baseZ = 2.45;
+      // A recessed dark socket stays in the deck so an empty slot reads as empty.
+      add(new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.1, 0.68), carbon)).position.set(slotX, 0.22, baseZ);
+
+      const chip = new THREE.Group();
+      chip.position.set(slotX, baseY, baseZ);
+      deck.add(chip);
+      const cadd = (m: THREE.Mesh): THREE.Mesh => { m.castShadow = true; chip.add(m); return m; };
+      // chip body (ceramic carrier)
+      cadd(new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.18, 0.62), trim));
+      // glowing virus core on the chip (per-chip animated material)
+      const coreMat = new THREE.MeshStandardMaterial({
+        color: chipCores[i], metalness: 0.2, roughness: 0.35,
+        emissive: chipCores[i], emissiveIntensity: 1.1,
+      });
+      cadd(new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.1, 0.34), coreMat)).position.set(0, 0.11, 0);
+      // etched circuit cross on the core
+      cadd(new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.04, 0.05), gold)).position.set(0, 0.17, 0);
+      cadd(new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.04, 0.4), gold)).position.set(0, 0.17, 0);
+      // gold contact pins along the leading edge
+      cadd(new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.06, 0.1), gold)).position.set(0, -0.08, 0.33);
+      // soft additive halo that flares when the chip is fired or seated
+      const glowMat = new THREE.MeshBasicMaterial({
+        color: chipCores[i], transparent: true, opacity: 0.0,
+        toneMapped: false, depthWrite: false, blending: THREE.AdditiveBlending,
+      });
+      const glow = new THREE.Mesh(new THREE.SphereGeometry(0.34, 12, 10), glowMat);
+      glow.position.set(0, 0.12, 0);
+      chip.add(glow);
+
+      this.subChips.push({
+        group: chip, core: coreMat, glow, glowMat,
+        baseY, baseZ, offset: 0, target: 0, flash: 0,
+      });
     }
+    this.subLoaded = this.subChips.length; // built fully loaded
 
     // ── Emitter prong (front): the intrusion beam launches from its glowing tip ──
-    const prongBase = add(new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.5, 0.9), frameMat));
+    const prongBase = add(new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.5, 0.9), frameLit));
     prongBase.position.set(0, 0.2, -2.5);
-    const prong = add(new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.22, 1.7, 10), antennaMat));
+    // Twin focusing fins flanking the prong (gives the muzzle some read).
+    for (const fx of [-0.34, 0.34]) {
+      const fin = add(new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.5, 1.3), trim));
+      fin.position.set(fx, 0.4, -3.3);
+    }
+    const prong = add(new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.22, 1.7, 12), antennaMat));
     prong.rotation.x = Math.PI / 2;
     prong.position.set(0, 0.35, -3.4);
+    // glowing focusing rings up the prong
+    for (let i = 0; i < 3; i++) {
+      const r = add(new THREE.Mesh(new THREE.TorusGeometry(0.2, 0.03, 6, 14), accentMat));
+      r.rotation.x = Math.PI / 2;
+      r.position.set(0, 0.35, -3.0 - i * 0.42);
+    }
     this.subEmitterMat = new THREE.MeshStandardMaterial({
       color: 0x062a16, metalness: 0.2, roughness: 0.3,
       emissive: 0x39ff14, emissiveIntensity: 1.4, envMapIntensity: 0.8,
     });
     // glowing emitter dish at the tip
-    const dish = add(new THREE.Mesh(new THREE.ConeGeometry(0.46, 0.7, 12, 1, true), this.subEmitterMat));
+    const dish = add(new THREE.Mesh(new THREE.ConeGeometry(0.46, 0.7, 14, 1, true), this.subEmitterMat));
     dish.rotation.x = -Math.PI / 2;
     dish.position.set(0, 0.35, -4.25);
     // emitter core bead
-    add(new THREE.Mesh(new THREE.SphereGeometry(0.2, 12, 12), this.subEmitterMat)).position.set(0, 0.35, -4.0);
+    add(new THREE.Mesh(new THREE.SphereGeometry(0.2, 14, 14), this.subEmitterMat)).position.set(0, 0.35, -4.0);
 
     // ── Side grips the hands hold + a blinking status antenna ──
     add(new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.85, 2.2), rubber)).position.set(-1.85, -0.05, 0.6);
@@ -985,10 +1119,82 @@ export class GunModel {
 
     this.subTime = 0;
     this.subDeploy = 0;
+    this.subReloadGlow = 0;
+    this.subEmitterCharge = 0;
 
     // Both hands cup the rugged side grips.
     this.triggerGrip = { x: 1.4, y: -0.55, z: 0.9 };
     this.supportGrip = { x: -1.4, y: -0.55, z: 0.9 };
+  }
+
+  /**
+   * Builds the Subverter's live screen as a canvas texture: a Matrix-style
+   * "code rain" of cyber glyphs over scanlines, redrawn/scrolled each frame in
+   * updateActions. Returns the texture + its 2D context so the animator can
+   * repaint it. Used as both the colour map and the emissive map.
+   */
+  private makeScreenTexture(): { tex: THREE.CanvasTexture; ctx: CanvasRenderingContext2D } {
+    const W = 128, H = 160;
+    const canvas = document.createElement('canvas');
+    canvas.width = W; canvas.height = H;
+    const ctx = canvas.getContext('2d')!;
+    ctx.fillStyle = '#02160c';
+    ctx.fillRect(0, 0, W, H);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.minFilter = THREE.LinearFilter;
+    tex.magFilter = THREE.NearestFilter; // crisp "pixel font" look
+    return { tex, ctx };
+  }
+
+  /** Repaint the Subverter screen's code-rain for the current frame. `surge`
+   *  (0..1) floods the display white-hot on a deploy; `scan` washes it for a
+   *  reload. Cheap: a 128×160 canvas redrawn with a few dozen glyphs. */
+  private paintScreen(surge: number, scan: number) {
+    const ctx = this.subScreenCtx;
+    if (!ctx || !this.subScreenTex) return;
+    const W = 128, H = 160;
+    // Trailing fade — overdraw the previous frame slightly so glyphs leave
+    // streaks (the classic falling-code trail).
+    ctx.fillStyle = 'rgba(2, 18, 10, 0.34)';
+    ctx.fillRect(0, 0, W, H);
+    const cols = 16;
+    const cw = W / cols;
+    this.subScreenScroll = (this.subScreenScroll + 0.6 + surge * 4) % H;
+    ctx.font = '11px monospace';
+    ctx.textBaseline = 'top';
+    for (let c = 0; c < cols; c++) {
+      // each column falls at its own phase
+      const phase = (this.subScreenScroll * (0.6 + (c % 5) * 0.16) + c * 37) % H;
+      const rows = 4;
+      for (let r = 0; r < rows; r++) {
+        const y = (phase + r * 13) % H;
+        const head = r === 0;
+        const ch = String.fromCharCode(0x30 + ((Math.random() * 42) | 0)); // digits/symbols
+        const g = head ? 255 : 90 + ((Math.random() * 120) | 0);
+        ctx.fillStyle = head
+          ? `rgb(${180 + surge * 75},255,${200 + surge * 55})`
+          : `rgba(40,${g},${90 + (g >> 1)},0.9)`;
+        ctx.fillText(ch, c * cw + 1, y);
+      }
+    }
+    // Scanline shading
+    ctx.fillStyle = 'rgba(0,0,0,0.18)';
+    for (let y = 0; y < H; y += 3) ctx.fillRect(0, y, W, 1);
+    // Reload wash — a bright bar sweeping the screen while chips reload.
+    if (scan > 0.001) {
+      const by = ((1 - scan) * H * 1.4) % H;
+      ctx.fillStyle = `rgba(120,255,200,${0.35 * scan})`;
+      ctx.fillRect(0, by - 6, W, 12);
+    }
+    // Surge flash — flood the whole display on a deploy.
+    if (surge > 0.001) {
+      ctx.fillStyle = `rgba(200,255,210,${0.5 * surge})`;
+      ctx.fillRect(0, 0, W, H);
+    }
+    this.subScreenTex.needsUpdate = true;
   }
 
   // ====================================================================
@@ -999,26 +1205,27 @@ export class GunModel {
     const glove = this.mat(0x15171b, 0.28, 0.55, { envMapIntensity: 1.0 });
     const cuff = this.mat(0x1d2024, 0.18, 0.68, { envMapIntensity: 0.6 });
 
+    // Each arm is wrapped in its own group (forearm + elbow + cuff + fist) so the
+    // reload routine can drive the WHOLE arm — hand AND forearm together — toward
+    // the magazine well and back. The wrapper sits at the origin, so the reload
+    // pose is applied as a small delta from rest (0,0,0).
+    const zeroRest = () => ({ x: 0, y: 0, z: 0, rx: 0, ry: 0 });
+
     // Trigger (right) hand — always present
-    this.buildArm(this.triggerGrip, 1, sleeve, glove, cuff);
+    this.triggerHandGroup = this.buildArm(this.triggerGrip, 1, sleeve, glove, cuff);
+    this.triggerHandRest = zeroRest();
     // Support (left) hand — most weapons; pistols/launchers may differ
     if (this.supportGrip) {
-      this.buildArm(this.supportGrip, -1, sleeve, glove, cuff);
+      this.supportHandGroup = this.buildArm(this.supportGrip, -1, sleeve, glove, cuff);
+      this.supportHandRest = zeroRest();
     }
   }
 
-  /** Arm parts cast + receive shadows so they ground into the lit scene. */
-  private armPart(m: THREE.Mesh): THREE.Mesh {
-    m.castShadow = true;
-    m.receiveShadow = true;
-    this.group.add(m);
-    return m;
-  }
-
   /**
-   * Builds one arm: a tapered forearm running from an off-screen elbow to
-   * the wrist, a rolled cuff, and a detailed gloved fist gripping the weapon.
-   * `side` is +1 for the right arm, -1 for the left.
+   * Builds one arm INSIDE its own wrapper group: a tapered forearm running from
+   * an off-screen elbow to the wrist, a rolled cuff, and a detailed gloved fist
+   * gripping the weapon. `side` is +1 for the right arm, -1 for the left. The
+   * wrapper is returned (and added to the model) so it can be animated as a unit.
    */
   private buildArm(
     hand: { x: number; y: number; z: number },
@@ -1026,7 +1233,11 @@ export class GunModel {
     sleeve: THREE.Material,
     glove: THREE.Material,
     cuff: THREE.Material,
-  ) {
+  ): THREE.Group {
+    const armGroup = new THREE.Group();
+    const part = (m: THREE.Mesh): THREE.Mesh => {
+      m.castShadow = true; m.receiveShadow = true; armGroup.add(m); return m;
+    };
     const wrist = new THREE.Vector3(hand.x, hand.y + 0.2, hand.z + 0.55);
     // Elbow sits below, behind and outboard of the hand (off-screen).
     const anchor = new THREE.Vector3(hand.x + 1.7 * side, hand.y - 3.5, hand.z + 3.8);
@@ -1045,18 +1256,18 @@ export class GunModel {
       (wrist.y + anchor.y) / 2,
       (wrist.z + anchor.z) / 2,
     );
-    this.armPart(forearm);
+    part(forearm);
 
     // Elbow cap
     const elbow = new THREE.Mesh(new THREE.SphereGeometry(0.66, 12, 10), sleeve);
     elbow.position.copy(anchor);
-    this.armPart(elbow);
+    part(elbow);
 
     // Rolled cuff at the wrist
     const cuffMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.5, 0.62, 14), cuff);
     cuffMesh.quaternion.copy(quat);
     cuffMesh.position.copy(wrist);
-    this.armPart(cuffMesh);
+    part(cuffMesh);
 
     // Gloved fist — back of hand, knuckles, curled fingers, thumb
     const handGroup = new THREE.Group();
@@ -1092,7 +1303,9 @@ export class GunModel {
         o.receiveShadow = true;
       }
     });
-    this.group.add(handGroup);
+    armGroup.add(handGroup);
+    this.group.add(armGroup);
+    return armGroup;
   }
 
   /**
@@ -1137,13 +1350,14 @@ export class GunModel {
       }
     }
 
-    // Prominent reload animation — the whole weapon dips and rolls toward
-    // the player, the magazine visibly drops out and a fresh one is slammed
-    // home, then the slide/bolt is racked. Reads as a deliberate, weighty
-    // action on every weapon.
+    // ── RELOAD — now paced to fill the FULL reload window (handed in via
+    // triggerReload) so the hands work the weapon for the entire time instead of
+    // snapping done in ~0.5s. Three flavours, each with a believable manual hand
+    // chore: shell-fed (shotgun, thumbed in one-by-one), chip-cartridge
+    // (subverter) and magazine (every other gun).
     if (this.isReloading) {
-      this.reloadAnimation += delta * 2.0;
-      const ra = this.reloadAnimation;
+      this.reloadAnimation += delta / this.reloadDuration;
+      const ra = Math.min(1, this.reloadAnimation);
 
       // Whole-gun dip envelope — ease in, hold, ease out.
       this.reloadDip =
@@ -1151,62 +1365,192 @@ export class GunModel {
         ra > 0.84 ? Math.max(0, (1 - ra) / 0.16) :
         1;
 
-      // Stage 1: Magazine drops out (0.0 - 0.24)
-      if (ra < 0.24) {
-        const p = ra / 0.24;
-        if (this.magazine) {
-          this.magazine.position.y = this.magRestY - p * 4.6;
-          this.magazine.rotation.x = p * 1.9;
-          this.magazine.rotation.z = p * 0.8;
-        }
-        if (this.slide) this.slide.position.z = this.slideRest + p * 0.6;
-        this.reloadRotZ = p * 0.6;
-      }
-      // Stage 2: Magazine away, hand reaches for a fresh one (0.24 - 0.46)
-      else if (ra < 0.46) {
-        if (this.magazine) this.magazine.visible = false;
-        this.reloadRotZ = 0.6;
-      }
-      // Stage 3: Fresh magazine slammed in (0.46 - 0.74)
-      else if (ra < 0.74) {
-        const p = (ra - 0.46) / 0.28;
-        if (this.magazine) {
-          this.magazine.visible = true;
-          this.magazine.position.y = this.magRestY - 4.6 * (1 - p);
-          this.magazine.rotation.x = (1 - p) * 1.3;
-          this.magazine.rotation.z = 0;
-        }
-        this.reloadRotZ = 0.6;
-      }
-      // Stage 4: Seat the mag, rack the slide/bolt, recover (0.74 - 1.0)
-      else if (ra < 1.0) {
-        const p = (ra - 0.74) / 0.26;
-        if (this.magazine) {
-          this.magazine.position.y = this.magRestY;
-          this.magazine.rotation.x = 0;
-        }
-        if (this.slide) this.slide.position.z = this.slideRest + (1 - p) * 0.6;
-        if (this.bolt) this.bolt.position.z = this.boltRest + (1 - p) * 1.3;
-        this.reloadRotZ = (1 - p) * 0.6;
-      }
-      // Complete
-      else {
-        this.isReloading = false;
-        this.reloadAnimation = 0;
-        this.reloadRotZ = 0;
-        this.reloadDip = 0;
-        if (this.magazine) {
-          this.magazine.position.y = this.magRestY;
-          this.magazine.rotation.x = 0;
-          this.magazine.rotation.z = 0;
-          this.magazine.visible = true;
-        }
-        if (this.slide) this.slide.position.z = this.slideRest;
-        if (this.bolt) this.bolt.position.z = this.boltRest;
-      }
+      if (this.currentWeaponType === 'subverter') this.animateSubverterReload(ra);
+      else if (this.currentWeaponType === 'shotgun') this.animateShellReload(ra);
+      else this.animateMagReload(ra);
+
+      // The trigger hand keeps the firing grip through the whole reload.
+      this.setArmPose(this.triggerHandGroup, this.triggerHandRest, 0, -this.reloadDip * 0.06, 0, 0, 0);
+
+      if (this.reloadAnimation >= 1.0) this.finishReload();
     } else {
       this.reloadRotZ *= 0.9;
       this.reloadDip *= 0.85;
+      // Ease the arms back to their natural grip pose between reloads.
+      this.restHands(delta);
+    }
+  }
+
+  /** Smooth 0→1 ramp helper (Hermite). */
+  private ss(v: number): number { return THREE.MathUtils.smoothstep(THREE.MathUtils.clamp(v, 0, 1), 0, 1); }
+
+  /** Snap an arm wrapper to its rest pose plus a delta (units are model space). */
+  private setArmPose(
+    g: THREE.Group | null,
+    rest: { x: number; y: number; z: number; rx: number; ry: number },
+    dx: number, dy: number, dz: number, drx: number, dry: number,
+  ) {
+    if (!g) return;
+    g.position.set(rest.x + dx, rest.y + dy, rest.z + dz);
+    g.rotation.set(rest.rx + drx, rest.ry + dry, 0);
+  }
+
+  /** Ease both arms back toward their rest grip pose. */
+  private restHands(delta: number) {
+    const k = Math.min(1, delta * 12);
+    const ease = (g: THREE.Group | null, r: { x: number; y: number; z: number; rx: number; ry: number }) => {
+      if (!g) return;
+      g.position.x += (r.x - g.position.x) * k;
+      g.position.y += (r.y - g.position.y) * k;
+      g.position.z += (r.z - g.position.z) * k;
+      g.rotation.x += (r.rx - g.rotation.x) * k;
+      g.rotation.y += (r.ry - g.rotation.y) * k;
+    };
+    ease(this.supportHandGroup, this.supportHandRest);
+    ease(this.triggerHandGroup, this.triggerHandRest);
+  }
+
+  /** Magazine reload: drop the empty mag, the support hand dives for a fresh one
+   *  and slams it home, then racks the slide/bolt. */
+  private animateMagReload(ra: number) {
+    // Stage 1: Magazine drops out (0.0 - 0.24)
+    if (ra < 0.24) {
+      const p = ra / 0.24;
+      if (this.magazine) {
+        this.magazine.position.y = this.magRestY - p * 4.6;
+        this.magazine.rotation.x = p * 1.9;
+        this.magazine.rotation.z = p * 0.8;
+      }
+      if (this.slide) this.slide.position.z = this.slideRest + p * 0.6;
+      this.reloadRotZ = p * 0.6;
+    }
+    // Stage 2: Magazine away, hand reaches for a fresh one (0.24 - 0.46)
+    else if (ra < 0.46) {
+      if (this.magazine) this.magazine.visible = false;
+      this.reloadRotZ = 0.6;
+    }
+    // Stage 3: Fresh magazine slammed in (0.46 - 0.74)
+    else if (ra < 0.74) {
+      const p = (ra - 0.46) / 0.28;
+      if (this.magazine) {
+        this.magazine.visible = true;
+        this.magazine.position.y = this.magRestY - 4.6 * (1 - p);
+        this.magazine.rotation.x = (1 - p) * 1.3;
+        this.magazine.rotation.z = 0;
+      }
+      this.reloadRotZ = 0.6;
+    }
+    // Stage 4: Seat the mag, rack the slide/bolt, recover (0.74 - 1.0)
+    else {
+      const p = (ra - 0.74) / 0.26;
+      if (this.magazine) {
+        this.magazine.position.y = this.magRestY;
+        this.magazine.rotation.x = 0;
+      }
+      if (this.slide) this.slide.position.z = this.slideRest + (1 - p) * 0.6;
+      if (this.bolt) this.bolt.position.z = this.boltRest + (1 - p) * 1.3;
+      this.reloadRotZ = (1 - p) * 0.6;
+    }
+
+    // Support hand: dive down to the mag well (carrying a fresh mag), hold while
+    // it seats, then snap back up to the support grip with a "slap" tap.
+    const reach = ra < 0.22 ? this.ss(ra / 0.22)
+      : ra < 0.72 ? 1
+      : 1 - this.ss((ra - 0.72) / 0.28);
+    const slap = (ra > 0.7 && ra < 0.86) ? Math.sin(((ra - 0.7) / 0.16) * Math.PI) * 0.5 : 0;
+    this.setArmPose(
+      this.supportHandGroup, this.supportHandRest,
+      reach * 0.3,
+      -reach * 2.7 + slap * 0.7,
+      reach * 0.8,
+      reach * 0.65,
+      -reach * 0.3,
+    );
+  }
+
+  /** Shotgun reload: thumb shells into the loading port one-by-one across the
+   *  window, then rack the pump at the very end. The support hand cycles between
+   *  the shell carrier and the port for each round. */
+  private animateShellReload(ra: number) {
+    const loadEnd = 0.82;
+    if (ra < loadEnd) {
+      const beats = this.reloadShells;
+      const phase = (ra / loadEnd) * beats;     // which shell we're on (fractional)
+      const local = phase - Math.floor(phase);   // 0..1 within this shell's load
+      // The hand dips to the carrier (grab) then up to the port (push) each beat.
+      const reach = Math.sin(local * Math.PI);   // one dip+return per shell
+      this.setArmPose(
+        this.supportHandGroup, this.supportHandRest,
+        -reach * 0.5,
+        -reach * 1.9,
+        reach * 1.4,
+        reach * 0.6,
+        reach * 0.4,
+      );
+      // The shell carrier (mapped to `magazine`) nudges as each round is pushed.
+      if (this.magazine) this.magazine.position.y = this.magRestY - Math.sin(local * Math.PI) * 0.25;
+      this.reloadRotZ = 0.32;
+      if (this.slide) this.slide.position.z = this.slideRest;
+    } else {
+      // Final pump rack — yank the pump back and slam it forward.
+      const p = (ra - loadEnd) / (1 - loadEnd);
+      const rack = Math.sin(p * Math.PI);
+      if (this.slide) this.slide.position.z = this.slideRest + rack * 1.5;
+      this.setArmPose(
+        this.supportHandGroup, this.supportHandRest,
+        0, -rack * 0.5, rack * 1.5, 0, 0,
+      );
+      this.reloadRotZ = 0.32 * (1 - p);
+      if (this.magazine) this.magazine.position.y = this.magRestY;
+    }
+  }
+
+  /** Subverter reload: a fresh chip cartridge is seated and the four intrusion
+   *  chips slam back into their slots one-by-one while the screen runs a load
+   *  scan. The support hand swaps the cartridge at the rear of the deck. */
+  private animateSubverterReload(ra: number) {
+    this.subReloadGlow = 1;
+    this.reloadRotZ = Math.sin(ra * Math.PI) * 0.28;
+    const n = this.subChips.length;
+    for (let i = 0; i < n; i++) {
+      const c = this.subChips[i];
+      // Each chip seats during its slice of the [0.28, 0.96] load window.
+      const start = 0.28 + (i / n) * 0.62;
+      if (ra >= start) {
+        if (c.target !== 0) { c.target = 0; c.flash = 1; c.group.visible = true; }
+      } else {
+        c.target = 1; c.offset = 1; c.group.visible = false;
+      }
+    }
+    // Support hand reaches to the rear chip bay to seat the cartridge, then back.
+    const reach = ra < 0.2 ? this.ss(ra / 0.2)
+      : ra < 0.85 ? 1
+      : 1 - this.ss((ra - 0.85) / 0.15);
+    this.setArmPose(
+      this.supportHandGroup, this.supportHandRest,
+      0, -reach * 1.9, reach * 1.2, reach * 0.55, 0,
+    );
+  }
+
+  /** Reset every reloadable part to rest and end the reload. */
+  private finishReload() {
+    this.isReloading = false;
+    this.reloadAnimation = 0;
+    this.reloadRotZ = 0;
+    this.reloadDip = 0;
+    if (this.magazine) {
+      this.magazine.position.y = this.magRestY;
+      this.magazine.rotation.x = 0;
+      this.magazine.rotation.z = 0;
+      this.magazine.visible = true;
+    }
+    if (this.slide) this.slide.position.z = this.slideRest;
+    if (this.bolt) this.bolt.position.z = this.boltRest;
+    if (this.currentWeaponType === 'subverter') {
+      // All chips fully seated; the live count is back to the deck capacity.
+      for (const c of this.subChips) { c.target = 0; c.group.visible = true; }
+      this.subLoaded = this.subChips.length;
+      this.subReloadGrace = 0.3; // protect the fresh chips while App catches up
     }
   }
 
@@ -1339,24 +1683,35 @@ export class GunModel {
       }
     }
 
-    // ── Subverter screen / emitter life ──
+    // ── Subverter screen / emitter / chip life ──
     if (this.currentWeaponType === 'subverter') {
       this.subTime += delta;
       if (this.subDeploy > 0) this.subDeploy = Math.max(0, this.subDeploy - delta * 2.2);
+      if (!this.isReloading && this.subReloadGlow > 0) {
+        this.subReloadGlow = Math.max(0, this.subReloadGlow - delta * 1.6);
+      }
+      if (this.subReloadGrace > 0) this.subReloadGrace = Math.max(0, this.subReloadGrace - delta);
       const t = this.subTime;
       const deploy = this.subDeploy; // 1 just-fired → 0
-      // Screen breathes + flickers; surges bright white-green on a deploy.
+
+      // Repaint the live "code-rain" display (surges on deploy, washes on reload).
+      this.paintScreen(deploy, this.isReloading ? 1 : 0);
+
+      // Screen emissive breathes + flickers; flares white-green on a deploy.
       if (this.subScreenMat) {
-        const flicker = 0.82 + Math.sin(t * 7.3) * 0.1 + Math.sin(t * 23.0) * 0.05;
-        this.subScreenMat.emissiveIntensity = flicker + deploy * 2.6;
+        const flicker = 0.95 + Math.sin(t * 7.3) * 0.12 + Math.sin(t * 23.0) * 0.06;
+        this.subScreenMat.emissiveIntensity = flicker + deploy * 2.2 + this.subReloadGlow * 0.6;
       }
-      // Emitter dish charges hard while a chip launches, idles dim otherwise.
+      // Emitter charge eases up while a chip is in flight, then idles dim.
+      let inFlight = 0;
+      for (const c of this.subChips) inFlight = Math.max(inFlight, c.offset > 0.04 && c.offset < 0.96 ? 1 : 0);
+      this.subEmitterCharge += (Math.max(deploy, inFlight) - this.subEmitterCharge) * Math.min(1, delta * 9);
       if (this.subEmitterMat) {
-        this.subEmitterMat.emissiveIntensity = 0.8 + Math.sin(t * 9) * 0.25 + deploy * 4.0;
+        this.subEmitterMat.emissiveIntensity = 0.8 + Math.sin(t * 9) * 0.25 + this.subEmitterCharge * 4.2;
       }
-      // Code lines ripple in sequence like scrolling output.
+      // Edge sequencer rails ripple in sequence like scrolling output.
       for (let i = 0; i < this.subCodeMats.length; i++) {
-        const phase = t * 4.5 - i * 0.6;
+        const phase = t * 4.5 - i * 0.9;
         this.subCodeMats[i].emissiveIntensity = 0.35 + Math.max(0, Math.sin(phase)) * 0.9 + deploy * 1.6;
       }
       // Status antenna tip blinks (and pops on deploy).
@@ -1364,14 +1719,84 @@ export class GunModel {
         const blink = (Math.sin(t * 5) > 0.4 ? 1 : 0.25) + deploy;
         this.subAntennaTip.scale.setScalar(0.7 + blink * 0.5);
       }
+
+      // ── Per-chip eject/insert animation ──
+      // Each chip eases toward its target offset (0 seated → 1 launched). A
+      // launched chip rises out of its slot, accelerates forward into the
+      // emitter, tumbles and shrinks to nothing; a seated chip rests with a soft
+      // contact-pad pulse. `flash` flares the core on eject/seat.
+      for (const c of this.subChips) {
+        c.offset += (c.target - c.offset) * Math.min(1, delta * 11);
+        if (c.flash > 0) c.flash = Math.max(0, c.flash - delta * 3);
+        const o = c.offset;
+        if (o > 0.985 && c.target === 1) {
+          c.group.visible = false;
+          c.glowMat.opacity = 0;
+          continue;
+        }
+        c.group.visible = true;
+        c.group.position.y = c.baseY + o * 1.15;
+        c.group.position.z = c.baseZ - o * o * 4.9;       // sucked toward the front emitter
+        c.group.scale.setScalar(Math.max(0.02, 1 - o * 0.86));
+        c.group.rotation.x = o * 1.7;                      // tumbles as it launches
+        const flight = o * (1 - o);                        // peaks mid-travel
+        c.core.emissiveIntensity = 1.0 + c.flash * 2.6 + flight * 3.0;
+        c.glowMat.opacity = Math.min(0.95, c.flash * 0.8 + flight * 2.2);
+      }
     }
   }
 
   /** Subverter: one-shot deploy flourish — surges the screen/emitter glow and
-   *  drives a forward "jab" of the deck (see applyAnimations). */
+   *  drives a forward "jab" of the deck (see applyAnimations). The chip itself
+   *  is launched by updateSubverterAmmo when the live count drops. */
   triggerDeploy() {
     this.subDeploy = 1;
+    this.subEmitterCharge = 1;
     this.abilityAnim = Math.max(this.abilityAnim, 0.6); // a small upward flick
+  }
+
+  // ── Subverter chip bay control ───────────────────────────────────────────
+
+  /** Fire one chip: launch the top-loaded chip off the deck into the emitter. */
+  private ejectChip(i: number) {
+    const c = this.subChips[i];
+    if (!c) return;
+    c.target = 1;
+    c.flash = 1;
+    c.group.visible = true;
+  }
+
+  /** Seat one chip back into its slot (a pickup top-up; reloads use their own
+   *  staggered routine). */
+  private insertChip(i: number, animate: boolean) {
+    const c = this.subChips[i];
+    if (!c) return;
+    c.group.visible = true;
+    c.target = 0;
+    c.flash = 1;
+    if (!animate) c.offset = 0;
+  }
+
+  /**
+   * Keep the deck's visible chips in lockstep with the live ammo count. Called
+   * every frame from the game loop. A drop launches the top chip(s); a rise
+   * (ammo pickup) slams chip(s) back in. While a reload is running the reload
+   * routine owns the bay, so this no-ops to avoid fighting it.
+   */
+  updateSubverterAmmo(ammo: number) {
+    if (this.currentWeaponType !== 'subverter' || this.subChips.length === 0) return;
+    if (this.isReloading) return;
+    const want = THREE.MathUtils.clamp(Math.floor(ammo), 0, this.subChips.length);
+    if (want === this.subLoaded) return;
+    if (want < this.subLoaded) {
+      // Just reloaded: the chips are visually full but App may still be pushing
+      // ammo back up — don't re-eject during the grace window.
+      if (this.subReloadGrace > 0) return;
+      for (let i = this.subLoaded - 1; i >= want; i--) this.ejectChip(i);
+    } else {
+      for (let i = this.subLoaded; i < want; i++) this.insertChip(i, true);
+    }
+    this.subLoaded = want;
   }
 
   /** Begin (or restart) the weapon-inspect animation. No-op mid-reload. */
@@ -1527,9 +1952,19 @@ export class GunModel {
     this.recoilFlick = (Math.random() - 0.5) * 0.11 * THREE.MathUtils.clamp(strength, 0.5, 2.2);
   }
 
-  triggerReload() {
+  /**
+   * Begin a reload. `durationSec` paces the WHOLE hand animation to fill the
+   * real reload window (so the player visibly works the weapon for the entire
+   * time); `shells` is how many discrete "thumb a round in" beats a shell-fed
+   * reload (shotgun) plays across that window. Both default to sane values for
+   * a quick one-off call.
+   */
+  triggerReload(durationSec: number = 0.5, shells: number = 8) {
     this.isReloading = true;
     this.reloadAnimation = 0;
+    this.reloadDuration = Math.max(0.25, durationSec);
+    this.reloadShells = Math.max(1, Math.round(shells));
+    if (this.currentWeaponType === 'subverter') this.subReloadGlow = 1;
   }
 
   switchWeapon(type: WeaponType) {

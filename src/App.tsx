@@ -2472,6 +2472,7 @@ const ForestSurvivalGame = () => {
       : [];
     let sentinelIntroFired = false; // First-encounter intro banner fires once.
     let rangedEnemyIntroFired = false;
+    let bossIntroFired = false; // First full-boss encounter (wave 10+) banner.
 
     // === SPAWN SAFE ZONE ===
     // Random terrain generation can place a tree/rock/wall right on top of the
@@ -3452,6 +3453,10 @@ const ForestSurvivalGame = () => {
         attackTime: 0,
         attackCooldown: type === 'fast' ? 800 : type === 'boss' ? 1500 : 1000,
         lastAttackTime: 0,
+        // Boss summoner: first reinforcement call comes a few seconds after the
+        // boss arrives so the player has a beat to react before the adds drop.
+        bossNextSummonAt: type === 'boss' ? Date.now() + 6000 : undefined,
+        bossSummonCast: 0,
         // NEW: Advanced AI Systems
         aiBehavior,
         perception,
@@ -4007,7 +4012,7 @@ const ForestSurvivalGame = () => {
                 soundManager.play('powerUp', 0.6, false, 1.4);
               }
             }
-            else if (wave >= 5 && rand < (hardish ? 0.12 : 0.08)) type = 'boss';
+            else if (wave >= 10 && rand < (hardish ? 0.12 : 0.08)) type = 'boss';
             else if (wave >= 3 && rand < (hardish ? 0.32 : 0.24)) type = 'tank';
             else if (wave >= 2 && rand < (hardish ? 0.5 : 0.42)) type = 'fast';
           }
@@ -4038,6 +4043,20 @@ const ForestSurvivalGame = () => {
             crown.userData.cannotReceiveAO = true;
             enemy.mesh.add(crown);
           }
+          // First full BOSS of the run (wave 10+) gets a one-time threat banner
+          // so the player knows the summoner has arrived.
+          if (enemy.type === 'boss' && !bossIntroFired && !isTutorialMode) {
+            bossIntroFired = true;
+            setEnemyIntro({
+              id: Date.now(),
+              name: 'Overlord',
+              tag: 'APEX · SUMMONER',
+              blurb: 'A towering purple apex that calls in Red & Blue shock troops — and rarely a Sniper. Immune to the Subverter. Burn it down fast.',
+              accent: '#e85aff',
+              icon: 'crown',
+            });
+            soundManager.play('powerUp', 0.9, false, 0.55);
+          }
           // Host stamps a stable network id so guests can track this enemy.
           if (isMpHost) {
             enemy.netId = nextEnemyNetId++;
@@ -4048,6 +4067,54 @@ const ForestSurvivalGame = () => {
         }
       }
       return spawned;
+    };
+
+    // ── BOSS SUMMONER ────────────────────────────────────────────────────
+    // The pay-off of a boss's summon telegraph: a pack of minions bursts in
+    // around it. Composition is mostly Red (normal) + Blue (fast) shock troops
+    // with a rare Sniper (ranged). Each minion pops in with a portal flash in
+    // its signature colour; the boss emits a purple summon shockwave. Respects
+    // the live enemy cap / pool, so it never overwhelms the budget or the GPU.
+    const SUMMON_TELEGRAPH = 0.85; // seconds of rear-up before the adds appear
+    const performBossSummon = (boss: Enemy) => {
+      const count = boss.bossSummonCount ?? 3;
+      const bx = boss.mesh.position.x;
+      const bz = boss.mesh.position.z;
+      // Purple summon shockwave + roar at the boss.
+      castEffects.push(new AbilityCastEffect(scene, boss.mesh.position.clone(), 0xe85aff));
+      createParticles(boss.mesh.position, 0xe85aff, 30);
+      soundManager.play('hack_overclock', 0.6, false, 0.7);
+      if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
+      let spawnedAdds = 0;
+      const startAngle = Math.random() * Math.PI * 2;
+      for (let i = 0; i < count; i++) {
+        if (!smartEnemyManager.canSpawnMore() || enemies.length >= smartEnemyManager.getCurrentMaxEnemies()) break;
+        // Composition: rare Sniper (ranged), otherwise an even Red/Blue split.
+        const roll = Math.random();
+        const t: 'normal' | 'fast' | 'ranged' = roll < 0.12 ? 'ranged' : roll < 0.56 ? 'fast' : 'normal';
+        // A clear spot in a tight ring around the boss (widen if blocked).
+        const ang = startAngle + (i / count) * Math.PI * 2 + (Math.random() - 0.5) * 0.4;
+        let mx = bx, mz = bz, ok = false;
+        for (let r = 0; r < 4; r++) {
+          const dist = 3.0 + r * 1.6 + Math.random() * 1.2;
+          mx = bx + Math.cos(ang) * dist;
+          mz = bz + Math.sin(ang) * dist;
+          if (!overlapsTerrain(mx, mz, 1.2)) { ok = true; break; }
+        }
+        if (!ok) continue;
+        const minion = createEnemy(mx, mz, t);
+        if (!minion) continue;
+        if (isMpHost) { minion.netId = nextEnemyNetId++; enemyByNetId.set(minion.netId, minion); }
+        enemies.push(minion);
+        // Portal pop in the minion's signature colour (Red / Blue / Cyan).
+        const col = t === 'ranged' ? 0x6effff : t === 'fast' ? 0x57d6ff : 0xff6a3d;
+        createParticles(new THREE.Vector3(mx, 1.0, mz), col, 16);
+        castEffects.push(new AbilityCastEffect(scene, new THREE.Vector3(mx, 0.2, mz), col));
+        spawnedAdds++;
+      }
+      if (spawnedAdds > 0 && gameSettingsManager.getSetting('killFeed')) {
+        addKillFeedEntry('Overlord summons reinforcements!', 'combo');
+      }
     };
 
     // Picks a powerup spawn point that doesn't overlap a collidable
@@ -4107,12 +4174,15 @@ const ForestSurvivalGame = () => {
       waveEnemiesRemaining = Math.max(4, Math.floor((7 + wave * 3) * diffSettings.spawnMult * (runMods.enemySpawnMult ?? 1)));
       const opening = Math.min(5, waveEnemiesRemaining);
       waveEnemiesRemaining -= spawnEnemyBatch(opening);
-      // ── MINI-BOSS every 5 waves ─────────────────────────────────────
-      // Wave % 5 spawns a beefed-up tank flagged isMiniBoss. The mini-boss
-      // is treated like a regular kill for wave-clear math (counts toward
-      // waveEnemiesRemaining via spawnEnemyBatch's pool slot). Skipped on
-      // wave 10/20/etc. when a full boss is already in the mix.
-      if (wave > 0 && wave % 5 === 0 && wave % 10 !== 0) {
+      // ── MILESTONE ELITES every 5 waves ───────────────────────────────
+      // Wave 10 onward, every 5th wave (10, 15, 20…) hard-spawns a full
+      // SUMMONER BOSS — the apex threat that calls in its own reinforcements
+      // (its intro banner fires inside spawnEnemyBatch). Before wave 10, the
+      // 5-wave milestone is a crowned mini-boss tank instead, easing the player
+      // toward the boss era.
+      if (wave >= 10 && wave % 5 === 0) {
+        spawnEnemyBatch(1, 'boss');
+      } else if (wave > 0 && wave % 5 === 0) {
         const spawned = spawnEnemyBatch(1, 'tank', true);
         if (spawned > 0) {
           setEnemyIntro({
@@ -4863,9 +4933,7 @@ const ForestSurvivalGame = () => {
       const maxAmmoNow = effectiveMaxAmmo(currentWeapon);
       if (ammo >= maxAmmoNow) return false;
       isReloading = true;
-      soundManager.play('reload', 0.5);
       gunModel.cancelInspect(); // a reload overrides an in-progress inspect
-      gunModel.triggerReload();
       tutorial.recordAction('reload', 1);
       // Quickdraw skill + Engineer MP passive + Weapon Mastery all speed up
       // the reload. Mastery's `reloadSpeedup` is a percentage REDUCTION (0.10
@@ -4874,6 +4942,15 @@ const ForestSurvivalGame = () => {
         * (mpMods.reloadSpeedMult ?? 1)
         * (1 - masteryBonus.reloadSpeedup)
         * perkBonuses.reloadTimeMult;
+      // The viewmodel reload now fills the ENTIRE reload window so the hands work
+      // the weapon manually for the whole time (mag swap, shell-by-shell on the
+      // shotgun, chip cartridge on the subverter). The shotgun's beat count is
+      // the magazine size so each shell is thumbed in individually.
+      const reloadShells = currentWeapon === 'shotgun' ? maxAmmoNow : 8;
+      gunModel.triggerReload(reloadMs / 1000, reloadShells);
+      // Subverter swaps a chip cartridge (a layered digital clack); guns rack a
+      // fresh magazine.
+      soundManager.play(currentWeapon === 'subverter' ? 'hack_reload' : 'reload', 0.5);
       setReloadDurationUI(reloadMs); // drives the crosshair reload indicator
       if (reloadTimeoutId !== null) window.clearTimeout(reloadTimeoutId);
       reloadTimeoutId = window.setTimeout(() => {
@@ -5191,6 +5268,10 @@ const ForestSurvivalGame = () => {
       for (let k = 0; k < enemies.length; k++) {
         const e = enemies[k];
         if (e.dead || e.hacked || e.health <= 0) continue;
+        // Bosses are IMMUNE to the Subverter — their hardened cores reject the
+        // intrusion chip entirely. They can never be hacked, hunted by a hacked
+        // minion, or caught in the overclock EMP (see findHackVictim / detonate).
+        if (e.type === 'boss') continue;
         // Don't hack an enemy that hasn't even streamed in its detailed model
         // (the distant minimal stand-in) — same fairness gate bullets use.
         if (e.detailReady === false) continue;
@@ -6590,6 +6671,8 @@ const ForestSurvivalGame = () => {
         if (k === hackerIdx) continue;
         const o = enemies[k];
         if (o.dead || o.hacked || o.health <= 0) continue;
+        // Bosses are immune to the Subverter — a hacked minion never turns on a boss.
+        if (o.type === 'boss') continue;
         const d = o.mesh.position.distanceToSquared(hacker.mesh.position);
         if (d < bestD && d < MAX * MAX) { bestD = d; best = o; }
       }
@@ -6609,6 +6692,8 @@ const ForestSurvivalGame = () => {
       for (let j = enemies.length - 1; j >= 0; j--) {
         const e = enemies[j];
         if (e === enemy || e.dead) continue;
+        // Bosses shrug off the overclock EMP — the Subverter can't touch them.
+        if (e.type === 'boss') continue;
         const d = e.mesh.position.distanceTo(epos);
         if (d > HACK_BLAST_RADIUS) continue;
         const falloff = 1 - (d / HACK_BLAST_RADIUS) * 0.5;
@@ -7972,6 +8057,10 @@ const ForestSurvivalGame = () => {
       gunModel.updateJump(delta, isJumping, velocityY);
       // Decay one-shot flourishes (dash, abilities)
       gunModel.updateActions(delta);
+      // Subverter: keep the deck's visible intrusion chips in lockstep with the
+      // live chip count — a fired chip launches off the deck, a pickup slams one
+      // back in (no-ops for every other weapon and while reloading).
+      gunModel.updateSubverterAmmo(ammo);
       gunModel.applyAnimations(); // Combine all animation offsets into final transform
 
       // (Player ground shadow now lives in LocalPlayerShadow — driven below
@@ -10025,6 +10114,57 @@ const ForestSurvivalGame = () => {
           } else {
             // Lost LOS or out of range — drop any in-progress charge.
             enemy.rangedChargeMs = 0;
+          }
+        }
+
+        // === BOSS SUMMONER (wave 10+) ===
+        // The boss periodically calls in reinforcements. It first rears up in a
+        // telegraph (arms thrown overhead, rising motes) so the player can read
+        // the wind-up, then the pack bursts in (performBossSummon). Host/solo
+        // only — guests mirror the host's authoritative spawns.
+        if (enemy.type === 'boss' && !enemy.hacked && !enemy.dead && enemy.health > 0 && !isMpGuest) {
+          if ((enemy.bossSummonCast ?? 0) > 0) {
+            // Mid-telegraph: throw both arms overhead and count the cast down.
+            enemy.bossSummonCast = (enemy.bossSummonCast ?? 0) - delta;
+            if (enemy.leftArm) {
+              enemy.leftArm.rotation.x = THREE.MathUtils.lerp(enemy.leftArm.rotation.x, -2.3, 0.35);
+              enemy.leftArm.rotation.z = THREE.MathUtils.lerp(enemy.leftArm.rotation.z, 0.5, 0.35);
+            }
+            if (enemy.rightArm) {
+              enemy.rightArm.rotation.x = THREE.MathUtils.lerp(enemy.rightArm.rotation.x, -2.3, 0.35);
+              enemy.rightArm.rotation.z = THREE.MathUtils.lerp(enemy.rightArm.rotation.z, -0.5, 0.35);
+            }
+            // Rising summon motes from the boss while it charges.
+            if (Math.random() < 0.4) {
+              createParticles(
+                new THREE.Vector3(
+                  enemy.mesh.position.x + (Math.random() - 0.5) * 2,
+                  enemy.mesh.position.y + 0.5,
+                  enemy.mesh.position.z + (Math.random() - 0.5) * 2,
+                ),
+                0xe85aff, 3,
+              );
+            }
+            if ((enemy.bossSummonCast ?? 0) <= 0) {
+              enemy.bossSummonCast = 0;
+              performBossSummon(enemy);
+            }
+          } else if (frameNowMs >= (enemy.bossNextSummonAt ?? Infinity)) {
+            // Time to summon — but only when the player is engaged and the pool
+            // has headroom; otherwise nudge the timer and try again shortly.
+            const headroom = enemies.length < smartEnemyManager.getCurrentMaxEnemies() - 2
+              && smartEnemyManager.canSpawnMore();
+            if (enemy.engageable !== false && headroom) {
+              // Enraged (phase-2) bosses summon bigger packs more often.
+              const phase2 = (enemy.bossPhase ?? 1) === 2;
+              enemy.bossSummonCount = (phase2 ? 4 : 3) + (Math.random() < 0.4 ? 1 : 0);
+              enemy.bossSummonCast = SUMMON_TELEGRAPH;
+              const cooldown = (phase2 ? 9000 : 13000) + Math.random() * 3000;
+              enemy.bossNextSummonAt = frameNowMs + cooldown + SUMMON_TELEGRAPH * 1000;
+              soundManager.play('powerUp', 0.7, false, 0.55); // charge-up roar
+            } else {
+              enemy.bossNextSummonAt = frameNowMs + 2500;
+            }
           }
         }
 

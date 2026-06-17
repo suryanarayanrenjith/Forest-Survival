@@ -43,7 +43,7 @@ export const WEAPONS: Record<string, Weapon> = {
     bulletSpeed: 3,
     bulletColor: 0xff6600,
     spread: 0.01,
-    unlockScore: 200,
+    unlockScore: 100,
     weight: 1.5, // Medium weight
     canAim: true // Rifle can aim
   },
@@ -56,7 +56,7 @@ export const WEAPONS: Record<string, Weapon> = {
     bulletSpeed: 1.5,
     bulletColor: 0xff0000,
     spread: 0.15,
-    unlockScore: 500,
+    unlockScore: 250,
     weight: 1.7, // Heavy weapon
     canAim: true
   },
@@ -73,7 +73,7 @@ export const WEAPONS: Record<string, Weapon> = {
     bulletSpeed: 2.5,
     bulletColor: 0x00ffff,
     spread: 0.03,
-    unlockScore: 1000,
+    unlockScore: 450,
     autoFire: true,
     weight: 1.2, // Light-medium weight
     canAim: true
@@ -87,7 +87,7 @@ export const WEAPONS: Record<string, Weapon> = {
     bulletSpeed: 5,
     bulletColor: 0x00ff00,
     spread: 0.005,
-    unlockScore: 1800,
+    unlockScore: 700,
     autoFire: false,
     weight: 2.0, // Heavy weapon - slower movement
     canAim: true // Sniper can aim
@@ -101,7 +101,7 @@ export const WEAPONS: Record<string, Weapon> = {
     bulletSpeed: 3,
     bulletColor: 0xffaa00, // Realistic yellow-orange fire
     spread: 0.05,
-    unlockScore: 3000,
+    unlockScore: 1100,
     autoFire: true,
     weight: 3.0, // Very heavy - significantly slower
     canAim: true
@@ -115,7 +115,7 @@ export const WEAPONS: Record<string, Weapon> = {
     bulletSpeed: 1.8,
     bulletColor: 0xff4400,
     spread: 0.01,
-    unlockScore: 4800,
+    unlockScore: 1600,
     autoFire: false,
     weight: 2.5, // Very heavy
     canAim: true
@@ -136,7 +136,7 @@ export const WEAPONS: Record<string, Weapon> = {
     bulletSpeed: 0,
     bulletColor: 0x39ff14, // cyber-green virus glow
     spread: 0,
-    unlockScore: 6800,
+    unlockScore: 2200,
     autoFire: false,
     weight: 1.0,          // light tablet — full movement speed
     canAim: false         // it's a deploy tool, not a sighted weapon
@@ -244,6 +244,16 @@ export interface Enemy {
   // so the trigger only fires once.
   isMiniBoss?: boolean;
   bossPhase?: 1 | 2;
+  // ── Boss summoner (wave 10+) ─────────────────────────────────────────
+  // From wave 10 the full boss periodically calls in a pack of minions —
+  // mostly Red (normal) + Blue (fast) shock troops, rarely a Sniper (ranged).
+  // bossNextSummonAt is the ms timestamp the next summon is allowed; while
+  // bossSummonCast > 0 the boss is rearing up in its summon telegraph (seconds
+  // remaining) before the minions burst in; bossSummonCount is the pack size
+  // for the in-progress cast.
+  bossNextSummonAt?: number;
+  bossSummonCast?: number;
+  bossSummonCount?: number;
   // ── Ranged archetype state ──────────────────────────────────────────
   // Ranged enemies fire a slow telegraphed energy bolt at the player when
   // they have line of sight and the cooldown has elapsed. The cooldown is
