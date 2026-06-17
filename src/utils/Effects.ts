@@ -133,6 +133,118 @@ export class MuzzleFlash {
   }
 }
 
+/**
+ * Shared muzzle-smoke texture — a soft, slightly wispy grey puff. Identical for
+ * every shot, so it's built once and reused (same discipline as the flash).
+ * Normal alpha (NOT additive) + a grey tint read it as drifting smoke rather
+ * than light, sitting it into the cinematic atmosphere instead of glowing.
+ */
+let sharedSmokeTexture: THREE.CanvasTexture | null = null;
+function getSmokeTexture(): THREE.CanvasTexture {
+  if (sharedSmokeTexture) return sharedSmokeTexture;
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 128;
+  const c = canvas.getContext('2d')!;
+  // Base soft round falloff.
+  const base = c.createRadialGradient(64, 64, 0, 64, 64, 64);
+  base.addColorStop(0, 'rgba(255,255,255,0.95)');
+  base.addColorStop(0.45, 'rgba(255,255,255,0.5)');
+  base.addColorStop(0.8, 'rgba(255,255,255,0.12)');
+  base.addColorStop(1, 'rgba(255,255,255,0)');
+  c.fillStyle = base;
+  c.fillRect(0, 0, 128, 128);
+  // A few overlapping soft blobs break the perfect circle into a wispier cloud.
+  for (let i = 0; i < 7; i++) {
+    const bx = 64 + (Math.random() - 0.5) * 56;
+    const by = 64 + (Math.random() - 0.5) * 56;
+    const br = 16 + Math.random() * 26;
+    const g = c.createRadialGradient(bx, by, 0, bx, by, br);
+    const a = 0.10 + Math.random() * 0.16;
+    g.addColorStop(0, `rgba(255,255,255,${a})`);
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    c.fillStyle = g;
+    c.fillRect(0, 0, 128, 128);
+  }
+  sharedSmokeTexture = new THREE.CanvasTexture(canvas);
+  return sharedSmokeTexture;
+}
+
+/**
+ * A single lingering muzzle-smoke puff: one billboard sprite that drifts up and
+ * forward off the barrel, expands, slowly tumbles and fades. The host spawns
+ * these (throttled + hard-capped) so full-auto leaves a believable haze rather
+ * than a wall of sprites. Shared texture + a cheap per-instance material (no
+ * texture upload) keeps each puff almost free; the material is disposed on
+ * teardown, the texture is shared and never disposed here.
+ */
+export class MuzzleSmoke {
+  sprite: THREE.Sprite;
+  private life: number;
+  private readonly maxLife: number;
+  private readonly vel: THREE.Vector3;
+  private readonly startScale: number;
+  private readonly endScale: number;
+  private readonly peakOpacity: number;
+  private readonly spin: number;
+
+  constructor(scene: THREE.Scene, position: THREE.Vector3, forward: THREE.Vector3) {
+    const material = new THREE.SpriteMaterial({
+      map: getSmokeTexture(),
+      transparent: true,
+      depthWrite: false,
+      opacity: 0,
+      // Cool gun-smoke grey; fog ON so it grounds into the scene atmosphere.
+      color: 0x9a9ea6,
+      fog: true,
+    });
+    this.sprite = new THREE.Sprite(material);
+    this.sprite.position.copy(position);
+    this.sprite.userData.cannotReceiveAO = true;
+    // Drift: a little along the barrel + a buoyant rise + slight random jitter.
+    this.vel = new THREE.Vector3(
+      forward.x * 0.45 + (Math.random() - 0.5) * 0.4,
+      0.45 + Math.random() * 0.35,
+      forward.z * 0.45 + (Math.random() - 0.5) * 0.4,
+    );
+    this.startScale = 0.16 + Math.random() * 0.08;
+    this.endScale = 0.85 + Math.random() * 0.5;
+    this.maxLife = 0.55 + Math.random() * 0.4;
+    this.life = this.maxLife;
+    this.peakOpacity = 0.26 + Math.random() * 0.12;
+    this.spin = (Math.random() - 0.5) * 1.6;
+    this.sprite.scale.setScalar(this.startScale);
+    scene.add(this.sprite);
+  }
+
+  update(delta: number): boolean {
+    this.life -= delta;
+    if (this.life <= 0) return true;
+    const p = 1 - this.life / this.maxLife; // 0 → 1 over its life
+    // Expand (ease-out) so the puff blooms quickly then settles.
+    const eased = 1 - (1 - p) * (1 - p);
+    const s = this.startScale + (this.endScale - this.startScale) * eased;
+    this.sprite.scale.setScalar(s);
+    // Drift with air drag + buoyant lift.
+    this.vel.multiplyScalar(Math.max(0, 1 - delta * 1.3));
+    this.vel.y += delta * 0.35;
+    this.sprite.position.addScaledVector(this.vel, delta);
+    // Quick fade-in, long fade-out.
+    const op = p < 0.18 ? (p / 0.18) * this.peakOpacity : this.peakOpacity * (1 - (p - 0.18) / 0.82);
+    const mat = this.sprite.material as THREE.SpriteMaterial;
+    mat.opacity = Math.max(0, op);
+    mat.rotation += this.spin * delta;
+    return false;
+  }
+
+  dispose(scene: THREE.Scene) {
+    scene.remove(this.sprite);
+    if (this.sprite.material instanceof THREE.SpriteMaterial) {
+      this.sprite.material.dispose();
+    }
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared tracer material. Every BulletTracer used to allocate its own
 // LineBasicMaterial — even though every tracer is the same bright-yellow,

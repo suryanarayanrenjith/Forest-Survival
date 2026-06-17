@@ -716,7 +716,7 @@ export class RemotePlayerManager {
     const healthTexture = new THREE.CanvasTexture(healthCanvas);
     healthTexture.minFilter = THREE.LinearFilter;
     healthTexture.magFilter = THREE.LinearFilter;
-    healthTexture.anisotropy = 4;
+    healthTexture.anisotropy = THREE.Texture.DEFAULT_ANISOTROPY; // global max (GPU-clamped)
     const healthBar = new THREE.Sprite(new THREE.SpriteMaterial({
       map: healthTexture, depthTest: true, depthWrite: false, transparent: true,
     }));
@@ -855,7 +855,7 @@ export class RemotePlayerManager {
     const tex = new THREE.CanvasTexture(canvas);
     tex.minFilter = THREE.LinearFilter;
     tex.magFilter = THREE.LinearFilter;
-    tex.anisotropy = 4;
+    tex.anisotropy = THREE.Texture.DEFAULT_ANISOTROPY; // global max (GPU-clamped)
 
     const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
       map: tex, depthTest: true, depthWrite: false, transparent: true,

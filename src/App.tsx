@@ -4,7 +4,7 @@ import { GraduationCap, Play, Home, MousePointerClick } from 'lucide-react';
 import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
 import { GunModel, type WeaponType as GunWeaponType } from './utils/GunModel';
-import { MuzzleFlash, BulletTracer, ImpactEffect, RobotHitSparks, ExplosionEffect, FireNovaEffect, AbilityCastEffect, ImpactBurst, setMuzzleLightPool, setExplosionLightPool } from './utils/Effects';
+import { MuzzleFlash, MuzzleSmoke, BulletTracer, ImpactEffect, RobotHitSparks, ExplosionEffect, FireNovaEffect, AbilityCastEffect, ImpactBurst, setMuzzleLightPool, setExplosionLightPool } from './utils/Effects';
 import { HackBeam, buildHackVisuals, updateHackVisuals, disposeHackVisuals } from './utils/HackVisuals';
 import { soundManager } from './utils/SoundManager';
 import { gameSettingsManager, type UserSettings, type KeyBindings } from './utils/GameSettingsManager';
@@ -2073,7 +2073,7 @@ const ForestSurvivalGame = () => {
     let weatherMods = weatherSystem.update(0, camera.position, !atmosphericSettings.sunVisible);
 
     // === BIOME SYSTEM ===
-    const biomeSystem = new BiomeSystem(scene);
+    const biomeSystem = new BiomeSystem(scene, graphicsPreset.terrainDetail);
 
     // DYNAMIC INFINITE WORLD GENERATION with Enhanced Terrain
     const terrainObjects: TerrainObject[] = [];
@@ -2345,6 +2345,12 @@ const ForestSurvivalGame = () => {
     //   pathing around everything taller than STEP_OVER).
     const STEP_OVER_HEIGHT = 0.7;
     const CLIMB_MAX_HEIGHT = 4.0;
+    // STEP_UP: the tallest ledge the player auto-mounts by simply walking into
+    // it — no jump required (the support-height system smoothly lerps the camera
+    // up onto the surface the same frame). This is the standard AAA "auto-step"
+    // that stops low rocks/kerbs/debris from feeling like sticky invisible walls.
+    // Climbable obstacles taller than this (up to CLIMB_MAX) still want a hop.
+    const STEP_UP_HEIGHT = 1.8;
 
     // Collision queries run through the terrain spatial grid (declared with
     // the other grids further down; safe to reference here because these
@@ -2367,6 +2373,13 @@ const ForestSurvivalGame = () => {
           // Feet at/above the top → the player is jumping over it or standing
           // on it, so let them move freely across.
           if (feetY > h - 0.05) continue;
+          // AUTO STEP-UP: a low climbable ledge whose top sits within a stride of
+          // the player's feet is mounted by walking straight into it — the
+          // support-height system raises the camera onto it the same frame, so
+          // it must NOT block movement here. Taller climbable rocks (up to
+          // CLIMB_MAX) still require a hop. Enemies pass feetY ≈ -1, so this is
+          // never true for them — they keep pathing around every obstacle.
+          if (h <= CLIMB_MAX_HEIGHT && feetY >= h - STEP_UP_HEIGHT) continue;
         }
         const dx = newX - obj.x;
         const dz = newZ - obj.z;
@@ -2389,7 +2402,10 @@ const ForestSurvivalGame = () => {
         const obj = terrainObjects[nearby[n]];
         if (!obj || !obj.collidable || obj.height === undefined) continue;
         if (obj.height <= STEP_OVER_HEIGHT || obj.height > CLIMB_MAX_HEIGHT) continue;
-        if (feetY < obj.height - 0.6) continue; // not high enough to be on top
+        // Within a stride of the top → the player is on it (or auto-stepping
+        // onto it), so this surface supports them. Matches the STEP_UP gate in
+        // checkTerrainCollision so a ledge that lets you walk in also lifts you.
+        if (feetY < obj.height - STEP_UP_HEIGHT) continue; // not high enough to mount/stand on
         const dx = x - obj.x;
         const dz = z - obj.z;
         if (dx * dx + dz * dz <= obj.radius * obj.radius && obj.height > top) {
@@ -2414,6 +2430,9 @@ const ForestSurvivalGame = () => {
         if (h !== undefined) {
           if (h <= STEP_OVER_HEIGHT) continue;       // stepped over — never penetrating
           if (feetY > h - 0.05) continue;            // on top / cleared — don't shove off
+          // Mounting a low ledge (auto step-up) — don't shove the player back off
+          // while the camera lerps up onto the surface.
+          if (h <= CLIMB_MAX_HEIGHT && feetY >= h - STEP_UP_HEIGHT) continue;
         }
         const dx = camera.position.x - obj.x;
         const dz = camera.position.z - obj.z;
@@ -2954,6 +2973,12 @@ const ForestSurvivalGame = () => {
 
     // Effects arrays
     const muzzleFlashes: MuzzleFlash[] = [];
+    // Lingering muzzle smoke — throttled + hard-capped so full-auto leaves a
+    // believable haze instead of unbounded sprites (mirrors the casing/shard
+    // pooling discipline). `lastMuzzleSmokeMs` enforces the emit throttle.
+    const muzzleSmokePuffs: MuzzleSmoke[] = [];
+    const MAX_MUZZLE_SMOKE = 28;
+    let lastMuzzleSmokeMs = 0;
     const bulletTracers: BulletTracer[] = [];
     const impactEffects: ImpactEffect[] = [];
     const robotSparks: RobotHitSparks[] = [];
@@ -3030,7 +3055,7 @@ const ForestSurvivalGame = () => {
     // gravity, bounce off the ground with friction + tumble, then shrink away.
     // A hard cap (oldest removed first) keeps rapid fire from spawning unbounded
     // meshes. One shared geo+material so the whole effect costs almost nothing.
-    interface ShellCasing { mesh: THREE.Mesh; vel: THREE.Vector3; spin: THREE.Vector3; life: number; }
+    interface ShellCasing { mesh: THREE.Mesh; vel: THREE.Vector3; spin: THREE.Vector3; life: number; bounced?: boolean; }
     const shellCasings: ShellCasing[] = [];
     const MAX_CASINGS = 40;
     const casingGeo = new THREE.CylinderGeometry(0.022, 0.026, 0.12, 6);
@@ -5448,6 +5473,25 @@ const ForestSurvivalGame = () => {
         const flash = new MuzzleFlash(scene, gunWorldPos, weapon.bulletColor);
         muzzleFlashes.push(flash);
 
+        // Lingering muzzle smoke — a soft grey wisp drifting up off the barrel.
+        // Throttled (scaled by particle density) so full-auto reads as a haze,
+        // not a sprite storm; the launcher trails its own rocket exhaust so it's
+        // skipped. Oldest puff is evicted past the cap.
+        if (!isLauncher) {
+          const nowMs = performance.now();
+          const smokeInterval = 48 / Math.max(0.35, graphicsPreset.particleDensity);
+          if (nowMs - lastMuzzleSmokeMs >= smokeInterval) {
+            lastMuzzleSmokeMs = nowMs;
+            if (muzzleSmokePuffs.length >= MAX_MUZZLE_SMOKE) {
+              const oldPuff = muzzleSmokePuffs.shift();
+              if (oldPuff) oldPuff.dispose(scene);
+            }
+            const smokeDir = new THREE.Vector3();
+            camera.getWorldDirection(smokeDir);
+            muzzleSmokePuffs.push(new MuzzleSmoke(scene, gunWorldPos, smokeDir));
+          }
+        }
+
         // Notify all enemies about gunshot. registerSound clones the position
         // internally, so passing the live vector avoids one allocation per
         // enemy per shot (which added up fast on autofire weapons).
@@ -6796,6 +6840,32 @@ const ForestSurvivalGame = () => {
         if (dx * dx + dz * dz < r * r) return true;
       }
       return false;
+    };
+
+    // ── MOVE WITH WALL-SLIDING ───────────────────────────────────────────
+    // Resolve a desired (dx,dz) step per-axis so the player SLIDES along walls
+    // instead of dead-stopping when a move is partly blocked (the old all-or-
+    // nothing check made geometry feel sticky — pressing into a rock at an angle
+    // halted you completely). Each axis is tested from the already-updated
+    // position, the canonical AAA capsule-vs-world resolution: on open ground
+    // both axes apply (identical to before), against a surface only the free
+    // axis moves so you glide along it. Honours the same terrain + barrel tests,
+    // and `camera.position.y` carries the jump height so airborne step-overs and
+    // auto step-up keep working unchanged.
+    const attemptMove = (dx: number, dz: number): void => {
+      const eyeY = camera.position.y;
+      if (dx !== 0) {
+        const nx = camera.position.x + dx;
+        if (!checkTerrainCollision(nx, camera.position.z, eyeY) && !overlapsBarrel(nx, camera.position.z)) {
+          camera.position.x = nx;
+        }
+      }
+      if (dz !== 0) {
+        const nz = camera.position.z + dz;
+        if (!checkTerrainCollision(camera.position.x, nz, eyeY) && !overlapsBarrel(camera.position.x, nz)) {
+          camera.position.z = nz;
+        }
+      }
     };
 
     // ── ABILITIES / POWER-UPS SET OFF NEARBY TNT ─────────────────────────
@@ -8213,38 +8283,18 @@ const ForestSurvivalGame = () => {
         }
       }
 
-      // Movement with collision detection (skip if dashing)
+      // Movement with collision detection + wall-sliding (skip if dashing)
       if (!isDashing && moving('moveForward')) {
-        const newX = camera.position.x + _moveDirection.x * currentSpeed;
-        const newZ = camera.position.z + _moveDirection.z * currentSpeed;
-        if (!checkTerrainCollision(newX, newZ, camera.position.y) && !overlapsBarrel(newX, newZ)) {
-          camera.position.x = newX;
-          camera.position.z = newZ;
-        }
+        attemptMove(_moveDirection.x * currentSpeed, _moveDirection.z * currentSpeed);
       }
       if (!isDashing && moving('moveBackward')) {
-        const newX = camera.position.x - _moveDirection.x * currentSpeed;
-        const newZ = camera.position.z - _moveDirection.z * currentSpeed;
-        if (!checkTerrainCollision(newX, newZ, camera.position.y) && !overlapsBarrel(newX, newZ)) {
-          camera.position.x = newX;
-          camera.position.z = newZ;
-        }
+        attemptMove(-_moveDirection.x * currentSpeed, -_moveDirection.z * currentSpeed);
       }
       if (!isDashing && moving('moveLeft')) {
-        const newX = camera.position.x + _moveRight.x * currentSpeed;
-        const newZ = camera.position.z + _moveRight.z * currentSpeed;
-        if (!checkTerrainCollision(newX, newZ, camera.position.y) && !overlapsBarrel(newX, newZ)) {
-          camera.position.x = newX;
-          camera.position.z = newZ;
-        }
+        attemptMove(_moveRight.x * currentSpeed, _moveRight.z * currentSpeed);
       }
       if (!isDashing && moving('moveRight')) {
-        const newX = camera.position.x - _moveRight.x * currentSpeed;
-        const newZ = camera.position.z - _moveRight.z * currentSpeed;
-        if (!checkTerrainCollision(newX, newZ, camera.position.y) && !overlapsBarrel(newX, newZ)) {
-          camera.position.x = newX;
-          camera.position.z = newZ;
-        }
+        attemptMove(-_moveRight.x * currentSpeed, -_moveRight.z * currentSpeed);
       }
 
       // ── ANALOG TOUCH MOVEMENT (mobile joystick) ──
@@ -8260,12 +8310,7 @@ const ForestSurvivalGame = () => {
         if (_touchMove.lengthSq() > 1e-6) {
           _touchMove.normalize();
           const step = currentSpeed * mag;
-          const newX = camera.position.x + _touchMove.x * step;
-          const newZ = camera.position.z + _touchMove.z * step;
-          if (!checkTerrainCollision(newX, newZ, camera.position.y) && !overlapsBarrel(newX, newZ)) {
-            camera.position.x = newX;
-            camera.position.z = newZ;
-          }
+          attemptMove(_touchMove.x * step, _touchMove.z * step);
         }
       }
 
@@ -8316,8 +8361,16 @@ const ForestSurvivalGame = () => {
 
       // Land on the dynamic floor (ground or a rock top), accounting for crouch.
       if (camera.position.y <= floorY) {
-        camera.position.y = floorY;
         velocityY = 0;
+        // SMOOTH AUTO STEP-UP: when the floor suddenly rises a long way under the
+        // player (they walked onto a ledge), DON'T teleport the camera up — leave
+        // it low and let the head-bob / idle-settle lerp below climb onto the
+        // surface over a few frames. Only the tiny per-frame gravity dip and
+        // genuine jump landings snap to the floor instantly.
+        const floorRise = floorY - camera.position.y;
+        if (floorRise <= 0.12 || wasJumping) {
+          camera.position.y = floorY;
+        }
         // Landing impact — trigger camera dip when touching ground after a jump
         if (wasJumping) {
           landingImpact = 0.3; // Start landing dip effect
@@ -8421,6 +8474,14 @@ const ForestSurvivalGame = () => {
         }
       }
 
+      // Update lingering muzzle smoke — drift, expand, fade.
+      for (let i = muzzleSmokePuffs.length - 1; i >= 0; i--) {
+        if (muzzleSmokePuffs[i].update(delta)) {
+          muzzleSmokePuffs[i].dispose(scene);
+          muzzleSmokePuffs.splice(i, 1);
+        }
+      }
+
       for (let i = bulletTracers.length - 1; i >= 0; i--) {
         if (bulletTracers[i].update(delta)) {
           bulletTracers[i].dispose(scene);
@@ -8503,6 +8564,12 @@ const ForestSurvivalGame = () => {
         if (c.mesh.position.y <= 0.03) {
           c.mesh.position.y = 0.03;
           if (c.vel.y < 0) {
+            // Bright brass "tink" on the FIRST real ground contact only — quick
+            // micro-bounces afterward stay silent so it never machine-guns.
+            if (!c.bounced && c.vel.y < -1.0) {
+              c.bounced = true;
+              soundManager.play('casing', 0.16, false, 0.9 + Math.random() * 0.3);
+            }
             c.vel.y *= -0.36;
             c.vel.x *= 0.55;
             c.vel.z *= 0.55;
@@ -10484,10 +10551,11 @@ const ForestSurvivalGame = () => {
       const refs: {
         rocket: THREE.Mesh | null;
         flash: MuzzleFlash | null;
+        smoke: MuzzleSmoke | null;
         tracer: BulletTracer | null;
         impact: ImpactEffect | null;
         sparks: RobotHitSparks | null;
-      } = { rocket: null, flash: null, tracer: null, impact: null, sparks: null };
+      } = { rocket: null, flash: null, smoke: null, tracer: null, impact: null, sparks: null };
 
       // ── STAGE 1: spawn warmup bullets ──────────────────────────────
       await stage('Bullets', false, () => {
@@ -10522,6 +10590,9 @@ const ForestSurvivalGame = () => {
         scene.add(rocket); warm.push(rocket);
         refs.rocket = rocket;
         refs.flash = new MuzzleFlash(scene, wp, 0xffaa00);
+        // Pre-compile the muzzle-smoke sprite shader (normal-blend + fog variant,
+        // distinct from the additive flash) so the first wisp never stalls.
+        refs.smoke = new MuzzleSmoke(scene, wp, new THREE.Vector3(0, 0, -1));
         refs.tracer = new BulletTracer(scene, wp, wp.clone(), 0xffffaa);
         refs.impact = new ImpactEffect(scene, wp, 0xffaa00, 2);
         refs.sparks = new RobotHitSparks(scene, wp, new THREE.Vector3(0, 1, 0), 2);
@@ -10642,6 +10713,7 @@ const ForestSurvivalGame = () => {
           });
         });
         refs.flash?.dispose(scene);
+        refs.smoke?.dispose(scene);
         refs.tracer?.dispose(scene);
         refs.impact?.dispose(scene);
         refs.sparks?.dispose(scene);
@@ -10900,6 +10972,10 @@ const ForestSurvivalGame = () => {
       shellCasings.length = 0;
       casingGeo.dispose();
       casingMat.dispose();
+
+      // Cleanup lingering muzzle smoke (each puff owns its sprite + material).
+      for (const p of muzzleSmokePuffs) p.dispose(scene);
+      muzzleSmokePuffs.length = 0;
 
       // Cleanup bullet shatter shards (shared geos + material across all shards).
       for (const s of bulletShards) scene.remove(s.mesh);

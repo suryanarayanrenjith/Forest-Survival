@@ -1,3 +1,6 @@
+// MUST be first: raises the global texture anisotropy default before any
+// module-level texture singleton (in App and its util imports) is constructed.
+import './utils/textureDefaults'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ConvexReactClient } from 'convex/react'

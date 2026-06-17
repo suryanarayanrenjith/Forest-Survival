@@ -3,6 +3,81 @@ import type { TerrainObject } from '../types/game';
 
 export type BiomeType = 'forest' | 'volcanic' | 'tundra' | 'desert' | 'swamp' | 'military' | 'ruins' | 'twilight';
 
+// ─────────────────────────────────────────────────────────────────────────────
+// PROCEDURAL PROP SURFACE DETAIL (shared shader injection)
+//
+// The world props (rocks, trunks, boulders, snow, logs, foliage masses) are
+// flat-shaded solid-colour meshes — the deliberate low-poly silhouette, but the
+// fills read as plasticky and uniform up close. This injects a SUBTLE, purely
+// ALBEDO-domain weathering pass (macro tonal blotches + cavity darkening + fine
+// micro-grit) so every solid surface gains material "tooth" and grounded depth
+// while the palette, faceting and shadows stay byte-identical (no normal or
+// vertex changes → the instanced depth/shadow material is untouched).
+//
+// It is keyed to WORLD space (so detail doesn't swim as instances stream) and
+// fwidth-antialiased + distance-faded so it never shimmers and costs nothing in
+// the far field. Two shared static uniforms drive strength/frequency, so EVERY
+// pooled material references the same holders — zero per-material/per-frame cost,
+// pooling preserved. Strength is 0 on the Low preset (injection skipped).
+//
+// `vPropWP` is built from `transformed` BEFORE three's instancing multiply, so
+// it is recomputed here as modelMatrix·instanceMatrix·position to land in world
+// space for both instanced batches and the rare standalone fallback mesh.
+// ─────────────────────────────────────────────────────────────────────────────
+const PROP_DETAIL_VERT_HEAD = 'varying vec3 vPropWP;\n';
+const PROP_DETAIL_VERT_BODY = /* glsl */ `
+  #ifdef USE_INSTANCING
+    vPropWP = ( modelMatrix * instanceMatrix * vec4( transformed, 1.0 ) ).xyz;
+  #else
+    vPropWP = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;
+  #endif
+`;
+const PROP_DETAIL_FRAG_HEAD = /* glsl */ `
+  varying vec3 vPropWP;
+  uniform float uPropDetailStr;
+  uniform float uPropDetailFreq;
+  float pdHash( vec2 p ) { return fract( sin( dot( p, vec2( 127.1, 311.7 ) ) ) * 43758.5453123 ); }
+  float pdNoise( vec2 p ) {
+    vec2 i = floor( p ); vec2 f = fract( p );
+    float a = pdHash( i );
+    float b = pdHash( i + vec2( 1.0, 0.0 ) );
+    float c = pdHash( i + vec2( 0.0, 1.0 ) );
+    float d = pdHash( i + vec2( 1.0, 1.0 ) );
+    vec2 u = f * f * ( 3.0 - 2.0 * f );
+    return mix( a, b, u.x ) + ( c - a ) * u.y * ( 1.0 - u.x ) + ( d - b ) * u.x * u.y;
+  }
+  float pdFbm( vec2 p ) {
+    float v = 0.0; float a = 0.5;
+    for ( int i = 0; i < 3; i++ ) { v += a * pdNoise( p ); p = p * 2.07 + vec2( 13.0, 7.0 ); a *= 0.5; }
+    return v;
+  }
+`;
+const PROP_DETAIL_FRAG_BODY = /* glsl */ `
+  {
+    vec3 pdBase = diffuseColor.rgb;
+    vec2 pdWP = vPropWP.xz;
+    // Fold Y into a 2D coord so vertical faces (trunks / boulder sides) get
+    // variation too without paying for full triplanar sampling.
+    vec2 pdWPv = vec2( vPropWP.x + vPropWP.y, vPropWP.z + vPropWP.y );
+    float pdNear = 1.0 - smoothstep( 40.0, 130.0, length( vViewPosition ) );
+    vec2 pdFw = fwidth( pdWPv );
+    float pdAA = 1.0 - smoothstep( 0.5, 2.2, max( pdFw.x, pdFw.y ) * uPropDetailFreq );
+    float pdMicro = pdNear * pdAA;
+    // Macro weathering — broad tonal blotches break the flat fill.
+    float pdMacro = pdFbm( pdWP * 0.25 * uPropDetailFreq + 7.0 );
+    diffuseColor.rgb *= mix( 0.9, 1.09, pdMacro );
+    // Cavity AO — gently darken creases for grounded depth (floored so dark
+    // biomes never muddy).
+    float pdCav = pdFbm( pdWPv * 0.7 * uPropDetailFreq + 19.0 );
+    diffuseColor.rgb *= 0.9 + 0.1 * smoothstep( 0.2, 0.85, pdCav );
+    // Micro grit — fine grain, antialiased so it resolves flat in the distance.
+    float pdGrit = pdNoise( pdWPv * 3.1 * uPropDetailFreq );
+    diffuseColor.rgb *= 1.0 + ( pdGrit - 0.5 ) * 0.13 * pdMicro;
+    // Tier strength blends the whole weathering pass in (0 = original colour).
+    diffuseColor.rgb = mix( pdBase, diffuseColor.rgb, uPropDetailStr );
+  }
+`;
+
 interface BiomeConfig {
   groundColor: number;
   groundEmissive: number;
@@ -60,14 +135,48 @@ export class BiomeSystem {
   private matPool = new Map<string, THREE.Material>();
   private geoPool = new Map<string, THREE.BufferGeometry>();
 
+  // Shared static uniforms for the procedural prop-detail shader. One pair of
+  // holders referenced by every detailed material → no per-material state.
+  private propDetailUniforms = {
+    uPropDetailStr: { value: 0 },
+    uPropDetailFreq: { value: 1.0 },
+  };
+
   /** Reuse a MeshStandardMaterial with the given options, or create + cache it. */
   private mat(opts: StdMatOpts): THREE.MeshStandardMaterial {
     const key = hashStdMatOpts(opts);
     const cached = this.matPool.get(key);
     if (cached) return cached as THREE.MeshStandardMaterial;
     const fresh = new THREE.MeshStandardMaterial(opts);
+    // Enrich SOLID surfaces (rock/bark/snow/log/foliage mass) with subtle
+    // procedural weathering. Skip glows / transparent / strongly-emissive mats
+    // (lava veins, crystals, embers, ice, water) where grain would read wrong.
+    if (
+      this.propDetailUniforms.uPropDetailStr.value > 0 &&
+      !opts.transparent &&
+      (opts.opacity ?? 1) >= 0.99 &&
+      (opts.emissiveIntensity ?? 0) <= 0.3
+    ) {
+      this.applyPropDetail(fresh);
+    }
     this.matPool.set(key, fresh);
     return fresh;
+  }
+
+  /** Inject the shared world-space albedo-weathering pass into a material. */
+  private applyPropDetail(mat: THREE.MeshStandardMaterial): void {
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.uPropDetailStr = this.propDetailUniforms.uPropDetailStr;
+      shader.uniforms.uPropDetailFreq = this.propDetailUniforms.uPropDetailFreq;
+      shader.vertexShader = PROP_DETAIL_VERT_HEAD + shader.vertexShader.replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>\n${PROP_DETAIL_VERT_BODY}`,
+      );
+      shader.fragmentShader = PROP_DETAIL_FRAG_HEAD + shader.fragmentShader.replace(
+        '#include <color_fragment>',
+        `#include <color_fragment>\n${PROP_DETAIL_FRAG_BODY}`,
+      );
+    };
   }
 
   /**
@@ -135,9 +244,14 @@ export class BiomeSystem {
   // Shared time uniform driving the grass wind sway (updated each frame)
   private grassTime = { value: 0 };
 
-  constructor(_scene: THREE.Scene) {
+  constructor(_scene: THREE.Scene, detailLevel = 1) {
     this.biomeConfigs = new Map();
     this.initializeBiomes();
+    // Tier the procedural prop-detail strength off the graphics preset's
+    // terrainDetail: full on High/Ultra (1.0), eased on Medium (0.85), OFF on
+    // Low (0.62) so weak hardware skips the extra fragment work entirely.
+    this.propDetailUniforms.uPropDetailStr.value =
+      detailLevel >= 1.0 ? 1.0 : detailLevel >= 0.82 ? 0.75 : 0.0;
   }
 
   /** Release every pooled resource. Called when the game scene tears down. */

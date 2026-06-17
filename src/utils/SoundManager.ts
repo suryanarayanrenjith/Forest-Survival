@@ -90,6 +90,11 @@ class SoundManager {
     // tactile feedback instead of being silent.
     this.sounds.set('weaponSwitch', this.createWeaponSwitchSound(ctx, sampleRate));
 
+    // Spent brass casing hitting the ground — a tiny bright metallic "tink"
+    // with a lighter skitter tap, so ejected shells rain believably onto hard
+    // ground after each shot without ever reading as a second gunshot.
+    this.sounds.set('casing', this.createCasingDrop(ctx, sampleRate));
+
     // ── Per-weapon gunshots ──────────────────────────────────────────────
     // Every weapon used to share the single generic 'shoot' buffer, so all
     // seven guns sounded identical. Each now has a distinct synthesized
@@ -429,6 +434,36 @@ class SoundManager {
         }
       }
       data[i] = Math.tanh((clack + blip) * 1.2) * 0.5;
+    }
+    return buffer;
+  }
+
+  // Spent brass casing bouncing on hard ground — two contacts (a primary
+  // tink + a lighter skitter ~85ms later) made of inharmonic metallic partials
+  // over a sharp contact click, glued with tanh. Short, bright and quiet so a
+  // stream of ejected shells reads as brass tinkling on the floor, not gunfire.
+  private createCasingDrop(ctx: AudioContext, sampleRate: number): AudioBuffer {
+    const duration = 0.2;
+    const buffer = ctx.createBuffer(1, Math.floor(sampleRate * duration), sampleRate);
+    const data = buffer.getChannelData(0);
+    const taps = [ { at: 0.0, g: 1.0 }, { at: 0.085, g: 0.5 } ];
+    // Inharmonic partials → "metal", not a pitched tone.
+    const partials = [
+      { f: 2300, a: 1.0 }, { f: 3170, a: 0.6 }, { f: 4690, a: 0.34 }, { f: 6300, a: 0.18 },
+    ];
+    for (let i = 0; i < buffer.length; i++) {
+      const t = i / sampleRate;
+      let s = 0;
+      for (const tap of taps) {
+        const dt = t - tap.at;
+        if (dt < 0) continue;
+        const env = Math.exp(-dt * 55);
+        const click = (Math.random() * 2 - 1) * Math.exp(-dt * 400) * 0.25;
+        let tone = 0;
+        for (const p of partials) tone += Math.sin(2 * Math.PI * p.f * dt) * p.a;
+        s += (tone * 0.16 + click) * env * tap.g;
+      }
+      data[i] = Math.tanh(s * 1.2) * 0.5;
     }
     return buffer;
   }
