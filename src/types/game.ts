@@ -287,7 +287,7 @@ export interface Bullet {
   isRocket?: boolean;
 }
 
-export type PowerUpType = 'ammo' | 'speed' | 'damage' | 'shield' | 'infinite_ammo' | 'overcharge' | 'phantom';
+export type PowerUpType = 'ammo' | 'speed' | 'damage' | 'shield' | 'infinite_ammo' | 'overcharge' | 'phantom' | 'nuke';
 
 export interface PowerUp {
   mesh: THREE.Mesh;

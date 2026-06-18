@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   Heart, Crosshair, Skull, Waves, Flame, Lock,
   Zap, Shield as ShieldIcon, Wind, Ghost, Footprints,
-  Swords, Infinity as InfinityIcon, Boxes, PackageSearch, type LucideIcon,
+  Swords, Infinity as InfinityIcon, Boxes, PackageSearch, Bomb, type LucideIcon,
 } from 'lucide-react';
 import { WEAPONS } from '../types/game';
 import { getAbilityIcon } from './abilityIcons';
@@ -33,6 +33,7 @@ const POWER_ICONS: Record<string, LucideIcon> = {
   infinite_ammo: InfinityIcon,
   overcharge: Zap,
   phantom: Ghost,
+  nuke: Bomb,
 };
 
 interface HUDProps {

@@ -872,8 +872,9 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
     ];
     // Single unit cone — every foliage tier scales this. Previously each
     // tier got a fresh ConeGeometry, producing ~600 unique cones across
-    // the menu's ~150 trees.
-    const foliageUnitGeo = new THREE.ConeGeometry(1, 1, 6);
+    // the menu's ~150 trees. 8 radial segments (was 6) rounds the silhouette
+    // so the low-poly canopy doesn't read as a flat-faced green shard.
+    const foliageUnitGeo = new THREE.ConeGeometry(1, 1, 8);
     const deadTrunkGeo = new THREE.CylinderGeometry(0.06, 0.2, 1, 5);
     const deadBranchGeo = new THREE.CylinderGeometry(0.02, 0.05, 1, 3);
 
@@ -887,14 +888,15 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
       trunk.receiveShadow = true;
       treeGroup.add(trunk);
 
+      // One foliage shade per WHOLE tree — picking a fresh random green per
+      // tier made single trees look patchy/non-uniform. Each tree still varies
+      // tree-to-tree, but its own canopy now reads as one coherent conifer.
+      const treeFoliageMat = foliageMaterials[Math.floor(Math.random() * foliageMaterials.length)];
       const tierCount = 3 + (sizeIndex > 1 ? 1 : 0);
       for (let tierIndex = 0; tierIndex < tierCount; tierIndex++) {
         const tierRadius = (3.5 - tierIndex * 0.5) * randomRange(0.75, 1.25);
         const tierHeight = (7 - tierIndex * 1.1) * randomRange(0.8, 1.1);
-        const foliage = new THREE.Mesh(
-          foliageUnitGeo,
-          foliageMaterials[Math.floor(Math.random() * foliageMaterials.length)],
-        );
+        const foliage = new THREE.Mesh(foliageUnitGeo, treeFoliageMat);
         foliage.scale.set(tierRadius, tierHeight, tierRadius);
         foliage.position.y = trunkHeight * 0.5 + tierIndex * 3 + 1;
         foliage.castShadow = true;
@@ -935,7 +937,11 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
       const baseScale = 0.5 + Math.random() * 0.8;
       const distanceScale = distanceFromCenter > 45 ? 0.55 : distanceFromCenter > 28 ? 0.75 : 1.0;
       const foregroundScale = treePosition.z > 18 ? 0.6 : treePosition.z > 10 ? 0.8 : 1.0;
-      const treeScale = baseScale * distanceScale * foregroundScale;
+      // Floor the final scale so the distance/foreground multipliers can't
+      // shrink a tree down to a stubby green cone that reads as a bush instead
+      // of a conifer — every tree keeps enough height for its tiers to separate,
+      // keeping the tree-line uniform.
+      const treeScale = Math.max(0.62, baseScale * distanceScale * foregroundScale);
       const treeGroup = Math.random() < 0.1 ? createDeadTree() : createPineTree(treeScale);
       treeGroup.scale.set(treeScale, treeScale + Math.random() * 0.2, treeScale);
       treeGroup.position.set(treePosition.x, heightAt(treePosition.x, treePosition.z), treePosition.z);

@@ -717,6 +717,300 @@ export class FireNovaEffect {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Tactical Nuke — a full, self-contained nuclear-detonation set-piece for the
+// nuke power-up. Built to read as the real thing in stages:
+//   1. a blinding white-hot flash that snaps out instantly,
+//   2. a churning ground fireball that expands then lifts off,
+//   3. a rising MUSHROOM CLOUD — a column (stem) that climbs while a billowing
+//      cap rolls outward at its head (with a vortex-ring collar), cooling from
+//      fire-orange to ash-grey as it rises,
+//   4. a fast, wide ground shockwave ring + a low base dust ring,
+//   5. debris/embers blown out and arcing back down.
+// Allocation-light (shared geometries, one pooled light) and far cheaper than
+// chaining dozens of explosions for the same payoff.
+//
+// Refs: mushroom-cloud + shockwave layering — the same expanding-ring approach
+// as the fire nova above, extended with a rising stem/cap pair.
+// ─────────────────────────────────────────────────────────────────────────────
+const NUKE_STEM_GEO = new THREE.CylinderGeometry(0.42, 0.62, 1, 18, 1, true);
+const NUKE_CAP_GEO = new THREE.IcosahedronGeometry(1, 3);
+const NUKE_COLLAR_GEO = new THREE.TorusGeometry(1, 0.42, 12, 28);
+const NUKE_RING_GEO = (() => {
+  const g = new THREE.RingGeometry(0.78, 1.0, 72);
+  g.rotateX(-Math.PI / 2); // lie flat on the XZ ground plane
+  return g;
+})();
+// Scratch colours reused for the cooling lerp (no per-frame allocation).
+const _NUKE_HOT = new THREE.Color(0xfff1c2);
+const _NUKE_FIRE = new THREE.Color(0xff7a26);
+const _NUKE_ASH = new THREE.Color(0x4a443e);
+
+export class NukeEffect {
+  private group: THREE.Group;
+  private flash: THREE.Mesh;
+  private fireball: THREE.Mesh;
+  private stem: THREE.Mesh;
+  private cap: THREE.Mesh;
+  private collar: THREE.Mesh;
+  private shock: THREE.Mesh;
+  private dust: THREE.Mesh;
+  private debris: THREE.Points;
+  private debrisVel: Float32Array;
+  private flashMat: THREE.MeshBasicMaterial;
+  private fireMat: THREE.MeshBasicMaterial;
+  private stemMat: THREE.MeshBasicMaterial;
+  private capMat: THREE.MeshBasicMaterial;
+  private collarMat: THREE.MeshBasicMaterial;
+  private shockMat: THREE.MeshBasicMaterial;
+  private dustMat: THREE.MeshBasicMaterial;
+  private debrisMat: THREE.PointsMaterial;
+  private debrisGeo: THREE.BufferGeometry;
+  private light: THREE.PointLight | null;
+  private age = 0;
+  private readonly life = 3.8;        // long enough for the cloud to rise + cool
+  private readonly radius: number;    // blast scale driver
+  private readonly cloudTop: number;  // peak height the cap climbs to
+  private readonly lightPeak: number;
+
+  constructor(scene: THREE.Scene, position: THREE.Vector3, radius = 34) {
+    this.radius = radius;
+    this.cloudTop = radius * 1.5;
+    this.lightPeak = Math.min(160, 70 + radius * 2.4);
+    this.group = new THREE.Group();
+    this.group.position.copy(position);
+
+    // 1. Blinding detonation flash — white-hot, snaps huge then vanishes.
+    this.flashMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff, transparent: true, opacity: 1,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    this.flash = new THREE.Mesh(NUKE_CAP_GEO, this.flashMat);
+    this.flash.position.y = radius * 0.32;
+    this.flash.userData.cannotReceiveAO = true;
+    this.flash.renderOrder = 996;
+    this.group.add(this.flash);
+
+    // 2. Ground fireball — churning hot core that lifts off as the stem forms.
+    this.fireMat = new THREE.MeshBasicMaterial({
+      color: 0xff8a2e, transparent: true, opacity: 1,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    this.fireball = new THREE.Mesh(NUKE_CAP_GEO, this.fireMat);
+    this.fireball.position.y = radius * 0.22;
+    this.fireball.userData.cannotReceiveAO = true;
+    this.fireball.renderOrder = 994;
+    this.group.add(this.fireball);
+
+    // 3a. Rising stem — the column of the mushroom.
+    this.stemMat = new THREE.MeshBasicMaterial({
+      color: 0xff7a26, transparent: true, opacity: 0.0,
+      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+    });
+    this.stem = new THREE.Mesh(NUKE_STEM_GEO, this.stemMat);
+    this.stem.userData.cannotReceiveAO = true;
+    this.stem.renderOrder = 992;
+    this.group.add(this.stem);
+
+    // 3b. Billowing cap + 3c. vortex-ring collar at the cap's underside.
+    this.capMat = new THREE.MeshBasicMaterial({
+      color: 0xff8a30, transparent: true, opacity: 0.0,
+      blending: THREE.NormalBlending, depthWrite: false,
+    });
+    this.cap = new THREE.Mesh(NUKE_CAP_GEO, this.capMat);
+    this.cap.userData.cannotReceiveAO = true;
+    this.cap.renderOrder = 993;
+    this.group.add(this.cap);
+
+    this.collarMat = new THREE.MeshBasicMaterial({
+      color: 0xff9a3a, transparent: true, opacity: 0.0,
+      blending: THREE.NormalBlending, depthWrite: false,
+    });
+    this.collar = new THREE.Mesh(NUKE_COLLAR_GEO, this.collarMat);
+    this.collar.rotation.x = Math.PI / 2; // lie flat (ring axis up)
+    this.collar.userData.cannotReceiveAO = true;
+    this.collar.renderOrder = 992;
+    this.group.add(this.collar);
+
+    // 4a. Ground shockwave — sweeps out fast and wide.
+    this.shockMat = new THREE.MeshBasicMaterial({
+      color: 0xffd9a0, transparent: true, opacity: 0.95,
+      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+    });
+    this.shock = new THREE.Mesh(NUKE_RING_GEO, this.shockMat);
+    this.shock.position.y = 0.16;
+    this.shock.userData.cannotReceiveAO = true;
+    this.shock.renderOrder = 991;
+    this.group.add(this.shock);
+
+    // 4b. Base dust ring — kicked-up dirt skirting the crater.
+    this.dustMat = new THREE.MeshBasicMaterial({
+      color: 0x6a5d4c, transparent: true, opacity: 0.0,
+      blending: THREE.NormalBlending, depthWrite: false, side: THREE.DoubleSide,
+    });
+    this.dust = new THREE.Mesh(NUKE_RING_GEO, this.dustMat);
+    this.dust.position.y = 0.1;
+    this.dust.userData.cannotReceiveAO = true;
+    this.dust.renderOrder = 990;
+    this.group.add(this.dust);
+
+    // 5. Debris/embers thrown out + up, arcing back down under gravity.
+    const debrisCount = 90;
+    this.debrisGeo = new THREE.BufferGeometry();
+    const positions = new Float32Array(debrisCount * 3);
+    const colors = new Float32Array(debrisCount * 3);
+    this.debrisVel = new Float32Array(debrisCount * 3);
+    const DEBRIS_COLORS = [0xffd24a, 0xff7a1e, 0xff4a1e, 0x6a5d4c, 0x3a342e];
+    for (let i = 0; i < debrisCount; i++) {
+      const i3 = i * 3;
+      const ang = Math.random() * Math.PI * 2;
+      const out = 10 + Math.random() * radius * 1.1;
+      this.debrisVel[i3] = Math.cos(ang) * out;
+      this.debrisVel[i3 + 1] = 10 + Math.random() * 24; // strong upward kick
+      this.debrisVel[i3 + 2] = Math.sin(ang) * out;
+      const c = DEBRIS_COLORS[(Math.random() * DEBRIS_COLORS.length) | 0];
+      colors[i3] = ((c >> 16) & 255) / 255;
+      colors[i3 + 1] = ((c >> 8) & 255) / 255;
+      colors[i3 + 2] = (c & 255) / 255;
+    }
+    this.debrisGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    this.debrisGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    this.debrisMat = new THREE.PointsMaterial({
+      size: 0.7, vertexColors: true, transparent: true, opacity: 1,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    this.debris = new THREE.Points(this.debrisGeo, this.debrisMat);
+    this.debris.userData.cannotReceiveAO = true;
+    this.group.add(this.debris);
+
+    scene.add(this.group);
+
+    // Borrow a pooled light (never scene.add a fresh one — that recompiles).
+    this.light = _explosionLightAcquire ? _explosionLightAcquire() : null;
+    if (this.light) {
+      this.light.color.setHex(0xffd28a);
+      this.light.intensity = this.lightPeak;
+      this.light.distance = Math.max(80, radius * 6);
+      this.light.position.set(position.x, position.y + 4, position.z);
+    }
+  }
+
+  update(delta: number): boolean {
+    this.age += delta;
+    const t = this.age / this.life;
+    if (t >= 1) return true;
+
+    // 1. Flash — colossal in the first ~80ms, gone by ~180ms.
+    const flGrow = easeOut(Math.min(1, this.age / 0.08));
+    this.flash.scale.setScalar(this.radius * (0.4 + 1.1 * flGrow));
+    this.flashMat.opacity = Math.max(0, 1 - this.age / 0.18);
+    this.flash.visible = this.flashMat.opacity > 0.01;
+
+    // 2. Fireball — expands hard, lifts off and dims into the rising stem.
+    const fbGrow = easeOut(Math.min(1, this.age / 0.45));
+    this.fireball.scale.setScalar(this.radius * (0.25 + 0.7 * fbGrow));
+    this.fireball.position.y = this.radius * (0.22 + 0.5 * easeOut(Math.min(1, this.age / 0.9)));
+    this.fireMat.opacity = this.age < 0.25 ? 1 : Math.max(0, 1 - (this.age - 0.25) / 0.85);
+    this.fireball.visible = this.fireMat.opacity > 0.01;
+
+    // 3. Mushroom cloud — the cap climbs to cloudTop while the stem stretches
+    // under it; both fade up from nothing as the fireball hands off (~0.2s).
+    const rise = easeOut(Math.min(1, this.age / 2.4));        // 0→1 climb
+    const capY = this.radius * 0.4 + this.cloudTop * rise;
+    const capScale = this.radius * (0.3 + 0.95 * easeOut(Math.min(1, this.age / 1.8)));
+    // Cooling: fire-orange → ash-grey as the cloud ages (collar runs hotter).
+    const coolA = Math.min(1, this.age / 1.6);
+    this.capMat.color.copy(_NUKE_FIRE).lerp(_NUKE_ASH, coolA);
+    this.stemMat.color.copy(_NUKE_FIRE).lerp(_NUKE_ASH, Math.min(1, this.age / 1.9));
+    this.collarMat.color.copy(_NUKE_HOT).lerp(_NUKE_ASH, coolA);
+
+    // Cap: a wide, slightly flattened billow that rolls outward as it rises.
+    this.cap.position.y = capY;
+    this.cap.scale.set(capScale, capScale * 0.74, capScale);
+    // Vortex collar hugs the cap underside, a touch wider than the cap.
+    this.collar.position.y = capY - capScale * 0.34;
+    this.collar.scale.set(capScale * 0.92, capScale * 0.92, capScale * 0.5);
+
+    // Stem: from the ground up to just under the cap, thickening slightly.
+    const stemH = Math.max(0.001, capY - this.radius * 0.1);
+    const stemW = this.radius * (0.26 + 0.12 * rise);
+    this.stem.position.y = stemH * 0.5;
+    this.stem.scale.set(stemW, stemH, stemW);
+
+    // Cloud opacity: fades in fast, holds, then dissolves over the last ~1.1s.
+    const cloudFade = this.age < 0.22 ? 0
+      : this.age < 1.0 ? (this.age - 0.22) / 0.78
+      : Math.max(0, 1 - (this.age - (this.life - 1.1)) / 1.1);
+    const cloudOp = Math.min(1, Math.max(0, cloudFade));
+    this.capMat.opacity = 0.96 * cloudOp;
+    this.collarMat.opacity = 0.9 * cloudOp;
+    this.stemMat.opacity = 0.8 * cloudOp;
+
+    // 4a. Shockwave — out fast and wide in the first ~1.1s.
+    const swT = Math.min(1, this.age / 1.1);
+    const sw = easeOut(swT);
+    const swScale = this.radius * (0.25 + 2.2 * sw);
+    this.shock.scale.set(swScale, 1, swScale);
+    this.shockMat.opacity = 0.95 * Math.max(0, 1 - swT);
+    this.shock.visible = this.shockMat.opacity > 0.01;
+
+    // 4b. Base dust ring — slower, lingers low around the crater.
+    const dT = Math.min(1, this.age / 1.8);
+    const dScale = this.radius * (0.3 + 1.5 * easeOut(dT));
+    this.dust.scale.set(dScale, 1, dScale);
+    this.dustMat.opacity = 0.5 * Math.max(0, 1 - dT) * (this.age > 0.1 ? 1 : this.age / 0.1);
+    this.dust.visible = this.dustMat.opacity > 0.01;
+
+    // 5. Debris — fly out and arc back down (frozen once it has mostly landed).
+    if (this.age < 1.6) {
+      const pos = this.debrisGeo.getAttribute('position') as THREE.BufferAttribute;
+      const arr = pos.array as Float32Array;
+      for (let i = 0; i < this.debrisVel.length; i += 3) {
+        arr[i] += this.debrisVel[i] * delta;
+        arr[i + 1] += this.debrisVel[i + 1] * delta;
+        arr[i + 2] += this.debrisVel[i + 2] * delta;
+        this.debrisVel[i + 1] -= 26 * delta; // gravity
+        this.debrisVel[i] *= 0.97;
+        this.debrisVel[i + 2] *= 0.97;
+        if (arr[i + 1] < 0) arr[i + 1] = 0; // settle on the ground
+      }
+      pos.needsUpdate = true;
+    }
+    this.debrisMat.opacity = Math.max(0, 1 - this.age / 1.5);
+    this.debris.visible = this.debrisMat.opacity > 0.01;
+
+    // Light: blinding flash that decays fast, then a warm afterglow from the
+    // burning cloud that fades over ~1.2s.
+    if (this.light) {
+      const flashGlow = this.lightPeak * Math.max(0, 1 - this.age / 0.4);
+      const cloudGlow = this.lightPeak * 0.28 * Math.max(0, 1 - this.age / 1.2);
+      this.light.intensity = Math.max(flashGlow, cloudGlow);
+      this.light.position.y = 4 + capY * 0.4;
+    }
+
+    return false;
+  }
+
+  dispose(scene: THREE.Scene) {
+    scene.remove(this.group);
+    this.flashMat.dispose();
+    this.fireMat.dispose();
+    this.stemMat.dispose();
+    this.capMat.dispose();
+    this.collarMat.dispose();
+    this.shockMat.dispose();
+    this.dustMat.dispose();
+    this.debrisMat.dispose();
+    this.debrisGeo.dispose();
+    if (this.light) {
+      if (_explosionLightRelease) _explosionLightRelease(this.light);
+      else scene.remove(this.light);
+      this.light = null;
+    }
+    // NUKE_* shared geometries are never disposed here.
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Ability Cast — a generic, tinted "signature move" burst played at the caster
 // the instant ANY character ability fires. It reads as a surge of the
 // ability's accent colour erupting from the player: an expanding ground energy

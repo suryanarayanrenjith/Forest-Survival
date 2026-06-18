@@ -1,10 +1,10 @@
-import { useRef, useEffect, useState, useCallback } from 'react';
+import { useRef, useEffect, useState, useCallback, type CSSProperties } from 'react';
 import * as THREE from 'three';
 import { GraduationCap, Play, Home, MousePointerClick } from 'lucide-react';
 import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
 import { GunModel, type WeaponType as GunWeaponType } from './utils/GunModel';
-import { MuzzleFlash, MuzzleSmoke, BulletTracer, ImpactEffect, RobotHitSparks, ExplosionEffect, FireNovaEffect, AbilityCastEffect, ImpactBurst, setMuzzleLightPool, setExplosionLightPool } from './utils/Effects';
+import { MuzzleFlash, MuzzleSmoke, BulletTracer, ImpactEffect, RobotHitSparks, ExplosionEffect, FireNovaEffect, NukeEffect, AbilityCastEffect, ImpactBurst, setMuzzleLightPool, setExplosionLightPool } from './utils/Effects';
 import { HackBeam, buildHackVisuals, updateHackVisuals, disposeHackVisuals } from './utils/HackVisuals';
 import { soundManager } from './utils/SoundManager';
 import { gameSettingsManager, type UserSettings, type KeyBindings } from './utils/GameSettingsManager';
@@ -327,6 +327,10 @@ const ForestSurvivalGame = () => {
   // Resolver consumes the final pick result — `WavePerkId` on a winning
   // guess, `null` when the player picked an empty box.
   const wavePerkResolverRef = useRef<((picked: WavePerkId | null) => void) | null>(null);
+  // Dynamic crosshair root — the game loop writes the live aim-spread (in px)
+  // into its `--chs` CSS var each frame so the reticle opens/closes with the
+  // weapon's real cone (only the 'dynamic' crosshair style reads it).
+  const crosshairRef = useRef<HTMLDivElement>(null);
   // Picked perks for the active run — surfaces as a small chip in the HUD
   // so the player can see at a glance what's stacked.
   const [activeRunPerks, setActiveRunPerks] = useState<WavePerkId[]>([]);
@@ -2986,6 +2990,8 @@ const ForestSurvivalGame = () => {
     // a world-space core flash + shockring at each point of contact.
     const impactBursts: ImpactBurst[] = [];
     const explosionEffects: ExplosionEffect[] = [];
+    // Tactical-nuke detonations (mushroom cloud set-piece — own small array).
+    const nukeEffects: NukeEffect[] = [];
     // Pyro "Firestorm" fire-nova shockwaves (rare ultimate — own small array).
     const fireNovas: FireNovaEffect[] = [];
     // Per-cast ability bursts (tinted ring + pillar + sparks at the caster).
@@ -3791,6 +3797,13 @@ const ForestSurvivalGame = () => {
           shellGeo = _pgeo('pgShellPh', () => new THREE.TorusKnotGeometry(0.32, 0.12, 64, 8));
           innerGeo = _pgeo('pgInnerPh', () => new THREE.IcosahedronGeometry(0.24, 0));
           break;
+        case 'nuke':
+          // Radioactive-green warhead — a rounded shell with a hot glowing core
+          // so the rare nuke drop reads as obviously dangerous/special.
+          color = 0x1f7a22; coreColor = 0x9bff4a;
+          shellGeo = _pgeo('pgShellNk', () => new THREE.IcosahedronGeometry(0.6, 1));
+          innerGeo = _pgeo('pgInnerNk', () => new THREE.IcosahedronGeometry(0.32, 0));
+          break;
         default:
           shellGeo = _pgeo('pgShellD0', () => new THREE.BoxGeometry(0.6, 0.6, 0.6));
           innerGeo = _pgeo('pgInnerD0', () => new THREE.BoxGeometry(0.32, 0.32, 0.32));
@@ -4339,6 +4352,16 @@ const ForestSurvivalGame = () => {
     const crouchSpeedMultiplier = 0.5; // Move slower when crouching
     let currentCameraHeight = standingHeight; // For smooth transitions
 
+    // ── WEAPON BLOOM (movement + sustained-fire spread) ──────────────────
+    // Firing while on the move throws shots off; holding auto-fire opens the
+    // cone up further. These mirror the per-frame movement state out of the
+    // render loop so shoot() (trigger-driven) and the dynamic crosshair (per
+    // frame) read the SAME stance — what you see is what you get. fireBloom
+    // builds per shot in shoot() and decays in the loop.
+    let moveStateMoving = false;   // any directional input this frame
+    let moveStateRunning = false;  // sprinting this frame
+    let fireBloom = 0;             // 0..1 sustained-fire bloom
+
     // POWERUP EFFECTS TRACKING
     let speedBoostActive = false;
     let speedBoostEndTime = 0;
@@ -4378,13 +4401,19 @@ const ForestSurvivalGame = () => {
     // crate stows the power (it is NOT auto-applied); pressing E activates it,
     // emptying the slot. While a power is held, new crates can't be collected —
     // the player must spend the current one first. Truly random per drop.
-    type HeldPower = 'ammo' | 'speed' | 'damage' | 'shield' | 'infinite_ammo' | 'overcharge' | 'phantom';
+    type HeldPower = 'ammo' | 'speed' | 'damage' | 'shield' | 'infinite_ammo' | 'overcharge' | 'phantom' | 'nuke';
+    // The uniform loot pool deliberately EXCLUDES 'nuke' — the nuke is a rare
+    // special roll handled separately in randomLoot so it stays a treat, not a
+    // 1-in-8 staple.
     const LOOT_POOL: HeldPower[] = ['ammo', 'speed', 'damage', 'shield', 'infinite_ammo', 'overcharge', 'phantom'];
     const POWER_LABELS: Record<HeldPower, string> = {
       ammo: 'Ammo', speed: 'Speed', damage: 'Damage', shield: 'Shield',
-      infinite_ammo: 'Inf. Ammo', overcharge: 'Overcharge', phantom: 'Phantom',
+      infinite_ammo: 'Inf. Ammo', overcharge: 'Overcharge', phantom: 'Phantom', nuke: 'Nuke',
     };
-    const randomLoot = (): HeldPower => LOOT_POOL[(Math.random() * LOOT_POOL.length) | 0];
+    // ~5% of drops are a tactical nuke (rare); the rest roll the uniform pool.
+    const NUKE_LOOT_CHANCE = 0.05;
+    const randomLoot = (): HeldPower =>
+      Math.random() < NUKE_LOOT_CHANCE ? 'nuke' : LOOT_POOL[(Math.random() * LOOT_POOL.length) | 0];
     let heldPower: HeldPower | null = null;
     let lastHeldHintAt = 0; // throttles the "use your power first" hint
 
@@ -4443,6 +4472,14 @@ const ForestSurvivalGame = () => {
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Phantom Active!', 'powerup');
           // No world flare — the weapon fading out is the feedback.
           break;
+        case 'nuke': {
+          // Tactical Nuke — a deployable mushroom-cloud blast that clears a
+          // large area around the player (player shielded from their own boom).
+          const kills = detonateNuke(camera.position);
+          showPowerMessage(`Tactical Nuke · ${kills} eliminated`, 2400);
+          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry(`Tactical Nuke · ${kills} kills`, 'powerup');
+          break;
+        }
       }
       // Quick cast flourish. Only Overcharge spawns a world flare now — Shield
       // and Phantom each have their own persistent visual (braced mesh / weapon
@@ -4461,7 +4498,9 @@ const ForestSurvivalGame = () => {
     // power can only be activated when NO other timed effect is currently
     // running. Instant powers are always allowed. `isTimedPower` and
     // `anyTimedEffectActive` are the single source of truth for that rule.
-    const isTimedPower = (p: HeldPower): boolean => p !== 'ammo';
+    // Instant powers (applied once, no lingering timer): ammo refill + the
+    // tactical nuke. Everything else runs for a duration and is anti-stacked.
+    const isTimedPower = (p: HeldPower): boolean => p !== 'ammo' && p !== 'nuke';
     function anyTimedEffectActive(): boolean {
       return speedBoostActive || damageBoostActive || shieldActive
         || infiniteAmmoActive || overchargeActive || phantomActive;
@@ -4510,9 +4549,11 @@ const ForestSurvivalGame = () => {
           break;
         }
         case 'nuke': {
-          // Tactical nuke — vaporise everything alive. Credit each kill so
-          // the player's score / streak / mission progress all tick up.
-          let nuked = 0;
+          // 20-streak reward — the cinematic mushroom-cloud blast (full VFX +
+          // big-area damage, player shielded), then a GLOBAL mop-up so the
+          // streak nuke keeps its "vaporise the whole wave" identity. Each kill
+          // is credited so score / streak / mission progress all tick up.
+          let nuked = detonateNuke(camera.position, 90);
           for (let i = 0; i < enemies.length; i++) {
             const e = enemies[i];
             if (e.dead || e.health <= 0) continue;
@@ -4522,10 +4563,6 @@ const ForestSurvivalGame = () => {
           }
           showPowerMessage(`Tactical Nuke · ${nuked} eliminated`, 2200);
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry(`Tactical Nuke · ${nuked} kills`, 'powerup');
-          triggerScreenShake();
-          // A bright burst on the player + the kill flash for the payoff.
-          createParticles(camera.position, 0x33ff33, 50);
-          triggerKillFlash();
           break;
         }
         case 'frenzy': {
@@ -4546,10 +4583,15 @@ const ForestSurvivalGame = () => {
           // 30-streak reward — a tanky rampage: a full riot shield, a speed
           // surge and an overcharge offensive burst together. Pure reuse of the
           // existing timed states, so no fresh expiry path is introduced.
-          shieldActive = true;
-          shieldEndTime = nowMs + shieldDuration;
-          shieldAbsorb = SHIELD_ABSORB_MAX;
-          shieldBreakFlash = 0;
+          // Skip ONLY the shield if the left hand is busy with an armed bomb's
+          // detonator (engineer) — the speed + overcharge still land so the
+          // reward isn't wasted, and the detonator/shield stay mutually exclusive.
+          if (!detonatorOccupiesHand()) {
+            shieldActive = true;
+            shieldEndTime = nowMs + shieldDuration;
+            shieldAbsorb = SHIELD_ABSORB_MAX;
+            shieldBreakFlash = 0;
+          }
           speedBoostActive = true;
           speedBoostEndTime = nowMs + speedBoostDuration;
           overchargeActive = true;
@@ -4595,7 +4637,19 @@ const ForestSurvivalGame = () => {
     // the detonation path can clear the reference if the bomb goes off any way.
     let armedBomb: ExplosiveBarrel | null = null;
     const DEMO_WIRE_RANGE = 5.5;   // how close the engineer must stand to a barrel
-    const DEMO_ARM_TIME = 0.85;    // seconds the wiring animation takes
+    const DEMO_ARM_TIME = 1.0;     // seconds the crouch-and-wire animation takes
+
+    // ── ONE-HANDED LEFT ARM (detonator ⇄ riot shield) ────────────────────
+    // The engineer's remote detonator and the riot shield are BOTH held on the
+    // player's left arm — they can never be carried at once. This single
+    // predicate is the source of truth: it's true while a bomb is wired/armed
+    // (or the detonator is still dropping out of view), so every shield-raise
+    // path (loot power-up, killstreak Juggernaut) is blocked while it holds,
+    // and wiring is blocked while the shield is up. Keeps the two viewmodels
+    // mutually exclusive in EVERY game mode. (detonatorRaise/wiringTime are
+    // declared above; armedBomb just above.)
+    const detonatorOccupiesHand = (): boolean =>
+      armedBomb !== null || wiringTime > 0 || detonatorRaise > 0.05;
 
     // ── KILLSTREAK AIRDROP REWARDS ───────────────────────────────────────
     // Earned by chaining kills without dying. Effects are INSTANT (no held
@@ -4702,6 +4756,13 @@ const ForestSurvivalGame = () => {
           abilityActiveUntil = nowMs + 200;
           tutorial.recordAction('use_ability', 1);
           return;
+        }
+        // Wiring needs the left hand, but the riot shield is braced on that
+        // same arm — can't do both. Make the player drop the shield first so
+        // the detonator and shield can never be carried together.
+        if (shieldActive) {
+          showPowerMessage('Lower the shield first — wiring the bomb needs that hand', 1600);
+          return; // costs no cooldown
         }
         const target = findNearestBarrel(camera.position.x, camera.position.z, DEMO_WIRE_RANGE);
         if (!target) {
@@ -5088,9 +5149,14 @@ const ForestSurvivalGame = () => {
       // enemy loot now (one at a time), so there's no point-unlock gating.
       if (e.code === b.usePower && !paused) {
         if (heldPower) {
+          // Hand check: the riot shield braces on the SAME left arm that holds
+          // the engineer's remote detonator, so it can't be raised while a bomb
+          // is wired/armed. Slot is kept so the player can use it after detonating.
+          if (heldPower === 'shield' && detonatorOccupiesHand()) {
+            showPowerMessage('Hands full — detonate your bomb before raising the shield', 1800);
           // Anti-stack: a timed power can't start while another timed effect is
           // still running — the player keeps the held power and is told to wait.
-          if (isTimedPower(heldPower) && anyTimedEffectActive()) {
+          } else if (isTimedPower(heldPower) && anyTimedEffectActive()) {
             showPowerMessage('Wait for your active power to finish', 1600);
           } else {
             const power = heldPower;
@@ -5349,6 +5415,37 @@ const ForestSurvivalGame = () => {
     };
 
     // Enhanced shooting
+    // ── AIM SPREAD (single source of truth) ──────────────────────────────
+    // Total per-axis deviation added to the shot direction for the player's
+    // CURRENT stance. Used by BOTH shoot() (the fired bullet) and the dynamic
+    // crosshair (its size), so the reticle always reflects the real cone.
+    //   • base weapon spread — tightened by ADS (scoped sniper → pinpoint) and
+    //     the accuracy skill, exactly as before;
+    //   • movement bloom — ADDITIVE, so even pin-point weapons pull off-aim on
+    //     the move: jumping is worst, then sprinting, then walking; crouching
+    //     steadies the stance. ADS also stabilises movement (but never fully to
+    //     zero while moving — only a still, scoped sniper is truly pinpoint);
+    //   • sustained-fire bloom — the cone opens the longer auto-fire is held.
+    const computeAimSpread = (): number => {
+      const weapon = WEAPONS[currentWeapon];
+      const scopedSniper = isAiming && currentWeapon === 'sniper';
+      const adsActive = isAiming && weapon.canAim === true;
+      const accuracy = 1 + skillBonus('accuracy');
+      // Base weapon spread (ADS-tightened).
+      const aimingScale = adsActive ? (scopedSniper ? 0 : 0.2) : 1.0;
+      let spread = (weapon.spread * aimingScale) / accuracy;
+      // Movement + sustained-fire bloom (additive, ADS-stabilised but not zeroed).
+      let bloom = isJumping ? 0.075
+        : moveStateRunning ? 0.055
+        : moveStateMoving ? 0.030
+        : 0;
+      if (isCrouching) bloom *= 0.4;       // crouched stance is steadier
+      bloom += fireBloom * 0.045;          // holding the trigger opens the cone
+      const bloomAds = adsActive ? 0.4 : 1.0;
+      spread += (bloom * bloomAds) / accuracy;
+      return spread;
+    };
+
     const shoot = () => {
       // Empty magazine — dry-fire click + auto-reload so pulling the trigger on
       // an empty mag actually does something instead of a dead click. The
@@ -5390,6 +5487,9 @@ const ForestSurvivalGame = () => {
         // 1.5 → 1.35, 2.0 → 1.95, 3.0 → 3.2 (the model clamps its own visual).
         const recoilStrength = Math.pow(weapon.weight, 1.45) * 0.85 * (1 - masteryBonus.recoilReduction);
         gunModel.triggerRecoil(recoilStrength);
+        // Sustained-fire bloom — each trigger pull opens the cone a little more;
+        // it recovers in the render loop once you stop firing (see fireBloom).
+        fireBloom = Math.min(1, fireBloom + 0.12);
         // Eject a brass casing per trigger pull (the launcher fires rockets, no casing).
         if (!weapon.name.includes('Launcher')) ejectShellCasing();
         updateGameState();
@@ -5414,17 +5514,13 @@ const ForestSurvivalGame = () => {
           const direction = new THREE.Vector3();
           camera.getWorldDirection(direction);
 
-          // Reduce spread when aiming + Steady Hands skill tightens it further.
-          // Sniper specifically is a precision weapon — when scoped, spread
-          // collapses to ZERO so the bullet lands exactly on the crosshair,
-          // not just "close to it". For other ADS weapons, spread shrinks to
-          // 20% (still tight enough for accurate hip-fire-corrected aim).
-          const isScopedSniper = isAiming && currentWeapon === 'sniper';
-          const aimingScale = (isAiming && weapon.canAim) ? (isScopedSniper ? 0 : 0.2) : 1.0;
-          const spreadMultiplier = aimingScale / (1 + skillBonus('accuracy'));
-          direction.x += (Math.random() - 0.5) * weapon.spread * spreadMultiplier;
-          direction.y += (Math.random() - 0.5) * weapon.spread * spreadMultiplier;
-          direction.z += (Math.random() - 0.5) * weapon.spread * spreadMultiplier;
+          // Total aim deviation for the current stance (base weapon spread +
+          // ADS tightening + movement/sustained-fire bloom). Single source of
+          // truth shared with the dynamic crosshair (see computeAimSpread).
+          const spreadPerAxis = computeAimSpread();
+          direction.x += (Math.random() - 0.5) * spreadPerAxis;
+          direction.y += (Math.random() - 0.5) * spreadPerAxis;
+          direction.z += (Math.random() - 0.5) * spreadPerAxis;
           direction.normalize();
 
           let bullet: THREE.Object3D;
@@ -6886,6 +6982,60 @@ const ForestSurvivalGame = () => {
       }
     };
 
+    // ── TACTICAL NUKE ────────────────────────────────────────────────────
+    // Deploys a full nuclear detonation at `center`: the cinematic NukeEffect
+    // (blinding flash → fireball → rising mushroom cloud → shockwave) plus a
+    // massive AoE that clears a LARGE surrounding area with distance falloff.
+    // The player is shielded from their own blast (a brief invuln that also
+    // covers the barrel chain it sets off). Every kill is credited through the
+    // normal path so score / streak / missions all tick up. Returns the kill
+    // count. `radius` defaults to a large area; the killstreak reward passes a
+    // huge radius to clear the whole arena. Hoisted callers (applyPower /
+    // applyKillstreakReward) only run mid-game, long after this is defined.
+    const NUKE_AREA_RADIUS = 55; // "large surrounding area"
+    const detonateNuke = (center: THREE.Vector3, radius = NUKE_AREA_RADIUS): number => {
+      // Cinematic mushroom-cloud VFX (visual scale a touch under the kill radius
+      // so the blast clearly covers what the cloud engulfs).
+      nukeEffects.push(new NukeEffect(scene, new THREE.Vector3(center.x, 0.5, center.z), radius * 0.62));
+      // Screen feedback — blinding flash, heavy shake, wide FOV punch + a deep
+      // low-pitched boom (no dedicated explosion sample; reuse the barrel boom).
+      triggerKillFlash();
+      if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
+      fovPunch = Math.min(fovPunch + 13, 18);
+      soundManager.play('powerUp', 1.0, false, 0.5);
+      soundManager.play('hit', 0.8, false, 0.5);
+      // Shield the player from their own nuke — also covers the barrel chain it
+      // ignites, so deploying it next to cover never suicides the player.
+      invincibleActive = true;
+      invincibleEndTime = Math.max(invincibleEndTime, Date.now() + 2600);
+      // AoE: vaporise everything alive in range, distance falloff toward the rim.
+      const r2 = radius * radius;
+      let kills = 0;
+      for (let i = 0; i < enemies.length; i++) {
+        const e = enemies[i];
+        if (e.dead || e.health <= 0) continue;
+        const dx = e.mesh.position.x - center.x;
+        const dz = e.mesh.position.z - center.z;
+        const d2 = dx * dx + dz * dz;
+        if (d2 > r2) continue;
+        // Centre = vaporised; toward the edge a colossal hit that still kills
+        // basic robots but can leave a tank/boss badly wounded, not skipped.
+        const falloff = 1 - (Math.sqrt(d2) / radius) * 0.55;
+        const dmg = 650 * falloff;
+        if (isMpGuest && mp) {
+          // Guests don't own enemy health — report each hit to the host.
+          if (e.netId !== undefined) mp.sendEnemyHit(e.netId, dmg, false);
+          continue;
+        }
+        e.health -= dmg;
+        if (e.health <= 0) { handleEnemyKilled(e, false); kills++; }
+        else { e.damageFlashTime = 0.5; }
+      }
+      // Sympathetic detonation of any explosive barrels caught in the area.
+      detonateBarrelsNear(center.x, center.z, radius * 0.5);
+      return kills;
+    };
+
     // ── ENGINEER DEMOLITION HELPERS ──────────────────────────────────────
     // Build the detonator/antenna/wire "kit" that visually turns a plain red
     // barrel into an armed remote bomb. All per-instance materials/geometries
@@ -8046,6 +8196,18 @@ const ForestSurvivalGame = () => {
       // never fight each other — release aim to sprint again.
       const isRunning = wantsToSprint && isMoving && !staminaExhausted && !aimingActive;
 
+      // Mirror the stance out for weapon bloom (shoot() + dynamic crosshair),
+      // and recover sustained-fire bloom while the trigger is at rest.
+      moveStateMoving = isMoving;
+      moveStateRunning = isRunning;
+      fireBloom = Math.max(0, fireBloom - rawDelta * 2.6);
+      // Drive the dynamic crosshair — map the live aim spread to a pixel gap so
+      // the reticle blooms with movement/fire (only the 'dynamic' style reads it).
+      if (crosshairRef.current) {
+        const px = Math.min(34, computeAimSpread() * 190);
+        crosshairRef.current.style.setProperty('--chs', `${px.toFixed(2)}px`);
+      }
+
       // Tick stamina. While sprinting it depletes; when not, after a
       // short idle delay, it regenerates.
       // Tutorial mode grants UNLIMITED stamina — new players should be free to
@@ -8104,7 +8266,16 @@ const ForestSurvivalGame = () => {
       }
 
       // === SMOOTH CROUCH CAMERA HEIGHT TRANSITION ===
-      const targetCameraHeight = isCrouching ? crouchHeight : standingHeight;
+      // The engineer physically BENDS DOWN to wire a barrel: while the wiring
+      // animation plays (`wiringOn`, set above) the eye drops below even the
+      // normal crouch so it reads as kneeling over the TNT, then springs back
+      // up once the bomb is armed. This stacks with the view-pitch dip
+      // (`wiringPitch`) and the gun's wiring pose for a full "crouch → wire →
+      // stand up" beat.
+      const WIRING_EYE_HEIGHT = 2.5; // deep bend over the barrel (< crouchHeight)
+      const targetCameraHeight = wiringOn
+        ? WIRING_EYE_HEIGHT
+        : (isCrouching ? crouchHeight : standingHeight);
       currentCameraHeight = THREE.MathUtils.lerp(currentCameraHeight, targetCameraHeight, rawDelta * 12);
 
       // Update gun sway and bobbing based on movement, then apply all animations
@@ -8509,6 +8680,14 @@ const ForestSurvivalGame = () => {
         if (explosionEffects[i].update(delta)) {
           explosionEffects[i].dispose(scene);
           explosionEffects.splice(i, 1);
+        }
+      }
+
+      // Update tactical-nuke detonations (rising mushroom cloud set-piece).
+      for (let i = nukeEffects.length - 1; i >= 0; i--) {
+        if (nukeEffects[i].update(delta)) {
+          nukeEffects[i].dispose(scene);
+          nukeEffects.splice(i, 1);
         }
       }
 
@@ -10571,7 +10750,7 @@ const ForestSurvivalGame = () => {
 
       // ── STAGE 2: spawn warmup pickups (every type) ─────────────────
       await stage('Pickups', false, () => {
-        const warmPowerUpTypes: PowerUp['type'][] = ['overcharge', 'ammo', 'speed', 'damage', 'shield', 'infinite_ammo', 'phantom'];
+        const warmPowerUpTypes: PowerUp['type'][] = ['overcharge', 'ammo', 'speed', 'damage', 'shield', 'infinite_ammo', 'phantom', 'nuke'];
         warmPowerUpTypes.forEach((type, index) => {
           const warmPowerUp = createPowerUp(
             wp.x + (index - warmPowerUpTypes.length / 2) * 0.85,
@@ -11006,6 +11185,8 @@ const ForestSurvivalGame = () => {
       // per-instance additive materials; shared geometries persist).
       for (const ex of explosionEffects) ex.dispose(scene);
       explosionEffects.length = 0;
+      for (const nk of nukeEffects) nk.dispose(scene);
+      nukeEffects.length = 0;
       for (const fn of fireNovas) fn.dispose(scene);
       fireNovas.length = 0;
       for (const ce of castEffects) ce.dispose(scene);
@@ -11540,8 +11721,9 @@ const ForestSurvivalGame = () => {
       <div className="absolute inset-0" style={{ zIndex: 10, pointerEvents: 'none' }}>
         {!gameState.isGameOver && !isPaused && (
           <div
+            ref={crosshairRef}
             className="absolute top-1/2 left-1/2"
-            style={{ filter: 'drop-shadow(0 0 1.5px rgba(0,0,0,0.95))' }}
+            style={{ filter: 'drop-shadow(0 0 1.5px rgba(0,0,0,0.95))', ['--chs' as string]: '0px' } as CSSProperties}
           >
             {(() => {
               const cc = userSettings.crosshairColor;
@@ -11585,10 +11767,47 @@ const ForestSurvivalGame = () => {
                 />
               );
 
+              // Dynamic tick — distance from centre = base gap + the live aim
+              // spread (`--chs`, written each frame by the game loop), so the
+              // reticle blooms with the weapon's real cone and tightens on ADS.
+              const dynTick = (dir: 'up' | 'down' | 'left' | 'right') => {
+                const vertical = dir === 'up' || dir === 'down';
+                const neg = dir === 'up' || dir === 'left';
+                const axis = vertical ? 'Y' : 'X';
+                const dist = '(6.5px + var(--chs, 0px))';
+                const shift = neg ? `calc(-1 * ${dist})` : `calc${dist}`;
+                return (
+                  <div
+                    key={dir}
+                    className="absolute rounded-full"
+                    style={{
+                      backgroundColor: cc,
+                      width: vertical ? 2 : 5,
+                      height: vertical ? 5 : 2,
+                      left: '50%',
+                      top: '50%',
+                      transform: `translate(-50%, -50%) translate${axis}(${shift})`,
+                    }}
+                  />
+                );
+              };
+              // Dynamic ring — diameter grows with the aim spread too.
+              const dynRing = () => (
+                <div
+                  className="absolute rounded-full"
+                  style={{
+                    border: `1.5px solid ${cc}`,
+                    width: 'calc(18px + 2 * var(--chs, 0px))',
+                    height: 'calc(18px + 2 * var(--chs, 0px))',
+                    left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
+                  }}
+                />
+              );
+
               if (style === 'dot') return dot(4);
               if (style === 'circle') return <>{ring(16)}{dot(2)}</>;
               if (style === 'dynamic') {
-                return <>{(['up', 'down', 'left', 'right'] as const).map((d) => tick(d, 5, 5))}{ring(20)}{dot(2)}</>;
+                return <>{(['up', 'down', 'left', 'right'] as const).map(dynTick)}{dynRing()}{dot(2)}</>;
               }
               // default: 'cross' — gapped 4-tick crosshair with centre dot
               return <>{(['up', 'down', 'left', 'right'] as const).map((d) => tick(d, 6, 3))}{dot(2)}</>;
