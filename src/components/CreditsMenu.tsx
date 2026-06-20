@@ -1,7 +1,8 @@
 import {
   Sparkles, Heart, Code2, ExternalLink, X, ArrowLeft,
   Cpu, Wand2, Palette, Boxes, Zap, ArrowUpRight, Layers3,
-  Database, ShieldCheck, Triangle, GitFork,
+  Database, ShieldCheck, Triangle, GitFork, Crosshair,
+  Gamepad2, Network, Brush, Cog,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -15,6 +16,23 @@ interface TechItem {
   icon: LucideIcon;
   accent: string;
 }
+
+// Film-style credit roll. The device is honest: a single person filled every
+// role, so listing the disciplines IS the story — not decoration.
+const ROLES: Array<{ role: string; icon: LucideIcon }> = [
+  { role: 'Game Design & Direction', icon: Gamepad2 },
+  { role: 'Engineering & Architecture', icon: Code2 },
+  { role: '3D, Shaders & Post-FX', icon: Boxes },
+  { role: 'Multiplayer Netcode', icon: Network },
+  { role: 'UI / UX & Art Direction', icon: Brush },
+  { role: 'Systems & Balancing', icon: Cog },
+];
+
+const STATS: Array<{ value: string; label: string }> = [
+  { value: 'Solo', label: 'Built by one' },
+  { value: '100%', label: 'Vibe-coded' },
+  { value: 'MIT', label: 'Open source' },
+];
 
 const TECH_STACK: TechItem[] = [
   { label: 'React 19',          hint: 'TypeScript · strict',     icon: Code2,   accent: '#38bdf8' },
@@ -36,17 +54,25 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
 
   return (
     <>
-      {/* Backdrop blur lives on its own layer — never invalidated by child scroll */}
+      {/* Backdrop blur lives on its own layer — kept lightly translucent so the
+          living forest still glows behind the dossier. Never invalidated by
+          child scroll (no backdrop-filter on the scroll container). */}
       <div
         className="fixed inset-0 z-50"
-        style={{ background: 'rgba(5,8,10,0.94)', backdropFilter: 'blur(14px)' }}
+        style={{ background: 'rgba(4,8,7,0.9)', backdropFilter: 'blur(16px)' }}
       />
       {/* Scroll container has no backdrop-filter so it never triggers a repaint */}
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4 overflow-y-auto menu-overlay-in">
       <div
-        className="relative w-full max-w-2xl rounded-2xl border border-white/10 bg-[#0b0f15] overflow-hidden"
+        className="hud-frame relative w-full max-w-2xl rounded-2xl border border-emerald-400/15 bg-[#080d0b] overflow-hidden shadow-[0_40px_100px_rgba(0,0,0,0.6)]"
         style={{ animation: 'crFade 0.4s cubic-bezier(0.16,1,0.3,1) forwards' }}
       >
+        {/* Ambient drifting bloom — pure atmosphere behind the content */}
+        <div
+          className="panel-drift pointer-events-none absolute -top-24 -right-16 h-64 w-64 rounded-full"
+          style={{ background: 'radial-gradient(circle, rgba(46,232,180,0.16), transparent 70%)' }}
+        />
+
         {/* Header */}
         <div className="relative flex items-center justify-between px-5 sm:px-6 py-4 border-b border-white/[0.07]">
           <div className="flex items-center gap-3">
@@ -55,10 +81,10 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
               <span className="absolute inset-0 rounded-xl border border-emerald-400/30" style={{ animation: 'crPulse 2.6s ease-in-out infinite' }} />
             </div>
             <div>
-              <p className="text-[10px] tracking-[0.35em] text-emerald-300/90 font-semibold uppercase">
+              <p className="font-hud text-[10px] tracking-[0.36em] text-emerald-300/90 font-semibold uppercase">
                 Credits
               </p>
-              <h2 className="text-lg font-bold text-white tracking-wide">Forest Survival</h2>
+              <h2 className="font-display text-lg font-semibold uppercase tracking-wide text-white">Forest Survival</h2>
             </div>
           </div>
           <button
@@ -71,28 +97,44 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
           </button>
         </div>
 
-        <div className="relative p-5 sm:p-7 space-y-6 max-h-[78dvh] overflow-y-auto">
+        <div className="relative p-5 sm:p-7 space-y-7 max-h-[78dvh] overflow-y-auto">
           {/* ── Hero ─────────────────────────────────────────────────── */}
-          <div className="rounded-2xl border border-white/10 bg-white/[0.02] px-5 sm:px-6 py-6 sm:py-7">
-            <h3
-              className="text-4xl sm:text-5xl font-black tracking-tight leading-[0.95] mb-3"
-              style={{
-                background: 'linear-gradient(180deg, #f0fdf4 0%, #86efac 45%, #22c55e 100%)',
-                WebkitBackgroundClip: 'text',
-                WebkitTextFillColor: 'transparent',
-                backgroundClip: 'text',
-                filter: 'drop-shadow(0 4px 20px rgba(34,197,94,0.45))',
-              }}
-            >
+          <div className="relative text-center pt-3 pb-1">
+            <p className="font-hud flex items-center justify-center gap-2 text-[10px] tracking-[0.42em] text-emerald-300/80 font-semibold uppercase mb-4">
+              <Crosshair className="w-3 h-3" strokeWidth={2.2} /> A solo project by
+            </p>
+            <h3 className="font-display title-bio text-6xl sm:text-7xl font-semibold uppercase tracking-[0.04em] leading-none">
               Surya
             </h3>
+            <p className="mx-auto mt-5 max-w-prose text-[14px] leading-relaxed text-gray-300/90">
+              A fully-featured 3D first-person wave-survival shooter — character abilities, procedural
+              terrain, snapshot-interpolated multiplayer netcode, in-game photo mode, and more.
+              Designed, engineered and vibe-coded from a blank file through conversational AI.
+            </p>
 
-            <p className="text-[14px] leading-relaxed text-gray-300/90 max-w-prose mb-3">
-              A fully-featured 3D first-person wave survival shooter vibecoded from start to finish — character abilities, procedural terrain, snapshot-interpolated multiplayer netcode, in-game photo mode, and more. Built completely from scratch through conversational AI coding.
-            </p>
-            <p className="text-[12px] leading-relaxed text-emerald-300/70 max-w-prose">
-              Open Source · MIT license
-            </p>
+            {/* Stat tiles — true facts about the build, rendered as HUD data */}
+            <div className="mt-6 grid grid-cols-3 gap-2.5">
+              {STATS.map((stat) => (
+                <div key={stat.label} className="rounded-xl border border-white/[0.08] bg-white/[0.02] px-2 py-3">
+                  <p className="font-display text-2xl sm:text-3xl font-semibold text-emerald-300 leading-none">{stat.value}</p>
+                  <p className="font-hud mt-1.5 text-[9.5px] tracking-[0.2em] text-gray-500 uppercase">{stat.label}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* ── Credit roll ───────────────────────────────────────────── */}
+          <div>
+            <SectionLabel>One Person, Every Role</SectionLabel>
+            <ul className="mt-3 divide-y divide-white/[0.05] rounded-xl border border-white/[0.07] bg-white/[0.015] overflow-hidden">
+              {ROLES.map(({ role, icon: Icon }) => (
+                <li key={role} className="flex items-center gap-3 px-4 py-2.5">
+                  <Icon className="w-4 h-4 text-emerald-400/70 flex-shrink-0" strokeWidth={2} />
+                  <span className="font-hud flex-1 text-[12px] tracking-wide text-gray-400">{role}</span>
+                  <span className="font-display text-sm font-semibold uppercase tracking-wide text-white/90">Surya</span>
+                </li>
+              ))}
+            </ul>
           </div>
 
           {/* ── Portfolio CTA ──────────────────────────────────────────── */}
@@ -106,8 +148,8 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
               background: 'linear-gradient(135deg, rgba(52,211,153,0.5), rgba(56,189,248,0.4), rgba(192,132,252,0.4))',
             }}
           >
-            <span className="relative flex items-center gap-4 w-full rounded-2xl bg-[#0b0f15] px-4 sm:px-5 py-4
-              group-hover:bg-[#0d1218] transition-colors">
+            <span className="relative flex items-center gap-4 w-full rounded-2xl bg-[#080d0b] px-4 sm:px-5 py-4
+              group-hover:bg-[#0a120f] transition-colors">
               <span className="relative flex items-center justify-center w-12 h-12 rounded-xl bg-emerald-500/12 border border-emerald-400/30 flex-shrink-0">
                 <ExternalLink className="w-[18px] h-[18px] text-emerald-300" strokeWidth={2} />
                 <span
@@ -116,7 +158,7 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
                 />
               </span>
               <span className="flex-1 min-w-0">
-                <span className="block text-[10px] font-bold tracking-[0.22em] text-emerald-300/90 uppercase mb-0.5">
+                <span className="font-hud block text-[10px] font-bold tracking-[0.24em] text-emerald-300/90 uppercase mb-0.5">
                   Surya Portfolio
                 </span>
                 <span className="block text-base font-bold text-white tracking-tight truncate">
@@ -126,8 +168,8 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
                   More about me, my work, and ways to get in touch
                 </span>
               </span>
-              <span className="flex items-center gap-1 text-emerald-300 group-hover:translate-x-0.5 transition-transform">
-                <span className="text-[10px] font-bold tracking-[0.22em] uppercase">Visit</span>
+              <span className="font-hud flex items-center gap-1 text-emerald-300 group-hover:translate-x-0.5 transition-transform">
+                <span className="text-[10px] font-bold tracking-[0.24em] uppercase">Visit</span>
                 <ArrowUpRight className="w-4 h-4" strokeWidth={2.5} />
               </span>
             </span>
@@ -144,8 +186,8 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
               background: 'linear-gradient(135deg, rgba(148,163,184,0.4), rgba(100,116,139,0.3), rgba(71,85,105,0.3))',
             }}
           >
-            <span className="relative flex items-center gap-4 w-full rounded-2xl bg-[#0b0f15] px-4 sm:px-5 py-4
-              group-hover:bg-[#0d1218] transition-colors">
+            <span className="relative flex items-center gap-4 w-full rounded-2xl bg-[#080d0b] px-4 sm:px-5 py-4
+              group-hover:bg-[#0a120f] transition-colors">
               <span className="relative flex items-center justify-center w-12 h-12 rounded-xl bg-slate-500/12 border border-slate-400/30 flex-shrink-0">
                 <GitFork className="w-[18px] h-[18px] text-slate-300" strokeWidth={2} />
                 <span
@@ -154,7 +196,7 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
                 />
               </span>
               <span className="flex-1 min-w-0">
-                <span className="block text-[10px] font-bold tracking-[0.22em] text-slate-300/90 uppercase mb-0.5">
+                <span className="font-hud block text-[10px] font-bold tracking-[0.24em] text-slate-300/90 uppercase mb-0.5">
                   Open Source · MIT
                 </span>
                 <span className="block text-base font-bold text-white tracking-tight truncate">
@@ -164,8 +206,8 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
                   Source code, issues, and contributions welcome
                 </span>
               </span>
-              <span className="flex items-center gap-1 text-slate-300 group-hover:translate-x-0.5 transition-transform">
-                <span className="text-[10px] font-bold tracking-[0.22em] uppercase">Star</span>
+              <span className="font-hud flex items-center gap-1 text-slate-300 group-hover:translate-x-0.5 transition-transform">
+                <span className="text-[10px] font-bold tracking-[0.24em] uppercase">Star</span>
                 <ArrowUpRight className="w-4 h-4" strokeWidth={2.5} />
               </span>
             </span>
@@ -173,14 +215,8 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
 
           {/* ── Tech Stack ─────────────────────────────────────────────── */}
           <div>
-            <div className="flex items-center gap-3 mb-3">
-              <div className="h-px flex-1 bg-gradient-to-r from-transparent via-white/15 to-transparent" />
-              <p className="text-[10px] font-bold tracking-[0.32em] text-gray-400 uppercase">
-                Built With
-              </p>
-              <div className="h-px flex-1 bg-gradient-to-r from-transparent via-white/15 to-transparent" />
-            </div>
-            <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <SectionLabel>Built With</SectionLabel>
+            <ul className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
               {TECH_STACK.map(({ label, hint, icon: Icon, accent }) => (
                 <li
                   key={label}
@@ -195,7 +231,7 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="block text-[13px] font-bold text-white truncate">{label}</span>
-                    <span className="block text-[10.5px] text-gray-500 truncate">{hint}</span>
+                    <span className="font-hud block text-[10.5px] text-gray-500 truncate">{hint}</span>
                   </span>
                 </li>
               ))}
@@ -204,7 +240,7 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
 
           {/* ── Footer ─────────────────────────────────────────────────── */}
           <div className="text-center pt-1">
-            <p className="flex items-center justify-center gap-1.5 text-[11px] text-gray-500">
+            <p className="font-hud flex items-center justify-center gap-1.5 text-[11px] text-gray-500">
               Crafted with
               <Heart className="w-3.5 h-3.5 text-red-400" strokeWidth={2.25} fill="currentColor" />
               and a lot of care
@@ -214,8 +250,8 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
           {/* Back button */}
           <button
             onClick={onClose}
-            className="group flex items-center justify-center gap-2 w-full rounded-xl px-4 py-3.5
-              border border-white/10 bg-white/[0.03] text-sm font-bold tracking-wide text-gray-300
+            className="font-hud group flex items-center justify-center gap-2 w-full rounded-xl px-4 py-3.5
+              border border-white/10 bg-white/[0.03] text-sm font-bold uppercase tracking-wide text-gray-300
               transition-all duration-200 hover:text-white hover:bg-white/[0.06] hover:border-white/20 hover:-translate-y-0.5"
           >
             <ArrowLeft className="w-4 h-4 group-hover:-translate-x-0.5 transition-transform" strokeWidth={2.25} />
@@ -238,5 +274,15 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
     </>
   );
 };
+
+const SectionLabel = ({ children }: { children: React.ReactNode }) => (
+  <div className="flex items-center gap-3">
+    <div className="h-px flex-1 bg-gradient-to-r from-transparent via-white/15 to-transparent" />
+    <p className="font-hud text-[10px] font-bold tracking-[0.34em] text-gray-400 uppercase whitespace-nowrap">
+      {children}
+    </p>
+    <div className="h-px flex-1 bg-gradient-to-r from-transparent via-white/15 to-transparent" />
+  </div>
+);
 
 export default CreditsMenu;

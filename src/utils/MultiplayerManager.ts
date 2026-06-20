@@ -96,6 +96,10 @@ export type NetworkMessage =
   | { type: 'player_joined'; data: PlayerData }
   | { type: 'player_left'; playerId: string }
   | { type: 'player_rejected'; reason: string }
+  // Host → a specific player: you have been removed from the game (manual kick
+  // by the host, or an automatic anti-cheat ejection). `reason` is shown to the
+  // kicked player before they're returned to the menu.
+  | { type: 'player_kicked'; targetId: string; reason: string }
   | { type: 'game_start'; gameState: Partial<SerializedGameState> }
   | { type: 'game_restart'; gameState: Partial<SerializedGameState> }
   | { type: 'return_to_lobby'; gameState: Partial<SerializedGameState> }
@@ -178,6 +182,13 @@ export class MultiplayerManager {
   // match. The host gates its enemy-sync stream on this so it never floods
   // a guest that's still warming up. Cleared at the start of every match.
   private readyPeers: Set<string> = new Set();
+
+  // Host-side anti-cheat movement tracker (per guest). Holds the last accepted
+  // position + a strike counter so a one-off lag spike never ejects a legit
+  // player — only a sustained pattern of physically-impossible movement does.
+  // Deliberately movement-ONLY so it can never conflict with stat-affecting
+  // powerups (speed boosts, dashes, nukes, score multipliers, etc.).
+  private antiCheat: Map<string, { x: number; z: number; t: number; strikes: number; alive: boolean }> = new Map();
 
   // Throttling state
   private lastPositionUpdate: number = 0;
@@ -488,6 +499,17 @@ export class MultiplayerManager {
         // Clamp untrusted peer-reported fields before storing/relaying.
         message.data = sanitizeRemotePlayer(message.data);
 
+        // Host-authoritative anti-cheat — only during a live match, never in
+        // the lobby. Movement-only so powerups can't trip it. A confirmed
+        // violator is ejected and their packet dropped.
+        if (this.isHost && this.gameState?.startTime) {
+          const verdict = this.inspectMovement(message.data);
+          if (verdict) {
+            this.kickPlayer(message.data.id, verdict);
+            return;
+          }
+        }
+
         // Track alive-state transitions before replacing snapshots
         const prevState = this.gameState?.players.get(message.data.id);
         const wasAlive = prevState ? prevState.isAlive : true;
@@ -543,6 +565,16 @@ export class MultiplayerManager {
         const playerRejectedHandlers = this.messageHandlers.get('player_rejected');
         if (playerRejectedHandlers) {
           playerRejectedHandlers.forEach(handler => handler(message));
+        }
+        break;
+      }
+
+      case 'player_kicked': {
+        // Only the targeted player acts on this (the host addressed it to them).
+        if (message.targetId !== this.localPlayer.id) break;
+        const kickedHandlers = this.messageHandlers.get('player_kicked');
+        if (kickedHandlers) {
+          kickedHandlers.forEach(handler => handler(message));
         }
         break;
       }
@@ -899,6 +931,83 @@ export class MultiplayerManager {
     this.broadcastMessage({ type: 'player_damaged', targetId, damage, enemyType });
   }
 
+  /**
+   * Host-only: forcibly remove a player. Tells the kicked client why (so it can
+   * show the reason and bail out), tells everyone else they left, and tears down
+   * the connection. Safe to call for a manual lobby kick or an anti-cheat
+   * ejection. No-op for guests or for the host trying to kick itself.
+   */
+  kickPlayer(playerId: string, reason: string): void {
+    if (!this.isHost || playerId === this.localPlayer.id) return;
+
+    const conn = this.connections.get(playerId);
+    if (conn) {
+      // Address the kick to the target so only they react, then close the link
+      // after a short beat so the message has time to flush.
+      this.sendMessage(conn, { type: 'player_kicked', targetId: playerId, reason });
+      setTimeout(() => { try { conn.close(); } catch { /* already closed */ } }, 200);
+    }
+
+    // Drop them locally and let the rest of the lobby know.
+    this.connections.delete(playerId);
+    this.remotePlayers.delete(playerId);
+    this.readyPeers.delete(playerId);
+    this.antiCheat.delete(playerId);
+    this.gameState?.players.delete(playerId);
+
+    this.broadcastMessage({ type: 'player_left', playerId });
+
+    // Fire the local handler so the host's own UI updates immediately.
+    const handlers = this.messageHandlers.get('player_left');
+    if (handlers) {
+      handlers.forEach(handler => handler({ type: 'player_left', playerId }));
+    }
+  }
+
+  /**
+   * Host-side movement sanity check for one incoming guest snapshot. Returns a
+   * kick reason string when a player has racked up enough consecutive
+   * physically-impossible jumps, else null.
+   *
+   * Deliberately conservative so it NEVER fights legitimate play or powerups:
+   *  - the per-update distance ceiling is far beyond any dash + speed-boost
+   *    combo (≈120 u/s plus a 45-unit burst headroom);
+   *  - respawns / alive-state flips and long gaps (lag, backgrounded tabs) are
+   *    skipped and bleed a strike off;
+   *  - a violation must repeat 4× in a row to eject, so a single teleport
+   *    (lag-batched movement, physics nudge) is harmless.
+   */
+  private inspectMovement(p: PlayerData): string | null {
+    const now = Date.now();
+    const prev = this.antiCheat.get(p.id);
+    const cur = { x: p.position.x, z: p.position.z, t: now, strikes: prev?.strikes ?? 0, alive: p.isAlive };
+    this.antiCheat.set(p.id, cur);
+
+    if (!prev) return null; // first sample — nothing to compare against
+    const dt = now - prev.t;
+
+    // Skip windows where a big jump is expected/legitimate: respawn or
+    // alive→dead→alive flips, dead players, and large time gaps (lag spikes,
+    // backgrounded tabs). Decay strikes so transient noise can't accumulate.
+    if (dt <= 0 || dt > 700 || prev.alive !== p.isAlive || !p.isAlive) {
+      cur.strikes = Math.max(0, (prev.strikes ?? 0) - 1);
+      return null;
+    }
+
+    const dist = Math.hypot(p.position.x - prev.x, p.position.z - prev.z);
+    const maxDist = 0.12 * dt + 45; // ≈120 u/s sustained + 45u dash/burst headroom
+
+    if (dist > maxDist) {
+      cur.strikes = (prev.strikes ?? 0) + 1;
+      if (cur.strikes >= 4) return 'Anti-cheat: impossible movement detected.';
+      return null;
+    }
+
+    // Clean update — relax one strike.
+    cur.strikes = Math.max(0, (prev.strikes ?? 0) - 1);
+    return null;
+  }
+
   private checkGameOver() {
     if (!this.gameState) return;
 
@@ -997,6 +1106,7 @@ export class MultiplayerManager {
 
     // Fresh match → guests re-warm and must re-signal readiness.
     this.readyPeers.clear();
+    this.antiCheat.clear();
 
     // Use previous settings if not overridden
     const mode = gameMode || this.gameState.gameMode;
@@ -1115,6 +1225,7 @@ export class MultiplayerManager {
     // Fresh match → guests must re-signal readiness before the enemy stream
     // resumes (they each re-run warmup on game_start).
     this.readyPeers.clear();
+    this.antiCheat.clear();
 
     this.gameState.gameMode = gameMode;
     this.gameState.timeLimit = timeLimit;

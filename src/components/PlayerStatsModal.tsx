@@ -10,7 +10,7 @@ interface PlayerStatsModalProps {
 
 const StatRow = ({ label, value }: { label: string; value: string }) => (
   <div className="flex items-baseline justify-between gap-2">
-    <span className="text-[11px] text-gray-400">{label}</span>
+    <span className="font-hud text-[11px] text-gray-400">{label}</span>
     <span className="font-bold text-white tabular-nums">{value}</span>
   </div>
 );
@@ -32,12 +32,12 @@ const PlayerStatsModal = ({ username, onClose }: PlayerStatsModalProps) => {
       onClick={onClose}
     >
       <div
-        className="relative max-h-[94dvh] w-full max-w-sm overflow-y-auto rounded-2xl border border-white/10 bg-[#0b0f15] shadow-[0_30px_80px_rgba(0,0,0,0.6)]"
+        className="hud-frame relative max-h-[94dvh] w-full max-w-sm overflow-y-auto rounded-2xl border border-emerald-400/15 bg-[#080d0b] shadow-[0_40px_100px_rgba(0,0,0,0.6)]"
         style={{ animation: 'authFade 0.25s cubic-bezier(0.16,1,0.3,1) forwards' }}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-white/[0.07] px-4 py-3">
-          <p className="text-[10px] tracking-[0.32em] text-emerald-300/90 font-semibold uppercase">Player</p>
+          <p className="font-hud text-[10px] tracking-[0.32em] text-emerald-300/90 font-semibold uppercase">Player</p>
           <button onClick={onClose} aria-label="Close"
             className="flex items-center justify-center w-8 h-8 rounded-lg border border-white/10 text-gray-400 transition-colors hover:text-white hover:bg-white/[0.06]">
             <X className="w-4 h-4" strokeWidth={2.25} />
@@ -60,8 +60,8 @@ const PlayerStatsModal = ({ username, onClose }: PlayerStatsModalProps) => {
               <div className="flex items-center gap-3">
                 <UserAvatar username={profile.username} name={profile.displayName} avatarIndex={profile.avatarIndex} size="lg" />
                 <div className="min-w-0 flex-1">
-                  <h3 className="truncate text-lg font-black tracking-tight text-white">{profile.displayName}</h3>
-                  <p className="truncate text-sm text-gray-400">@{profile.username}</p>
+                  <h3 className="font-display truncate text-xl font-semibold tracking-wide text-white">{profile.displayName}</h3>
+                  <p className="font-hud truncate text-sm text-gray-400">@{profile.username}</p>
                   {/* Inline rank chip — replaces the floating hexagon badge that
                       used to overlap the header in tight lobby cards. */}
                   <span
@@ -90,7 +90,7 @@ const PlayerStatsModal = ({ username, onClose }: PlayerStatsModalProps) => {
                     </div>
                   )}
                   <div className="rounded-xl border border-emerald-400/20 bg-emerald-500/[0.05] p-3">
-                    <p className="text-xs font-semibold text-emerald-300 uppercase tracking-wide">Solo</p>
+                    <p className="font-hud text-[11px] font-semibold text-emerald-300 uppercase tracking-[0.18em]">Solo</p>
                     <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1.5 text-sm">
                       <StatRow label="High Score" value={(solo?.highScore ?? 0).toLocaleString()} />
                       <StatRow label="Best Wave" value={`${solo?.highestWave ?? 0}`} />
@@ -99,7 +99,7 @@ const PlayerStatsModal = ({ username, onClose }: PlayerStatsModalProps) => {
                     </div>
                   </div>
                   <div className="rounded-xl border border-sky-400/20 bg-sky-500/[0.05] p-3">
-                    <p className="text-xs font-semibold text-sky-300 uppercase tracking-wide">Multiplayer</p>
+                    <p className="font-hud text-[11px] font-semibold text-sky-300 uppercase tracking-[0.18em]">Multiplayer</p>
                     <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1.5 text-sm">
                       <StatRow label="High Score" value={(mp?.highScore ?? 0).toLocaleString()} />
                       <StatRow label="Wins" value={`${mp?.wins ?? 0}`} />
@@ -111,16 +111,16 @@ const PlayerStatsModal = ({ username, onClose }: PlayerStatsModalProps) => {
                   </div>
                   <div className="flex items-center justify-around rounded-xl border border-white/10 bg-white/[0.02] p-3 text-center">
                     <div>
-                      <div className="text-base font-black text-amber-200 tabular-nums">{profile.achievementsCount ?? 0}</div>
-                      <div className="text-[9px] font-semibold tracking-[0.12em] text-gray-400 uppercase">Trophies</div>
+                      <div className="font-display text-lg font-semibold text-amber-200 tabular-nums">{profile.achievementsCount ?? 0}</div>
+                      <div className="font-hud text-[9px] font-semibold tracking-[0.12em] text-gray-400 uppercase">Trophies</div>
                     </div>
                     <div>
-                      <div className="text-base font-black text-white tabular-nums">{profile.skillsCount ?? 0}</div>
-                      <div className="text-[9px] font-semibold tracking-[0.12em] text-gray-400 uppercase">Skills</div>
+                      <div className="font-display text-lg font-semibold text-white tabular-nums">{profile.skillsCount ?? 0}</div>
+                      <div className="font-hud text-[9px] font-semibold tracking-[0.12em] text-gray-400 uppercase">Skills</div>
                     </div>
                     <div>
-                      <div className="text-base font-black text-violet-200 tabular-nums">{profile.rank.xp.toLocaleString()}</div>
-                      <div className="text-[9px] font-semibold tracking-[0.12em] text-gray-400 uppercase">XP</div>
+                      <div className="font-display text-lg font-semibold text-violet-200 tabular-nums">{profile.rank.xp.toLocaleString()}</div>
+                      <div className="font-hud text-[9px] font-semibold tracking-[0.12em] text-gray-400 uppercase">XP</div>
                     </div>
                   </div>
                 </div>

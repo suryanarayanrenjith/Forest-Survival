@@ -162,6 +162,14 @@ export interface UserSettings {
   /** Enemy death ragdoll physics (launch + gravity + bounce + tumble). When
    *  off, enemies use a lightweight shrink-out death instead. */
   ragdollPhysics: boolean;
+  /** Auto-reload when the trigger is pulled on an empty magazine. Off → the
+   *  empty pull just dry-fires (manual reload only). */
+  autoReload: boolean;
+  /** Vertical head-bob while moving. Off → the camera holds steady (helps
+   *  motion-sensitive players). */
+  cameraBob: boolean;
+  /** Show the aiming crosshair/reticle. Off → no reticle (hardcore aim). */
+  showCrosshair: boolean;
   crosshairStyle: 'dot' | 'cross' | 'circle' | 'dynamic';
   crosshairColor: string;
   graphicsQuality: GraphicsQuality;
@@ -182,6 +190,9 @@ export const defaultUserSettings: UserSettings = {
   damageNumbers: true,
   impactFeedback: true,
   ragdollPhysics: true,
+  autoReload: true,
+  cameraBob: true,
+  showCrosshair: true,
   crosshairStyle: 'cross',
   crosshairColor: '#22c55e',
   graphicsQuality: 'high', // Default to the high tier

@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import {
   ChevronRight,
+  Crosshair,
   GraduationCap,
   LockKeyhole,
   LogIn,
@@ -35,6 +36,21 @@ interface MainMenuProps {
   t: (key: string) => string;
 }
 
+// Per-mode accent system. Full literal Tailwind class strings (never
+// interpolated) so the JIT scanner keeps them; per-accent rgba lives in inline
+// styles where dynamic color is genuinely needed.
+type Accent = 'emerald' | 'sky' | 'amber';
+const accentIcon: Record<Accent, string> = {
+  emerald: 'text-emerald-300',
+  sky: 'text-sky-300',
+  amber: 'text-amber-300',
+};
+const accentTile: Record<Accent, string> = {
+  emerald: 'border-emerald-400/30 bg-emerald-500/[0.1] group-hover:border-emerald-300/55',
+  sky: 'border-sky-400/30 bg-sky-500/[0.1] group-hover:border-sky-300/55',
+  amber: 'border-amber-400/30 bg-amber-500/[0.1] group-hover:border-amber-300/55',
+};
+
 const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode }: MainMenuProps) => {
   const [showSettings, setShowSettings] = useState(false);
   const [showCredits, setShowCredits] = useState(false);
@@ -43,6 +59,7 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode }: MainMenu
   const [authMode, setAuthMode] = useState<'signIn' | 'signUp'>('signUp');
   const [pendingLaunch, setPendingLaunch] = useState<(() => void) | null>(null);
   const { isLoading, isAuthenticated } = useConvexAuth();
+  const { signOut } = useAuthActions();
   const { currentUser, playerStats } = usePlayerData();
   const previousAuthState = useRef(isAuthenticated);
   const profileLoading = isAuthenticated && currentUser === undefined;
@@ -128,7 +145,8 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode }: MainMenu
       icon: Swords,
       title: 'Solo',
       desc: 'Survive endless waves alone',
-      accent: 'emerald',
+      accent: 'emerald' as Accent,
+      primary: true,
       onClick: onClassicMode,
       requiresAuth: false,
     },
@@ -136,8 +154,9 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode }: MainMenu
       key: 'multiplayer',
       icon: Users,
       title: 'Multiplayer',
-      desc: 'Co-op & survival with friends',
-      accent: 'sky',
+      desc: 'Co-op survival with friends',
+      accent: 'sky' as Accent,
+      primary: false,
       onClick: onMultiplayerMode,
       requiresAuth: true,
     },
@@ -146,45 +165,26 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode }: MainMenu
       icon: GraduationCap,
       title: 'Tutorial',
       desc: 'Learn the core mechanics',
-      accent: 'amber',
+      accent: 'amber' as Accent,
+      primary: false,
       onClick: onTutorialMode,
       requiresAuth: false,
     },
   ] as const;
 
-  const accentRing: Record<string, string> = {
-    emerald: 'group-hover:border-emerald-400/70 group-hover:shadow-[0_0_24px_-6px_rgba(16,185,129,0.45)]',
-    sky: 'group-hover:border-sky-400/70 group-hover:shadow-[0_0_24px_-6px_rgba(56,189,248,0.45)]',
-    amber: 'group-hover:border-amber-400/70 group-hover:shadow-[0_0_24px_-6px_rgba(245,158,11,0.45)]',
-  };
-  const accentIcon: Record<string, string> = {
-    emerald: 'text-emerald-400',
-    sky: 'text-sky-400',
-    amber: 'text-amber-400',
-  };
-  const accentIconBg: Record<string, string> = {
-    emerald: 'bg-emerald-500/10 group-hover:bg-emerald-500/15',
-    sky: 'bg-sky-500/10 group-hover:bg-sky-500/15',
-    amber: 'bg-amber-500/10 group-hover:bg-amber-500/15',
-  };
-
   const accessCard = !isAuthenticated
     ? isLoading
       ? {
-          accent: 'amber',
-          icon: LockKeyhole,
-          title: 'Checking session...',
-          copy: 'Verifying your session before you launch into the forest.',
+          title: 'Checking session',
+          copy: 'Verifying your session before you step into the forest.',
+          tag: 'Standby',
         }
       : {
-          accent: 'amber',
-          icon: LockKeyhole,
           title: 'Playing as guest',
-          copy: 'Solo & Tutorial are free. Sign in to unlock Multiplayer, achievements, and the skill tree.',
+          copy: 'Solo and Tutorial are open. Sign in to unlock Multiplayer, achievements, and the skill tree.',
+          tag: 'Guest',
         }
     : null;
-
-  const { signOut } = useAuthActions();
 
   return (
     <div className="relative w-full h-dvh overflow-hidden">
@@ -192,237 +192,207 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode }: MainMenu
           level OUTSIDE the menu transition so it stays static while this
           screen slides. Only the content below animates. */}
 
-      {/* Main Screen */}
+      {/* Main Screen — fills exactly one viewport. A responsive two-column
+          layout (identity left / actions right) on large screens keeps every
+          state (incl. signed-in + daily challenge) on a single page; it
+          collapses to a compact, centered single column below lg. The wrapper
+          is m-auto centered with overflow-y-auto as a no-overlap safety net for
+          extreme short/landscape viewports. */}
       {!showSettings && (
-        <div className="relative z-10 h-dvh overflow-y-auto">
-        <div className="flex min-h-full flex-col items-center justify-center px-6 py-10 menu-stagger">
-          {/* Title */}
-          <div className="relative mb-10 sm:mb-14 text-center">
-            <div className="flex items-center justify-center gap-3 mb-3">
-              <span className="h-px w-8 sm:w-12 bg-gradient-to-r from-transparent to-emerald-500/60" />
-              <p className="text-[10px] sm:text-xs tracking-[0.45em] text-emerald-400/90 font-semibold uppercase">
-                Wave-Based Survival
-              </p>
-              <span className="h-px w-8 sm:w-12 bg-gradient-to-l from-transparent to-emerald-500/60" />
-            </div>
+        <div className="relative z-10 h-dvh overflow-y-auto overscroll-contain">
+        <div className="flex min-h-full flex-col px-5 sm:px-8 py-5 sm:py-6">
+          <div className="m-auto w-full max-w-md lg:max-w-5xl">
+            <div className="lg:grid lg:grid-cols-[1.05fr_minmax(0,27rem)] lg:gap-12 lg:items-center">
 
-            <h1
-              className="text-5xl sm:text-6xl md:text-7xl lg:text-8xl font-black tracking-tight leading-none"
-              style={{
-                background: 'linear-gradient(180deg, #f0fdf4 0%, #86efac 55%, #22c55e 100%)',
-                WebkitBackgroundClip: 'text',
-                WebkitTextFillColor: 'transparent',
-                backgroundClip: 'text',
-                filter: 'drop-shadow(0 4px 24px rgba(34,197,94,0.35))',
-              }}
-            >
-              FOREST<br className="sm:hidden" /> SURVIVAL
-            </h1>
-          </div>
-
-          {accessCard && (
-            <div
-              className={`mb-6 w-full max-w-md rounded-2xl border px-4 py-4 text-left ${
-                accessCard.accent === 'emerald'
-                  ? 'border-emerald-400/25 bg-emerald-500/[0.06]'
-                  : 'border-amber-400/20 bg-amber-500/[0.06]'
-              }`}
-            >
-              <div className="flex items-start gap-3">
-                <div
-                  className={`flex items-center justify-center w-11 h-11 rounded-xl border flex-shrink-0 ${
-                    accessCard.accent === 'emerald'
-                      ? 'bg-emerald-500/12 border-emerald-400/30'
-                      : 'bg-amber-500/12 border-amber-400/25'
-                  }`}
-                >
-                  {(() => {
-                    const AccessIcon = accessCard.icon;
-                    return (
-                      <AccessIcon
-                        className={accessCard.accent === 'emerald' ? 'w-5 h-5 text-emerald-300' : 'w-5 h-5 text-amber-300'}
-                        strokeWidth={2.2}
-                      />
-                    );
-                  })()}
-                </div>
-                <div>
-                  <p
-                    className={`text-[10px] tracking-[0.35em] font-semibold uppercase ${
-                      accessCard.accent === 'emerald' ? 'text-emerald-300/90' : 'text-amber-300/90'
-                    }`}
-                  >
-                    {accessCard.accent === 'emerald' ? 'Authenticated' : 'Guest'}
+              {/* ── Identity column ─────────────────────────────────── */}
+              <div className="title-reveal relative mb-6 lg:mb-0 text-center lg:text-left" style={{ '--title-tracking': '0.04em' } as CSSProperties}>
+                <div className="flex items-center justify-center lg:justify-start gap-3 mb-3">
+                  <span className="h-px w-9 sm:w-12 bg-gradient-to-r from-transparent to-emerald-400/60 lg:hidden" />
+                  <p className="font-hud flex items-center gap-1.5 text-[10px] sm:text-[11px] tracking-[0.42em] text-emerald-300/90 font-semibold uppercase">
+                    <Crosshair className="w-3 h-3" strokeWidth={2.2} />
+                    Wave-Based Survival
                   </p>
-                  <h2 className="text-base font-bold text-white tracking-wide mt-1">{accessCard.title}</h2>
-                  <p className="mt-1 text-xs leading-relaxed text-gray-300/80">{accessCard.copy}</p>
+                  <span className="h-px w-9 sm:w-12 bg-gradient-to-l from-transparent to-emerald-400/60" />
+                </div>
+
+                <h1 className="font-display title-bio font-semibold uppercase leading-[0.85] tracking-[0.02em] text-[clamp(2.5rem,10vw,3.5rem)] lg:text-[clamp(3.25rem,5vw,5.5rem)]">
+                  Forest<br />Survival
+                </h1>
+
+                {/* Aurora horizon rule with a datum chip */}
+                <div className="mt-3.5 flex items-center justify-center lg:justify-start gap-3">
+                  <span className="aurora-rule h-px w-14 sm:w-24 bg-emerald-400/25 lg:hidden" />
+                  <span className="font-hud text-[9px] sm:text-[10px] tracking-[0.4em] text-emerald-200/70 uppercase whitespace-nowrap">
+                    Nightfall · The Clearing
+                  </span>
+                  <span className="aurora-rule h-px w-14 sm:w-24 bg-emerald-400/25" />
                 </div>
               </div>
-            </div>
-          )}
 
-          {isAuthenticated && (
-            <div className="mb-6 w-full max-w-md rounded-3xl border border-white/10 bg-white/[0.045] px-4 py-4 shadow-[0_18px_50px_rgba(0,0,0,0.25)] backdrop-blur-md">
-              <div className="flex items-center gap-3">
-                <UserAvatar
-                  name={currentUser?.name}
-                  username={currentUser?.username}
-                  image={currentUser?.image ?? null}
-                  avatarIndex={avatarIndex}
-                  size="lg"
-                  className="border-emerald-400/20 shadow-[0_0_0_4px_rgba(16,185,129,0.08)]"
-                />
-                <div className="min-w-0 flex-1">
-                  <p className="text-[10px] tracking-[0.35em] text-emerald-300/90 font-semibold uppercase">
-                    Signed In
-                  </p>
-                  {profileLoading ? (
-                    <div className="mt-2 space-y-2">
-                      <div className="h-4 w-32 rounded-full bg-white/10" />
-                      <div className="h-3 w-24 rounded-full bg-white/8" />
+              {/* ── Actions column ──────────────────────────────────── */}
+              <div className="menu-stagger flex w-full max-w-md mx-auto lg:mx-0 flex-col gap-2.5">
+                {accessCard && (
+                  <div className="hud-frame w-full rounded-2xl border border-amber-400/20 bg-amber-500/[0.05] px-5 py-3.5 text-left"
+                    style={{ '--hud-bracket': 'rgba(245,158,11,0.5)' } as CSSProperties}>
+                    <div className="flex items-start gap-3.5">
+                      <div className="flex items-center justify-center w-10 h-10 rounded-xl border border-amber-400/25 bg-amber-500/12 flex-shrink-0">
+                        <LockKeyhole className="w-[18px] h-[18px] text-amber-300" strokeWidth={2.2} />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="font-hud text-[10px] tracking-[0.34em] font-semibold uppercase text-amber-300/90">
+                          {accessCard.tag}
+                        </p>
+                        <h2 className="font-display text-base font-semibold uppercase tracking-wide text-white mt-0.5">{accessCard.title}</h2>
+                        <p className="mt-1 text-xs leading-relaxed text-gray-300/80">{accessCard.copy}</p>
+                      </div>
                     </div>
-                  ) : (
-                    <>
-                      <h2 className="mt-1 truncate text-lg font-bold tracking-wide text-white">
-                        {displayName}
-                      </h2>
-                      <div className="flex items-center gap-2">
-                        <p className="truncate text-sm text-gray-300">{handle}</p>
-                        {menuRank && (
-                          <span
-                            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide"
-                            style={{ color: menuRank.color, background: `${menuRank.color}1a`, border: `1px solid ${menuRank.color}44` }}
-                          >
-                            <Trophy className="w-2.5 h-2.5" strokeWidth={2.5} /> {menuRank.tierName} · Lvl {menuRank.level}
-                          </span>
+                  </div>
+                )}
+
+                {isAuthenticated && (
+                  <div className="hud-frame w-full rounded-2xl border border-emerald-400/15 bg-white/[0.045] px-5 py-3.5 shadow-[0_18px_50px_rgba(0,0,0,0.3)] backdrop-blur-md">
+                    <div className="flex items-center gap-3.5">
+                      <UserAvatar
+                        name={currentUser?.name}
+                        username={currentUser?.username}
+                        image={currentUser?.image ?? null}
+                        avatarIndex={avatarIndex}
+                        size="lg"
+                        className="border-emerald-400/20 shadow-[0_0_0_4px_rgba(16,185,129,0.08)]"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className="font-hud text-[10px] tracking-[0.34em] text-emerald-300/90 font-semibold uppercase">
+                          Operative Online
+                        </p>
+                        {profileLoading ? (
+                          <div className="mt-2 space-y-2">
+                            <div className="h-4 w-32 rounded-full bg-white/10" />
+                            <div className="h-3 w-24 rounded-full bg-white/8" />
+                          </div>
+                        ) : (
+                          <>
+                            <h2 className="font-display mt-0.5 truncate text-xl font-semibold tracking-wide text-white">
+                              {displayName}
+                            </h2>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <p className="font-hud truncate text-[13px] text-gray-300">{handle}</p>
+                              {menuRank && (
+                                <span
+                                  className="font-hud inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide"
+                                  style={{ color: menuRank.color, background: `${menuRank.color}1a`, border: `1px solid ${menuRank.color}44` }}
+                                >
+                                  <Trophy className="w-2.5 h-2.5" strokeWidth={2.5} /> {menuRank.tierName} · Lvl {menuRank.level}
+                                </span>
+                              )}
+                            </div>
+                          </>
                         )}
                       </div>
-                    </>
-                  )}
-                  {!profileLoading && currentUser?.lastLoginAt ? (
-                    <p className="mt-1 text-[11px] text-gray-500">
-                      Last active {new Date(currentUser.lastLoginAt).toLocaleString()}
-                    </p>
-                  ) : null}
-                </div>
-                <div className="hidden sm:flex items-center gap-2">
+                      <div className="hidden sm:flex flex-col items-stretch gap-1.5">
+                        <button
+                          onClick={isAuthenticated ? openProfile : () => openAuth('signIn')}
+                          className="font-hud inline-flex items-center justify-center rounded-lg border border-emerald-400/25 bg-emerald-500/[0.06] px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-emerald-200 transition-colors hover:bg-emerald-500/[0.12] hover:text-white"
+                        >
+                          Profile
+                        </button>
+                        {isAuthenticated && (
+                          <button
+                            onClick={handleSignOut}
+                            className="font-hud inline-flex items-center justify-center rounded-lg border border-white/10 bg-white/[0.03] px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-white transition-colors hover:bg-white/[0.06]"
+                          >
+                            Sign Out
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Daily Challenge — signed-in only, today's rolled goal + claim. */}
+                {isAuthenticated && <DailyChallengeCard />}
+
+                {/* ── Mode selection ──────────────────────────────────── */}
+                {modes.map((mode) => {
+                  const Icon = mode.icon;
+                  return (
+                    <button
+                      key={mode.key}
+                      onClick={() => launchMode(mode.onClick, mode.requiresAuth)}
+                      className={`group flex items-center gap-4 w-full rounded-2xl py-3.5 px-4 text-left
+                        border backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 active:translate-y-0
+                        ${mode.primary
+                          ? 'border-emerald-400/30 bg-emerald-500/[0.06] hover:bg-emerald-500/[0.1] hover:border-emerald-300/50'
+                          : 'border-white/10 bg-white/[0.03] hover:bg-white/[0.06] hover:border-white/20'}`}
+                    >
+                      <span className={`flex items-center justify-center w-12 h-12 rounded-xl border flex-shrink-0 transition-colors duration-300 ${accentTile[mode.accent]}`}>
+                        <Icon className={`w-6 h-6 ${accentIcon[mode.accent]}`} strokeWidth={1.85} />
+                      </span>
+                      <span className="flex-1 min-w-0">
+                        <span className="font-display block text-xl font-semibold uppercase tracking-wide text-white leading-none">
+                          {mode.title}
+                        </span>
+                        <span className="font-hud mt-1 block text-[11px] text-gray-400 truncate">
+                          {mode.desc}
+                        </span>
+                      </span>
+                      <ChevronRight
+                        className="w-5 h-5 text-gray-600 transition-all duration-300 group-hover:text-gray-200 group-hover:translate-x-0.5"
+                        strokeWidth={2}
+                      />
+                    </button>
+                  );
+                })}
+
+                {/* Secondary actions — Settings · Credits · Account */}
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    onClick={() => setShowSettings(true)}
+                    className="font-hud group flex items-center justify-center gap-1.5 rounded-lg px-2 py-2.5
+                      text-[11px] font-semibold uppercase tracking-wider text-gray-400 border border-white/10 bg-white/[0.02]
+                      transition-all duration-300 hover:text-white hover:bg-white/[0.06] hover:border-white/20"
+                  >
+                    <Settings className="w-3.5 h-3.5 group-hover:rotate-90 transition-transform duration-500" strokeWidth={2} />
+                    <span>Settings</span>
+                  </button>
+                  <button
+                    onClick={() => setShowCredits(true)}
+                    className="font-hud group flex items-center justify-center gap-1.5 rounded-lg px-2 py-2.5
+                      text-[11px] font-semibold uppercase tracking-wider text-gray-400 border border-white/10 bg-white/[0.02]
+                      transition-all duration-300 hover:text-emerald-300 hover:bg-emerald-500/[0.06] hover:border-emerald-400/30"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 transition-transform duration-500 group-hover:scale-110" strokeWidth={2} fill="currentColor" />
+                    <span>Credits</span>
+                  </button>
                   <button
                     onClick={isAuthenticated ? openProfile : () => openAuth('signIn')}
-                    className="inline-flex items-center justify-center rounded-xl border border-emerald-400/25 bg-emerald-500/[0.06] px-3.5 py-2 text-xs font-semibold text-emerald-200 transition-colors hover:bg-emerald-500/[0.1] hover:text-white"
+                    className={`font-hud group flex items-center justify-center gap-1.5 rounded-lg px-2 py-2.5 text-[11px] font-semibold uppercase tracking-wider border transition-all duration-300 ${
+                      isAuthenticated
+                        ? 'text-emerald-300 border-emerald-400/25 bg-emerald-500/[0.05] hover:text-white hover:bg-emerald-500/[0.1] hover:border-emerald-300/40'
+                        : 'text-sky-300 border-sky-400/25 bg-sky-500/[0.05] hover:text-white hover:bg-sky-500/[0.1] hover:border-sky-300/40'
+                    }`}
                   >
-                    Profile
+                    {isAuthenticated ? (
+                      <UserRound className="w-3.5 h-3.5 transition-transform duration-500 group-hover:scale-110" strokeWidth={2} />
+                    ) : (
+                      <LogIn className="w-3.5 h-3.5 transition-transform duration-500 group-hover:scale-110" strokeWidth={2} />
+                    )}
+                    <span>{isAuthenticated ? 'Account' : 'Sign In'}</span>
                   </button>
-                  {isAuthenticated && (
-                    <button
-                      onClick={handleSignOut}
-                      className="inline-flex items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] px-3.5 py-2 text-xs font-semibold text-white transition-colors hover:bg-white/[0.06]"
-                    >
-                      Sign Out
-                    </button>
-                  )}
                 </div>
               </div>
             </div>
-          )}
 
-          {/* Daily Challenge — signed-in only, today's rolled goal + claim. */}
-          {isAuthenticated && (
-            <div className="mb-3 w-full max-w-md">
-              <DailyChallengeCard />
-            </div>
-          )}
-
-          {/* Mode Buttons */}
-          <div className="flex flex-col gap-3 w-full max-w-md">
-            {modes.map((mode) => {
-              const Icon = mode.icon;
-              return (
-                <button
-                  key={mode.key}
-                  onClick={() => launchMode(mode.onClick, mode.requiresAuth)}
-                  className="group relative flex items-center gap-4 w-full rounded-2xl px-4 py-4 text-left
-                    bg-white/[0.03] border border-white/10 backdrop-blur-md
-                    transition-all duration-300 hover:bg-white/[0.06] hover:-translate-y-0.5
-                    active:translate-y-0"
-                >
-                  {/* accent ring on hover */}
-                  <span
-                    className={`pointer-events-none absolute inset-0 rounded-2xl border border-transparent transition-all duration-300 ${accentRing[mode.accent]}`}
-                  />
-                  <span
-                    className={`flex items-center justify-center w-12 h-12 rounded-xl transition-colors duration-300 ${accentIconBg[mode.accent]}`}
-                  >
-                    <Icon className={`w-6 h-6 ${accentIcon[mode.accent]}`} strokeWidth={1.75} />
-                  </span>
-                  <span className="flex-1 min-w-0">
-                    <span className="block text-lg sm:text-xl font-bold text-white tracking-wide">
-                      {mode.title}
-                    </span>
-                    <span className="block text-xs sm:text-sm text-gray-400 font-medium truncate">
-                      {mode.desc}
-                    </span>
-                  </span>
-                  <ChevronRight
-                    className="w-5 h-5 text-gray-600 group-hover:text-gray-300 group-hover:translate-x-0.5 transition-all duration-300"
-                    strokeWidth={2}
-                  />
-                </button>
-              );
-            })}
-
-            {/* Settings + Credits */}
-            <div className="flex flex-wrap items-center justify-center gap-2 mt-1">
-              <button
-                onClick={() => setShowSettings(true)}
-                className="group flex items-center justify-center gap-2 rounded-xl px-5 py-2.5
-                  text-sm font-semibold text-gray-400 border border-white/10 bg-white/[0.02]
-                  transition-all duration-300 hover:text-white hover:bg-white/[0.06] hover:border-white/20"
-              >
-                <Settings className="w-4 h-4 group-hover:rotate-90 transition-transform duration-500" strokeWidth={2} />
-                Settings
-              </button>
+            {/* ── Utility footer ──────────────────────────────────────── */}
+            <div className="font-hud mt-6 lg:mt-8 flex items-center justify-center lg:justify-start gap-2.5 text-[10px] tracking-[0.3em] text-gray-600 uppercase">
+              <span>v1.0</span>
+              <span className="h-1 w-1 rounded-full bg-emerald-400/60 shadow-[0_0_6px_rgba(52,211,153,0.8)]" />
               <button
                 onClick={() => setShowCredits(true)}
-                className="group flex items-center justify-center gap-2 rounded-xl px-5 py-2.5
-                  text-sm font-semibold text-gray-400 border border-white/10 bg-white/[0.02]
-                  transition-all duration-300 hover:text-emerald-300 hover:bg-emerald-500/[0.06] hover:border-emerald-400/30"
+                className="tracking-[0.3em] transition-colors hover:text-emerald-300"
               >
-                <Sparkles
-                  className="w-4 h-4 transition-transform duration-500 group-hover:scale-110"
-                  strokeWidth={2}
-                  fill="currentColor"
-                />
-                Credits
-              </button>
-              <button
-                onClick={isAuthenticated ? openProfile : () => openAuth('signIn')}
-                className={`group flex items-center justify-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold border transition-all duration-300 ${
-                  isAuthenticated
-                    ? 'text-emerald-300 border-emerald-400/25 bg-emerald-500/[0.05] hover:text-white hover:bg-emerald-500/[0.1] hover:border-emerald-300/40'
-                    : 'text-sky-300 border-sky-400/25 bg-sky-500/[0.05] hover:text-white hover:bg-sky-500/[0.1] hover:border-sky-300/40'
-                }`}
-              >
-                {isAuthenticated ? (
-                  <UserRound className="w-4 h-4 transition-transform duration-500 group-hover:scale-110" strokeWidth={2} />
-                ) : (
-                  <LogIn className="w-4 h-4 transition-transform duration-500 group-hover:scale-110" strokeWidth={2} />
-                )}
-                {isAuthenticated ? 'Account' : 'Login / Register'}
+                vibe-coded by <span className="font-semibold text-gray-400">Surya</span>
               </button>
             </div>
-          </div>
-
-          {/* Version + author tagline */}
-          <div className="mt-10 flex flex-col items-center gap-1.5">
-            <p className="text-[10px] tracking-[0.3em] text-gray-600 uppercase">
-              Version 1.0
-            </p>
-            <button
-              onClick={() => setShowCredits(true)}
-              className="text-[11px] text-gray-500 hover:text-emerald-300 transition-colors"
-            >
-              vibe-coded by <span className="font-semibold">Surya</span>
-            </button>
           </div>
         </div>
         </div>

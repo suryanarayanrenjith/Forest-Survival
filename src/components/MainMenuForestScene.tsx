@@ -193,10 +193,6 @@ const FOREST_SCENE_DEFAULTS = {
   chromaticAberration: 0.0026,
 } as const;
 
-function randomRange(minimum: number, maximum: number): number {
-  return minimum + Math.random() * (maximum - minimum);
-}
-
 function isUiClearZone(x: number, z: number): boolean {
   const normalizedX = x / 12;
   const normalizedZ = (z - 8) / 22;
@@ -611,8 +607,8 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
     // Unit cylinder + cones shared across all backdrop trees — each instance
     // scales the unit geometry to its trunk height / canopy radius. Saves
     // 21 unique geometries and 21 cloned materials vs. the per-tree approach.
-    const backdropTrunkGeo = new THREE.CylinderGeometry(0.5, 1.0, 1, 5);
-    const backdropCanopyGeo = new THREE.ConeGeometry(1, 1, 5);
+    const backdropTrunkGeo = new THREE.CylinderGeometry(0.5, 1.0, 1, 6);
+    const backdropCanopyGeo = new THREE.ConeGeometry(1, 1, 8);
     for (const [anchorX, anchorY, anchorZ, trunkHeight, canopyRadius] of backdropAnchors) {
       const backdropTree = new THREE.Group();
       const trunk = new THREE.Mesh(backdropTrunkGeo, backdropMaterial);
@@ -870,11 +866,9 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
       new THREE.CylinderGeometry(0.4, 0.65, 1, 6),
       new THREE.CylinderGeometry(0.5, 0.75, 1, 6),
     ];
-    // Single unit cone — every foliage tier scales this. Previously each
-    // tier got a fresh ConeGeometry, producing ~600 unique cones across
-    // the menu's ~150 trees. 8 radial segments (was 6) rounds the silhouette
-    // so the low-poly canopy doesn't read as a flat-faced green shard.
-    const foliageUnitGeo = new THREE.ConeGeometry(1, 1, 8);
+    // Single unit cone — every foliage tier scales this. 12 radial segments
+    // give a properly rounded canopy (no flat-faced "green shard" facets).
+    const foliageUnitGeo = new THREE.ConeGeometry(1, 1, 12);
     const deadTrunkGeo = new THREE.CylinderGeometry(0.06, 0.2, 1, 5);
     const deadBranchGeo = new THREE.CylinderGeometry(0.02, 0.05, 1, 3);
 
@@ -888,20 +882,37 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
       trunk.receiveShadow = true;
       treeGroup.add(trunk);
 
-      // One foliage shade per WHOLE tree — picking a fresh random green per
-      // tier made single trees look patchy/non-uniform. Each tree still varies
-      // tree-to-tree, but its own canopy now reads as one coherent conifer.
+      // One foliage shade per WHOLE tree so the canopy reads as one coherent
+      // conifer (varies tree-to-tree, not tier-to-tier).
       const treeFoliageMat = foliageMaterials[Math.floor(Math.random() * foliageMaterials.length)];
-      const tierCount = 3 + (sizeIndex > 1 ? 1 : 0);
+
+      // 5–6 OVERLAPPING tiers stepping monotonically from a wide skirt to a
+      // narrow spire. Because the radius + height always taper and the tiers
+      // overlap, the silhouette is reliably a layered, serrated pine — it can
+      // never collapse into a single smooth cone (the old glitch), and the
+      // denser stack reads as a much fuller, more believable tree.
+      const tierCount = 5 + (sizeIndex > 0 ? 1 : 0);
+      const baseY = trunkHeight * 0.42;        // skirt starts partway up the trunk
+      const span = trunkHeight * 0.98;         // vertical extent of the canopy
+      const bottomRadius = 3.5 + Math.random() * 0.6;
+      const topRadius = 0.45;
       for (let tierIndex = 0; tierIndex < tierCount; tierIndex++) {
-        const tierRadius = (3.5 - tierIndex * 0.5) * randomRange(0.75, 1.25);
-        const tierHeight = (7 - tierIndex * 1.1) * randomRange(0.8, 1.1);
+        const f = tierIndex / (tierCount - 1);             // 0 = skirt, 1 = spire
+        // Ease the taper (pow) so lower tiers stay broad and the top draws to a
+        // point — the classic spruce profile.
+        const taper = Math.pow(1 - f, 1.35);
+        const tierRadius = (topRadius + (bottomRadius - topRadius) * taper) * (0.92 + Math.random() * 0.12);
+        const tierHeight = (1.9 + 2.0 * (1 - f)) * (0.92 + Math.random() * 0.16);
         const foliage = new THREE.Mesh(foliageUnitGeo, treeFoliageMat);
         foliage.scale.set(tierRadius, tierHeight, tierRadius);
-        foliage.position.y = trunkHeight * 0.5 + tierIndex * 3 + 1;
+        foliage.position.y = baseY + f * span;
+        // Subtle lateral jitter + per-tier spin so stacked cones never look like
+        // a single extruded shape.
+        foliage.position.x = (Math.random() - 0.5) * 0.16 * tierRadius;
+        foliage.position.z = (Math.random() - 0.5) * 0.16 * tierRadius;
+        foliage.rotation.y = Math.random() * Math.PI;
         foliage.castShadow = true;
         foliage.receiveShadow = true;
-        foliage.rotation.y = Math.random() * 0.4;
         treeGroup.add(foliage);
       }
 
@@ -1123,6 +1134,114 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
       haloMesh.position.copy(moonMesh.position);
       scene.add(haloMesh);
     }
+
+    // ── SHARED SOFT-RADIAL SPRITE TEXTURE ──────────────────────────────────
+    // One reusable feathered glow disc, drawn once to a canvas, shared by the
+    // moon's lens flare and the campfire flames. Disposed on cleanup (it isn't
+    // owned by any single material so disposeScene won't reach it).
+    const softGlowTexture = (() => {
+      const glowCanvas = document.createElement('canvas');
+      glowCanvas.width = 128;
+      glowCanvas.height = 128;
+      const ctx = glowCanvas.getContext('2d')!;
+      const grad = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+      grad.addColorStop(0.0, 'rgba(255,255,255,1)');
+      grad.addColorStop(0.22, 'rgba(255,255,255,0.72)');
+      grad.addColorStop(0.5, 'rgba(255,255,255,0.22)');
+      grad.addColorStop(1.0, 'rgba(255,255,255,0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, 128, 128);
+      return new THREE.CanvasTexture(glowCanvas);
+    })();
+
+    // ── MOON LENS FLARE — corona + anamorphic streaks ──────────────────────
+    // The moon was just a flat emissive sphere; this gives it a real
+    // camera-lens presence: a soft corona, a hot core, and crossed anamorphic
+    // streaks (the wide cyan horizontal smear that screams "cinematic lens").
+    // Sprites always face the camera, so they read correctly through the gentle
+    // parallax drift. Drawn with depthTest off + high renderOrder so they
+    // behave like a real lens artifact layered over the vista.
+    type MoonFlare = { sprite: THREE.Sprite; baseOpacity: number; pulse: number; phase: number };
+    const moonFlares: MoonFlare[] = [];
+    const makeFlareSprite = (color: number, sx: number, sy: number, opacity: number, pulse: number) => {
+      const material = new THREE.SpriteMaterial({
+        map: softGlowTexture,
+        color,
+        transparent: true,
+        opacity,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        depthTest: false,
+        toneMapped: false,
+        fog: false,
+      });
+      const sprite = new THREE.Sprite(material);
+      sprite.scale.set(sx, sy, 1);
+      sprite.position.copy(moonMesh.position);
+      sprite.renderOrder = 5;
+      scene.add(sprite);
+      moonFlares.push({ sprite, baseOpacity: opacity, pulse, phase: Math.random() * Math.PI * 2 });
+      return sprite;
+    };
+    makeFlareSprite(0xbfe6ff, 26, 26, 0.5, 0.5);   // soft corona
+    makeFlareSprite(0xffffff, 9, 9, 0.7, 0.9);     // hot core
+    makeFlareSprite(0x9fd8ff, 52, 2.0, 0.3, 0.7);  // horizontal anamorphic streak
+    makeFlareSprite(0x9fd8ff, 1.8, 30, 0.16, 0.6); // faint vertical streak
+
+    // ── SURVIVAL CAMPFIRE — warm focal counterpoint to the cool aurora ─────
+    // A lone camp in the clearing, offset to the lower-left (rule of thirds,
+    // outside the centre UI-clear zone). Its warm flicker plays against the
+    // teal world for cinematic warm/cool tension and quietly says "survival
+    // camp" — the human stake in the vista. The point light is created ONCE at
+    // init (never added/removed at runtime), so it respects the no-runtime-
+    // lights rule the rest of the game lives by.
+    const fireX = -15.5;
+    const fireZ = 4;
+    const fireBaseY = heightAt(fireX, fireZ);
+    const campfire = new THREE.Group();
+    campfire.position.set(fireX, fireBaseY, fireZ);
+    const campLogMat = new THREE.MeshStandardMaterial({
+      color: 0x281910,
+      roughness: 0.92,
+      emissive: new THREE.Color(0x5a1d05),
+      emissiveIntensity: 0.5,
+    });
+    const campLogGeo = new THREE.CylinderGeometry(0.12, 0.17, 2.4, 6);
+    for (let logIdx = 0; logIdx < 6; logIdx++) {
+      const log = new THREE.Mesh(campLogGeo, campLogMat);
+      const a = (logIdx / 6) * Math.PI * 2;
+      log.position.set(Math.cos(a) * 0.5, 0.95, Math.sin(a) * 0.5);
+      log.rotation.z = Math.cos(a) * 0.52;
+      log.rotation.x = Math.sin(a) * 0.52;
+      log.castShadow = true;
+      campfire.add(log);
+    }
+    const coals = new THREE.Mesh(
+      new THREE.SphereGeometry(0.55, 10, 7),
+      new THREE.MeshStandardMaterial({ color: 0xff6a1a, emissive: new THREE.Color(0xff5410), emissiveIntensity: 1.9, roughness: 0.55 }),
+    );
+    coals.scale.set(1, 0.42, 1);
+    coals.position.y = 0.22;
+    campfire.add(coals);
+    const flameSprites: Array<{ sprite: THREE.Sprite; baseY: number; baseSx: number; baseSy: number; speed: number; phase: number }> = [];
+    const addFlame = (color: number, sx: number, sy: number, y: number, opacity: number, speed: number) => {
+      const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: softGlowTexture, color, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false, fog: false,
+      }));
+      sprite.scale.set(sx, sy, 1);
+      sprite.position.y = y;
+      sprite.renderOrder = 4;
+      campfire.add(sprite);
+      flameSprites.push({ sprite, baseY: y, baseSx: sx, baseSy: sy, speed, phase: Math.random() * Math.PI * 2 });
+    };
+    addFlame(0xff8a2a, 1.9, 3.2, 1.5, 0.85, 11);
+    addFlame(0xffd070, 1.1, 2.0, 1.15, 0.95, 17);
+    scene.add(campfire);
+
+    const fireLight = new THREE.PointLight(0xff8636, 6, 34, 1.7);
+    fireLight.position.set(fireX, fireBaseY + 1.5, fireZ);
+    const fireBaseIntensity = 5.2;
+    scene.add(fireLight);
 
     // Bumped from 100 — denser firefly field for that magical "alive
     // forest" feel. Still cheap (single Points draw call).
@@ -1629,12 +1748,35 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
       mouseState.y += (mouseState.targetY - mouseState.y) * 0.02;
 
       // Gentle autonomous camera breathing layered under the mouse parallax, so
-      // the scene stays alive and cinematic even when the pointer is still.
+      // the scene stays alive and cinematic even when the pointer is still. A
+      // slow dolly on Z adds genuine parallax depth (the tree-line slides past
+      // the moon) without ever drifting far enough to expose the clearing edge.
       const camDriftX = Math.sin(elapsedTime * 0.12) * 1.05;
       const camDriftY = Math.cos(elapsedTime * 0.09) * 0.45;
+      const camDriftZ = Math.sin(elapsedTime * 0.045) * 1.7;
       camera.position.x = mouseState.x * 3 + camDriftX;
       camera.position.y = 7 - mouseState.y * 0.8 + camDriftY;
+      camera.position.z = 28 + camDriftZ;
       camera.lookAt(mouseState.x * 0.8 + camDriftX * 0.25, 2 - mouseState.y * 0.3, -8);
+
+      // Moon lens flare — breathe corona/streak opacity + scale so the flare
+      // shimmers like a real lens artifact rather than a static decal.
+      for (const flare of moonFlares) {
+        const breath = 0.78 + Math.sin(elapsedTime * flare.pulse + flare.phase) * 0.22;
+        (flare.sprite.material as THREE.SpriteMaterial).opacity = flare.baseOpacity * breath;
+      }
+
+      // Campfire — organic flicker driven by layered sines plus a touch of
+      // noise, applied to both the warm point light and the flame sprites so
+      // the whole pool of light pulses together the way a real fire does.
+      const fireFlick =
+        0.74 + Math.sin(elapsedTime * 9.0) * 0.16 + Math.sin(elapsedTime * 23.0 + 1.3) * 0.08 + Math.random() * 0.06;
+      fireLight.intensity = fireBaseIntensity * fireFlick;
+      for (const flame of flameSprites) {
+        const f = 0.82 + Math.sin(elapsedTime * flame.speed + flame.phase) * 0.18 + Math.random() * 0.05;
+        flame.sprite.scale.set(flame.baseSx * (0.92 + (f - 0.82) * 0.6), flame.baseSy * f, 1);
+        flame.sprite.position.y = flame.baseY + (f - 0.85) * 0.5;
+      }
 
       // Shooting stars — advance each meteor along its arc (or wait out its gap).
       for (let mi = 0; mi < meteors.length; mi++) {
@@ -1775,6 +1917,7 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
       window.cancelAnimationFrame(animationFrameId);
       window.cancelAnimationFrame(readyFrame);
       meteorTexture.dispose(); // shared streak texture isn't owned by any mesh
+      softGlowTexture.dispose(); // shared flare/flame disc, likewise unowned
       disposeScene(scene);
       scene.clear();
       (bloomPass as unknown as { dispose?: () => void }).dispose?.();

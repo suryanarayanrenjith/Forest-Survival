@@ -38,6 +38,53 @@ function todayChallengeId(utcDay: string): string {
   return DAILY_CHALLENGE_IDS[idx];
 }
 
+/** Per-challenge completion goals — shared by `claim` and `getActivity`. */
+const CHALLENGE_GOALS: Record<string, number> = {
+  kill_100: 100,
+  reach_wave_10: 10,
+  headshot_25: 25,
+  flawless_3_waves: 3,
+  survive_pistol_only: 30,
+};
+
+/**
+ * Activity calendar source for the Profile (GitHub-style heatmap). Every day the
+ * player actually plays writes/updates a `dailyProgress` row (the daily
+ * challenge advances as they play), so those rows ARE the activity log — no
+ * extra storage or write path needed. Returns one entry per active day in the
+ * last ~53 weeks, with an intensity `level` (1–4) derived from how far they got
+ * on that day's challenge. `day` is the UTC "YYYY-MM-DD" string.
+ */
+export const getActivity = query({
+  args: {},
+  returns: v.object({
+    days: v.array(v.object({ day: v.string(), level: v.number() })),
+  }),
+  handler: async (ctx: QueryCtx) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) return { days: [] };
+
+    // 53 weeks + a few days of slack so the oldest visible column is covered.
+    const cutoff = new Date(Date.now() - 372 * 86_400_000).toISOString().slice(0, 10);
+    const rows = await ctx.db
+      .query("dailyProgress")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+
+    const days = rows
+      .filter((r) => r.utcDay >= cutoff)
+      .map((r) => {
+        const goal = CHALLENGE_GOALS[r.challengeId];
+        const frac = goal ? Math.min(1, r.progress / goal) : r.progress > 0 ? 0.5 : 0;
+        // Any active day is at least level 1; completion (claimed or goal met) is 4.
+        const level = r.claimed || frac >= 1 ? 4 : frac >= 0.6 ? 3 : frac >= 0.3 ? 2 : 1;
+        return { day: r.utcDay, level };
+      });
+
+    return { days };
+  },
+});
+
 /** Read the caller's daily row for today. Returns null when not signed in. */
 export const getDaily = query({
   args: {},
@@ -124,17 +171,9 @@ export const claim = mutation({
     if (!row) throw new ConvexError("No daily progress yet");
     if (row.claimed) return { granted: 0 };
 
-    // Look up the goal for the rolled challenge — must agree with the
-    // client-side registry. Inlining the goals avoids importing a TS file
-    // that lives outside /convex.
-    const goals: Record<string, number> = {
-      kill_100: 100,
-      reach_wave_10: 10,
-      headshot_25: 25,
-      flawless_3_waves: 3,
-      survive_pistol_only: 30,
-    };
-    const goal = goals[row.challengeId];
+    // Goal for the rolled challenge — must agree with the client-side registry
+    // (see CHALLENGE_GOALS above).
+    const goal = CHALLENGE_GOALS[row.challengeId];
     if (goal === undefined || row.progress < goal) {
       throw new ConvexError("Not eligible to claim");
     }

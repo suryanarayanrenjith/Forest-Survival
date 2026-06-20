@@ -4,7 +4,7 @@ import {
   ChevronDown, Crown, Play, X, Loader2, Wifi, Check, UserRound,
   Trees, Flame, Snowflake, Mountain, Droplet, Shield, Leaf, Landmark,
   Crosshair, Skull, Cpu, Bot, Footprints, ShieldCheck, EyeOff, Flame as FlameIcon,
-  HeartPulse, Wrench, Ghost, Lock, Sun, Moon, SunMoon, Smartphone, type LucideIcon,
+  HeartPulse, Wrench, Ghost, Lock, Sun, Moon, SunMoon, Smartphone, UserX, type LucideIcon,
 } from 'lucide-react';
 import { usePlayerData } from '../hooks/usePlayerData';
 import UserAvatar from './UserAvatar';
@@ -22,6 +22,7 @@ function popcount(value: number): number {
 
 type GameStartMsg = Extract<NetworkMessage, { type: 'game_start' }>;
 type PlayerRejectedMsg = Extract<NetworkMessage, { type: 'player_rejected' }>;
+type PlayerKickedMsg = Extract<NetworkMessage, { type: 'player_kicked' }>;
 import { MAP_CONFIGS, type MapType } from '../utils/MapSystem';
 import { CHARACTER_ABILITIES } from '../utils/CharacterAbilityRegistry';
 import { ABILITY_ICONS } from './abilityIcons';
@@ -111,24 +112,30 @@ const getURLParams = () => {
 // ── Module-level sub-components (defined OUTSIDE the lobby so the 100ms
 //    player-list poll doesn't remount them — that remount was what made the
 //    rows constantly flash). ───────────────────────────────────────────────
-const PlayerRow = ({ player, index, manager, onViewStats }: {
+const PlayerRow = ({ player, index, manager, onViewStats, onKick }: {
   player: PlayerData;
   index: number;
   manager: MultiplayerManager;
   onViewStats?: (username: string) => void;
+  onKick?: (player: PlayerData) => void;
 }) => {
   const isLocal = player.id === manager.getLocalPlayer().id;
   const isHost = manager.isPlayerHost(player.id);
   const tier = player.rankTier !== undefined ? RANK_TIERS[player.rankTier] : null;
+  // Only the host can kick, and only other (non-host) players.
+  const canKick = manager.isGameHost() && !isHost && !isLocal;
   return (
-    <button
-      type="button"
-      onClick={() => onViewStats?.(player.name)}
-      className={`flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-colors hover:bg-white/[0.05] ${
+    <div
+      className={`flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 transition-colors ${
         isLocal ? 'border-emerald-400/30 bg-emerald-500/[0.07]' : 'border-white/[0.07] bg-white/[0.02]'
       }`}
       style={{ animation: `mlRow 0.3s ease-out ${index * 0.06}s both` }}
     >
+      <button
+        type="button"
+        onClick={() => onViewStats?.(player.name)}
+        className="flex flex-1 items-center gap-3 min-w-0 text-left rounded-lg transition-colors hover:opacity-90"
+      >
       <UserAvatar username={player.name} avatarIndex={player.avatarIndex} size="sm" className="w-9 h-9 rounded-lg" />
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5">
@@ -174,7 +181,19 @@ const PlayerRow = ({ player, index, manager, onViewStats }: {
           })()}
         </div>
       </div>
-    </button>
+      </button>
+      {canKick && (
+        <button
+          type="button"
+          onClick={() => onKick?.(player)}
+          title={`Kick ${player.name}`}
+          aria-label={`Kick ${player.name}`}
+          className="flex-shrink-0 flex items-center justify-center w-8 h-8 rounded-lg border border-rose-400/30 text-rose-300 transition-colors hover:bg-rose-500/15 hover:text-rose-200"
+        >
+          <UserX className="w-4 h-4" strokeWidth={2.2} />
+        </button>
+      )}
+    </div>
   );
 };
 
@@ -190,7 +209,7 @@ const CharacterPicker = ({
   onPick: (id: ModelClassId) => void;
 }) => (
   <div>
-    <label className="block text-[10px] font-semibold tracking-[0.15em] text-gray-500 uppercase mb-1.5">
+    <label className="font-hud block text-[10px] font-semibold tracking-[0.18em] text-gray-500 uppercase mb-1.5">
       Choose Character
     </label>
     <div className="grid grid-cols-4 gap-1.5">
@@ -263,7 +282,7 @@ const ErrorBox = ({ error }: { error: string }) =>
 // (no random names, no renaming).
 const IdentityField = ({ username }: { username: string }) => (
   <div>
-    <label className="block text-[10px] font-semibold tracking-[0.15em] text-gray-500 uppercase mb-1.5">
+    <label className="font-hud block text-[10px] font-semibold tracking-[0.18em] text-gray-500 uppercase mb-1.5">
       Playing As
     </label>
     <div className="flex items-center gap-2.5 rounded-xl border border-emerald-400/20 bg-emerald-500/[0.06] px-3.5 py-2.5">
@@ -441,9 +460,22 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
       setIsConnecting(false);
     });
 
+    // Kicked by the host (or auto-ejected by anti-cheat) while still in the
+    // lobby — surface the reason and drop back to the menu.
+    const unsubKicked = manager.onMessage('player_kicked', (raw) => {
+      const data = raw as PlayerKickedMsg;
+      setError(data.reason || 'You were removed from the game by the host.');
+      manager.disconnect();
+      setManager(null);
+      setView('menu');
+      setIsConnecting(false);
+      clearMultiplayerURL();
+    });
+
     return () => {
       unsubStart();
       unsubRejected();
+      unsubKicked();
     };
   }, [manager, onStartGame]);
 
@@ -529,6 +561,14 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
     if (!localPlayer || p.id === localPlayer.id) return;
     if (p.modelClass) takenByOthers.set(p.modelClass, p.name);
   });
+  // Host-only: remove a player from the lobby. The kicked client gets the
+  // reason and is dropped back to the menu; everyone else sees them leave.
+  const handleKick = (player: PlayerData) => {
+    if (!manager || !manager.isGameHost()) return;
+    manager.kickPlayer(player.id, `You were removed from the lobby by the host.`);
+    setConnectedPlayers(manager.getAllPlayers());
+  };
+
   const handlePickCharacter = (id: ModelClassId) => {
     if (!manager) return;
     // Defence in depth — the button is disabled when taken, but block
@@ -587,8 +627,10 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
   // the backdrop can't drift while this screen slides in/out.
   const backdrop = 'fixed inset-0 z-50 flex items-center justify-center p-4 overflow-y-auto';
   const backdropStyle = {} as const;
-  const panelClass = 'w-full max-w-sm rounded-3xl border border-white/10 bg-[#0b1016]/95 shadow-[0_24px_80px_-24px_rgba(0,0,0,0.8)]';
-  const panelInnerClass = 'w-full max-w-xl rounded-3xl border border-white/10 bg-[#0b1016]/95 shadow-[0_24px_80px_-24px_rgba(0,0,0,0.8)] overflow-hidden flex flex-col max-h-[94dvh]';
+  // Transparent dark-green glass — uniform with the Solo/Tutorial menus so the
+  // forest backdrop reads through, instead of the old opaque slab.
+  const panelClass = 'hud-frame w-full max-w-sm rounded-3xl border border-emerald-400/15 bg-[#0a1410]/70 backdrop-blur-xl shadow-[0_30px_90px_-24px_rgba(0,0,0,0.85)]';
+  const panelInnerClass = 'hud-frame w-full max-w-xl rounded-3xl border border-emerald-400/15 bg-[#0a1410]/70 backdrop-blur-xl shadow-[0_30px_90px_-24px_rgba(0,0,0,0.85)] overflow-hidden flex flex-col max-h-[94dvh]';
 
   // ── AUTH GATE ───────────────────────────────────────────────────────────
   // Multiplayer always plays as the signed-in account username. Guests who
@@ -596,7 +638,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
   if (currentUser === undefined) {
     return (
       <div className={backdrop} style={backdropStyle}>
-        <div className="flex flex-col items-center gap-4 rounded-3xl border border-white/10 bg-[#0b1016]/95 px-6 py-5 shadow-[0_24px_80px_-24px_rgba(0,0,0,0.8)]">
+        <div className="flex flex-col items-center gap-4 rounded-3xl border border-white/10 bg-[#0a1410]/70 backdrop-blur-xl px-6 py-5 shadow-[0_24px_80px_-24px_rgba(0,0,0,0.8)]">
           <Loader2 className="w-10 h-10 text-sky-400 animate-spin" strokeWidth={2} />
           <div className="text-sm font-semibold tracking-wide text-gray-300">Checking your session…</div>
         </div>
@@ -638,8 +680,8 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
             <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-sky-500/12 mb-3">
               <Users className="w-6 h-6 text-sky-400" strokeWidth={2} />
             </div>
-            <p className="text-[10px] tracking-[0.35em] text-sky-400/90 font-semibold uppercase">Online Play</p>
-            <h1 className="text-3xl font-bold text-white tracking-tight">Multiplayer</h1>
+            <p className="font-hud text-[10px] tracking-[0.35em] text-sky-400/90 font-semibold uppercase">Online Play</p>
+            <h1 className="font-display text-3xl font-semibold uppercase text-white tracking-wide">Multiplayer</h1>
           </div>
 
           <div className="space-y-3">
@@ -694,7 +736,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
   if (view === 'host' && isConnecting && !manager) {
     return (
       <div className={backdrop} style={backdropStyle}>
-        <div className="flex flex-col items-center gap-4 rounded-3xl border border-white/10 bg-[#0b1016]/95 px-6 py-5 shadow-[0_24px_80px_-24px_rgba(0,0,0,0.8)]">
+        <div className="flex flex-col items-center gap-4 rounded-3xl border border-white/10 bg-[#0a1410]/70 backdrop-blur-xl px-6 py-5 shadow-[0_24px_80px_-24px_rgba(0,0,0,0.8)]">
           <Loader2 className="w-10 h-10 text-emerald-400 animate-spin" strokeWidth={2} />
           <div className="text-sm font-semibold tracking-wide text-gray-300">Creating lobby…</div>
         </div>
@@ -716,7 +758,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
                 <Server className="w-5 h-5 text-emerald-400" strokeWidth={2} />
               </div>
               <div>
-                <h2 className="text-lg font-bold text-white tracking-wide">Host Lobby</h2>
+                <h2 className="font-display text-lg font-semibold uppercase text-white tracking-wide">Host Lobby</h2>
                 <p className="flex items-center gap-1.5 text-xs text-emerald-400">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> Lobby open
                 </p>
@@ -732,7 +774,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
           <div className="p-5 space-y-4 overflow-y-auto">
             {/* Lobby ID */}
             <div>
-              <label className="block text-[10px] font-semibold tracking-[0.15em] text-gray-500 uppercase mb-1.5">
+              <label className="font-hud block text-[10px] font-semibold tracking-[0.18em] text-gray-500 uppercase mb-1.5">
                 Lobby ID — share with friends
               </label>
               <div className="flex gap-2">
@@ -771,7 +813,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
               </div>
 
               <div>
-                <label className="block text-[10px] font-semibold tracking-[0.15em] text-gray-500 uppercase mb-1.5">Mode</label>
+                <label className="font-hud block text-[10px] font-semibold tracking-[0.18em] text-gray-500 uppercase mb-1.5">Mode</label>
                 <div className="grid grid-cols-2 gap-2">
                   {([['coop', 'Co-op Survival'], ['survival', 'Last Man Standing']] as const).map(([val, label]) => (
                     <button
@@ -791,7 +833,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
 
               {/* Difficulty */}
               <div>
-                <label className="block text-[10px] font-semibold tracking-[0.15em] text-gray-500 uppercase mb-1.5">Difficulty</label>
+                <label className="font-hud block text-[10px] font-semibold tracking-[0.18em] text-gray-500 uppercase mb-1.5">Difficulty</label>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                   {([
                     ['easy', 'Easy', 'Casual', Shield, '#34d399'],
@@ -821,7 +863,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
 
               {/* Time of day */}
               <div>
-                <label className="block text-[10px] font-semibold tracking-[0.15em] text-gray-500 uppercase mb-1.5">Time of Day</label>
+                <label className="font-hud block text-[10px] font-semibold tracking-[0.18em] text-gray-500 uppercase mb-1.5">Time of Day</label>
                 <div className="grid grid-cols-3 gap-2">
                   {([
                     ['auto', 'Auto', 'Day/Night cycle', SunMoon, '#a78bfa'],
@@ -878,7 +920,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
 
               {/* Map */}
               <div>
-                <label className="block text-[10px] font-semibold tracking-[0.15em] text-gray-500 uppercase mb-1.5">Map</label>
+                <label className="font-hud block text-[10px] font-semibold tracking-[0.18em] text-gray-500 uppercase mb-1.5">Map</label>
                 <button
                   onClick={() => setShowMapSelector(!showMapSelector)}
                   className="flex items-center gap-3 w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2.5
@@ -927,7 +969,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
               </div>
               <div className="space-y-1.5">
                 {connectedPlayers.map((player, index) => (
-                  <PlayerRow key={player.id} player={player} index={index} manager={manager} onViewStats={setViewStatsUser} />
+                  <PlayerRow key={player.id} player={player} index={index} manager={manager} onViewStats={setViewStatsUser} onKick={handleKick} />
                 ))}
                 {connectedPlayers.length < 8 && (
                   <div className="flex items-center gap-3 rounded-xl border border-dashed border-white/10 px-3 py-2.5">
@@ -997,14 +1039,14 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
             <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-sky-500/12 mb-3">
               <LogIn className="w-6 h-6 text-sky-400" strokeWidth={2} />
             </div>
-            <h2 className="text-2xl font-bold text-white tracking-tight">Join Game</h2>
+            <h2 className="font-display text-2xl font-semibold uppercase text-white tracking-wide">Join Game</h2>
           </div>
 
           <div className="space-y-3">
             <IdentityField username={username} />
 
             <div>
-              <label className="block text-[10px] font-semibold tracking-[0.15em] text-gray-500 uppercase mb-1.5">
+              <label className="font-hud block text-[10px] font-semibold tracking-[0.18em] text-gray-500 uppercase mb-1.5">
                 Lobby ID
               </label>
               <input
@@ -1052,14 +1094,14 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
   if (view === 'join' && manager) {
     return (
       <div className={backdrop} style={backdropStyle}>
-        <div className="w-full max-w-md rounded-3xl border border-white/10 bg-[#0b1016]/95 overflow-hidden shadow-[0_24px_80px_-24px_rgba(0,0,0,0.8)]"
+        <div className="w-full max-w-md rounded-3xl border border-white/10 bg-[#0a1410]/70 backdrop-blur-xl overflow-hidden shadow-[0_24px_80px_-24px_rgba(0,0,0,0.8)]"
           style={{ animation: 'mlFade 0.35s cubic-bezier(0.16,1,0.3,1) forwards' }}>
           <div className="flex items-center gap-3 px-5 py-4 border-b border-white/[0.07]">
             <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-sky-500/12">
               <Wifi className="w-5 h-5 text-sky-400" strokeWidth={2} />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-white tracking-wide">In Lobby</h2>
+              <h2 className="font-display text-lg font-semibold uppercase text-white tracking-wide">In Lobby</h2>
               <p className="flex items-center gap-1.5 text-xs text-emerald-400">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> Connected
               </p>

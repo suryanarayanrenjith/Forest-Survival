@@ -58,7 +58,7 @@ const CharacterSelect = ({ selected, onSelect, accent = '#34d399' }: CharacterSe
               }}
             >
               <Icon className="w-5 h-5" style={{ color: active ? ab.color : '#9ca3af' }} strokeWidth={1.9} />
-              <span className={`text-[10px] font-bold leading-tight text-center ${active ? 'text-white' : 'text-gray-400'}`}>
+              <span className={`font-hud text-[10px] font-bold uppercase tracking-wide leading-tight text-center ${active ? 'text-white' : 'text-gray-400'}`}>
                 {CHARACTER_NAMES[id]}
               </span>
             </button>
@@ -79,7 +79,7 @@ const CharacterSelect = ({ selected, onSelect, accent = '#34d399' }: CharacterSe
             <AbilityIcon className="w-[18px] h-[18px]" style={{ color: ability.color }} strokeWidth={2.1} />
           </span>
           <div className="min-w-0">
-            <p className="text-[10px] uppercase tracking-[0.18em] font-semibold" style={{ color: ability.color }}>
+            <p className="font-hud text-[10px] uppercase tracking-[0.18em] font-semibold" style={{ color: ability.color }}>
               Ability · {ability.name}
             </p>
             <p className="text-[11px] text-gray-300 leading-snug">{ability.description}</p>

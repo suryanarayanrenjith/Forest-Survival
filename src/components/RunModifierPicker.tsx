@@ -105,11 +105,12 @@ const RunModifierPicker = ({ options: initialOptions, onChoose, onBack }: RunMod
       <div className="relative z-20 w-full max-w-3xl">
         {/* Header */}
         <div className="mb-7 text-center">
-          <p className="text-[10px] font-bold uppercase tracking-[0.5em] text-rose-300/85">
+          <p className="font-hud text-[10px] font-bold uppercase tracking-[0.5em] text-rose-300/85">
             Randomized Stakes · roll the dice
           </p>
-          <h2 className="mt-2 text-3xl font-black tracking-tight text-white sm:text-4xl">
-            Raise the stakes
+          <h2 className="font-display mt-2 text-4xl font-semibold uppercase tracking-wide text-white sm:text-5xl"
+            style={{ filter: 'drop-shadow(0 4px 20px rgba(244,63,94,0.3))' }}>
+            Raise the Stakes
           </h2>
           <p className="mt-2 text-[13px] text-gray-400">
             Three freshly-rolled mutators — each warps the run a different way and pays out a higher score multiplier.
@@ -137,7 +138,7 @@ const RunModifierPicker = ({ options: initialOptions, onChoose, onBack }: RunMod
                 }}
               >
                 <kbd
-                  className="absolute -top-2 -right-2 flex h-7 w-7 items-center justify-center rounded-lg border bg-[#0b0f15] text-[12px] font-black tabular-nums shadow-lg"
+                  className="font-hud absolute -top-2 -right-2 flex h-7 w-7 items-center justify-center rounded-lg border bg-[#080d0b] text-[12px] font-black tabular-nums shadow-lg"
                   style={{ borderColor: isFocused ? accent.ring : `${accent.ring}66`, color: accent.text }}
                 >
                   {idx + 1}
@@ -157,7 +158,7 @@ const RunModifierPicker = ({ options: initialOptions, onChoose, onBack }: RunMod
                   </span>
                 </div>
                 <div>
-                  <p className="text-lg font-black tracking-tight text-white">{mod.name}</p>
+                  <p className="font-display text-lg font-semibold uppercase tracking-wide text-white">{mod.name}</p>
                   <p className="mt-1 text-[12px] leading-snug text-gray-400">{mod.blurb}</p>
                 </div>
                 {/* Effect breakdown chips — the concrete stat tweaks. */}
@@ -173,7 +174,7 @@ const RunModifierPicker = ({ options: initialOptions, onChoose, onBack }: RunMod
                   ))}
                 </div>
                 <span
-                  className="mt-auto text-[10px] font-bold uppercase tracking-[0.2em]"
+                  className="font-hud mt-auto text-[10px] font-bold uppercase tracking-[0.2em]"
                   style={{ color: isFocused ? accent.text : `${accent.text}aa` }}
                 >
                   {isFocused ? 'Press Enter' : 'Apply'}
@@ -190,7 +191,7 @@ const RunModifierPicker = ({ options: initialOptions, onChoose, onBack }: RunMod
               type="button"
               onClick={onBack}
               onMouseEnter={() => setFocusedIdx(-2)}
-              className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2.5 text-[12px] font-bold uppercase tracking-[0.15em] text-gray-300 transition-all hover:bg-white/[0.08] hover:text-white"
+              className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2.5 font-hud text-[12px] font-bold uppercase tracking-[0.15em] text-gray-300 transition-all hover:bg-white/[0.08] hover:text-white"
             >
               ← Back
               <kbd className="ml-1 rounded border border-white/15 bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-bold text-gray-400">Esc</kbd>
@@ -198,7 +199,7 @@ const RunModifierPicker = ({ options: initialOptions, onChoose, onBack }: RunMod
             <button
               type="button"
               onClick={reroll}
-              className="flex items-center gap-2 rounded-xl border border-violet-400/35 bg-violet-500/[0.08] px-4 py-2.5 text-[12px] font-bold uppercase tracking-[0.15em] text-violet-200 transition-all hover:bg-violet-500/15 hover:text-white"
+              className="flex items-center gap-2 rounded-xl border border-violet-400/35 bg-violet-500/[0.08] px-4 py-2.5 font-hud text-[12px] font-bold uppercase tracking-[0.15em] text-violet-200 transition-all hover:bg-violet-500/15 hover:text-white"
             >
               <Dices className={`h-4 w-4 ${rerollSpin ? 'animate-spin' : ''}`} strokeWidth={2.25} />
               Re-roll
@@ -209,7 +210,7 @@ const RunModifierPicker = ({ options: initialOptions, onChoose, onBack }: RunMod
             type="button"
             onClick={() => onChoose(null)}
             onMouseEnter={() => setFocusedIdx(-1)}
-            className={`flex items-center justify-center gap-2 rounded-xl border px-5 py-2.5 text-[12px] font-bold uppercase tracking-[0.15em] transition-all ${
+            className={`font-hud flex items-center justify-center gap-2 rounded-xl border px-5 py-2.5 text-[12px] font-bold uppercase tracking-[0.15em] transition-all ${
               focusedIdx === -1
                 ? 'border-emerald-300 bg-emerald-500/20 text-emerald-100'
                 : 'border-emerald-400/35 bg-emerald-500/[0.08] text-emerald-200 hover:bg-emerald-500/15'

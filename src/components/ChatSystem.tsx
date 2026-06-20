@@ -328,13 +328,13 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
             onClick={() => { setTouchOpen(false); setShowEmotes(false); }}
           >
             <div
-              className="flex max-h-[80dvh] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#0b0f15]"
+              className="flex max-h-[80dvh] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#080d0b]"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="flex items-center justify-between border-b border-white/[0.07] px-3 py-2.5">
                 <div className="flex items-center gap-2">
                   <MessageSquare className="h-4 w-4 text-emerald-400" strokeWidth={2.25} />
-                  <span className="text-xs font-semibold uppercase tracking-[0.12em] text-white">Chat</span>
+                  <span className="font-hud text-xs font-semibold uppercase tracking-[0.12em] text-white">Chat</span>
                 </div>
                 <button
                   onClick={() => { setTouchOpen(false); setShowEmotes(false); }}
@@ -432,12 +432,12 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
     <div className="absolute bottom-24 sm:bottom-28 left-2 sm:left-4 space-y-2" style={{ zIndex: 30 }}>
       {/* Chat Messages - Responsive sizing */}
       {showChat && (
-        <div className="w-[280px] sm:w-80 md:w-96 h-48 sm:h-56 md:h-64 bg-[#0b0f15]/95 border border-white/10 rounded-2xl overflow-hidden flex flex-col">
+        <div className="w-[280px] sm:w-80 md:w-96 h-48 sm:h-56 md:h-64 bg-[#080d0b]/95 border border-white/10 rounded-2xl overflow-hidden flex flex-col">
           {/* Header */}
           <div className="px-3 py-2 flex items-center justify-between border-b border-white/[0.07]">
             <div className="flex items-center gap-2">
               <MessageSquare className="w-4 h-4 text-emerald-400" strokeWidth={2.25} />
-              <span className="text-white font-semibold text-xs tracking-[0.12em] uppercase">Chat</span>
+              <span className="font-hud text-white font-semibold text-xs tracking-[0.12em] uppercase">Chat</span>
               {chatCooldown && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />}
             </div>
             <button
@@ -523,9 +523,9 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
 
       {/* Emote Picker */}
       {showEmotes && (
-        <div className="w-[280px] sm:w-80 md:w-96 bg-[#0b0f15]/95 border border-white/10 rounded-2xl p-3">
+        <div className="w-[280px] sm:w-80 md:w-96 bg-[#080d0b]/95 border border-white/10 rounded-2xl p-3">
           <div className="flex items-center justify-between mb-2.5">
-            <span className="text-xs font-semibold tracking-[0.12em] text-gray-300 uppercase">Quick Emotes</span>
+            <span className="font-hud text-xs font-semibold tracking-[0.12em] text-gray-300 uppercase">Quick Emotes</span>
             <div className="flex items-center gap-2">
               {emoteCooldown && <span className="text-amber-400 text-[10px] font-semibold">Cooldown…</span>}
               <button

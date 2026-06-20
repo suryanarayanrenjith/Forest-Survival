@@ -15,6 +15,16 @@
     <meta property="og:image" content="/Forest.png" />
     <meta property="og:type" content="website" />
     <title>Forest Survival</title>
+    <!-- Menu typography: Oswald (condensed expedition display) + Chakra Petch
+         (techy HUD data face). Scoped to menu UI via .font-display / .font-hud
+         so the in-game HUD typography is untouched. Loaded with swap so the
+         WebGL menu never blocks on font fetch. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Oswald:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
   </head>
   <body>
     <div id="root"></div>

@@ -1,6 +1,7 @@
-import { query, internalQuery } from "./_generated/server";
-import { v } from "convex/values";
+import { query, internalQuery, mutation } from "./_generated/server";
+import { v, ConvexError } from "convex/values";
 import { getAuthUserId } from "@convex-dev/auth/server";
+import { checkDisplayName, normalizeDisplayName } from "./authValidation";
 
 export const currentUser = query({
   args: {},
@@ -43,6 +44,25 @@ export const getAuthRecord = internalQuery({
     const user = await ctx.db.get(userId);
     if (user === null) return null;
     return { username: user.username, dob: user.dob ?? null };
+  },
+});
+
+/**
+ * Update the signed-in player's DISPLAY NAME (not the username — the username is
+ * the permanent account handle and is never editable). Validated with the same
+ * shared rules used at sign-up so a renamed account can't bypass the filters.
+ */
+export const updateDisplayName = mutation({
+  args: { name: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { name }) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new ConvexError("Sign in to change your name.");
+    const normalized = normalizeDisplayName(name);
+    const error = checkDisplayName(normalized);
+    if (error) throw new ConvexError(error);
+    await ctx.db.patch(userId, { name: normalized });
+    return null;
   },
 });
 

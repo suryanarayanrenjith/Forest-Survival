@@ -1,9 +1,9 @@
-import { type FormEvent, useEffect, useMemo, useState } from 'react';
+import { type FormEvent, type ReactNode, type CSSProperties, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  KeyRound, LogOut, ShieldCheck, X, User, BarChart3, Trophy, Settings as SettingsIcon,
+  KeyRound, LogOut, ShieldCheck, X, User, BarChart3, Trophy,
   Lock, Eye, EyeOff, Check, Calendar, Camera, Download, Trash2, ImageOff, Loader2, Maximize2,
-  Crown,
+  Crown, AlertTriangle, Loader, Activity, Flame, CalendarDays, Pencil,
 } from 'lucide-react';
 import { useAction, useMutation, useQuery } from 'convex/react';
 import type { Id } from '../../convex/_generated/dataModel';
@@ -22,15 +22,14 @@ interface ProfileMenuProps {
   onClose: () => void;
 }
 
-type TabKey = 'overview' | 'stats' | 'leaderboard' | 'achievements' | 'photos' | 'settings';
+type TabKey = 'overview' | 'stats' | 'achievements' | 'leaderboard' | 'photos';
 
 const TABS: { key: TabKey; label: string; Icon: typeof User }[] = [
   { key: 'overview', label: 'Overview', Icon: User },
   { key: 'stats', label: 'Stats', Icon: BarChart3 },
-  { key: 'leaderboard', label: 'Leaderboard', Icon: Crown },
-  { key: 'achievements', label: 'Achievements', Icon: Trophy },
+  { key: 'achievements', label: 'Trophies', Icon: Trophy },
+  { key: 'leaderboard', label: 'Ranks', Icon: Crown },
   { key: 'photos', label: 'Photos', Icon: Camera },
-  { key: 'settings', label: 'Settings', Icon: SettingsIcon },
 ];
 
 const RARITY_STYLE: Record<string, { ring: string; text: string; bg: string }> = {
@@ -39,6 +38,9 @@ const RARITY_STYLE: Record<string, { ring: string; text: string; bg: string }> =
   epic: { ring: 'border-violet-400/40', text: 'text-violet-300', bg: 'bg-violet-500/10' },
   legendary: { ring: 'border-amber-400/50', text: 'text-amber-300', bg: 'bg-amber-500/10' },
 };
+
+const inputClass =
+  'w-full rounded-lg border border-white/10 bg-[#05080c] px-3.5 py-2.5 text-sm text-white outline-none transition-colors placeholder:text-gray-600 focus:border-emerald-400/50 focus:ring-2 focus:ring-emerald-400/20';
 
 function popcount(value: number): number {
   let count = 0;
@@ -50,9 +52,13 @@ function popcount(value: number): number {
   return count;
 }
 
+const SectionLabel = ({ children }: { children: ReactNode }) => (
+  <p className="font-hud text-[10px] font-semibold uppercase tracking-[0.22em] text-gray-400">{children}</p>
+);
+
 const StatRow = ({ label, value }: { label: string; value: string }) => (
   <div className="flex items-baseline justify-between gap-2">
-    <span className="text-[11px] text-gray-400">{label}</span>
+    <span className="font-hud text-[11px] text-gray-400">{label}</span>
     <span className="font-bold text-white tabular-nums">{value}</span>
   </div>
 );
@@ -60,18 +66,32 @@ const StatRow = ({ label, value }: { label: string; value: string }) => (
 const ProfileMenu = ({ onClose }: ProfileMenuProps) => {
   const { signOut } = useAuthActions();
   const { currentUser, playerStats } = usePlayerData();
-  const changePassword = useAction(api.account.changePassword);
+  const deleteAccount = useAction(api.account.deleteAccount);
   const setAvatar = useMutation(api.playerStats.setAvatar);
   const setStatsPrivacy = useMutation(api.playerStats.setStatsPrivacy);
   const setLeaderboardOptIn = useMutation(api.playerStats.setLeaderboardOptIn);
+  const updateDisplayName = useMutation(api.profile.updateDisplayName);
 
   const [tab, setTab] = useState<TabKey>('overview');
-  const [passwordBusy, setPasswordBusy] = useState(false);
-  const [passwordError, setPasswordError] = useState<string | null>(null);
-  const [passwordSuccess, setPasswordSuccess] = useState<string | null>(null);
+  const [pwOpen, setPwOpen] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
+
+  // Display-name inline editor (the username is permanent and never editable).
+  const [nameEditing, setNameEditing] = useState(false);
+  const [nameDraft, setNameDraft] = useState('');
+  const [nameBusy, setNameBusy] = useState(false);
+  const [nameError, setNameError] = useState<string | null>(null);
+
+  // Delete-account flow
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deletePassword, setDeletePassword] = useState('');
+  const [deleteConfirm, setDeleteConfirm] = useState('');
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const profileLoading = currentUser === undefined;
   const displayName = currentUser?.name?.trim() || currentUser?.username?.trim() || 'Player';
+  const username = currentUser?.username ?? '';
   const usernameLabel = currentUser?.username ? `@${currentUser.username}` : 'Loading profile...';
 
   const solo = playerStats?.solo;
@@ -104,12 +124,6 @@ const ProfileMenu = ({ onClose }: ProfileMenuProps) => {
     return sys.getAllAchievements();
   }, [playerStats?.achievements]);
 
-  useEffect(() => {
-    setPasswordError(null);
-    setPasswordSuccess(null);
-    setPasswordBusy(false);
-  }, []);
-
   const handlePickAvatar = (index: number) => {
     if (index === avatarIndex) return;
     void setAvatar({ avatarIndex: index }).catch(() => {});
@@ -125,69 +139,92 @@ const ProfileMenu = ({ onClose }: ProfileMenuProps) => {
     void setLeaderboardOptIn({ optIn }).catch(() => {});
   };
 
-  const submitPasswordChange = async (event: FormEvent<HTMLFormElement>) => {
+  const startNameEdit = () => {
+    setNameDraft(displayName);
+    setNameError(null);
+    setNameEditing(true);
+  };
+
+  const submitName = async (event: FormEvent) => {
     event.preventDefault();
-    const form = event.currentTarget;
-    if (passwordBusy) return;
-
-    const formData = new FormData(form);
-    const currentPassword = String(formData.get('currentPassword') ?? '');
-    const dob = String(formData.get('dob') ?? '');
-    const newPassword = String(formData.get('newPassword') ?? '');
-    const confirmNewPassword = String(formData.get('confirmNewPassword') ?? '');
-
-    if (!currentPassword) return setPasswordError('Enter your current password.');
-    if (!dob) return setPasswordError('Enter your date of birth to confirm it’s you.');
-    if (!newPassword) return setPasswordError('Enter a new password.');
-    if (newPassword !== confirmNewPassword) return setPasswordError('New passwords do not match.');
-
-    setPasswordBusy(true);
-    setPasswordError(null);
-    setPasswordSuccess(null);
+    if (nameBusy) return;
+    const next = nameDraft.trim();
+    if (!next) return setNameError('Enter a name.');
+    if (next === displayName) { setNameEditing(false); return; }
+    setNameBusy(true);
+    setNameError(null);
     try {
-      await changePassword({ currentPassword, newPassword, dob });
-      setPasswordSuccess('Password updated successfully.');
-      form.reset();
-    } catch (changeError) {
-      setPasswordError(extractErrorMessage(changeError));
+      await updateDisplayName({ name: next });
+      setNameEditing(false);
+    } catch (err) {
+      setNameError(extractErrorMessage(err));
     } finally {
-      setPasswordBusy(false);
+      setNameBusy(false);
     }
   };
 
   const handleSignOut = async () => {
-    if (passwordBusy) return;
-    setPasswordBusy(true);
-    setPasswordError(null);
+    if (signingOut) return;
+    setSigningOut(true);
     try {
       await signOut();
       onClose();
-    } catch (signOutError) {
-      setPasswordError(extractErrorMessage(signOutError));
-      setPasswordBusy(false);
+    } catch {
+      setSigningOut(false);
     }
   };
+
+  const closeDeleteDialog = () => {
+    if (deleteBusy) return;
+    setDeleteOpen(false);
+    setDeletePassword('');
+    setDeleteConfirm('');
+    setDeleteError(null);
+  };
+
+  const handleDeleteAccount = async () => {
+    if (deleteBusy) return;
+    if (!deletePassword) return setDeleteError('Enter your password to confirm.');
+    const typed = deleteConfirm.trim().replace(/^@/, '').toLowerCase();
+    if (typed !== username.toLowerCase()) return setDeleteError('Username does not match.');
+
+    setDeleteBusy(true);
+    setDeleteError(null);
+    try {
+      await deleteAccount({ password: deletePassword });
+      // The account (and our session) no longer exist — clear local auth and exit.
+      try { await signOut(); } catch { /* session already gone */ }
+      onClose();
+    } catch (deleteErr) {
+      setDeleteError(extractErrorMessage(deleteErr));
+      setDeleteBusy(false);
+    }
+  };
+
+  const deleteReady = deletePassword.length > 0
+    && deleteConfirm.trim().replace(/^@/, '').toLowerCase() === username.toLowerCase()
+    && username.length > 0;
 
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto p-3 sm:p-4 menu-overlay-in"
-      style={{ background: 'rgba(5,8,10,0.94)', backdropFilter: 'blur(14px)' }}
+      style={{ background: 'rgba(4,8,7,0.92)', backdropFilter: 'blur(16px)' }}
     >
       <MenuShell variant="main" />
 
       <div
-        className="relative z-10 flex max-h-[94dvh] w-full max-w-3xl flex-col overflow-hidden rounded-[24px] border border-white/10 bg-[#0b0f15] shadow-[0_30px_120px_rgba(0,0,0,0.58)]"
+        className="hud-frame relative z-10 flex max-h-[94dvh] w-full max-w-5xl flex-col overflow-hidden rounded-[24px] border border-emerald-400/15 bg-[#080d0b] shadow-[0_40px_120px_rgba(0,0,0,0.6)]"
         style={{ animation: 'authFade 0.32s cubic-bezier(0.16,1,0.3,1) forwards' }}
       >
         {/* Header */}
-        <div className="flex items-start justify-between gap-4 border-b border-white/[0.07] px-5 py-4">
+        <div className="flex items-center justify-between gap-4 border-b border-white/[0.07] px-5 sm:px-6 py-4">
           <div className="flex items-center gap-3">
             <div className="relative flex items-center justify-center w-10 h-10 rounded-xl bg-emerald-500/12 border border-emerald-400/30">
               <ShieldCheck className="w-5 h-5 text-emerald-300" strokeWidth={2.1} />
             </div>
             <div>
-              <p className="text-[10px] tracking-[0.35em] text-emerald-300/90 font-semibold uppercase">Account</p>
-              <h2 className="text-lg font-bold text-white tracking-wide">Player Profile</h2>
+              <p className="font-hud text-[10px] tracking-[0.36em] text-emerald-300/90 font-semibold uppercase">Account</p>
+              <h2 className="font-display text-lg font-semibold uppercase tracking-wide text-white">Player Profile</h2>
             </div>
           </div>
           <button
@@ -199,284 +236,336 @@ const ProfileMenu = ({ onClose }: ProfileMenuProps) => {
           </button>
         </div>
 
-        {/* Tabs */}
-        <div className="flex gap-1 border-b border-white/[0.07] px-3 py-2">
-          {TABS.map(({ key, label, Icon }) => (
-            <button
-              key={key}
-              onClick={() => setTab(key)}
-              className={`flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${
-                tab === key ? 'bg-emerald-500/[0.12] text-emerald-200' : 'text-gray-400 hover:text-gray-200 hover:bg-white/[0.04]'
-              }`}
-            >
-              <Icon className="w-4 h-4" strokeWidth={2.1} />
-              <span className="hidden sm:inline">{label}</span>
-            </button>
-          ))}
-        </div>
-
-        {/* Content */}
-        <div className="flex-1 overflow-y-auto p-5 sm:p-6">
-          {tab === 'overview' && (
-            <div className="space-y-5">
-              <div className="flex items-center gap-4 rounded-2xl border border-emerald-400/20 bg-gradient-to-br from-emerald-500/[0.08] to-transparent p-4">
+        {/* Body — LEFT account column · RIGHT showcase column */}
+        <div className="flex flex-1 min-h-0 flex-col overflow-y-auto md:flex-row md:overflow-hidden">
+          {/* ── LEFT · ACCOUNT ─────────────────────────────────────────── */}
+          <aside className="w-full flex-shrink-0 space-y-4 border-b border-white/[0.07] p-5 md:w-[340px] md:border-b-0 md:border-r md:overflow-y-auto">
+            {/* Identity */}
+            <div className="rounded-2xl border border-emerald-400/20 bg-gradient-to-br from-emerald-500/[0.08] to-transparent p-4">
+              <div className="flex items-center gap-3.5">
                 <UserAvatar name={currentUser?.name} username={currentUser?.username} avatarIndex={avatarIndex} size="lg" className="shadow-[0_0_0_4px_rgba(16,185,129,0.08)]" />
                 <div className="min-w-0">
-                  <p className="text-[10px] tracking-[0.35em] text-emerald-300/90 font-semibold uppercase">Signed In</p>
+                  <p className="font-hud text-[10px] tracking-[0.32em] text-emerald-300/90 font-semibold uppercase">Signed In</p>
                   {profileLoading ? (
                     <div className="mt-2 h-5 w-32 rounded-full bg-white/10" />
+                  ) : nameEditing ? (
+                    <form onSubmit={submitName} className="mt-0.5 flex items-center gap-1.5">
+                      <input
+                        value={nameDraft}
+                        onChange={(e) => setNameDraft(e.target.value)}
+                        autoFocus
+                        maxLength={24}
+                        aria-label="Display name"
+                        className="min-w-0 flex-1 rounded-md border border-emerald-400/40 bg-[#05080c] px-2 py-1 text-sm text-white outline-none focus:border-emerald-400/70"
+                      />
+                      <button type="submit" disabled={nameBusy} aria-label="Save name"
+                        className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md border border-emerald-400/40 bg-emerald-500/15 text-emerald-200 transition-colors hover:bg-emerald-500/25 disabled:opacity-60">
+                        {nameBusy ? <Loader className="h-3.5 w-3.5 animate-spin" strokeWidth={2.4} /> : <Check className="h-3.5 w-3.5" strokeWidth={2.6} />}
+                      </button>
+                      <button type="button" onClick={() => { setNameEditing(false); setNameError(null); }} aria-label="Cancel"
+                        className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md border border-white/10 text-gray-400 transition-colors hover:bg-white/[0.06] hover:text-white">
+                        <X className="h-3.5 w-3.5" strokeWidth={2.4} />
+                      </button>
+                    </form>
                   ) : (
                     <>
-                      <h3 className="mt-1 truncate text-xl font-black tracking-tight text-white">{displayName}</h3>
-                      <p className="truncate text-sm text-gray-300">{usernameLabel}</p>
+                      <div className="mt-0.5 flex items-center gap-1.5">
+                        <h3 className="font-display truncate text-xl font-semibold tracking-wide text-white">{displayName}</h3>
+                        <button
+                          type="button"
+                          onClick={startNameEdit}
+                          aria-label="Edit display name"
+                          title="Edit name"
+                          className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md border border-white/10 text-gray-400 transition-colors hover:bg-white/[0.06] hover:text-emerald-200"
+                        >
+                          <Pencil className="h-3 w-3" strokeWidth={2.3} />
+                        </button>
+                      </div>
+                      <p className="font-hud truncate text-[13px] text-gray-300">{usernameLabel}</p>
                     </>
+                  )}
+                  {nameError && <p className="mt-1 text-[11px] text-rose-300">{nameError}</p>}
+                  {rank && (
+                    <span
+                      className="font-hud mt-1.5 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide"
+                      style={{ color: rank.color, background: `${rank.color}1a`, border: `1px solid ${rank.color}44` }}
+                    >
+                      <Trophy className="w-2.5 h-2.5" strokeWidth={2.5} /> {rank.tierName} · Lvl {rank.level}
+                    </span>
                   )}
                 </div>
               </div>
-
-              {/* Rank emblem */}
-              {rank && (
-                <div
-                  className="relative overflow-hidden rounded-2xl border p-5"
-                  style={{ borderColor: `${rank.color}33`, background: `radial-gradient(120% 140% at 0% 0%, ${rank.color}1f, transparent 55%), rgba(255,255,255,0.02)` }}
-                >
-                  <p className="mb-3 text-[10px] tracking-[0.35em] font-semibold uppercase" style={{ color: rank.color }}>
-                    Rank
-                  </p>
-                  <RankBadge rank={rank} />
-                </div>
-              )}
-
-              {/* Headline stats */}
-              <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-                <HeadlineStat label="Solo Best" value={(solo?.highScore ?? 0).toLocaleString()} />
-                <HeadlineStat label="Best Wave" value={`${solo?.highestWave ?? 0}`} />
-                <HeadlineStat label="MP Wins" value={`${mp?.wins ?? 0}`} />
-                <HeadlineStat label="Trophies" value={`${achievementsUnlocked}/${achievements.length}`} />
-              </div>
             </div>
-          )}
 
-          {tab === 'stats' && (
-            <div className="space-y-4">
-              <div className="grid grid-cols-3 gap-2">
-                <HeadlineStat label="Skill Pts" value={`${playerStats?.skillPoints ?? 0}`} accent="violet" />
-                <HeadlineStat label="Skills" value={`${skillsUnlocked}`} />
-                <HeadlineStat label="Trophies" value={`${achievementsUnlocked}/${achievements.length}`} accent="amber" />
-              </div>
-
-              <div className="rounded-xl border border-emerald-400/20 bg-emerald-500/[0.05] p-4">
-                <p className="text-xs font-semibold text-emerald-300 uppercase tracking-wide">Solo</p>
-                <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1.5 text-sm">
-                  <StatRow label="High Score" value={(solo?.highScore ?? 0).toLocaleString()} />
-                  <StatRow label="Best Wave" value={`${solo?.highestWave ?? 0}`} />
-                  <StatRow label="Total Kills" value={(solo?.totalKills ?? 0).toLocaleString()} />
-                  <StatRow label="Runs" value={`${solo?.totalRuns ?? 0}`} />
-                </div>
-              </div>
-
-              <div className="rounded-xl border border-sky-400/20 bg-sky-500/[0.05] p-4">
-                <p className="text-xs font-semibold text-sky-300 uppercase tracking-wide">Multiplayer</p>
-                <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1.5 text-sm">
-                  <StatRow label="High Score" value={(mp?.highScore ?? 0).toLocaleString()} />
-                  <StatRow label="Wins" value={`${mp?.wins ?? 0}`} />
-                  <StatRow label="Games" value={`${mp?.gamesPlayed ?? 0}`} />
-                  <StatRow label="Win Rate" value={`${mpWinRate}%`} />
-                  <StatRow label="Kills" value={(mp?.totalKills ?? 0).toLocaleString()} />
-                  <StatRow label="K/D" value={`${mpKd}`} />
-                </div>
-              </div>
-            </div>
-          )}
-
-          {tab === 'leaderboard' && (
-            <div className="space-y-4">
-              <p className="text-[12px] text-gray-400">
-                Best players across the world, ranked by overall account XP. Earn more by
-                surviving longer and playing harder difficulties.
-                {!leaderboardOptIn && (
-                  <span className="mt-1 block text-amber-300/90">
-                    You're currently hidden — enable visibility in the Settings tab.
-                  </span>
-                )}
-              </p>
-              <LeaderboardList />
-            </div>
-          )}
-
-          {tab === 'achievements' && (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-semibold text-gray-200">
-                  {achievementsUnlocked} of {achievements.length} unlocked
-                </p>
-                <span className="text-xs text-gray-500 tabular-nums">
-                  {Math.round((achievementsUnlocked / achievements.length) * 100)}%
-                </span>
-              </div>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                {achievements.map((a) => {
-                  const style = RARITY_STYLE[a.rarity] ?? RARITY_STYLE.common;
+            {/* Avatar picker */}
+            <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
+              <SectionLabel>Avatar</SectionLabel>
+              <p className="mt-1 text-[11px] text-gray-500">Pick how you appear across menus and multiplayer.</p>
+              <div className="mt-3.5 grid grid-cols-6 gap-x-3 gap-y-3.5 sm:gap-x-3.5">
+                {AVATARS.map((a) => {
+                  const Icon = a.Icon;
+                  const active = a.id === avatarIndex;
                   return (
-                    <div
+                    <button
                       key={a.id}
-                      className={`flex items-center gap-3 rounded-xl border p-3 transition-opacity ${
-                        a.unlocked ? `${style.ring} ${style.bg}` : 'border-white/[0.06] bg-white/[0.01] opacity-55'
+                      onClick={() => handlePickAvatar(a.id)}
+                      title={a.name}
+                      className={`relative aspect-square rounded-xl bg-gradient-to-br ${a.gradient} flex items-center justify-center transition-transform hover:scale-110 ${
+                        active ? 'ring-2 ring-emerald-300 ring-offset-2 ring-offset-[#0a1410]' : 'ring-1 ring-white/10 hover:ring-white/25'
                       }`}
                     >
-                      <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-black/30 text-xl">
-                        {a.unlocked ? a.icon : <Lock className="h-4 w-4 text-gray-500" strokeWidth={2.2} />}
-                      </div>
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <p className="truncate text-sm font-bold text-white">{a.name}</p>
-                          <span className={`text-[9px] font-bold uppercase tracking-wide ${style.text}`}>{a.rarity}</span>
-                        </div>
-                        <p className="truncate text-[11px] text-gray-400">{a.description}</p>
-                      </div>
-                    </div>
+                      <Icon className="h-[18px] w-[18px] text-slate-950" strokeWidth={2.3} />
+                      {active && (
+                        <span className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-emerald-500">
+                          <Check className="h-2.5 w-2.5 text-white" strokeWidth={3.5} />
+                        </span>
+                      )}
+                    </button>
                   );
                 })}
               </div>
             </div>
-          )}
 
-          {tab === 'photos' && <PhotosPanel />}
-
-          {tab === 'settings' && (
-            <div className="space-y-5">
-              {/* Avatar picker */}
-              <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
-                <p className="text-sm font-semibold text-gray-200">Avatar</p>
-                <p className="mt-0.5 text-[11px] text-gray-500">Pick how you appear across menus and multiplayer.</p>
-                <div className="mt-3 grid grid-cols-6 gap-2">
-                  {AVATARS.map((a) => {
-                    const Icon = a.Icon;
-                    const active = a.id === avatarIndex;
-                    return (
-                      <button
-                        key={a.id}
-                        onClick={() => handlePickAvatar(a.id)}
-                        title={a.name}
-                        className={`relative aspect-square rounded-xl bg-gradient-to-br ${a.gradient} flex items-center justify-center transition-transform hover:scale-105 ${
-                          active ? 'ring-2 ring-white ring-offset-2 ring-offset-[#0b0f15]' : 'ring-1 ring-white/10'
-                        }`}
-                      >
-                        <Icon className="h-5 w-5 text-slate-950" strokeWidth={2.3} />
-                        {active && (
-                          <span className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-emerald-500">
-                            <Check className="h-2.5 w-2.5 text-white" strokeWidth={3.5} />
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
+            {/* Privacy */}
+            <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
+              <SectionLabel>Stats Privacy</SectionLabel>
+              <p className="mt-1 text-[11px] text-gray-500">When private, others still see your rank &amp; avatar — but not detailed stats.</p>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => handlePrivacy(true)}
+                  className={`font-hud flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-xs font-semibold uppercase tracking-wider transition-colors ${
+                    statsPublic ? 'border-emerald-400/40 bg-emerald-500/[0.1] text-emerald-200' : 'border-white/10 text-gray-400 hover:bg-white/[0.04]'
+                  }`}
+                >
+                  <Eye className="w-4 h-4" strokeWidth={2.2} /> Public
+                </button>
+                <button
+                  onClick={() => handlePrivacy(false)}
+                  className={`font-hud flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-xs font-semibold uppercase tracking-wider transition-colors ${
+                    !statsPublic ? 'border-amber-400/40 bg-amber-500/[0.1] text-amber-200' : 'border-white/10 text-gray-400 hover:bg-white/[0.04]'
+                  }`}
+                >
+                  <EyeOff className="w-4 h-4" strokeWidth={2.2} /> Private
+                </button>
               </div>
-
-              {/* Privacy */}
-              <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
-                <p className="text-sm font-semibold text-gray-200">Stats Privacy</p>
-                <p className="mt-0.5 text-[11px] text-gray-500">
-                  When private, other players still see your rank & avatar — but not your detailed stats.
-                </p>
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                  <button
-                    onClick={() => handlePrivacy(true)}
-                    className={`flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-sm font-semibold transition-colors ${
-                      statsPublic ? 'border-emerald-400/40 bg-emerald-500/[0.1] text-emerald-200' : 'border-white/10 text-gray-400 hover:bg-white/[0.04]'
-                    }`}
-                  >
-                    <Eye className="w-4 h-4" strokeWidth={2.2} /> Public
-                  </button>
-                  <button
-                    onClick={() => handlePrivacy(false)}
-                    className={`flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-sm font-semibold transition-colors ${
-                      !statsPublic ? 'border-amber-400/40 bg-amber-500/[0.1] text-amber-200' : 'border-white/10 text-gray-400 hover:bg-white/[0.04]'
-                    }`}
-                  >
-                    <EyeOff className="w-4 h-4" strokeWidth={2.2} /> Private
-                  </button>
-                </div>
-              </div>
-
-              {/* Leaderboard visibility */}
-              <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
-                <p className="text-sm font-semibold text-gray-200">Leaderboard</p>
-                <p className="mt-0.5 text-[11px] text-gray-500">
-                  Show your name, rank & best wave on the global leaderboard. Turn off to stay hidden.
-                </p>
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                  <button
-                    onClick={() => handleLeaderboardOptIn(true)}
-                    className={`flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-sm font-semibold transition-colors ${
-                      leaderboardOptIn ? 'border-amber-400/40 bg-amber-500/[0.1] text-amber-200' : 'border-white/10 text-gray-400 hover:bg-white/[0.04]'
-                    }`}
-                  >
-                    <Trophy className="w-4 h-4" strokeWidth={2.2} /> Show me
-                  </button>
-                  <button
-                    onClick={() => handleLeaderboardOptIn(false)}
-                    className={`flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-sm font-semibold transition-colors ${
-                      !leaderboardOptIn ? 'border-white/30 bg-white/[0.06] text-gray-100' : 'border-white/10 text-gray-400 hover:bg-white/[0.04]'
-                    }`}
-                  >
-                    <EyeOff className="w-4 h-4" strokeWidth={2.2} /> Hide me
-                  </button>
-                </div>
-              </div>
-
-              {/* Display & gameplay settings live in the in-game Settings panel
-                  (and sync to your account automatically). */}
-              <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
-                <p className="text-sm font-semibold text-gray-200">Display &amp; Gameplay</p>
-                <p className="mt-0.5 text-[11px] text-gray-500">
-                  Graphics quality, audio, sensitivity, crosshair and more live in the
-                  <span className="text-gray-300 font-medium"> Settings</span> panel — your choices sync to this account and apply on every device.
-                </p>
-              </div>
-
-              {/* Password */}
-              <form onSubmit={submitPasswordChange} className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
-                <p className="text-sm font-semibold text-gray-200">Change Password</p>
-                <p className="mt-0.5 text-[11px] text-gray-500">Confirm your current password and date of birth to set a new one.</p>
-                <div className="mt-3 grid gap-3">
-                  <input name="currentPassword" type="password" autoComplete="current-password" placeholder="Current password"
-                    className="w-full rounded-lg border border-white/10 bg-[#05080c] px-3.5 py-2.5 text-sm text-white outline-none transition-colors placeholder:text-gray-600 focus:border-emerald-400/50 focus:ring-2 focus:ring-emerald-400/20" />
-                  <div className="relative">
-                    <Calendar className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" strokeWidth={2.1} />
-                    <input name="dob" type="date" aria-label="Date of birth"
-                      className="w-full rounded-lg border border-white/10 bg-[#05080c] pl-9 pr-3.5 py-2.5 text-sm text-white outline-none transition-colors placeholder:text-gray-600 focus:border-emerald-400/50 focus:ring-2 focus:ring-emerald-400/20 [color-scheme:dark]" />
-                  </div>
-                  <input name="newPassword" type="password" autoComplete="new-password" placeholder="New password"
-                    className="w-full rounded-lg border border-white/10 bg-[#05080c] px-3.5 py-2.5 text-sm text-white outline-none transition-colors placeholder:text-gray-600 focus:border-emerald-400/50 focus:ring-2 focus:ring-emerald-400/20" />
-                  <input name="confirmNewPassword" type="password" autoComplete="new-password" placeholder="Confirm new password"
-                    className="w-full rounded-lg border border-white/10 bg-[#05080c] px-3.5 py-2.5 text-sm text-white outline-none transition-colors placeholder:text-gray-600 focus:border-emerald-400/50 focus:ring-2 focus:ring-emerald-400/20" />
-                  {passwordError && (
-                    <div className="rounded-md border border-rose-400/20 bg-rose-500/[0.06] px-3 py-2 text-sm text-rose-100">{passwordError}</div>
-                  )}
-                  {passwordSuccess && (
-                    <div className="rounded-md border border-emerald-400/20 bg-emerald-500/[0.06] px-3 py-2 text-sm text-emerald-100">{passwordSuccess}</div>
-                  )}
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <button type="submit" disabled={passwordBusy}
-                      className="group flex items-center justify-center gap-2 w-full rounded-lg px-4 py-2.5 text-sm font-bold tracking-wide text-[#04130a] transition-all duration-200 disabled:opacity-70"
-                      style={{ background: 'linear-gradient(135deg, #34d399, #22c55e)' }}>
-                      <KeyRound className="w-4 h-4 group-hover:rotate-12 transition-transform" strokeWidth={2.25} />
-                      {passwordBusy ? 'Saving...' : 'Change Password'}
-                    </button>
-                    <button type="button" onClick={handleSignOut} disabled={passwordBusy}
-                      className="group flex items-center justify-center gap-2 w-full rounded-lg border border-white/10 bg-white/[0.03] px-4 py-2.5 text-sm font-bold tracking-wide text-white transition-colors disabled:opacity-70">
-                      <LogOut className="w-4 h-4 group-hover:translate-x-0.5 transition-transform" strokeWidth={2.25} />
-                      Sign Out
-                    </button>
-                  </div>
-                </div>
-              </form>
             </div>
-          )}
+
+            {/* Leaderboard visibility */}
+            <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
+              <SectionLabel>Leaderboard</SectionLabel>
+              <p className="mt-1 text-[11px] text-gray-500">Show your name, rank &amp; best wave on the global leaderboard.</p>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => handleLeaderboardOptIn(true)}
+                  className={`font-hud flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-xs font-semibold uppercase tracking-wider transition-colors ${
+                    leaderboardOptIn ? 'border-amber-400/40 bg-amber-500/[0.1] text-amber-200' : 'border-white/10 text-gray-400 hover:bg-white/[0.04]'
+                  }`}
+                >
+                  <Trophy className="w-4 h-4" strokeWidth={2.2} /> Show me
+                </button>
+                <button
+                  onClick={() => handleLeaderboardOptIn(false)}
+                  className={`font-hud flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-xs font-semibold uppercase tracking-wider transition-colors ${
+                    !leaderboardOptIn ? 'border-white/30 bg-white/[0.06] text-gray-100' : 'border-white/10 text-gray-400 hover:bg-white/[0.04]'
+                  }`}
+                >
+                  <EyeOff className="w-4 h-4" strokeWidth={2.2} /> Hide me
+                </button>
+              </div>
+            </div>
+
+            {/* Account — security actions + danger zone, compact */}
+            <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
+              <SectionLabel>Account</SectionLabel>
+              <div className="mt-3 grid gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPwOpen(true)}
+                  className="font-hud group flex items-center justify-center gap-2 w-full rounded-lg border border-emerald-400/25 bg-emerald-500/[0.06] px-4 py-2.5 text-xs font-bold uppercase tracking-wider text-emerald-200 transition-colors hover:bg-emerald-500/[0.12] hover:text-white"
+                >
+                  <KeyRound className="w-4 h-4 transition-transform group-hover:rotate-12" strokeWidth={2.25} />
+                  Change Password
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSignOut}
+                  disabled={signingOut}
+                  className="font-hud group flex items-center justify-center gap-2 w-full rounded-lg border border-white/10 bg-white/[0.03] px-4 py-2.5 text-xs font-bold uppercase tracking-wider text-white transition-colors hover:bg-white/[0.06] disabled:opacity-70"
+                >
+                  <LogOut className="w-4 h-4 transition-transform group-hover:translate-x-0.5" strokeWidth={2.25} />
+                  {signingOut ? 'Signing Out…' : 'Sign Out'}
+                </button>
+              </div>
+
+              <div className="mt-3 border-t border-rose-400/15 pt-3">
+                <p className="font-hud flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.22em] text-rose-300">
+                  <AlertTriangle className="w-3 h-3" strokeWidth={2.4} /> Danger Zone
+                </p>
+                <button
+                  type="button"
+                  onClick={() => { setDeleteError(null); setDeleteOpen(true); }}
+                  className="font-hud group mt-2 flex items-center justify-center gap-2 w-full rounded-lg border border-rose-400/40 bg-rose-500/[0.1] px-4 py-2.5 text-xs font-bold uppercase tracking-wider text-rose-100 transition-colors hover:bg-rose-500/25"
+                >
+                  <Trash2 className="w-4 h-4" strokeWidth={2.25} />
+                  Delete Account
+                </button>
+                <p className="mt-2 text-[10.5px] leading-relaxed text-rose-200/55">
+                  Permanently erases every trace of your account. This cannot be undone.
+                </p>
+              </div>
+            </div>
+          </aside>
+
+          {/* ── RIGHT · SHOWCASE ───────────────────────────────────────── */}
+          <section className="flex min-w-0 flex-1 flex-col">
+            <div className="flex gap-1 overflow-x-auto border-b border-white/[0.07] px-3 py-2">
+              {TABS.map(({ key, label, Icon }) => (
+                <button
+                  key={key}
+                  onClick={() => setTab(key)}
+                  className={`font-hud flex flex-shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold uppercase tracking-wider transition-colors ${
+                    tab === key ? 'bg-emerald-500/[0.12] text-emerald-200' : 'text-gray-400 hover:text-gray-200 hover:bg-white/[0.04]'
+                  }`}
+                >
+                  <Icon className="w-4 h-4" strokeWidth={2.1} />
+                  <span className="hidden sm:inline">{label}</span>
+                </button>
+              ))}
+            </div>
+
+            <div className="p-5 sm:p-6 md:flex-1 md:overflow-y-auto">
+              {tab === 'overview' && (
+                <div className="space-y-5">
+                  {rank && (
+                    <div
+                      className="relative overflow-hidden rounded-2xl border p-5"
+                      style={{ borderColor: `${rank.color}33`, background: `radial-gradient(120% 140% at 0% 0%, ${rank.color}1f, transparent 55%), rgba(255,255,255,0.02)` }}
+                    >
+                      <p className="font-hud mb-3 text-[10px] tracking-[0.32em] font-semibold uppercase" style={{ color: rank.color }}>
+                        Rank
+                      </p>
+                      <RankBadge rank={rank} />
+                    </div>
+                  )}
+                  <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+                    <HeadlineStat label="Solo Best" value={(solo?.highScore ?? 0).toLocaleString()} />
+                    <HeadlineStat label="Best Wave" value={`${solo?.highestWave ?? 0}`} />
+                    <HeadlineStat label="MP Wins" value={`${mp?.wins ?? 0}`} />
+                    <HeadlineStat label="Trophies" value={`${achievementsUnlocked}/${achievements.length}`} accent="amber" />
+                  </div>
+
+                  <ActivityHeatmap />
+                </div>
+              )}
+
+              {tab === 'stats' && (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-3 gap-2">
+                    <HeadlineStat label="Skill Pts" value={`${playerStats?.skillPoints ?? 0}`} accent="violet" />
+                    <HeadlineStat label="Skills" value={`${skillsUnlocked}`} />
+                    <HeadlineStat label="Trophies" value={`${achievementsUnlocked}/${achievements.length}`} accent="amber" />
+                  </div>
+
+                  <div className="rounded-xl border border-emerald-400/20 bg-emerald-500/[0.05] p-4">
+                    <p className="font-hud text-[11px] font-semibold text-emerald-300 uppercase tracking-[0.18em]">Solo</p>
+                    <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1.5 text-sm">
+                      <StatRow label="High Score" value={(solo?.highScore ?? 0).toLocaleString()} />
+                      <StatRow label="Best Wave" value={`${solo?.highestWave ?? 0}`} />
+                      <StatRow label="Total Kills" value={(solo?.totalKills ?? 0).toLocaleString()} />
+                      <StatRow label="Runs" value={`${solo?.totalRuns ?? 0}`} />
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-sky-400/20 bg-sky-500/[0.05] p-4">
+                    <p className="font-hud text-[11px] font-semibold text-sky-300 uppercase tracking-[0.18em]">Multiplayer</p>
+                    <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1.5 text-sm">
+                      <StatRow label="High Score" value={(mp?.highScore ?? 0).toLocaleString()} />
+                      <StatRow label="Wins" value={`${mp?.wins ?? 0}`} />
+                      <StatRow label="Games" value={`${mp?.gamesPlayed ?? 0}`} />
+                      <StatRow label="Win Rate" value={`${mpWinRate}%`} />
+                      <StatRow label="Kills" value={(mp?.totalKills ?? 0).toLocaleString()} />
+                      <StatRow label="K/D" value={`${mpKd}`} />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {tab === 'achievements' && (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <p className="font-hud text-xs font-semibold uppercase tracking-wider text-gray-200">
+                      {achievementsUnlocked} of {achievements.length} unlocked
+                    </p>
+                    <span className="font-hud text-xs text-gray-500 tabular-nums">
+                      {Math.round((achievementsUnlocked / achievements.length) * 100)}%
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {achievements.map((a) => {
+                      const style = RARITY_STYLE[a.rarity] ?? RARITY_STYLE.common;
+                      return (
+                        <div
+                          key={a.id}
+                          className={`flex items-center gap-3 rounded-xl border p-3 transition-opacity ${
+                            a.unlocked ? `${style.ring} ${style.bg}` : 'border-white/[0.06] bg-white/[0.01] opacity-55'
+                          }`}
+                        >
+                          <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-black/30 text-xl">
+                            {a.unlocked ? a.icon : <Lock className="h-4 w-4 text-gray-500" strokeWidth={2.2} />}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <p className="truncate text-sm font-bold text-white">{a.name}</p>
+                              <span className={`font-hud text-[9px] font-bold uppercase tracking-wide ${style.text}`}>{a.rarity}</span>
+                            </div>
+                            <p className="truncate text-[11px] text-gray-400">{a.description}</p>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {tab === 'leaderboard' && (
+                <div className="space-y-4">
+                  <p className="text-[12px] text-gray-400">
+                    Best players across the world, ranked by overall account XP. Earn more by
+                    surviving longer and playing harder difficulties.
+                    {!leaderboardOptIn && (
+                      <span className="mt-1 block text-amber-300/90">
+                        You're currently hidden — enable visibility from the Leaderboard control on the left.
+                      </span>
+                    )}
+                  </p>
+                  <LeaderboardList />
+                </div>
+              )}
+
+              {tab === 'photos' && <PhotosPanel />}
+            </div>
+          </section>
         </div>
       </div>
+
+      {/* Change-password modal */}
+      {pwOpen && <ChangePasswordModal onClose={() => setPwOpen(false)} />}
+
+      {/* Delete-account confirmation */}
+      {deleteOpen && (
+        <DeleteAccountDialog
+          handle={usernameLabel}
+          password={deletePassword}
+          setPassword={setDeletePassword}
+          confirmText={deleteConfirm}
+          setConfirmText={setDeleteConfirm}
+          busy={deleteBusy}
+          error={deleteError}
+          ready={deleteReady}
+          onCancel={closeDeleteDialog}
+          onConfirm={handleDeleteAccount}
+        />
+      )}
 
       <style>{`
         @keyframes authFade {
@@ -487,6 +576,389 @@ const ProfileMenu = ({ onClose }: ProfileMenuProps) => {
     </div>
   );
 };
+
+/* ============================================================
+ * DELETE ACCOUNT DIALOG
+ * ============================================================ */
+interface DeleteAccountDialogProps {
+  handle: string;
+  password: string;
+  setPassword: (v: string) => void;
+  confirmText: string;
+  setConfirmText: (v: string) => void;
+  busy: boolean;
+  error: string | null;
+  ready: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}
+
+const DeleteAccountDialog = ({
+  handle, password, setPassword, confirmText, setConfirmText, busy, error, ready, onCancel, onConfirm,
+}: DeleteAccountDialogProps) =>
+  createPortal(
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Delete account"
+      className="fixed inset-0 z-[70] flex items-center justify-center p-4"
+      style={{ background: 'rgba(4,6,6,0.86)', backdropFilter: 'blur(14px)', animation: 'daBack 0.2s ease forwards' }}
+      onClick={onCancel}
+    >
+      <div
+        className="hud-frame relative w-full max-w-md overflow-hidden rounded-2xl border border-rose-400/25 bg-[#0c0807] p-6 shadow-[0_40px_120px_rgba(0,0,0,0.7)]"
+        style={{ '--hud-bracket': 'rgba(244,63,94,0.5)', animation: 'daCard 0.26s cubic-bezier(0.16,1,0.3,1) forwards' } as CSSProperties}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-rose-500/15 border border-rose-400/30">
+          <AlertTriangle className="w-6 h-6 text-rose-300" strokeWidth={2.2} />
+        </div>
+        <p className="font-hud mt-4 text-[10px] tracking-[0.34em] text-rose-300/90 font-semibold uppercase">Danger Zone</p>
+        <h3 className="font-display text-2xl font-semibold uppercase tracking-wide text-white">Delete account</h3>
+        <p className="mt-2 text-[13px] leading-relaxed text-gray-300/90">
+          This permanently erases your profile, stats, photos, achievements, rank and login —
+          and releases your username. Every trace is wiped from the database. <span className="font-semibold text-rose-200">This cannot be undone.</span>
+        </p>
+
+        <div className="mt-4 space-y-3">
+          <div>
+            <label className="font-hud block text-[11px] font-semibold uppercase tracking-[0.22em] text-gray-400">
+              Type <span className="text-rose-200">{handle}</span> to confirm
+            </label>
+            <input
+              value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value)}
+              autoComplete="off"
+              spellCheck={false}
+              autoCapitalize="none"
+              placeholder={handle}
+              className="mt-1.5 w-full rounded-lg border border-white/10 bg-[#05080c] px-3.5 py-2.5 text-sm text-white outline-none transition-colors placeholder:text-gray-600 focus:border-rose-400/50 focus:ring-2 focus:ring-rose-400/20"
+            />
+          </div>
+          <div>
+            <label className="font-hud block text-[11px] font-semibold uppercase tracking-[0.22em] text-gray-400">Password</label>
+            <input
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              type="password"
+              autoComplete="current-password"
+              placeholder="Enter your password"
+              className="mt-1.5 w-full rounded-lg border border-white/10 bg-[#05080c] px-3.5 py-2.5 text-sm text-white outline-none transition-colors placeholder:text-gray-600 focus:border-rose-400/50 focus:ring-2 focus:ring-rose-400/20"
+            />
+          </div>
+
+          {error && (
+            <div className="rounded-md border border-rose-400/30 bg-rose-500/[0.08] px-3 py-2 text-sm text-rose-100">{error}</div>
+          )}
+
+          <div className="grid grid-cols-[auto_1fr] gap-2 pt-1">
+            <button
+              type="button"
+              onClick={onCancel}
+              disabled={busy}
+              className="font-hud rounded-lg border border-white/10 bg-white/[0.03] px-4 py-2.5 text-sm font-semibold uppercase tracking-wider text-gray-200 transition-colors hover:bg-white/[0.07] disabled:opacity-60"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={onConfirm}
+              disabled={busy || !ready}
+              className="font-hud flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-bold uppercase tracking-wider text-white transition-all duration-150 hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+              style={{ background: 'linear-gradient(135deg, #f43f5e, #e11d48)', boxShadow: '0 12px 30px -12px rgba(244,63,94,0.7)' }}
+            >
+              {busy ? <Loader className="w-4 h-4 animate-spin" strokeWidth={2.4} /> : <Trash2 className="w-4 h-4" strokeWidth={2.4} />}
+              {busy ? 'Deleting…' : 'Delete forever'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <style>{`
+        @keyframes daBack { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes daCard { from { opacity: 0; transform: scale(0.95) translateY(10px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+      `}</style>
+    </div>,
+    document.body,
+  );
+
+/* ============================================================
+ * CHANGE PASSWORD MODAL
+ * ============================================================ */
+const ChangePasswordModal = ({ onClose }: { onClose: () => void }) => {
+  const changePassword = useAction(api.account.changePassword);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    if (busy) return;
+    const fd = new FormData(form);
+    const currentPassword = String(fd.get('currentPassword') ?? '');
+    const dob = String(fd.get('dob') ?? '');
+    const newPassword = String(fd.get('newPassword') ?? '');
+    const confirmNewPassword = String(fd.get('confirmNewPassword') ?? '');
+
+    if (!currentPassword) return setError('Enter your current password.');
+    if (!dob) return setError('Enter your date of birth to confirm it’s you.');
+    if (!newPassword) return setError('Enter a new password.');
+    if (newPassword !== confirmNewPassword) return setError('New passwords do not match.');
+
+    setBusy(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      await changePassword({ currentPassword, newPassword, dob });
+      setSuccess('Password updated successfully.');
+      form.reset();
+    } catch (e) {
+      setError(extractErrorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return createPortal(
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Change password"
+      className="menu-overlay-in fixed inset-0 z-[70] flex items-center justify-center p-4"
+      style={{ background: 'rgba(4,8,7,0.86)', backdropFilter: 'blur(14px)' }}
+      onClick={() => { if (!busy) onClose(); }}
+    >
+      <div
+        className="hud-frame relative w-full max-w-md overflow-hidden rounded-2xl border border-emerald-400/20 bg-[#080d0b] p-6 shadow-[0_40px_120px_rgba(0,0,0,0.7)]"
+        style={{ animation: 'authFade 0.26s cubic-bezier(0.16,1,0.3,1) forwards' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-emerald-500/12 border border-emerald-400/30">
+              <KeyRound className="w-5 h-5 text-emerald-300" strokeWidth={2.1} />
+            </div>
+            <div>
+              <p className="font-hud text-[10px] tracking-[0.34em] text-emerald-300/90 font-semibold uppercase">Security</p>
+              <h3 className="font-display text-lg font-semibold uppercase tracking-wide text-white">Change Password</h3>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            className="flex items-center justify-center w-9 h-9 rounded-lg border border-white/10 text-gray-400 transition-colors hover:text-white hover:bg-white/[0.06]"
+          >
+            <X className="w-[18px] h-[18px]" strokeWidth={2.25} />
+          </button>
+        </div>
+
+        <p className="mt-3 text-[12px] leading-relaxed text-gray-400">
+          Confirm your current password and date of birth to set a new one.
+        </p>
+
+        <form onSubmit={submit} className="mt-4 grid gap-3">
+          <input name="currentPassword" type="password" autoComplete="current-password" placeholder="Current password" className={inputClass} />
+          <div className="relative">
+            <Calendar className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" strokeWidth={2.1} />
+            <input name="dob" type="date" aria-label="Date of birth" className={`${inputClass} pl-9 [color-scheme:dark]`} />
+          </div>
+          <input name="newPassword" type="password" autoComplete="new-password" placeholder="New password" className={inputClass} />
+          <input name="confirmNewPassword" type="password" autoComplete="new-password" placeholder="Confirm new password" className={inputClass} />
+          {error && <div className="rounded-md border border-rose-400/20 bg-rose-500/[0.06] px-3 py-2 text-sm text-rose-100">{error}</div>}
+          {success && <div className="rounded-md border border-emerald-400/20 bg-emerald-500/[0.06] px-3 py-2 text-sm text-emerald-100">{success}</div>}
+          <div className="grid grid-cols-[auto_1fr] gap-2 pt-1">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={busy}
+              className="font-hud rounded-lg border border-white/10 bg-white/[0.03] px-4 py-2.5 text-sm font-semibold uppercase tracking-wider text-gray-200 transition-colors hover:bg-white/[0.07] disabled:opacity-60"
+            >
+              Close
+            </button>
+            <button
+              type="submit"
+              disabled={busy}
+              className="font-hud group flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-bold uppercase tracking-wider text-[#04130a] transition-all duration-150 hover:brightness-110 disabled:opacity-60"
+              style={{ background: 'linear-gradient(135deg, #34d399, #22c55e)', boxShadow: '0 12px 30px -12px rgba(46,232,180,0.7)' }}
+            >
+              {busy ? <Loader className="w-4 h-4 animate-spin" strokeWidth={2.4} /> : <KeyRound className="w-4 h-4 transition-transform group-hover:rotate-12" strokeWidth={2.25} />}
+              {busy ? 'Saving…' : 'Update'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>,
+    document.body,
+  );
+};
+
+/* ============================================================
+ * ACTIVITY HEATMAP (GitHub-style)
+ * ============================================================ */
+const HEAT_BG = [
+  'rgba(255,255,255,0.05)',
+  'rgba(46,232,180,0.22)',
+  'rgba(46,232,180,0.42)',
+  'rgba(46,232,180,0.70)',
+  'rgba(46,232,180,0.96)',
+];
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const DAY_MS = 86_400_000;
+const isoDayKey = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+
+const ActivityHeatmap = () => {
+  const data = useQuery(api.daily.getActivity);
+  const loading = data === undefined;
+
+  const grid = useMemo(() => {
+    const levelByDay = new Map<string, number>();
+    for (const d of data?.days ?? []) levelByDay.set(d.day, d.level);
+
+    const WEEKS = 53;
+    const now = new Date();
+    const todayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    const todayDow = new Date(todayUtc).getUTCDay();
+    const startMs = todayUtc - todayDow * DAY_MS - (WEEKS - 1) * 7 * DAY_MS;
+
+    type Cell = { ms: number; level: number } | null;
+    const weeks: Cell[][] = [];
+    const months: { w: number; label: string }[] = [];
+    let lastMonth = -1;
+    let activeDays = 0;
+
+    for (let w = 0; w < WEEKS; w++) {
+      const col: Cell[] = [];
+      for (let d = 0; d < 7; d++) {
+        const ms = startMs + (w * 7 + d) * DAY_MS;
+        if (ms > todayUtc) { col.push(null); continue; }
+        const level = levelByDay.get(isoDayKey(ms)) ?? 0;
+        if (level > 0) activeDays += 1;
+        col.push({ ms, level });
+      }
+      const topMs = startMs + w * 7 * DAY_MS;
+      if (topMs <= todayUtc) {
+        const month = new Date(topMs).getUTCMonth();
+        if (month !== lastMonth) { months.push({ w, label: MONTHS[month] }); lastMonth = month; }
+      }
+      weeks.push(col);
+    }
+
+    // Current streak — an inactive *today* doesn't break a run that's still alive.
+    let currentStreak = 0;
+    for (let i = 0; i < 400; i++) {
+      const active = (levelByDay.get(isoDayKey(todayUtc - i * DAY_MS)) ?? 0) > 0;
+      if (active) currentStreak += 1;
+      else if (i === 0) continue;
+      else break;
+    }
+
+    // Longest streak across all known active days.
+    const activeKeys = [...levelByDay.entries()].filter(([, lvl]) => lvl > 0).map(([k]) => k).sort();
+    let longestStreak = 0;
+    let run = 0;
+    let prevMs: number | null = null;
+    for (const k of activeKeys) {
+      const ms = Date.parse(`${k}T00:00:00Z`);
+      run = prevMs !== null && ms - prevMs === DAY_MS ? run + 1 : 1;
+      longestStreak = Math.max(longestStreak, run);
+      prevMs = ms;
+    }
+
+    return { weeks, months, activeDays, currentStreak, longestStreak };
+  }, [data]);
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4 sm:p-5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Activity className="w-4 h-4 text-emerald-300" strokeWidth={2.2} />
+          <p className="font-hud text-[11px] font-semibold uppercase tracking-[0.2em] text-gray-200">Activity</p>
+        </div>
+        <p className="font-hud text-[10px] uppercase tracking-wider text-gray-500">Last 12 months</p>
+      </div>
+
+      <div className="mt-3 grid grid-cols-3 gap-2">
+        <HeatStat icon={CalendarDays} label="Active Days" value={`${grid.activeDays}`} />
+        <HeatStat icon={Flame} label="Current" value={`${grid.currentStreak}d`} />
+        <HeatStat icon={Trophy} label="Longest" value={`${grid.longestStreak}d`} />
+      </div>
+
+      {loading ? (
+        <div className="mt-4 h-[116px] animate-pulse rounded-lg bg-white/[0.03]" />
+      ) : (
+        <div className="mt-4 overflow-x-auto pb-1">
+          <div className="inline-block min-w-max">
+            {/* Month labels */}
+            <div className="flex">
+              <div className="w-7 flex-shrink-0" />
+              <div className="flex gap-[3px]">
+                {grid.weeks.map((_, w) => {
+                  const label = grid.months.find((m) => m.w === w)?.label;
+                  return (
+                    <div key={w} className="relative w-[12px]">
+                      {label && <span className="font-hud absolute left-0 top-0 whitespace-nowrap text-[9px] text-gray-500">{label}</span>}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            {/* Weekday labels + cells */}
+            <div className="mt-1 flex">
+              <div className="mr-1 flex w-6 flex-shrink-0 flex-col gap-[3px]">
+                {['', 'Mon', '', 'Wed', '', 'Fri', ''].map((d, i) => (
+                  <div key={i} className="font-hud flex h-[12px] items-center text-[8px] text-gray-600">{d}</div>
+                ))}
+              </div>
+              <div className="flex gap-[3px]">
+                {grid.weeks.map((col, w) => (
+                  <div key={w} className="flex flex-col gap-[3px]">
+                    {col.map((cell, d) => cell === null ? (
+                      <div key={d} className="h-[12px] w-[12px]" />
+                    ) : (
+                      <div
+                        key={d}
+                        className="h-[12px] w-[12px] rounded-[3px]"
+                        style={{ background: HEAT_BG[cell.level], boxShadow: cell.level >= 4 ? '0 0 6px rgba(46,232,180,0.5)' : undefined }}
+                        title={`${formatHeatDay(cell.ms)} — ${cell.level > 0 ? 'active' : 'no activity'}`}
+                      />
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="mt-3 flex items-center justify-end gap-1.5">
+        <span className="font-hud text-[9px] uppercase tracking-wider text-gray-500">Less</span>
+        {HEAT_BG.map((bg, i) => (
+          <span key={i} className="h-[11px] w-[11px] rounded-[3px]" style={{ background: bg }} />
+        ))}
+        <span className="font-hud text-[9px] uppercase tracking-wider text-gray-500">More</span>
+      </div>
+    </div>
+  );
+};
+
+const HeatStat = ({ icon: Icon, label, value }: { icon: typeof Flame; label: string; value: string }) => (
+  <div className="rounded-xl border border-white/10 bg-white/[0.02] px-3 py-2.5">
+    <div className="flex items-center gap-1.5">
+      <Icon className="w-3.5 h-3.5 text-emerald-300" strokeWidth={2.3} />
+      <span className="font-display text-lg font-semibold leading-none tabular-nums text-white">{value}</span>
+    </div>
+    <p className="font-hud mt-1 text-[9px] font-semibold uppercase tracking-[0.14em] text-gray-500">{label}</p>
+  </div>
+);
+
+function formatHeatDay(ms: number): string {
+  try {
+    return new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+  } catch {
+    return '';
+  }
+}
 
 /**
  * Photo Mode gallery — the captures taken from the in-game pause menu. Players
@@ -561,12 +1033,12 @@ const PhotosPanel = () => {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-sm font-semibold text-gray-200">Photo Gallery</p>
-          <p className="mt-0.5 text-[11px] text-gray-500">
+          <SectionLabel>Photo Gallery</SectionLabel>
+          <p className="mt-1 text-[11px] text-gray-500">
             Captured from <span className="text-gray-300">Pause → Photo Mode</span> during Solo play.
           </p>
         </div>
-        <span className="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-bold tabular-nums text-emerald-200">
+        <span className="font-hud rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-bold tabular-nums text-emerald-200">
           {photos.length} / {max}
         </span>
       </div>
@@ -613,14 +1085,12 @@ const PhotosPanel = () => {
                 )}
               </button>
 
-              {/* Expand hint (top-right, on hover) */}
               {p.url && (
                 <span className="pointer-events-none absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-lg bg-black/55 text-white opacity-0 backdrop-blur-md transition-opacity group-hover:opacity-100">
                   <Maximize2 className="h-3.5 w-3.5" strokeWidth={2.3} />
                 </span>
               )}
 
-              {/* Action overlay */}
               <div className="pointer-events-none absolute inset-0 flex items-end justify-between gap-2 bg-gradient-to-t from-black/75 via-black/10 to-transparent p-2 opacity-0 transition-opacity group-hover:opacity-100">
                 <button
                   onClick={(e) => { e.stopPropagation(); handleDownload(p.url, p.id); }}
@@ -640,7 +1110,6 @@ const PhotosPanel = () => {
                 </button>
               </div>
 
-              {/* Delete confirmation */}
               {confirmId === p.id && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-2.5 bg-black/85 p-3 text-center backdrop-blur-sm">
                   <p className="text-[12px] font-semibold text-white">Delete this photo?</p>
@@ -668,8 +1137,6 @@ const PhotosPanel = () => {
         </div>
       )}
 
-      {/* Full-size preview lightbox — a bounded framed card so the image never
-          overflows and the action bar is always visible. */}
       {previewPhoto && typeof document !== 'undefined' && createPortal(
         <div
           role="dialog"
@@ -680,19 +1147,18 @@ const PhotosPanel = () => {
           onClick={() => setPreviewId(null)}
         >
           <div
-            className="relative flex max-h-[92dvh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#0b0f15] shadow-[0_40px_140px_rgba(0,0,0,0.7)]"
+            className="relative flex max-h-[92dvh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#080d0b] shadow-[0_40px_140px_rgba(0,0,0,0.7)]"
             style={{ animation: 'pmPrevCard 0.26s cubic-bezier(0.16,1,0.3,1) forwards' }}
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Header */}
             <div className="flex items-center justify-between gap-3 border-b border-white/[0.07] px-4 py-3">
               <div className="flex min-w-0 items-center gap-2.5">
                 <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg border border-emerald-400/30 bg-emerald-500/12">
                   <Camera className="h-4 w-4 text-emerald-300" strokeWidth={2.2} />
                 </span>
                 <div className="min-w-0">
-                  <p className="text-sm font-bold leading-none text-white">Photo Preview</p>
-                  <p className="mt-1 truncate text-[11px] text-gray-500">{formatPhotoDate(previewPhoto.createdAt)}</p>
+                  <p className="font-display text-sm font-semibold uppercase tracking-wide leading-none text-white">Photo Preview</p>
+                  <p className="font-hud mt-1 truncate text-[11px] text-gray-500">{formatPhotoDate(previewPhoto.createdAt)}</p>
                 </div>
               </div>
               <button
@@ -704,7 +1170,6 @@ const PhotosPanel = () => {
               </button>
             </div>
 
-            {/* Image stage */}
             <div
               className="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-3 sm:p-4"
               style={{ background: 'radial-gradient(120% 120% at 50% 0%, rgba(52,211,153,0.07), transparent 60%), #06090d' }}
@@ -722,12 +1187,11 @@ const PhotosPanel = () => {
               )}
             </div>
 
-            {/* Footer actions */}
             <div className="flex items-center justify-end gap-2.5 border-t border-white/[0.07] px-4 py-3">
               <button
                 onClick={() => handleDownload(previewPhoto.url, previewPhoto.id)}
                 disabled={busyId === previewPhoto.id || !previewPhoto.url}
-                className="flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-bold text-[#04130a] transition-all hover:brightness-110 disabled:opacity-50"
+                className="font-hud flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-bold uppercase tracking-wider text-[#04130a] transition-all hover:brightness-110 disabled:opacity-50"
                 style={{ background: 'linear-gradient(135deg, #34d399, #22c55e)' }}
               >
                 {busyId === previewPhoto.id ? <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2.4} /> : <Download className="h-4 w-4" strokeWidth={2.4} />}
@@ -736,7 +1200,7 @@ const PhotosPanel = () => {
               <button
                 onClick={() => handleDelete(previewPhoto.id)}
                 disabled={busyId === previewPhoto.id}
-                className="flex items-center gap-2 rounded-lg border border-rose-400/40 bg-rose-500/10 px-4 py-2.5 text-sm font-bold text-rose-100 transition-colors hover:bg-rose-500/25 disabled:opacity-50"
+                className="font-hud flex items-center gap-2 rounded-lg border border-rose-400/40 bg-rose-500/10 px-4 py-2.5 text-sm font-bold uppercase tracking-wider text-rose-100 transition-colors hover:bg-rose-500/25 disabled:opacity-50"
               >
                 <Trash2 className="h-4 w-4" strokeWidth={2.4} />
                 Delete
@@ -765,8 +1229,8 @@ const HeadlineStat = ({ label, value, accent }: { label: string; value: string; 
     : 'border-white/10 bg-white/[0.02] text-white';
   return (
     <div className={`rounded-xl border p-3 text-center ${color}`}>
-      <div className="text-lg font-black tabular-nums">{value}</div>
-      <div className="text-[9px] font-semibold tracking-[0.12em] uppercase opacity-80">{label}</div>
+      <div className="font-display text-xl font-semibold tabular-nums">{value}</div>
+      <div className="font-hud text-[9px] font-semibold tracking-[0.12em] uppercase opacity-80">{label}</div>
     </div>
   );
 };

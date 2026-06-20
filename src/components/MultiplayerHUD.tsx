@@ -107,11 +107,11 @@ const MultiplayerHUD = ({ localPlayer, remotePlayers, remainingTime, gameMode, i
   const teamSummary = (
     <div className="flex border-t border-white/[0.07]">
       <div className="flex-1 flex items-center justify-center gap-2 py-2 border-r border-white/[0.07]">
-        <span className="text-[10px] text-gray-500 uppercase tracking-wide">Kills</span>
+        <span className="font-hud text-[10px] text-gray-500 uppercase tracking-[0.16em]">Kills</span>
         <span className="text-sm font-bold text-orange-300 tabular-nums">{totalKills}</span>
       </div>
       <div className="flex-1 flex items-center justify-center gap-2 py-2">
-        <span className="text-[10px] text-gray-500 uppercase tracking-wide">Alive</span>
+        <span className="font-hud text-[10px] text-gray-500 uppercase tracking-[0.16em]">Alive</span>
         <span className="text-sm font-bold text-emerald-300 tabular-nums">{aliveCount}/{allPlayers.length}</span>
       </div>
     </div>
@@ -155,11 +155,11 @@ const MultiplayerHUD = ({ localPlayer, remotePlayers, remainingTime, gameMode, i
             onClick={() => setBoardOpen(false)}
           >
             <div
-              className="w-full max-w-sm overflow-hidden rounded-2xl border border-white/10 bg-[#0b0f15]"
+              className="hud-frame w-full max-w-sm overflow-hidden rounded-2xl border border-emerald-400/15 bg-[#080d0b]"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="flex items-center justify-between px-3 py-2.5 border-b border-white/[0.07]">
-                <span className="text-[11px] font-semibold tracking-[0.15em] text-gray-300 uppercase">
+                <span className="font-hud text-[11px] font-semibold tracking-[0.18em] text-gray-300 uppercase">
                   Scoreboard · {allPlayers.length}
                 </span>
                 <button
@@ -206,7 +206,7 @@ const MultiplayerHUD = ({ localPlayer, remotePlayers, remainingTime, gameMode, i
           {gameMode === 'coop'
             ? <Users className="w-4 h-4 text-sky-400" strokeWidth={2.25} />
             : <Swords className="w-4 h-4 text-rose-400" strokeWidth={2.25} />}
-          <span className="text-[11px] font-bold tracking-[0.12em] text-gray-200 uppercase">
+          <span className="font-hud text-[11px] font-bold tracking-[0.12em] text-gray-200 uppercase">
             {gameMode === 'coop' ? 'Co-op' : 'Survival'}
           </span>
         </div>
@@ -215,10 +215,10 @@ const MultiplayerHUD = ({ localPlayer, remotePlayers, remainingTime, gameMode, i
       {/* Scoreboard — flex-1 so it takes the remaining height; the rows scroll. */}
       <div className="flex min-h-0 flex-1 flex-col rounded-xl border border-white/10 bg-black/80 overflow-hidden">
         <div className="flex flex-shrink-0 items-center justify-between px-3 py-2 border-b border-white/[0.07]">
-          <span className="text-[10px] font-semibold tracking-[0.15em] text-gray-400 uppercase">
+          <span className="font-hud text-[10px] font-semibold tracking-[0.18em] text-gray-400 uppercase">
             Players · {allPlayers.length}
           </span>
-          <span className="text-[10px] font-semibold tracking-[0.1em] text-gray-600 uppercase">K / D / Score</span>
+          <span className="font-hud text-[10px] font-semibold tracking-[0.1em] text-gray-600 uppercase">K / D / Score</span>
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto">{scoreRows}</div>

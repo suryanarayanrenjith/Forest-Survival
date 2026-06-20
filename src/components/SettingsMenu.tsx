@@ -29,6 +29,9 @@ interface GameSettings {
   damageNumbers: boolean;
   impactFeedback: boolean;
   ragdollPhysics: boolean;
+  autoReload: boolean;
+  cameraBob: boolean;
+  showCrosshair: boolean;
   crosshairStyle: 'dot' | 'cross' | 'circle' | 'dynamic';
   crosshairColor: string;
   graphicsQuality: GraphicsQuality;
@@ -48,6 +51,9 @@ const defaultSettings: GameSettings = {
   damageNumbers: true,
   impactFeedback: true,
   ragdollPhysics: true,
+  autoReload: true,
+  cameraBob: true,
+  showCrosshair: true,
   crosshairStyle: 'cross',
   crosshairColor: '#22c55e',
   graphicsQuality: 'high',
@@ -107,18 +113,18 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
       style={{ background: 'rgba(5,8,10,0.92)', backdropFilter: 'blur(12px)' }}
     >
       <div
-        className="w-full max-w-3xl flex flex-col rounded-2xl border border-white/10 bg-[#0b0f15]"
+        className="hud-frame w-full max-w-3xl flex flex-col rounded-2xl border border-emerald-400/15 bg-[#080d0b] shadow-[0_40px_100px_rgba(0,0,0,0.6)]"
         style={{ maxHeight: '94dvh', animation: 'smFade 0.3s cubic-bezier(0.16,1,0.3,1)' }}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.07]">
+        <div className="flex items-center justify-between px-5 sm:px-6 py-4 border-b border-white/[0.07]">
           <div className="flex items-center gap-3">
-            <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-emerald-500/12">
-              <Settings className="w-5 h-5 text-emerald-400" strokeWidth={2} />
+            <div className="relative flex items-center justify-center w-10 h-10 rounded-xl bg-emerald-500/12 border border-emerald-400/30">
+              <Settings className="w-5 h-5 text-emerald-300" strokeWidth={2} />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-white tracking-wide">Settings</h2>
-              <p className="text-xs text-gray-500">Customize your experience</p>
+              <p className="font-hud text-[10px] tracking-[0.36em] text-emerald-300/90 font-semibold uppercase">Configuration</p>
+              <h2 className="font-display text-lg font-semibold uppercase tracking-wide text-white">Settings</h2>
             </div>
           </div>
           <button
@@ -140,7 +146,7 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold transition-all duration-200 ${
+                className={`font-hud flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-200 ${
                   active ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-400/40' : 'text-gray-400 border border-transparent hover:text-gray-200 hover:bg-white/[0.04]'
                 }`}
               >
@@ -186,10 +192,11 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
               <Slider label="Master Volume" icon={Volume2} value={settings.masterVolume} onChange={(v) => updateSetting('masterVolume', v)} />
               <Slider label="Sound Effects" icon={Zap} value={settings.sfxVolume} onChange={(v) => updateSetting('sfxVolume', v)} />
               <Slider label="Music" icon={Music} value={settings.musicVolume} onChange={(v) => updateSetting('musicVolume', v)} />
+
               <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-4">
                 <div className="flex items-center gap-2 mb-3">
                   <Headphones className="w-4 h-4 text-gray-400" strokeWidth={2.25} />
-                  <span className="text-sm font-semibold text-gray-300">Sound Test</span>
+                  <span className="font-hud text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-300">Sound Test</span>
                 </div>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                   {[
@@ -222,14 +229,22 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
                 <Toggle label="Damage Numbers" desc="Show damage dealt" icon={Hash} value={settings.damageNumbers} onChange={(v) => updateSetting('damageNumbers', v)} />
                 <Toggle label="Impact Feedback" desc="Hit flashes, bullet shatter & impact sparks" icon={Flame} value={settings.impactFeedback} onChange={(v) => updateSetting('impactFeedback', v)} />
                 <Toggle label="Ragdoll Physics" desc="Enemies fly & tumble on death" icon={Bone} value={settings.ragdollPhysics} onChange={(v) => updateSetting('ragdollPhysics', v)} />
+                <Toggle label="Auto Reload" desc="Reload automatically on empty mag" icon={RotateCcw} value={settings.autoReload} onChange={(v) => updateSetting('autoReload', v)} />
+                <Toggle label="Camera Bob" desc="Head-bob while moving" icon={Wind} value={settings.cameraBob} onChange={(v) => updateSetting('cameraBob', v)} />
+                <Toggle label="Show Crosshair" desc="Display the aiming reticle" icon={Target} value={settings.showCrosshair} onChange={(v) => updateSetting('showCrosshair', v)} />
                 {isTouch && (
                   <Toggle label="Haptics" desc="Vibration on fire, hits & damage" icon={Hand} value={settings.haptics} onChange={(v) => updateSetting('haptics', v)} />
                 )}
               </div>
-              <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-4">
-                <div className="flex items-center gap-2 mb-3">
-                  <Crosshair className="w-4 h-4 text-gray-400" strokeWidth={2.25} />
-                  <span className="text-sm font-semibold text-gray-300">Crosshair Style</span>
+              <div className={`rounded-xl border border-white/[0.07] bg-white/[0.02] p-4 transition-opacity ${settings.showCrosshair ? '' : 'opacity-50'}`}>
+                <div className="flex items-center justify-between gap-2 mb-3">
+                  <div className="flex items-center gap-2">
+                    <Crosshair className="w-4 h-4 text-gray-400" strokeWidth={2.25} />
+                    <span className="font-hud text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-300">Crosshair Style</span>
+                  </div>
+                  {!settings.showCrosshair && (
+                    <span className="font-hud text-[9px] font-semibold uppercase tracking-wider text-gray-500">Crosshair hidden</span>
+                  )}
                 </div>
                 <div className="grid grid-cols-4 gap-2">
                   {(['dot', 'cross', 'circle', 'dynamic'] as const).map((style) => {
@@ -237,9 +252,10 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
                     return (
                       <button
                         key={style}
+                        disabled={!settings.showCrosshair}
                         onClick={() => updateSetting('crosshairStyle', style)}
-                        className={`py-2.5 rounded-lg text-xs font-semibold capitalize transition-all border ${
-                          active ? 'border-emerald-400/50 bg-emerald-500/15 text-emerald-300' : 'border-white/10 bg-white/[0.03] text-gray-400 hover:bg-white/[0.06]'
+                        className={`py-2.5 rounded-lg text-xs font-semibold capitalize transition-all border disabled:cursor-not-allowed ${
+                          active ? 'border-emerald-400/50 bg-emerald-500/15 text-emerald-300' : 'border-white/10 bg-white/[0.03] text-gray-400 enabled:hover:bg-white/[0.06]'
                         }`}
                       >
                         {style}
@@ -256,7 +272,7 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
               <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-4">
                 <div className="flex items-center gap-2 mb-3">
                   <Monitor className="w-4 h-4 text-gray-400" strokeWidth={2.25} />
-                  <span className="text-sm font-semibold text-gray-300">Graphics Quality</span>
+                  <span className="font-hud text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-300">Graphics Quality</span>
                 </div>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                   {(['low', 'medium', 'high', 'ultra'] as const).map((quality) => {
@@ -298,18 +314,24 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
               </div>
               <Slider label="Field of View" icon={Eye} value={settings.fov} min={60} max={120} suffix="°" onChange={(v) => updateSetting('fov', v)} />
               <Toggle label="Show FPS Counter" desc="Display frames per second" icon={Activity} value={settings.showFPS} onChange={(v) => updateSetting('showFPS', v)} />
-              <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-4">
-                <div className="flex items-center gap-2 mb-3">
-                  <Crosshair className="w-4 h-4 text-gray-400" strokeWidth={2.25} />
-                  <span className="text-sm font-semibold text-gray-300">Crosshair Color</span>
+              <div className={`rounded-xl border border-white/[0.07] bg-white/[0.02] p-4 transition-opacity ${settings.showCrosshair ? '' : 'opacity-50'}`}>
+                <div className="flex items-center justify-between gap-2 mb-3">
+                  <div className="flex items-center gap-2">
+                    <Crosshair className="w-4 h-4 text-gray-400" strokeWidth={2.25} />
+                    <span className="font-hud text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-300">Crosshair Color</span>
+                  </div>
+                  {!settings.showCrosshair && (
+                    <span className="font-hud text-[9px] font-semibold uppercase tracking-wider text-gray-500">Crosshair hidden</span>
+                  )}
                 </div>
                 <div className="flex gap-2.5">
                   {['#22c55e', '#ef4444', '#3b82f6', '#f59e0b', '#8b5cf6', '#ffffff'].map((color) => (
                     <button
                       key={color}
+                      disabled={!settings.showCrosshair}
                       onClick={() => updateSetting('crosshairColor', color)}
-                      className={`w-9 h-9 rounded-lg transition-transform hover:scale-110 ${
-                        settings.crosshairColor === color ? 'ring-2 ring-white ring-offset-2 ring-offset-[#0b0f15]' : ''
+                      className={`w-9 h-9 rounded-lg transition-transform enabled:hover:scale-110 disabled:cursor-not-allowed ${
+                        settings.crosshairColor === color ? 'ring-2 ring-white ring-offset-2 ring-offset-[#080d0b]' : ''
                       }`}
                       style={{ backgroundColor: color }}
                       aria-label={`Crosshair color ${color}`}
@@ -322,18 +344,18 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between px-5 py-4 border-t border-white/[0.07]">
+        <div className="flex items-center justify-between px-5 sm:px-6 py-4 border-t border-white/[0.07]">
           <button
             onClick={() => setSettings(defaultSettings)}
-            className="text-sm font-semibold text-gray-400 transition-colors hover:text-white"
+            className="font-hud text-xs font-semibold uppercase tracking-wider text-gray-400 transition-colors hover:text-white"
           >
             Reset to defaults
           </button>
           <button
             onClick={onClose}
-            className="rounded-xl px-7 py-2.5 text-sm font-bold tracking-wide text-[#04130a]
-              transition-all duration-200 hover:-translate-y-0.5"
-            style={{ background: 'linear-gradient(135deg, #34d399, #22c55e)' }}
+            className="font-hud rounded-xl px-7 py-2.5 text-sm font-bold uppercase tracking-wider text-[#04130a]
+              transition-all duration-200 hover:-translate-y-0.5 hover:brightness-110"
+            style={{ background: 'linear-gradient(135deg, #34d399, #22c55e)', boxShadow: '0 12px 30px -12px rgba(46,232,180,0.7)' }}
           >
             Save &amp; Close
           </button>
@@ -349,12 +371,12 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
         input[type="range"].sm-slider::-webkit-slider-thumb {
           -webkit-appearance: none; appearance: none;
           width: 16px; height: 16px; border-radius: 50%;
-          background: #34d399; cursor: pointer; border: 2px solid #0b0f15;
+          background: #34d399; cursor: pointer; border: 2px solid #080d0b;
           box-shadow: 0 0 0 1px rgba(255,255,255,0.15);
         }
         input[type="range"].sm-slider::-moz-range-thumb {
           width: 16px; height: 16px; border-radius: 50%;
-          background: #34d399; cursor: pointer; border: 2px solid #0b0f15;
+          background: #34d399; cursor: pointer; border: 2px solid #080d0b;
         }
       `}</style>
     </div>
@@ -370,7 +392,7 @@ const Slider = ({ label, icon: Icon, value, onChange, min = 0, max = 100, suffix
       <div className="flex items-center justify-between mb-2.5">
         <div className="flex items-center gap-2.5">
           <Icon className="w-4 h-4 text-gray-400" strokeWidth={2.25} />
-          <span className="text-sm font-semibold text-gray-300">{label}</span>
+          <span className="font-hud text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-300">{label}</span>
         </div>
         <span className="text-sm font-bold text-emerald-300 tabular-nums">{value}{suffix}</span>
       </div>

@@ -51,7 +51,7 @@ const TutorialMenu = ({ onStartTutorial, onBack, selectedCharacter, onSelectChar
       <button
         onClick={onBack}
         className="group fixed top-5 left-5 z-50 flex items-center gap-2 rounded-xl px-4 py-2.5
-          border border-white/10 bg-black/50 backdrop-blur-md text-sm font-semibold text-gray-300
+          border border-white/10 bg-black/50 backdrop-blur-md font-hud text-sm font-semibold uppercase tracking-wider text-gray-300
           transition-all duration-200 hover:text-white hover:bg-black/70 hover:border-white/20"
       >
         <ArrowLeft className="w-4 h-4 group-hover:-translate-x-0.5 transition-transform" strokeWidth={2.25} />
@@ -66,14 +66,15 @@ const TutorialMenu = ({ onStartTutorial, onBack, selectedCharacter, onSelectChar
             <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl border border-amber-400/30 bg-amber-500/10 mb-4">
               <GraduationCap className="w-7 h-7 text-amber-400" strokeWidth={1.75} />
             </div>
-            <p className="text-[10px] tracking-[0.4em] text-amber-300/90 font-semibold uppercase mb-2">Tutorial</p>
+            <p className="font-hud text-[10px] tracking-[0.4em] text-amber-300/90 font-semibold uppercase mb-2">Tutorial</p>
             <h1
-              className="text-4xl sm:text-5xl font-black tracking-tight"
+              className="font-display text-4xl sm:text-5xl font-semibold uppercase tracking-wide"
               style={{
                 background: 'linear-gradient(180deg, #fef3c7 0%, #fcd34d 60%, #f59e0b 100%)',
                 WebkitBackgroundClip: 'text',
                 WebkitTextFillColor: 'transparent',
                 backgroundClip: 'text',
+                filter: 'drop-shadow(0 4px 20px rgba(245,158,11,0.35))',
               }}
             >
               CHOOSE YOUR MAP
@@ -106,7 +107,7 @@ const TutorialMenu = ({ onStartTutorial, onBack, selectedCharacter, onSelectChar
                       }}
                     >
                       <Icon className="w-5 h-5 mb-1.5" style={{ color: active ? a.color : '#9ca3af' }} strokeWidth={2} />
-                      <span className={`text-xs font-bold ${active ? 'text-white' : 'text-gray-300'}`}>{a.label}</span>
+                      <span className={`font-hud text-xs font-bold ${active ? 'text-white' : 'text-gray-300'}`}>{a.label}</span>
                       <span className="text-[10px] text-gray-500">{a.desc}</span>
                     </button>
                   );
@@ -159,7 +160,7 @@ const TutorialMenu = ({ onStartTutorial, onBack, selectedCharacter, onSelectChar
             </Section>
           </div>
 
-          <p className="mt-6 text-[10px] tracking-[0.3em] text-gray-600 uppercase">
+          <p className="font-hud mt-6 text-[10px] tracking-[0.3em] text-gray-600 uppercase">
             Tutorial Mode · Invincible · All weapons unlocked
           </p>
         </div>
@@ -170,8 +171,8 @@ const TutorialMenu = ({ onStartTutorial, onBack, selectedCharacter, onSelectChar
         <div className="bg-gradient-to-t from-black via-black/80 to-transparent pt-10 pb-6 px-4 flex justify-center pointer-events-auto">
           <button
             onClick={() => onStartTutorial(selectedMap, selectedTimeOfDay)}
-            className="group flex items-center justify-center gap-2.5 rounded-xl px-12 py-4 min-w-[260px]
-              font-bold tracking-[0.1em] uppercase text-[#160a04] transition-all duration-200
+            className="group font-hud flex items-center justify-center gap-2.5 rounded-xl px-12 py-4 min-w-[260px]
+              font-bold tracking-[0.12em] uppercase text-[#160a04] transition-all duration-200
               hover:-translate-y-0.5 active:translate-y-0"
             style={{
               background: 'linear-gradient(135deg, #fcd34d, #f59e0b)',
@@ -190,7 +191,7 @@ const TutorialMenu = ({ onStartTutorial, onBack, selectedCharacter, onSelectChar
 const Section = ({ title, children }: { title: string; children: React.ReactNode }) => (
   <div className="rounded-2xl border border-white/10 bg-white/[0.025] backdrop-blur-md">
     <div className="px-4 py-2.5 border-b border-white/[0.07]">
-      <h2 className="text-[11px] font-semibold tracking-[0.2em] text-gray-400 uppercase">{title}</h2>
+      <h2 className="font-hud text-[11px] font-semibold tracking-[0.2em] text-gray-400 uppercase">{title}</h2>
     </div>
     <div className="p-3">{children}</div>
   </div>

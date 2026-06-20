@@ -121,7 +121,7 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
     >
       <MusicMuteButton />
       <div
-        className="relative w-full max-w-6xl h-[90dvh] flex flex-col rounded-2xl border border-white/10 bg-[#0b0f15] overflow-hidden shadow-2xl"
+        className="hud-frame relative w-full max-w-6xl h-[90dvh] flex flex-col rounded-2xl border border-emerald-400/15 bg-[#080d0b] overflow-hidden shadow-[0_40px_100px_rgba(0,0,0,0.6)]"
         style={{ animation: 'stFade 0.35s cubic-bezier(0.16,1,0.3,1) forwards' }}
       >
         {/* Top accent line */}
@@ -140,10 +140,8 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
               <Sparkles className="w-5 h-5 text-emerald-300" strokeWidth={2} />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-white tracking-wide">Skill Tree</h2>
-              <p className="text-[11px] text-gray-500 tracking-wide">
-                Spend points earned from your runs to make your operator stronger.
-              </p>
+              <p className="font-hud text-[10px] tracking-[0.36em] text-emerald-300/90 font-semibold uppercase">Progression</p>
+              <h2 className="font-display text-lg font-semibold uppercase tracking-wide text-white">Skill Tree</h2>
             </div>
           </div>
 
@@ -154,7 +152,7 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
               <div className="text-right">
                 <div className="flex items-baseline gap-1.5">
                   <span className="text-2xl font-bold tabular-nums text-emerald-200 leading-none">{availablePoints}</span>
-                  <span className="text-[10px] font-semibold tracking-[0.15em] text-emerald-400/70 uppercase">Available</span>
+                  <span className="font-hud text-[10px] font-semibold tracking-[0.15em] text-emerald-400/70 uppercase">Available</span>
                 </div>
                 <div className="mt-1.5 h-1 w-32 rounded-full bg-emerald-500/15 overflow-hidden">
                   <div
@@ -184,7 +182,7 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
           {/* ----- Sidebar ----- */}
           <div className="w-56 flex-shrink-0 border-r border-white/[0.07] overflow-y-auto hidden sm:flex flex-col">
             <div className="p-3">
-              <div className="text-[10px] font-semibold tracking-[0.2em] text-gray-500 uppercase mb-2 px-1">Categories</div>
+              <div className="font-hud text-[10px] font-semibold tracking-[0.2em] text-gray-500 uppercase mb-2 px-1">Categories</div>
               <div className="space-y-1">
                 {categories.map((cat) => {
                   const Icon = CATEGORY_ICON[cat.id] ?? Sparkles;
@@ -220,7 +218,7 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
 
             {/* Active bonuses summary */}
             <div className="px-3 pb-3 border-t border-white/[0.06] pt-3 mt-1">
-              <div className="flex items-center gap-1.5 text-[10px] font-semibold tracking-[0.2em] text-emerald-400/80 uppercase mb-2 px-1">
+              <div className="font-hud flex items-center gap-1.5 text-[10px] font-semibold tracking-[0.2em] text-emerald-400/80 uppercase mb-2 px-1">
                 <Sigma className="w-3 h-3" strokeWidth={2.5} /> Active Bonuses
               </div>
               {activeBonuses.length === 0 ? (
@@ -262,8 +260,8 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
                         {tier}
                       </span>
                       <div>
-                        <div className="text-sm font-bold text-white tracking-wide">{TIER_LABEL[tier] ?? `Tier ${tier}`}</div>
-                        <div className="text-[10px] text-gray-600 tracking-widest uppercase">Tier {tier}</div>
+                        <div className="font-display text-sm font-semibold uppercase text-white tracking-wide">{TIER_LABEL[tier] ?? `Tier ${tier}`}</div>
+                        <div className="font-hud text-[10px] text-gray-600 tracking-widest uppercase">Tier {tier}</div>
                       </div>
                       <div className="flex-1 h-px bg-gradient-to-r from-white/10 to-transparent" />
                     </div>
@@ -317,7 +315,7 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
         {selectedSkill && (
           <div className="absolute inset-0 z-20 flex flex-col justify-end bg-black/60 lg:hidden" onClick={() => setSelectedSkill(null)}>
             <div
-              className="max-h-[78%] overflow-y-auto rounded-t-2xl border-t border-white/10 bg-[#0b0f15]"
+              className="max-h-[78%] overflow-y-auto rounded-t-2xl border-t border-white/10 bg-[#080d0b]"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="flex items-center justify-end px-3 pt-2">
@@ -345,12 +343,12 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
 
         {/* ===== FOOTER ===== */}
         <div className="flex items-center justify-between px-6 py-3.5 border-t border-white/[0.07] bg-gradient-to-t from-white/[0.02] to-transparent">
-          <span className="text-[11px] text-gray-500 tracking-wide">
-            Skill points are earned each run · Unlocks are saved to your account
+          <span className="font-hud text-[10px] text-gray-500 tracking-[0.16em] uppercase">
+            Earned each run · Saved to your account
           </span>
           <button
             onClick={onClose}
-            className="group flex items-center gap-2 rounded-xl px-7 py-2.5 text-sm font-bold tracking-wide text-[#04130a] transition-all duration-200 hover:-translate-y-0.5"
+            className="font-hud group flex items-center gap-2 rounded-xl px-7 py-2.5 text-sm font-bold uppercase tracking-wider text-[#04130a] transition-all duration-200 hover:-translate-y-0.5 hover:brightness-110"
             style={{ background: 'linear-gradient(135deg, #34d399, #22c55e)', boxShadow: '0 8px 24px -8px rgba(52,211,153,0.55)' }}
           >
             Done
@@ -457,7 +455,7 @@ const SkillCard: React.FC<SkillCardProps> = ({
       )}
       {/* Lock badge */}
       {isLocked && (
-        <span className="absolute -top-1.5 -right-1.5 flex items-center justify-center w-5 h-5 rounded-full bg-[#0b0f15] border border-white/15">
+        <span className="absolute -top-1.5 -right-1.5 flex items-center justify-center w-5 h-5 rounded-full bg-[#080d0b] border border-white/15">
           <Lock className="w-2.5 h-2.5 text-gray-500" strokeWidth={2.5} />
         </span>
       )}
@@ -747,7 +745,7 @@ const SkillDetails: React.FC<SkillDetailsProps> = ({ skill, allSkills, canAfford
 
 const DetailBlock = ({ title, children }: { title: string; children: React.ReactNode }) => (
   <div className="mb-4">
-    <div className="text-[10px] font-semibold tracking-[0.2em] text-gray-500 uppercase mb-1.5">{title}</div>
+    <div className="font-hud text-[10px] font-semibold tracking-[0.2em] text-gray-500 uppercase mb-1.5">{title}</div>
     {children}
   </div>
 );

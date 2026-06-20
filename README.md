@@ -107,7 +107,7 @@ Premium low-poly creatures with chest cores, shoulder plating, knee/elbow pads, 
 - **Damage direction indicator** — red threat arc sweeps around the crosshair pointing at incoming fire (CoD-style spatial awareness)
 
 **Roguelike Wave Progression**
-- 🎁 **Mystery Box** picker between waves — three face-down crates. One hides a perk; pick wisely. Number keys highlight, Enter opens.
+- 🎁 **Mystery Box** picker between waves *(Solo only)* — three face-down crates. One hides a perk; pick wisely. Number keys highlight, Enter opens.
 - **15 stackable perks** in the registry (Hair Trigger, Iron Lung, Bloodletting, Drum Magazine, Detonators, Streak Keeper, Vampiric Edge, etc.) — each can appear **at most once per run** so a long run shapes a unique build.
 - **Consolation reward** on a miss — wrong box still pays out `25 + wave×6` **Weapon Mastery XP**.
 - Picked perks visible in the top-left HUD as coloured rarity chips throughout the run.
@@ -181,9 +181,13 @@ Every weapon has its own **L0 → L10 mastery** ladder. Kills grant XP scaled by
 **Multiplayer**
 - Peer-to-peer multiplayer via PeerJS (no dedicated game server)
 - Host-authoritative **shared enemy world** — every player fights the same enemies in the same positions; an enemy attacking one player is reflected for everyone
+- **Exactly-synced waves** — the wave number is host-authoritative and advances in lockstep for everyone (guests mirror the host and never run their own wave logic, so no two players ever drift onto different waves)
+- **Independent arsenals** — weapon unlocks are *not* shared: each player's guns unlock from their **own** score, so your loadout reflects your own effort even though the wave is shared
 - **Snapshot interpolation** — remote players and enemies rendered via timestamped snapshot buffering (Valve-style); motion stays smooth across packet gaps without the classic lerp-to-latest stutter
 - Up to 8 players, **8 selectable character classes** — each with a unique active ability and a mechanical passive (see [Characters](#-characters))
-- Mystery Box runs in multiplayer too with an 8s auto-pick countdown so a distracted player can't stall the match
+- **Host moderation** — the host can kick any player straight from the lobby; the kicked player is returned to the menu with the reason shown
+- **Movement anti-cheat** — a host-side, powerup-safe sanity check ejects anyone exhibiting physically-impossible movement (teleport/speed hacks) and shows them why; deliberately movement-only so it never fights legitimate dashes, speed boosts or nukes
+- *No Mystery Box in multiplayer* — the between-wave perk gamble is a **Solo-only** feature
 - Floating name tags + health bars above every player
 - In-game chat with quick emotes, live scoreboard HUD, spectator mode and game-over screens
 
@@ -195,17 +199,20 @@ Every weapon has its own **L0 → L10 mastery** ladder. Kills grant XP scaled by
 - Account rank (Bronze → Master) and level driven by kills and wins, not games played
 - Smart skill tree unlocked with points earned from Solo runs and Daily Challenge claims
 - Achievements are Solo-only; cross-device settings sync; privacy-aware public profiles
-- **Global leaderboard** — ranks all players by composite account XP (difficulty-weighted solo rank + multiplayer + meta); opt-out privacy toggle in Profile Settings
+- **Player Profile** — a two-column hub: editable **display name**, avatar picker, stats privacy & leaderboard toggles, password change, a stats / trophies / ranks / photos showcase, and a **GitHub-style activity heatmap** of the days you've played
+- **Delete account** — a password-confirmed purge that erases *every* trace of the account (profile, stats, photos, sessions, credentials and the username itself) from the database
+- **Global leaderboard** — ranks all players by composite account XP (difficulty-weighted solo rank + multiplayer + meta); opt-out privacy toggle in Profile
 
 **UI & Polish**
 - Cohesive, professional dark UI built with hand-crafted Tailwind styling
+- **Signature menu identity** applied uniformly across every screen (Main, Credits, Auth, Settings, Profile, Skill Tree, Photo Mode, Multiplayer and the Classic / Tutorial / Raise-the-Stakes flows): a bioluminescent-forest theme with **Oswald** condensed display + **Chakra Petch** HUD typography, dark-green glass panels framed by HUD corner-brackets, and a cinematic WebGL forest backdrop (aurora sky, lens-flare moon, survival campfire, fireflies and god-rays)
 - Crisp `lucide-react` SVG iconography throughout — zero emoji chrome
 - Dynamic crosshair, hit markers and floating damage numbers
 - Kill feed (with cosmetic title prefixes), combo display and achievement toasts
 - Screen shake and damage flash effects
 - Skill tree, mission display, stats gallery
 - Themed tutorial that freezes the world while you read each step
-- **Full settings menu** — Graphics (Low / Medium / High / Ultra), Audio, Gameplay (ragdoll, auto-reload, adaptive difficulty), Controls, UI — all persisted
+- **Full settings menu** — Graphics (Low / Medium / High / Ultra); Audio (master / SFX / music + sound test); Gameplay toggles (ragdoll physics, **auto-reload**, **camera bob**, **show crosshair**, screen shake, hit markers, kill feed, damage numbers, impact feedback); Controls; UI — all persisted and synced cross-device
 - **Key Bindings Editor** — 12 fully rebindable keyboard actions (Move, Jump, Sprint, Crouch, Dash, Reload, Power-Up, Tactical Map, Inspect Weapon)
 - **Colorblind modes** — Protanopia, Deuteranopia and Tritanopia correction filters
 - **Photo Mode** — from the Pause Menu; 8 filter presets (Original, Vivid, Noir, Sepia, Cool, Warm, Dramatic, Faded) + manual Brightness / Contrast / Saturation; captures cloud-saved to Profile → Photos
@@ -262,7 +269,7 @@ Plus **Killstreak Airdrops** delivered straight to you (see Killstreak Airdrops 
 
 > All movement and action keys (except mouse, weapon slots and Pause) are **fully rebindable** in Settings → Controls.
 
-### Mystery Box picker
+### Mystery Box picker *(Solo)*
 
 | Key | Action |
 |-----|--------|
@@ -270,7 +277,7 @@ Plus **Killstreak Airdrops** delivered straight to you (see Killstreak Airdrops 
 | ← / → or A / D | Browse |
 | Enter / Space | Open the highlighted box |
 
-The picker releases the pointer lock and blocks gameplay input so a stray click can't fire through the overlay. Multiplayer adds an 8-second auto-pick countdown.
+The picker releases the pointer lock and blocks gameplay input so a stray click can't fire through the overlay.
 
 ---
 

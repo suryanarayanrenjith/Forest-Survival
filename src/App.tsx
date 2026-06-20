@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState, useCallback, type CSSProperties } from 'react';
 import * as THREE from 'three';
-import { GraduationCap, Play, Home, MousePointerClick } from 'lucide-react';
+import { GraduationCap, Play, Home, MousePointerClick, ShieldAlert } from 'lucide-react';
 import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
 import { GunModel, type WeaponType as GunWeaponType } from './utils/GunModel';
@@ -441,6 +441,12 @@ const ForestSurvivalGame = () => {
   // Multiplayer state
   const [showMultiplayerLobby, setShowMultiplayerLobby] = useState(false);
   const [multiplayerManager, setMultiplayerManager] = useState<MultiplayerManager | null>(null);
+  // Set when this client is ejected mid-match (host kick / anti-cheat). Drives
+  // the full-screen "removed from match" overlay; cleared by returning to menu.
+  const [kickedReason, setKickedReason] = useState<string | null>(null);
+  // True only during a live match (not lobby / not game-over), so the in-game
+  // kick handler never collides with the lobby's own kick handling.
+  const inMatchRef = useRef(false);
   const [multiplayerGameOver, setMultiplayerGameOver] = useState(false);
   const [multiplayerWinner, setMultiplayerWinner] = useState<string | null>(null);
   const [multiplayerGameMode, setMultiplayerGameMode] = useState<'coop' | 'survival'>('coop');
@@ -842,6 +848,16 @@ const ForestSurvivalGame = () => {
 
     // Host sent everyone back to the lobby after a match — tear down the
     // game scene and show the lobby UI without forcing a peer rejoin.
+    // Ejected mid-match by the host or anti-cheat. Surface the reason on a
+    // full-screen overlay; the button returns to the menu. Gated to live
+    // matches (inMatchRef) so it never collides with the lobby kick handler.
+    const unsubKickedInGame = multiplayerManager.onMessage('player_kicked', (raw) => {
+      if (!inMatchRef.current) return;
+      const data = asMsg<'player_kicked'>(raw);
+      setKickedReason(data.reason || 'You were removed from the match.');
+      try { soundManager.mute(); } catch { /* ignore */ }
+    });
+
     const unsubReturnLobby = multiplayerManager.onMessage('return_to_lobby', () => {
       setMultiplayerGameOver(false);
       setMultiplayerWinner(null);
@@ -910,6 +926,7 @@ const ForestSurvivalGame = () => {
       unsubKilled();
       unsubRestart();
       unsubReturnLobby();
+      unsubKickedInGame();
       unsubPlayerUpdate();
       unsubEnemyKilled();
       clearInterval(statsInterval);
@@ -917,6 +934,11 @@ const ForestSurvivalGame = () => {
       if (statsTrailingTimer) clearTimeout(statsTrailingTimer);
     };
   }, [multiplayerManager]);
+
+  // Keep the in-match flag fresh for the kick handler's gate.
+  useEffect(() => {
+    inMatchRef.current = gameStarted && !showMultiplayerLobby && !multiplayerGameOver;
+  }, [gameStarted, showMultiplayerLobby, multiplayerGameOver]);
 
   const [gameState, setGameState] = useState<GameState>({
     health: 100,
@@ -5453,7 +5475,9 @@ const ForestSurvivalGame = () => {
       // of a held auto-fire burst are swallowed while the reload runs.
       if (ammo <= 0 && !isReloading && !isGameOver && !paused && !tutorialActiveRef.current) {
         soundManager.play('empty', 0.5);
-        startReload();
+        // Auto-reload on empty is a player setting (default on). When off, the
+        // empty pull just dry-fires and the player reloads manually.
+        if (gameSettingsManager.getSetting('autoReload')) startReload();
         return;
       }
       if (ammo > 0 && !isGameOver && !paused && canShoot && !isReloading && !tutorialActiveRef.current) {
@@ -6282,7 +6306,10 @@ const ForestSurvivalGame = () => {
       // Wave complete — only once the whole wave budget has spawned AND
       // every living enemy is dead. Tutorial mode has no wave progression.
       const livingEnemies = enemies.reduce((n, e) => n + (e.dead ? 0 : 1), 0);
-      if (!isTutorialMode && !isGameOver && !playerEliminated
+      // MP guests NEVER advance the wave locally — the wave number is strictly
+      // host-authoritative and mirrored from the enemy_sync stream (see
+      // handleEnemySync). This keeps every player's wave counter exactly equal.
+      if (!isTutorialMode && !isGameOver && !playerEliminated && !isMpGuest
           && waveEnemiesRemaining <= 0 && livingEnemies === 0 && !waveTransitioning) {
         waveTransitioning = true;
         // Flawless — the wave just cleared took no damage. Evaluate before the
@@ -6323,10 +6350,11 @@ const ForestSurvivalGame = () => {
           killStreak = streakBeforeWaveReset;
           lastStreakAwarded = lastAwardedBeforeWaveReset;
         }
-        // Pool exhausted (every perk already picked) → skip the picker and
-        // just wait out the celebration banner before spawning the next
-        // wave. Same in solo and MP.
-        if (isPerkPoolExhausted(runPerks)) {
+        // Multiplayer has NO mystery box / wave-perk picker at all (removed by
+        // design — perks are a solo-only feature). When the perk pool is
+        // exhausted in solo we also skip straight to the next wave. In both
+        // cases we just wait out the celebration banner, then spawn.
+        if (isMultiplayer || isPerkPoolExhausted(runPerks)) {
           waveTimeoutId = window.setTimeout(() => {
             waveTimeoutId = null;
             if (isGameOver || playerEliminated) return;
@@ -8568,7 +8596,7 @@ const ForestSurvivalGame = () => {
       // Head bob for realistic movement feel - uses stable time accumulator
       // Reduced values for smoother, less distracting motion
       // Crouching has slower, subtler bobbing
-      if (isMoving && !isJumping) {
+      if (isMoving && !isJumping && gameSettingsManager.getSetting('cameraBob')) {
         const bobAmount = isCrouching ? 0.015 : (isRunning ? 0.04 : 0.025);
         const bobSpeed = isCrouching ? 5 : (isRunning ? 10 : 7);
 
@@ -11628,6 +11656,27 @@ const ForestSurvivalGame = () => {
       />
       <div ref={mountRef} className="absolute inset-0" style={{ zIndex: 0 }} />
 
+      {/* Ejected mid-match (host kick / anti-cheat) — show the reason, then exit. */}
+      {kickedReason && (
+        <div className="absolute inset-0 z-[120] flex items-center justify-center bg-black/85 p-4" style={{ backdropFilter: 'blur(10px)' }}>
+          <div className="w-full max-w-md rounded-2xl border border-rose-400/25 bg-[#0c0807] p-6 text-center shadow-[0_40px_120px_rgba(0,0,0,0.7)]">
+            <div className="mx-auto flex items-center justify-center w-12 h-12 rounded-xl border border-rose-400/30 bg-rose-500/15">
+              <ShieldAlert className="w-6 h-6 text-rose-300" strokeWidth={2.2} />
+            </div>
+            <p className="font-hud mt-4 text-[10px] font-semibold uppercase tracking-[0.34em] text-rose-300/90">Removed from match</p>
+            <h2 className="font-display text-2xl font-semibold uppercase tracking-wide text-white">You were kicked</h2>
+            <p className="mt-2 text-sm leading-relaxed text-gray-300/90">{kickedReason}</p>
+            <button
+              onClick={returnToMenu}
+              className="font-hud mt-5 w-full rounded-lg px-4 py-2.5 text-sm font-bold uppercase tracking-wider text-[#04130a] transition-all hover:brightness-110"
+              style={{ background: 'linear-gradient(135deg, #34d399, #22c55e)', boxShadow: '0 12px 30px -12px rgba(46,232,180,0.7)' }}
+            >
+              Back to Menu
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Guest-only: brief "syncing with host" affordance shown after the
           loader hides but before the first enemy keyframe arrives — keeps a
           slow connection from looking like an empty, broken world. */}
@@ -11719,7 +11768,7 @@ const ForestSurvivalGame = () => {
 
       {!photoMode && (
       <div className="absolute inset-0" style={{ zIndex: 10, pointerEvents: 'none' }}>
-        {!gameState.isGameOver && !isPaused && (
+        {!gameState.isGameOver && !isPaused && userSettings.showCrosshair && (
           <div
             ref={crosshairRef}
             className="absolute top-1/2 left-1/2"

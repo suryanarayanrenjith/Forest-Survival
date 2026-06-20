@@ -59,7 +59,7 @@ const ClassicMenu = ({ onStartGame, onBack, selectedCharacter, onSelectCharacter
       <button
         onClick={onBack}
         className="group fixed top-5 left-5 z-50 flex items-center gap-2 rounded-xl px-4 py-2.5
-          border border-white/10 bg-black/50 backdrop-blur-md text-sm font-semibold text-gray-300
+          border border-white/10 bg-black/50 backdrop-blur-md font-hud text-sm font-semibold uppercase tracking-wider text-gray-300
           transition-all duration-200 hover:text-white hover:bg-black/70 hover:border-white/20"
       >
         <ArrowLeft className="w-4 h-4 group-hover:-translate-x-0.5 transition-transform" strokeWidth={2.25} />
@@ -71,14 +71,8 @@ const ClassicMenu = ({ onStartGame, onBack, selectedCharacter, onSelectCharacter
         <div className="flex flex-col items-center px-4 pt-20 pb-36 max-w-2xl mx-auto">
           {/* Title */}
           <div className="text-center mb-8">
-            <p className="text-[10px] tracking-[0.4em] text-emerald-400/90 font-semibold uppercase mb-2">Solo Survival</p>
-            <h1
-              className="text-4xl sm:text-5xl font-black tracking-tight"
-              style={{
-                background: 'linear-gradient(180deg, #f0fdf4 0%, #86efac 60%, #22c55e 100%)',
-                WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text',
-              }}
-            >
+            <p className="font-hud text-[10px] tracking-[0.4em] text-emerald-400/90 font-semibold uppercase mb-2">Solo Survival</p>
+            <h1 className="font-display title-bio text-4xl sm:text-5xl font-semibold uppercase tracking-wide">
               CLASSIC MODE
             </h1>
           </div>
@@ -104,8 +98,8 @@ const ClassicMenu = ({ onStartGame, onBack, selectedCharacter, onSelectCharacter
                 <Dices className="w-6 h-6 text-violet-400" strokeWidth={1.75} />
               </span>
               <span className="flex-1 min-w-0">
-                <span className="block text-base font-bold text-white tracking-wide">Random Mode</span>
-                <span className="block text-xs text-gray-400 truncate">
+                <span className="font-display block text-lg font-semibold uppercase tracking-wide text-white">Random Mode</span>
+                <span className="font-hud block text-xs text-gray-400 truncate">
                   {isRandomMode ? 'Adaptive difficulty + randomized atmosphere & map' : 'Let the game roll difficulty, time and map'}
                 </span>
               </span>
@@ -135,7 +129,7 @@ const ClassicMenu = ({ onStartGame, onBack, selectedCharacter, onSelectCharacter
                     <OptionCard key={d.key} active={active} color={d.color}
                       onClick={() => { setSelectedDifficulty(d.key); setIsRandomMode(false); }}>
                       <Icon className="w-5 h-5 mb-1.5" style={{ color: active ? d.color : '#9ca3af' }} strokeWidth={2} />
-                      <span className={`text-xs font-bold ${active ? 'text-white' : 'text-gray-300'}`}>{d.label}</span>
+                      <span className={`font-hud text-xs font-bold ${active ? 'text-white' : 'text-gray-300'}`}>{d.label}</span>
                       <span className="text-[10px] text-gray-500">{d.desc}</span>
                     </OptionCard>
                   );
@@ -153,7 +147,7 @@ const ClassicMenu = ({ onStartGame, onBack, selectedCharacter, onSelectCharacter
                     <OptionCard key={a.key} active={active} color={a.color}
                       onClick={() => setSelectedTimeOfDay(a.key)}>
                       <Icon className="w-5 h-5 mb-1.5" style={{ color: active ? a.color : '#9ca3af' }} strokeWidth={2} />
-                      <span className={`text-xs font-bold ${active ? 'text-white' : 'text-gray-300'}`}>{a.label}</span>
+                      <span className={`font-hud text-xs font-bold ${active ? 'text-white' : 'text-gray-300'}`}>{a.label}</span>
                       <span className="text-[10px] text-gray-500">{a.desc}</span>
                     </OptionCard>
                   );
@@ -197,7 +191,7 @@ const ClassicMenu = ({ onStartGame, onBack, selectedCharacter, onSelectCharacter
             </Section>
           </div>
 
-          <p className="mt-6 text-[10px] tracking-[0.3em] text-gray-600 uppercase">Version 1.0 · Classic Mode</p>
+          <p className="font-hud mt-6 text-[10px] tracking-[0.3em] text-gray-600 uppercase">Version 1.0 · Classic Mode</p>
         </div>
       </div>
 
@@ -213,8 +207,8 @@ const ClassicMenu = ({ onStartGame, onBack, selectedCharacter, onSelectCharacter
                 onStartGame(selectedDifficulty, selectedTimeOfDay, selectedMap, false);
               }
             }}
-            className="group flex items-center justify-center gap-2.5 rounded-xl px-12 py-4 min-w-[260px]
-              font-bold tracking-[0.1em] uppercase text-[#04130a] transition-all duration-200
+            className="group font-hud flex items-center justify-center gap-2.5 rounded-xl px-12 py-4 min-w-[260px]
+              font-bold tracking-[0.12em] uppercase text-[#04130a] transition-all duration-200
               hover:-translate-y-0.5 active:translate-y-0"
             style={{
               background: isRandomMode
@@ -239,7 +233,7 @@ const ClassicMenu = ({ onStartGame, onBack, selectedCharacter, onSelectCharacter
 const Section = ({ title, dimmed, children }: { title: string; dimmed: boolean; children: React.ReactNode }) => (
   <div className={`rounded-2xl border border-white/10 bg-white/[0.025] backdrop-blur-md transition-opacity duration-300 ${dimmed ? 'opacity-40 pointer-events-none' : ''}`}>
     <div className="px-4 py-2.5 border-b border-white/[0.07]">
-      <h2 className="text-[11px] font-semibold tracking-[0.2em] text-gray-400 uppercase">{title}</h2>
+      <h2 className="font-hud text-[11px] font-semibold tracking-[0.2em] text-gray-400 uppercase">{title}</h2>
     </div>
     <div className="p-3">{children}</div>
   </div>

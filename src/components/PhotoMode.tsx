@@ -40,8 +40,8 @@ const Slider = ({
 }: { label: string; value: number; min: number; max: number; step: number; onChange: (v: number) => void }) => (
   <div className="flex flex-col gap-1">
     <div className="flex items-center justify-between">
-      <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">{label}</span>
-      <span className="text-[11px] font-bold tabular-nums text-gray-200">{Math.round(value * 100)}%</span>
+      <span className="font-hud text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-400">{label}</span>
+      <span className="font-hud text-[11px] font-bold tabular-nums text-emerald-300">{Math.round(value * 100)}%</span>
     </div>
     <input
       type="range"
@@ -109,7 +109,7 @@ const PhotoMode = ({ photoCount, maxPhotos, onFilterChange, onCapture, onExit }:
       <div className="flex justify-center pt-5">
         <div className="pointer-events-auto flex items-center gap-2.5 rounded-full border border-white/10 bg-black/55 px-4 py-2 text-[12px] text-gray-300 backdrop-blur-md">
           <Camera className="h-4 w-4 text-emerald-300" strokeWidth={2.2} />
-          <span className="font-bold tracking-wide text-white">PHOTO MODE</span>
+          <span className="font-hud font-bold tracking-[0.22em] text-white">PHOTO MODE</span>
           <span className="text-gray-500">·</span>
           <MousePointer2 className="h-3.5 w-3.5 text-gray-400" strokeWidth={2.2} />
           <span>Drag to look</span>
@@ -127,9 +127,9 @@ const PhotoMode = ({ photoCount, maxPhotos, onFilterChange, onCapture, onExit }:
       {/* Bottom control dock */}
       <div className="flex justify-center px-3 pb-5">
         <div
-          className="pointer-events-auto relative w-full max-w-2xl overflow-hidden rounded-2xl border border-white/10 p-4 shadow-[0_24px_80px_rgba(0,0,0,0.65)] backdrop-blur-xl"
+          className="hud-frame pointer-events-auto relative w-full max-w-2xl overflow-hidden rounded-2xl border border-emerald-400/15 p-4 shadow-[0_24px_80px_rgba(0,0,0,0.65)] backdrop-blur-xl"
           style={{
-            background: 'linear-gradient(180deg, rgba(17,25,33,0.93), rgba(8,11,16,0.95))',
+            background: 'linear-gradient(180deg, rgba(11,18,15,0.94), rgba(6,11,9,0.96))',
             animation: 'pmUp 0.3s cubic-bezier(0.16,1,0.3,1) forwards',
           }}
         >
@@ -140,7 +140,7 @@ const PhotoMode = ({ photoCount, maxPhotos, onFilterChange, onCapture, onExit }:
           <div className="mb-3 flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Sparkles className="h-4 w-4 text-emerald-300" strokeWidth={2.2} />
-              <span className="text-sm font-bold tracking-wide text-white">Adjustments</span>
+              <span className="font-display text-sm font-semibold uppercase tracking-wide text-white">Adjustments</span>
             </div>
             <div className="flex items-center gap-2">
               <span className="hidden text-[11px] text-gray-500 sm:inline">
@@ -162,7 +162,7 @@ const PhotoMode = ({ photoCount, maxPhotos, onFilterChange, onCapture, onExit }:
               <button
                 key={p.id}
                 onClick={() => setPreset(p.id)}
-                className={`flex-shrink-0 rounded-lg border px-3 py-1.5 text-[12px] font-semibold transition-colors ${
+                className={`font-hud flex-shrink-0 rounded-lg border px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider transition-colors ${
                   preset === p.id
                     ? 'border-emerald-400/50 bg-emerald-500/15 text-emerald-100'
                     : 'border-white/10 bg-white/[0.03] text-gray-400 hover:bg-white/[0.07] hover:text-gray-200'
@@ -210,8 +210,8 @@ const PhotoMode = ({ photoCount, maxPhotos, onFilterChange, onCapture, onExit }:
             <button
               onClick={capture}
               disabled={full || status === 'busy'}
-              className="group flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-bold tracking-wide text-[#04130a] transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-50"
-              style={{ background: 'linear-gradient(135deg, #34d399, #22c55e)' }}
+              className="font-hud group flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-bold uppercase tracking-wider text-[#04130a] transition-all duration-200 hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+              style={{ background: 'linear-gradient(135deg, #34d399, #22c55e)', boxShadow: '0 10px 26px -12px rgba(46,232,180,0.8)' }}
             >
               {status === 'busy'
                 ? <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2.4} />
@@ -239,12 +239,12 @@ const PhotoMode = ({ photoCount, maxPhotos, onFilterChange, onCapture, onExit }:
         .pm-slider::-webkit-slider-thumb {
           -webkit-appearance: none; appearance: none;
           width: 15px; height: 15px; border-radius: 9999px;
-          background: #34d399; border: 2px solid #0b0f15; cursor: pointer;
+          background: #34d399; border: 2px solid #080d0b; cursor: pointer;
           box-shadow: 0 0 8px rgba(52,211,153,0.6);
         }
         .pm-slider::-moz-range-thumb {
           width: 15px; height: 15px; border-radius: 9999px;
-          background: #34d399; border: 2px solid #0b0f15; cursor: pointer;
+          background: #34d399; border: 2px solid #080d0b; cursor: pointer;
           box-shadow: 0 0 8px rgba(52,211,153,0.6);
         }
       `}</style>

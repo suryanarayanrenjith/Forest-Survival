@@ -53,7 +53,7 @@ const MultiplayerGameOver = ({
       style={{ zIndex: 200, background: 'rgba(5,8,10,0.95)', backdropFilter: 'blur(12px)' }}
     >
       <div
-        className="w-full max-w-2xl max-h-[96dvh] overflow-y-auto rounded-2xl border bg-[#0b0f15]/95 p-6"
+        className="hud-frame w-full max-w-2xl max-h-[96dvh] overflow-y-auto rounded-2xl border bg-[#080d0b]/95 p-6"
         style={{ borderColor: `${accent}44`, animation: 'mgoFade 0.4s cubic-bezier(0.16,1,0.3,1) forwards' }}
       >
         {/* Header */}
@@ -66,7 +66,7 @@ const MultiplayerGameOver = ({
               ? <Crown className="w-7 h-7" style={{ color: accent }} strokeWidth={2} />
               : <Skull className="w-7 h-7" style={{ color: accent }} strokeWidth={2} />}
           </div>
-          <h1 className="text-3xl sm:text-4xl font-bold tracking-[0.12em] uppercase" style={{ color: accent }}>
+          <h1 className="font-display text-4xl sm:text-5xl font-semibold tracking-[0.06em] uppercase" style={{ color: accent }}>
             {isLocalWinner ? 'Victory' : 'Game Over'}
           </h1>
           {winner && (
@@ -88,7 +88,7 @@ const MultiplayerGameOver = ({
         {/* Scoreboard */}
         <div className="rounded-xl border border-white/10 bg-white/[0.02] overflow-hidden mb-4">
           <div className="px-4 py-2.5 border-b border-white/[0.07]">
-            <h2 className="text-[11px] font-semibold tracking-[0.2em] text-gray-400 uppercase">Final Scoreboard</h2>
+            <h2 className="font-hud text-[11px] font-semibold tracking-[0.2em] text-gray-400 uppercase">Final Scoreboard</h2>
           </div>
           <div className="max-h-[34dvh] overflow-y-auto">
             {sortedPlayers.map((player, index) => {
@@ -148,8 +148,8 @@ const MultiplayerGameOver = ({
         <div className="grid grid-cols-4 gap-2 mb-5">
           {teamStats.map((s) => (
             <div key={s.label} className="rounded-xl border border-white/[0.07] bg-white/[0.02] py-2.5 text-center">
-              <div className="text-lg font-bold tabular-nums" style={{ color: s.color }}>{s.value}</div>
-              <div className="text-[9px] font-semibold tracking-[0.1em] text-gray-500 uppercase mt-0.5">{s.label}</div>
+              <div className="font-display text-xl font-semibold tabular-nums" style={{ color: s.color }}>{s.value}</div>
+              <div className="font-hud text-[9px] font-semibold tracking-[0.1em] text-gray-500 uppercase mt-0.5">{s.label}</div>
             </div>
           ))}
         </div>
@@ -159,7 +159,7 @@ const MultiplayerGameOver = ({
           <button
             onClick={onRestart}
             disabled={!canRestart}
-            className={`group flex-1 flex items-center justify-center gap-2 rounded-xl px-4 py-3.5 font-bold tracking-wide transition-all duration-200 ${
+            className={`font-hud group flex-1 flex items-center justify-center gap-2 rounded-xl px-4 py-3.5 font-bold uppercase tracking-wider transition-all duration-200 ${
               canRestart
                 ? 'border border-emerald-400/40 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 hover:border-emerald-400/70'
                 : 'border border-white/10 bg-white/[0.03] text-gray-500 cursor-not-allowed'
@@ -171,8 +171,8 @@ const MultiplayerGameOver = ({
           </button>
           <button
             onClick={onMainMenu}
-            className="flex-1 flex items-center justify-center gap-2 rounded-xl px-4 py-3.5
-              border border-white/10 bg-white/[0.04] text-gray-300 font-bold tracking-wide
+            className="font-hud flex-1 flex items-center justify-center gap-2 rounded-xl px-4 py-3.5
+              border border-white/10 bg-white/[0.04] text-gray-300 font-bold uppercase tracking-wider
               transition-all duration-200 hover:bg-white/[0.08] hover:text-white hover:border-white/20"
           >
             <Home className="w-[18px] h-[18px]" strokeWidth={2.25} />

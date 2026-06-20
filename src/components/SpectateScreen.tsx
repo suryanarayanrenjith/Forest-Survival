@@ -68,7 +68,7 @@ const SpectateScreen = ({ localPlayer, alivePlayers, allPlayers, killerInfo, onM
             <Skull className="w-6 h-6 text-red-400" strokeWidth={2} />
           </div>
           <div className="min-w-0">
-            <h1 className="text-xl sm:text-2xl font-bold tracking-[0.14em] text-red-400 uppercase">Eliminated</h1>
+            <h1 className="font-display text-2xl sm:text-3xl font-semibold tracking-[0.08em] text-red-400 uppercase">Eliminated</h1>
             <p className="text-xs text-gray-400 mt-0.5">
               {killerInfo?.killerName
                 ? <>Taken down by <span className="text-gray-200 font-semibold">{killerInfo.killerName}</span> · </>
@@ -87,7 +87,7 @@ const SpectateScreen = ({ localPlayer, alivePlayers, allPlayers, killerInfo, onM
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400" />
               </span>
               <Eye className="w-4 h-4 text-emerald-400" strokeWidth={2.25} />
-              <h2 className="text-[11px] font-semibold tracking-[0.2em] text-gray-300 uppercase">Now Spectating</h2>
+              <h2 className="font-hud text-[11px] font-semibold tracking-[0.2em] text-gray-300 uppercase">Now Spectating</h2>
             </div>
             {count > 1 && (
               <span className="text-[11px] font-semibold text-gray-500 tabular-nums">
@@ -116,8 +116,8 @@ const SpectateScreen = ({ localPlayer, alivePlayers, allPlayers, killerInfo, onM
                     className="w-4 h-4 rounded-full flex-shrink-0 ring-2 ring-white/15"
                     style={{ backgroundColor: formatColor(focused.color) }}
                   />
-                  <span className="text-lg font-bold text-white truncate">{focused.name}</span>
-                  <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-400 uppercase tracking-wide">
+                  <span className="font-display text-xl font-semibold text-white truncate">{focused.name}</span>
+                  <span className="font-hud flex items-center gap-1 text-[10px] font-bold text-emerald-400 uppercase tracking-wide">
                     <Activity className="w-3 h-3" strokeWidth={2.5} /> Alive
                   </span>
                 </div>
@@ -172,7 +172,7 @@ const SpectateScreen = ({ localPlayer, alivePlayers, allPlayers, killerInfo, onM
         <div className="rounded-2xl border border-white/10 bg-white/[0.03] overflow-hidden">
           <div className="flex items-center gap-2 px-5 py-2.5 border-b border-white/[0.07]">
             <Activity className="w-4 h-4 text-emerald-400" strokeWidth={2.25} />
-            <h2 className="text-[11px] font-semibold tracking-[0.2em] text-gray-300 uppercase">Live Scoreboard</h2>
+            <h2 className="font-hud text-[11px] font-semibold tracking-[0.2em] text-gray-300 uppercase">Live Scoreboard</h2>
           </div>
           <div className="max-h-[260px] overflow-y-auto">
             {sortedPlayers.map((player, index) => {
@@ -218,8 +218,8 @@ const SpectateScreen = ({ localPlayer, alivePlayers, allPlayers, killerInfo, onM
         <div className="flex justify-center">
           <button
             onClick={onMainMenu}
-            className="group flex items-center gap-2 rounded-xl px-8 py-3 border border-white/10 bg-white/[0.04]
-              text-sm font-bold tracking-wide text-gray-300 transition-all duration-200
+            className="font-hud group flex items-center gap-2 rounded-xl px-8 py-3 border border-white/10 bg-white/[0.04]
+              text-sm font-bold uppercase tracking-wider text-gray-300 transition-all duration-200
               hover:text-white hover:bg-white/[0.08] hover:border-white/20"
           >
             <Home className="w-4 h-4" strokeWidth={2.25} />
@@ -235,10 +235,10 @@ const SpecStat = ({ icon: Icon, label, value, color, small }: {
   icon: typeof Crosshair; label: string; value: number | string; color: string; small?: boolean;
 }) => (
   <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] py-2 px-1 text-center">
-    <div className={`font-bold tabular-nums truncate ${small ? 'text-sm' : 'text-lg'}`} style={{ color }}>{value}</div>
+    <div className={`font-display font-semibold tabular-nums truncate ${small ? 'text-sm' : 'text-lg'}`} style={{ color }}>{value}</div>
     <div className="flex items-center justify-center gap-1 mt-0.5">
       <Icon className="w-2.5 h-2.5 text-gray-600" strokeWidth={2.5} />
-      <span className="text-[9px] font-semibold tracking-[0.1em] text-gray-500 uppercase">{label}</span>
+      <span className="font-hud text-[9px] font-semibold tracking-[0.1em] text-gray-500 uppercase">{label}</span>
     </div>
   </div>
 );
