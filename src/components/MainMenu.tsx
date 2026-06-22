@@ -181,7 +181,7 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode }: MainMenu
         }
       : {
           title: 'Playing as guest',
-          copy: 'Solo and Tutorial are open. Sign in to unlock Multiplayer, achievements, and the skill tree.',
+          copy: 'Solo and Tutorial are open. Sign in to unlock Raise the Stakes run modifiers, Multiplayer, achievements, and the skill tree.',
           tag: 'Guest',
         }
     : null;
@@ -376,7 +376,7 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode }: MainMenu
                     ) : (
                       <LogIn className="w-3.5 h-3.5 transition-transform duration-500 group-hover:scale-110" strokeWidth={2} />
                     )}
-                    <span>{isAuthenticated ? 'Account' : 'Sign In'}</span>
+                    <span>{isAuthenticated ? 'Account' : 'Sign In / Up'}</span>
                   </button>
                 </div>
               </div>

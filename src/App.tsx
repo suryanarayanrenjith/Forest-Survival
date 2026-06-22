@@ -4,7 +4,7 @@ import { GraduationCap, Play, Home, MousePointerClick, ShieldAlert } from 'lucid
 import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
 import { GunModel, type WeaponType as GunWeaponType } from './utils/GunModel';
-import { MuzzleFlash, MuzzleSmoke, BulletTracer, ImpactEffect, RobotHitSparks, ExplosionEffect, FireNovaEffect, NukeEffect, AbilityCastEffect, ImpactBurst, setMuzzleLightPool, setExplosionLightPool } from './utils/Effects';
+import { MuzzleFlash, MuzzleSmoke, BulletTracer, ImpactEffect, RobotHitSparks, ExplosionEffect, FireNovaEffect, NukeEffect, AbilityCastEffect, ImpactBurst, setMuzzleLightPool, setExplosionLightPool, clearParticleGeometryPools, clearTracerGeometryPool, clearFlashSpritePool } from './utils/Effects';
 import { HackBeam, buildHackVisuals, updateHackVisuals, disposeHackVisuals } from './utils/HackVisuals';
 import { soundManager } from './utils/SoundManager';
 import { gameSettingsManager, type UserSettings, type KeyBindings } from './utils/GameSettingsManager';
@@ -11990,15 +11990,34 @@ const ForestSurvivalGame = () => {
       });
       await yieldFrame();
 
-      // ── STAGE 4: gun materials (cycle every weapon) ────────────────
-      // Populates the GunModel material cache so subsequent in-game
-      // weapon switches reuse cached shader programs and never stutter.
+      // ── STAGE 4: gun materials + shader programs (cycle every weapon) ──
+      // Switch to each weapon AND compile it WHILE its meshes are in the scene.
+      // Populating the GunModel material cache (avoiding re-allocation) is NOT
+      // enough on its own: a shader PROGRAM compiles on first RENDER, and the
+      // Stage-5 compile below only ever sees the final (restored) weapon — so
+      // without compiling here, the first in-game switch to any OTHER weapon
+      // stalls compiling its programs. That was the "huge lag switching
+      // pistol → rifle" the user hit. Compiling per weapon is incremental: the
+      // first call carries the scene + that weapon, each later weapon only adds
+      // its few unique programs (the program cache skips everything already
+      // built), and it must use the real `scene` so the light-count defines in
+      // the compiled programs match what the live render uses.
       const originalWeapon = currentWeapon;
       const allWeapons: GunWeaponType[]
         = ['pistol', 'rifle', 'shotgun', 'smg', 'sniper', 'minigun', 'launcher', 'subverter'];
+      const rGun = renderer as THREE.WebGLRenderer & {
+        compileAsync?: (scene: THREE.Scene, camera: THREE.Camera) => Promise<unknown>;
+      };
       for (const w of allWeapons) {
         if (continueAnywayRef.current) break;
-        await stage(`Weapon: ${w}`, false, () => gunModel.switchWeapon(w));
+        await stage(`Weapon: ${w}`, false, async () => {
+          gunModel.switchWeapon(w);
+          if (typeof rGun.compileAsync === 'function') {
+            await withTimeout(rGun.compileAsync(scene, camera), 4000, `Compile ${w}`);
+          } else {
+            renderer.compile(scene, camera);
+          }
+        });
         await yieldFrame();
       }
       try { gunModel.switchWeapon(originalWeapon as GunWeaponType); } catch { /* ignore — restore is best-effort */ }
@@ -12348,6 +12367,13 @@ const ForestSurvivalGame = () => {
       for (const p of muzzleSmokePuffs) p.dispose(scene);
       muzzleSmokePuffs.length = 0;
 
+      // Free the recycled impact/spark particle + tracer geometries and flash
+      // sprites so the pooled buffers don't carry across a remount into a fresh
+      // WebGL context.
+      clearParticleGeometryPools();
+      clearTracerGeometryPool();
+      clearFlashSpritePool();
+
       // Cleanup bullet shatter shards (shared geos + material across all shards).
       for (const s of bulletShards) scene.remove(s.mesh);
       bulletShards.length = 0;
@@ -12536,17 +12562,10 @@ const ForestSurvivalGame = () => {
     }
   }, [enterImmersiveMode]);
 
-  // Handle classic mode start. Now routes through the Run-Modifier picker:
-  // the player gets one last "raise the stakes" choice before the shader
-  // loader; their pick is stored on a ref the scene useEffect reads on init.
-  const handleClassicGameStart = (difficulty: 'easy' | 'medium' | 'hard' | 'adaptive', timeOfDay: 'day' | 'night' | 'auto', map: MapType, isRandom: boolean = false) => {
-    pendingClassicStartRef.current = { difficulty, timeOfDay, map, isRandom };
-    setShowClassicMenu(false);
-    setRunModifierPickerOptions(generateStakeOptions());
-  };
-
   // Called by the RunModifierPicker once the player picks a modifier (or
   // skips). Picks up the pending classic-start params and launches the run.
+  // Also the direct launch path for GUESTS, who never see the picker (Raise
+  // the Stakes is an account-only feature) — they always start with no modifier.
   const beginClassicWithModifier = (modifier: RunModifier | null) => {
     const pending = pendingClassicStartRef.current;
     if (!pending) {
@@ -12569,6 +12588,22 @@ const ForestSurvivalGame = () => {
     setRunModifierPickerOptions(null);
     setShowShaderProcessing(true);
     setGameStarted(true);
+  };
+
+  // Handle classic mode start. Signed-in players get the Run-Modifier picker —
+  // one last "Raise the Stakes" choice before the shader loader; their pick is
+  // stored on a ref the scene useEffect reads on init. Raise the Stakes is an
+  // ACCOUNT-ONLY feature: guests never see the picker and launch straight into
+  // the run with no modifier (the equivalent of skipping it). This is the
+  // single gate for the feature — the picker can only be opened from here.
+  const handleClassicGameStart = (difficulty: 'easy' | 'medium' | 'hard' | 'adaptive', timeOfDay: 'day' | 'night' | 'auto', map: MapType, isRandom: boolean = false) => {
+    pendingClassicStartRef.current = { difficulty, timeOfDay, map, isRandom };
+    setShowClassicMenu(false);
+    if (isAuthenticated) {
+      setRunModifierPickerOptions(generateStakeOptions());
+    } else {
+      beginClassicWithModifier(null);
+    }
   };
 
   const restartGame = () => {

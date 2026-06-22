@@ -43,6 +43,35 @@ export function setMuzzleLightPool(acquire: MuzzleLightAcquire, release: MuzzleL
   _muzzleLightRelease = release;
 }
 
+// Pooled flash sprites. Every shot built a fresh SpriteMaterial (one per
+// trigger pull); recycling a small pool of sprites removes that per-shot
+// allocation entirely. Overlapping autofire flashes each get their own pooled
+// sprite, so concurrent flashes never share animated-opacity state.
+const _flashSpritePool: THREE.Sprite[] = [];
+function acquireFlashSprite(): THREE.Sprite {
+  const s = _flashSpritePool.pop();
+  if (s) {
+    (s.material as THREE.SpriteMaterial).opacity = 1;
+    return s;
+  }
+  const mat = new THREE.SpriteMaterial({
+    map: getFlashTexture(),
+    blending: THREE.AdditiveBlending,
+    transparent: true,
+    depthWrite: false,
+  });
+  const sprite = new THREE.Sprite(mat);
+  sprite.scale.set(0.8, 0.8, 0.8); // Larger, more visible flash
+  sprite.userData.cannotReceiveAO = true;
+  return sprite;
+}
+
+/** Free every pooled flash sprite + its material (game teardown). */
+export function clearFlashSpritePool(): void {
+  for (const s of _flashSpritePool) (s.material as THREE.SpriteMaterial).dispose();
+  _flashSpritePool.length = 0;
+}
+
 export class MuzzleFlash {
   light: THREE.PointLight | null;
   sprite: THREE.Sprite;
@@ -75,22 +104,10 @@ export class MuzzleFlash {
     }
     this._initialIntensity = 20;
 
-    // Per-instance material owns the animated opacity. Building these is
-    // cheap (no texture upload) compared to the underlying canvas texture
-    // which is shared. We can't pool the material here because the muzzle
-    // flash runs alongside auto-fire and would need overlap-safe state.
-    const spriteMaterial = new THREE.SpriteMaterial({
-      map: getFlashTexture(),
-      blending: THREE.AdditiveBlending,
-      transparent: true,
-      depthWrite: false
-    });
-
-    this.sprite = new THREE.Sprite(spriteMaterial);
+    // Borrow a pooled sprite (its SpriteMaterial is reused — opacity reset on
+    // acquire); the flash texture is shared across all flashes.
+    this.sprite = acquireFlashSprite();
     this.sprite.position.copy(position);
-    this.sprite.scale.set(0.8, 0.8, 0.8); // Larger, more visible flash
-    // Legacy AO-opt-out tag preserved for any future AO pass.
-    this.sprite.userData.cannotReceiveAO = true;
     scene.add(this.sprite);
 
     this.lifetime = 0.08; // Shorter, snappier flash
@@ -125,11 +142,10 @@ export class MuzzleFlash {
       this.light = null;
     }
     scene.remove(this.sprite);
-    // Dispose only the per-instance material — the texture map is shared
-    // across every flash and must NOT be disposed here.
-    if (this.sprite.material instanceof THREE.SpriteMaterial) {
-      this.sprite.material.dispose();
-    }
+    // Return the sprite (with its reusable material) to the pool instead of
+    // disposing — the texture map is shared and must never be disposed here.
+    if (_flashSpritePool.length < 8) _flashSpritePool.push(this.sprite);
+    else if (this.sprite.material instanceof THREE.SpriteMaterial) this.sprite.material.dispose();
   }
 }
 
@@ -263,17 +279,45 @@ const sharedTracerMaterial = new THREE.LineBasicMaterial({
   linewidth: 2,
 });
 
+// Pooled 2-vertex line geometries for bullet tracers. Every trigger pull
+// allocated a fresh BufferGeometry + a GPU vertex buffer (via setFromPoints);
+// on a high-RPM minigun that is a steady drip of heap garbage + driver buffer
+// churn. We recycle the geometries: a tracer borrows one, rewrites its two
+// endpoints in-place, and returns it on dispose. Same 40 ms flash, no alloc.
+const _tracerGeoPool: THREE.BufferGeometry[] = [];
+function acquireTracerGeometry(start: THREE.Vector3, end: THREE.Vector3): THREE.BufferGeometry {
+  let g = _tracerGeoPool.pop();
+  if (!g) {
+    g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+  }
+  const p = g.getAttribute('position') as THREE.BufferAttribute;
+  const a = p.array as Float32Array;
+  a[0] = start.x; a[1] = start.y; a[2] = start.z;
+  a[3] = end.x;   a[4] = end.y;   a[5] = end.z;
+  p.needsUpdate = true;
+  return g;
+}
+
+/** Free every pooled tracer geometry (game teardown — see particle pools). */
+export function clearTracerGeometryPool(): void {
+  for (const g of _tracerGeoPool) g.dispose();
+  _tracerGeoPool.length = 0;
+}
+
 export class BulletTracer {
   line: THREE.Line;
   lifetime: number = 0;
   private geometry: THREE.BufferGeometry;
 
   constructor(scene: THREE.Scene, start: THREE.Vector3, end: THREE.Vector3, _color: number) {
-    // Tracer geometry must be unique per shot because the endpoints differ.
-    // It's a 2-vertex line — basically free to allocate.
-    this.geometry = new THREE.BufferGeometry().setFromPoints([start.clone(), end.clone()]);
+    this.geometry = acquireTracerGeometry(start, end);
     this.line = new THREE.Line(this.geometry, sharedTracerMaterial);
     this.line.userData.cannotReceiveAO = true;
+    // Pooled geometry carries a stale boundingSphere; a tracer is a one-frame
+    // flash fired straight down the player's aim (always on-screen), so skip
+    // the frustum test rather than recompute a sphere each shot.
+    this.line.frustumCulled = false;
     scene.add(this.line);
     this.lifetime = 0.04; // Shorter tracer duration
   }
@@ -289,8 +333,9 @@ export class BulletTracer {
 
   dispose(scene: THREE.Scene) {
     scene.remove(this.line);
-    this.geometry.dispose();
-    // Material is shared — never dispose here.
+    // Return the geometry to the pool instead of freeing it (material shared).
+    if (_tracerGeoPool.length < 32) _tracerGeoPool.push(this.geometry);
+    else this.geometry.dispose();
   }
 }
 
@@ -320,16 +365,74 @@ const sharedSparkMaterial = new THREE.PointsMaterial({
   depthWrite: false,
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Pooled particle geometries for ImpactEffect + RobotHitSparks.
+//
+// Every bullet hit (ImpactEffect) and every armour spark (RobotHitSparks) used
+// to allocate a brand-new BufferGeometry + two Float32Arrays (position + color)
+// AND a fresh GPU vertex buffer. On autofire into a crowd that is dozens of
+// allocations + buffer uploads per second — the heap churn that surfaces as the
+// periodic GC hitch the player feels as "lag when shooting".
+//
+// We now recycle a small pool of fixed-capacity geometries. An effect borrows
+// one for its lifetime, writes only its `count` points, clips the rest with
+// setDrawRange (so the render is byte-identical to a tightly-sized buffer), and
+// returns the geometry to the pool on dispose instead of freeing it. Output is
+// pixel-for-pixel unchanged; the per-hit allocation + GPU realloc is gone.
+//
+// Bursts larger than the cap (rare — only the 50-particle boss-enrage pop) fall
+// back to a dedicated, non-pooled geometry so behaviour is never clamped.
+// ─────────────────────────────────────────────────────────────────────────────
+const POOLED_PARTICLE_CAP = 64;
+const _impactGeoPool: THREE.BufferGeometry[] = [];
+const _sparkGeoPool: THREE.BufferGeometry[] = [];
+function acquireParticleGeometry(pool: THREE.BufferGeometry[], count: number): THREE.BufferGeometry {
+  if (count > POOLED_PARTICLE_CAP) {
+    // Oversized burst — give it a one-off geometry (released by disposal).
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(count * 3), 3));
+    g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(count * 3), 3));
+    return g;
+  }
+  const g = pool.pop();
+  if (g) return g;
+  const fresh = new THREE.BufferGeometry();
+  fresh.setAttribute('position', new THREE.BufferAttribute(new Float32Array(POOLED_PARTICLE_CAP * 3), 3));
+  fresh.setAttribute('color', new THREE.BufferAttribute(new Float32Array(POOLED_PARTICLE_CAP * 3), 3));
+  return fresh;
+}
+function releaseParticleGeometry(pool: THREE.BufferGeometry[], g: THREE.BufferGeometry): void {
+  // Pool only the standard-capacity geometries; free the oversized one-offs.
+  // Keep the pool bounded so a one-time mass burst can't permanently inflate it.
+  const cap = (g.getAttribute('position') as THREE.BufferAttribute | undefined)?.count ?? 0;
+  if (cap === POOLED_PARTICLE_CAP && pool.length < 24) pool.push(g);
+  else g.dispose();
+}
+
+/**
+ * Free every pooled particle geometry. Call on game teardown so the recycled
+ * buffers don't carry across a remount into a freshly-created WebGL context.
+ */
+export function clearParticleGeometryPools(): void {
+  for (const g of _impactGeoPool) g.dispose();
+  for (const g of _sparkGeoPool) g.dispose();
+  _impactGeoPool.length = 0;
+  _sparkGeoPool.length = 0;
+}
+
 export class ImpactEffect {
   particles: THREE.Points;
-  velocities: THREE.Vector3[] = [];
+  private velocities: Float32Array;
+  private count: number;
   lifetime: number = 0;
   private geometry: THREE.BufferGeometry;
 
   constructor(scene: THREE.Scene, position: THREE.Vector3, _color: number, count: number = 20) {
-    this.geometry = new THREE.BufferGeometry();
-    const positions = new Float32Array(count * 3);
-    const colors = new Float32Array(count * 3);
+    this.count = count;
+    this.geometry = acquireParticleGeometry(_impactGeoPool, count);
+    const positions = this.geometry.getAttribute('position').array as Float32Array;
+    const colors = this.geometry.getAttribute('color').array as Float32Array;
+    this.velocities = new Float32Array(count * 3);
 
     for (let i = 0; i < count; i++) {
       const idx = i * 3;
@@ -344,18 +447,25 @@ export class ImpactEffect {
       colors[idx + 2] = (sparkColor & 255) / 255;
 
       // Faster, more explosive velocities
-      this.velocities.push(new THREE.Vector3(
-        (Math.random() - 0.5) * 1.5,
-        (Math.random() - 0.2) * 1.2,
-        (Math.random() - 0.5) * 1.5,
-      ));
+      this.velocities[idx] = (Math.random() - 0.5) * 1.5;
+      this.velocities[idx + 1] = (Math.random() - 0.2) * 1.2;
+      this.velocities[idx + 2] = (Math.random() - 0.5) * 1.5;
     }
 
-    this.geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    this.geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    // Only render the `count` points we wrote — the rest of a pooled buffer is
+    // stale and must stay clipped. Upload both attributes once up-front.
+    this.geometry.setDrawRange(0, count);
+    this.geometry.getAttribute('position').needsUpdate = true;
+    this.geometry.getAttribute('color').needsUpdate = true;
 
     this.particles = new THREE.Points(this.geometry, sharedImpactMaterial);
     this.particles.userData.cannotReceiveAO = true;
+    // A pooled geometry keeps the previous user's boundingSphere, so per-object
+    // frustum culling would test against a stale bounds. These are tiny,
+    // sub-second bursts that only ever spawn at the point of combat (always
+    // on-screen), so skip the frustum test outright — visually identical,
+    // and it sidesteps the stale-bounds cull without recomputing a sphere.
+    this.particles.frustumCulled = false;
     scene.add(this.particles);
     this.lifetime = 0.6; // Longer visible impact
   }
@@ -367,22 +477,25 @@ export class ImpactEffect {
       return true;
     }
 
-    const positions = this.particles.geometry.attributes.position.array as Float32Array;
+    const positions = this.geometry.getAttribute('position').array as Float32Array;
+    const vel = this.velocities;
 
-    for (let i = 0; i < this.velocities.length; i++) {
+    for (let i = 0; i < this.count; i++) {
       const idx = i * 3;
-      positions[idx] += this.velocities[i].x * delta * 15;
-      positions[idx + 1] += this.velocities[i].y * delta * 15;
-      positions[idx + 2] += this.velocities[i].z * delta * 15;
+      positions[idx] += vel[idx] * delta * 15;
+      positions[idx + 1] += vel[idx + 1] * delta * 15;
+      positions[idx + 2] += vel[idx + 2] * delta * 15;
 
       // Strong gravity for realistic fall
-      this.velocities[i].y -= delta * 8;
+      vel[idx + 1] -= delta * 8;
 
       // Air resistance
-      this.velocities[i].multiplyScalar(0.98);
+      vel[idx] *= 0.98;
+      vel[idx + 1] *= 0.98;
+      vel[idx + 2] *= 0.98;
     }
 
-    this.particles.geometry.attributes.position.needsUpdate = true;
+    this.geometry.getAttribute('position').needsUpdate = true;
     // Opacity belongs to the shared material — leave it at 1 and rely on
     // the short lifetime + removal to provide the "pop" feel.
 
@@ -391,8 +504,8 @@ export class ImpactEffect {
 
   dispose(scene: THREE.Scene) {
     scene.remove(this.particles);
-    this.geometry.dispose();
-    // Material is shared — never dispose here.
+    // Return the geometry to the pool instead of freeing it (material shared).
+    releaseParticleGeometry(_impactGeoPool, this.geometry);
   }
 }
 
@@ -1174,14 +1287,17 @@ export class AbilityCastEffect {
 // not blood. Sparks fly out from the impact, then arc down under gravity.
 export class RobotHitSparks {
   particles: THREE.Points;
-  velocities: THREE.Vector3[] = [];
+  private velocities: Float32Array;
+  private count: number;
   lifetime: number = 0;
   private geometry: THREE.BufferGeometry;
 
   constructor(scene: THREE.Scene, position: THREE.Vector3, direction: THREE.Vector3, count: number = 15) {
-    this.geometry = new THREE.BufferGeometry();
-    const positions = new Float32Array(count * 3);
-    const colors = new Float32Array(count * 3);
+    this.count = count;
+    this.geometry = acquireParticleGeometry(_sparkGeoPool, count);
+    const positions = this.geometry.getAttribute('position').array as Float32Array;
+    const colors = this.geometry.getAttribute('color').array as Float32Array;
+    this.velocities = new Float32Array(count * 3);
 
     // Hot spark palette + a couple of cooler tones for shrapnel/electric arcs.
     const SPARK_COLORS = [0xffd23f, 0xff8a1e, 0xfff3c0, 0x66e0ff, 0xb8bdc4];
@@ -1200,20 +1316,21 @@ export class RobotHitSparks {
       // Spray away from impact direction, with a wider, faster cone than blood
       // so it reads as a spark burst.
       const spread = 0.8;
-      const velocity = new THREE.Vector3(
-        direction.x + (Math.random() - 0.5) * spread,
-        direction.y + (Math.random() - 0.5) * spread + 0.3, // bias slightly up
-        direction.z + (Math.random() - 0.5) * spread,
-      );
-      velocity.multiplyScalar(0.7 + Math.random() * 0.8);
-      this.velocities.push(velocity);
+      const mag = 0.7 + Math.random() * 0.8;
+      this.velocities[idx] = (direction.x + (Math.random() - 0.5) * spread) * mag;
+      this.velocities[idx + 1] = (direction.y + (Math.random() - 0.5) * spread + 0.3) * mag; // bias slightly up
+      this.velocities[idx + 2] = (direction.z + (Math.random() - 0.5) * spread) * mag;
     }
 
-    this.geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    this.geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    this.geometry.setDrawRange(0, count);
+    this.geometry.getAttribute('position').needsUpdate = true;
+    this.geometry.getAttribute('color').needsUpdate = true;
 
     this.particles = new THREE.Points(this.geometry, sharedSparkMaterial);
     this.particles.userData.cannotReceiveAO = true;
+    // Pooled geometry → stale boundingSphere; skip frustum culling (tiny,
+    // sub-second bursts always at the point of combat). See ImpactEffect.
+    this.particles.frustumCulled = false;
     scene.add(this.particles);
     this.lifetime = 0.55; // Sparks die quickly
   }
@@ -1225,28 +1342,31 @@ export class RobotHitSparks {
       return true;
     }
 
-    const positions = this.particles.geometry.attributes.position.array as Float32Array;
+    const positions = this.geometry.getAttribute('position').array as Float32Array;
+    const vel = this.velocities;
 
-    for (let i = 0; i < this.velocities.length; i++) {
+    for (let i = 0; i < this.count; i++) {
       const idx = i * 3;
-      positions[idx] += this.velocities[i].x * delta * 14;
-      positions[idx + 1] += this.velocities[i].y * delta * 14;
-      positions[idx + 2] += this.velocities[i].z * delta * 14;
+      positions[idx] += vel[idx] * delta * 14;
+      positions[idx + 1] += vel[idx + 1] * delta * 14;
+      positions[idx + 2] += vel[idx + 2] * delta * 14;
 
       // Strong gravity so sparks arc down fast, plus heavy drag (they burn out).
-      this.velocities[i].y -= delta * 9;
-      this.velocities[i].multiplyScalar(0.9);
+      vel[idx + 1] -= delta * 9;
+      vel[idx] *= 0.9;
+      vel[idx + 1] *= 0.9;
+      vel[idx + 2] *= 0.9;
     }
 
-    this.particles.geometry.attributes.position.needsUpdate = true;
+    this.geometry.getAttribute('position').needsUpdate = true;
 
     return false;
   }
 
   dispose(scene: THREE.Scene) {
     scene.remove(this.particles);
-    this.geometry.dispose();
-    // Material is shared — never dispose here.
+    // Return the geometry to the pool instead of freeing it (material shared).
+    releaseParticleGeometry(_sparkGeoPool, this.geometry);
   }
 }
 

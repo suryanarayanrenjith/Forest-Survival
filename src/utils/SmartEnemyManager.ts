@@ -188,6 +188,10 @@ interface PooledEnemyMesh {
   type: EnemyType | null;
   lastActivationTime: number;
   _cellKey?: string; // Spatial grid cell key for quick removal
+  // Meshes that cast a shadow (collected at build), plus the current gate
+  // state, so distant enemies can drop shadow casting without a recompile.
+  shadowCasters?: THREE.Mesh[];
+  castsShadow?: boolean;
 }
 
 // Performance metrics for adaptive optimization
@@ -210,6 +214,14 @@ const LOD_DISTANCES = {
   MEDIUM_TO_LOW: 70,
   LOW_TO_CULLED: 100,
 };
+
+// Beyond this distance an enemy stops casting a real-time shadow. A shadow at
+// 40 m is a few pixels on screen and reads as noise, but every caster past it
+// still costs a full extra draw in the directional light's shadow pass each
+// frame — the cost that scales hardest with crowd size. Gated per-enemy on the
+// throttled LOD tick (a cheap castShadow toggle, never a recompile), so close
+// enemies keep their full, crisp shadows and only distant ones are dropped.
+const SHADOW_CAST_DISTANCE = 40;
 
 // Performance thresholds
 const PERFORMANCE_THRESHOLDS = {
@@ -765,6 +777,18 @@ class SmartEnemyManager {
     // Apply scale based on enemy type
     pooledEnemy.group.scale.setScalar(config.scale);
     this.markEnemyAOSafe(pooledEnemy.group);
+
+    // Snapshot the meshes that cast shadows (exactly the ones built with
+    // castShadow=true above) so the per-enemy distance gate can toggle them
+    // cheaply. Collected here in the FULL build only; the type-affinity fast
+    // path reuses the existing list. `castsShadow` starts matching the build
+    // state; updateEnemyLOD re-gates it against SHADOW_CAST_DISTANCE.
+    const casters: THREE.Mesh[] = [];
+    const collect = (o: THREE.Object3D) => { if (o instanceof THREE.Mesh && o.castShadow) casters.push(o); };
+    pooledEnemy.lodGroups.high.traverse(collect);
+    pooledEnemy.lodGroups.medium.traverse(collect);
+    pooledEnemy.shadowCasters = casters;
+    pooledEnemy.castsShadow = shadows;
   }
 
   /**
@@ -945,6 +969,19 @@ class SmartEnemyManager {
       !this.isInFrustum(pooledEnemy.group.position)
     ) {
       newLOD = LODLevel.CULLED;
+    }
+
+    // ── Distance-gated shadow casting ──
+    // Drop the real-time shadow once the enemy is past SHADOW_CAST_DISTANCE (or
+    // culled / shadows off in the preset). A plain castShadow toggle on the
+    // pre-collected caster meshes — never a recompile — so close enemies keep
+    // their full shadows and only distant ones stop loading the shadow pass.
+    const shadowsOn = this.graphicsPreset?.shadowsEnabled ?? true;
+    const wantShadow = shadowsOn && newLOD !== LODLevel.CULLED && distance <= SHADOW_CAST_DISTANCE;
+    if (pooledEnemy.shadowCasters && wantShadow !== pooledEnemy.castsShadow) {
+      const casters = pooledEnemy.shadowCasters;
+      for (let s = 0; s < casters.length; s++) casters[s].castShadow = wantShadow;
+      pooledEnemy.castsShadow = wantShadow;
     }
 
     // Apply LOD change if needed

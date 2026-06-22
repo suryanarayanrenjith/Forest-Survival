@@ -1,5 +1,5 @@
 import { type FormEvent, useEffect, useState } from 'react';
-import { LogIn, LockKeyhole, UserPlus, X, ShieldAlert, Users, Calendar, ArrowLeft, ArrowRight, Check, Loader2, Crosshair, Trophy, GitBranch, Sparkles } from 'lucide-react';
+import { LogIn, LockKeyhole, UserPlus, X, ShieldAlert, Users, Calendar, ArrowLeft, ArrowRight, Check, Loader2, Crosshair, Trophy, GitBranch, Sparkles, Flame } from 'lucide-react';
 import { useAuthActions } from '@convex-dev/auth/react';
 import { useQuery } from 'convex/react';
 import { api } from '../../convex/_generated/api';
@@ -203,6 +203,7 @@ const AuthMenu = ({ onClose, onSignedIn, initialMode = 'signIn' }: AuthMenuProps
 
           <ul className="relative mt-8 space-y-3">
             {[
+              { icon: Flame, title: 'Raise the Stakes', desc: 'Risk-it-all run modifiers' },
               { icon: Users, title: 'Online Multiplayer', desc: 'Co-op & survival with friends' },
               { icon: Trophy, title: 'Achievements & Ranks', desc: 'Every milestone tracked' },
               { icon: GitBranch, title: 'Skill Tree', desc: 'Permanent, run-to-run upgrades' },
