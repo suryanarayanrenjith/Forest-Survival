@@ -74,7 +74,7 @@ export function bonusForLevel(level: number): MasteryBonus {
 }
 
 /** XP granted per kill — modest so reaching L10 is a meaningful grind. */
-export function xpPerKill(enemyType: 'normal' | 'fast' | 'tank' | 'boss' | 'ranged', isMiniBoss?: boolean): number {
+export function xpPerKill(enemyType: 'normal' | 'fast' | 'tank' | 'boss' | 'ranged' | 'revenant', isMiniBoss?: boolean): number {
   let base: number;
   switch (enemyType) {
     case 'fast':   base = 4;  break;
@@ -83,6 +83,8 @@ export function xpPerKill(enemyType: 'normal' | 'fast' | 'tank' | 'boss' | 'rang
     // Sniper kills feel meaningful — they pressure the player from afar
     // and are tougher to land than a charging stalker.
     case 'ranged': base = 9;  break;
+    // Revenant is the apex trickster — the rarest, hardest kill in the game.
+    case 'revenant': base = 40; break;
     case 'normal':
     default:       base = 5;
   }

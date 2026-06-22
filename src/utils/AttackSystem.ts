@@ -321,15 +321,21 @@ export class AttackSystem {
   ): AttackConfig {
     switch (type) {
       case 'fast':
+        // Runner: slower swings than the old 700ms (so it can't relentlessly
+        // chip you) but a GENEROUS arc + reach so its strikes actually CONNECT.
+        // It moves WHILE attacking (so it faces its travel heading, not the
+        // player) — a narrow arc made its swings whiff entirely (the "blue
+        // runner does no damage" bug). ~165° passes for any roughly-forward
+        // chase; only a player DIRECTLY behind it is missed.
         return {
           damage: baseDamage * 0.75,
           attackRange: 4.5,
-          attackCooldown: 700,
+          attackCooldown: 1050,
           attackDuration: 0.35,
-          attackWindup: 0.1,
-          attackRecovery: 0.1,
+          attackWindup: 0.12,
+          attackRecovery: 0.12,
           canMoveWhileAttacking: true,
-          attackArc: Math.PI // 180 degrees - very wide
+          attackArc: Math.PI * 0.92 // ~165° — reliably lands during a chase
         };
 
       case 'tank':

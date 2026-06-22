@@ -11,14 +11,16 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { type GraphicsPreset } from './GameSettingsManager';
 
-export type EnemyType = 'normal' | 'fast' | 'tank' | 'boss' | 'ranged';
+export type EnemyType = 'normal' | 'fast' | 'tank' | 'boss' | 'ranged' | 'revenant';
 
 // Result type for mesh acquisition - used by App.tsx createEnemy
 export interface AcquiredMesh {
   mesh: THREE.Group;
   body: THREE.Mesh;
-  leftArm: THREE.Mesh;
-  rightArm: THREE.Mesh;
+  // Arms are shoulder-PIVOT groups (the arm mesh hangs inside), so rotations
+  // swing from the shoulder. Typed Object3D since they're Groups, not Meshes.
+  leftArm: THREE.Object3D;
+  rightArm: THREE.Object3D;
   leftLeg: THREE.Mesh;
   rightLeg: THREE.Mesh;
   head: THREE.Mesh;
@@ -107,6 +109,20 @@ const ENEMY_CONFIGS: Record<EnemyType, EnemyVisualConfig> = {
     emissiveIntensity: 0.12,
     scale: 1.05,
   },
+  // Revenant — the rare APEX TRICKSTER. A small, fast-ish, dark-slate body lit
+  // by molten GOLD energy (its own unmistakable hue — no other enemy is gold).
+  // Teleports, shields, shoots and regenerates: the smartest, most dangerous
+  // foe in the game. Higher emissive so the gold reads "elite/charged" even at
+  // distance, and a sub-1.0 scale so its silhouette stays small & quick.
+  revenant: {
+    baseColor: 0x2a2233,   // dark indigo-slate shell
+    accentColor: 0x4a3a14, // burnished gold limbs
+    brightColor: 0xffe08a, // bright gold head/plate
+    darkColor: 0x14101a,   // near-black recesses
+    glowColor: 0xffc24a,   // molten gold core/eyes/shield
+    emissiveIntensity: 0.34,
+    scale: 0.85,
+  },
 };
 
 // Shared geometry cache - created once, reused for all enemies
@@ -159,8 +175,8 @@ interface PooledEnemyMesh {
   };
   parts: {
     body?: THREE.Mesh;
-    leftArm?: THREE.Mesh;
-    rightArm?: THREE.Mesh;
+    leftArm?: THREE.Object3D;   // shoulder-pivot group
+    rightArm?: THREE.Object3D;  // shoulder-pivot group
     leftLeg?: THREE.Mesh;
     rightLeg?: THREE.Mesh;
     head?: THREE.Mesh;
@@ -608,38 +624,63 @@ class SmartEnemyManager {
     body.add(bodyGlow);
 
     // ── Arms (fist + elbow pad merged into one dark mesh per arm) ──
+    // Each arm hangs from a SHOULDER PIVOT group: the arm mesh sits 0.6 below
+    // the pivot (= the old centred rest position, so the idle silhouette is
+    // pixel-identical), but walk / attack / summon rotations now swing the arm
+    // about the SHOULDER instead of spinning it around its own middle — the
+    // "propeller arm" look, most obvious on the 2× boss, is gone.
     const armDarkGeo = this.mergedGeo('arm_dark', [
       { geo: G.handHigh, pos: [0, -0.62, 0] },
       { geo: G.elbowPadHigh, pos: [0, -0.10, 0] },
     ]);
-    const leftArm = new THREE.Mesh(G.armHigh, accentMat);
-    leftArm.castShadow = shadows;
-    leftArm.position.set(-0.65, 0.6, 0);
-    highGroup.add(leftArm);
-    pooledEnemy.parts.leftArm = leftArm;
-    leftArm.add(new THREE.Mesh(armDarkGeo, darkMat));
-
-    const rightArm = new THREE.Mesh(G.armHigh, accentMat);
-    rightArm.castShadow = shadows;
-    rightArm.position.set(0.65, 0.6, 0);
-    highGroup.add(rightArm);
-    pooledEnemy.parts.rightArm = rightArm;
-    rightArm.add(new THREE.Mesh(armDarkGeo, darkMat));
+    const SHOULDER_Y = 1.2; // pivot height (arm spans pivot → pivot−1.2)
+    const makeArm = (side: -1 | 1): { pivot: THREE.Group; armMesh: THREE.Mesh } => {
+      const pivot = new THREE.Group();
+      pivot.position.set(side * 0.65, SHOULDER_Y, 0);
+      highGroup.add(pivot);
+      const armMesh = new THREE.Mesh(G.armHigh, accentMat);
+      armMesh.castShadow = shadows;
+      armMesh.position.set(0, -0.6, 0); // hang the centred box below the shoulder
+      pivot.add(armMesh);
+      armMesh.add(new THREE.Mesh(armDarkGeo, darkMat));
+      return { pivot, armMesh };
+    };
+    const leftArmRig = makeArm(-1);
+    pooledEnemy.parts.leftArm = leftArmRig.pivot;
+    const rightArmRig = makeArm(1);
+    pooledEnemy.parts.rightArm = rightArmRig.pivot;
 
     // ── RANGED ARCHETYPE — clip a rifle onto the right hand. Reads as
-    // unmistakable from afar so the player IDs the long-range threat.
+    // unmistakable from afar so the player IDs the long-range threat. The
+    // rifle/muzzle attach to the arm MESH (not the pivot) so they keep their
+    // exact local offset relative to the hand.
     if (type === 'ranged') {
       const rifle = new THREE.Mesh(this.mergedGeo('rifle_dark', [
         { geo: G.rifleStockHigh, pos: [0.06, -0.65, 0.12] },
         { geo: G.rifleBarrelHigh, pos: [0.06, -0.65, 0.78] },
       ]), darkMat);
-      rightArm.add(rifle);
+      rightArmRig.armMesh.add(rifle);
       // Glowing muzzle tip — same colour as the eye bar / belt so all
       // emissive bits read as one "energy weapon" set.
       const muzzle = new THREE.Mesh(G.muzzleGlowHigh, glowMat);
       muzzle.position.set(0.06, -0.65, 1.46);
       muzzle.userData.cannotReceiveAO = true;
-      rightArm.add(muzzle);
+      rightArmRig.armMesh.add(muzzle);
+    }
+
+    // ── REVENANT ARCHETYPE — a slim gold rifle on the hand (it shoots like a
+    // sniper). Twin glowing head horns are added after the head is built below,
+    // so its small silhouette still reads as the apex trickster.
+    if (type === 'revenant') {
+      const rifle = new THREE.Mesh(this.mergedGeo('rev_rifle_dark', [
+        { geo: G.rifleStockHigh, pos: [0.06, -0.6, 0.1] },
+        { geo: G.rifleBarrelHigh, pos: [0.06, -0.6, 0.62] },
+      ]), darkMat);
+      rightArmRig.armMesh.add(rifle);
+      const revMuzzle = new THREE.Mesh(G.muzzleGlowHigh, glowMat);
+      revMuzzle.position.set(0.06, -0.6, 1.2);
+      revMuzzle.userData.cannotReceiveAO = true;
+      rightArmRig.armMesh.add(revMuzzle);
     }
 
     // ── Legs (foot + knee pad merged into one dark mesh per leg) ──
@@ -678,6 +719,20 @@ class SmartEnemyManager {
     eyeBar.position.set(0, -0.02, 0.43);
     head.add(eyeBar);
     pooledEnemy.parts.leftEye = eyeBar;
+
+    // Revenant horns — twin emissive-gold crests swept back off the head. The
+    // unmistakable apex-trickster tell on top of the small gold body.
+    if (type === 'revenant') {
+      [-1, 1].forEach((s) => {
+        const horn = new THREE.Mesh(G.crestHigh, glowMat);
+        horn.scale.set(0.5, 1.15, 0.5);
+        horn.position.set(s * 0.34, 0.62, -0.06);
+        horn.rotation.z = s * 0.5;
+        horn.rotation.x = -0.3;
+        horn.userData.cannotReceiveAO = true;
+        head.add(horn);
+      });
+    }
 
     // MEDIUM LOD - Simplified (no separate arms/legs, just body + head)
     const mediumGroup = pooledEnemy.lodGroups.medium;
@@ -1094,8 +1149,8 @@ class SmartEnemyManager {
   getAnimationParts(pooledEnemy: PooledEnemyMesh): {
     leftLeg?: THREE.Mesh;
     rightLeg?: THREE.Mesh;
-    leftArm?: THREE.Mesh;
-    rightArm?: THREE.Mesh;
+    leftArm?: THREE.Object3D;  // shoulder-pivot group
+    rightArm?: THREE.Object3D;
   } {
     // Only return parts if using high LOD (animations only at close range)
     if (pooledEnemy.currentLOD === LODLevel.HIGH) {

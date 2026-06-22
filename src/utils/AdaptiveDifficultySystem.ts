@@ -87,7 +87,7 @@ export class AdaptiveDifficultySystem {
   private currentDifficulty: DifficultyProfile;
   private targetDifficulty: number = 50;
   private adjustmentRate: number = 0.15; // How quickly to adjust (0-1)
-  private updateInterval: number = 5000; // 5 seconds
+  private updateInterval: number = 3500; // re-evaluate every 3.5s (was 5s) so it tracks the player more responsively
   private lastAdjustmentTime: number = 0;
 
   // Performance thresholds
@@ -106,7 +106,7 @@ export class AdaptiveDifficultySystem {
   // Difficulty adjustment parameters
   private readonly MIN_DIFFICULTY = 20;
   private readonly MAX_DIFFICULTY = 95;
-  private readonly SMOOTH_FACTOR = 0.3; // Smoothing for difficulty changes
+  private readonly SMOOTH_FACTOR = 0.5; // Smoothing for difficulty changes (was 0.3 — snappier, still no jarring jumps)
 
   constructor(initialDifficulty: 'easy' | 'medium' | 'hard' = 'medium') {
     this.metrics = this.initializeMetrics();

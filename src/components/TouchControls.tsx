@@ -72,7 +72,7 @@ const TouchControls = ({
   // Held/active pickup icon, so mobile players can SEE which power they have.
   const POWER_ICONS: Record<string, LucideIcon> = {
     ammo: Boxes, speed: Wind, damage: Swords, shield: ShieldIcon,
-    infinite_ammo: InfinityIcon, overcharge: Zap, phantom: Ghost,
+    infinite_ammo: InfinityIcon, overcharge: Zap, phantom: Ghost, health: Heart,
   };
   const powerIcon = power?.powerType ? (POWER_ICONS[power.powerType] ?? PackageSearch) : PackageSearch;
   const isReloading = reloadDuration !== null;

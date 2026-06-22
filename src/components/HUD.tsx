@@ -37,6 +37,7 @@ const POWER_ICONS: Record<string, LucideIcon> = {
   cryo: Snowflake,
   tesla: Bolt,
   shockwave: Waves,
+  health: Heart,
   nuke: Bomb,
 };
 

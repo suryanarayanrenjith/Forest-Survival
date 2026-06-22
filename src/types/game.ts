@@ -149,7 +149,7 @@ export interface Enemy {
   maxHealth: number;
   speed: number;
   dead: boolean;
-  type: 'normal' | 'fast' | 'tank' | 'boss' | 'ranged';
+  type: 'normal' | 'fast' | 'tank' | 'boss' | 'ranged' | 'revenant';
   damage: number;
   scoreValue: number;
   // Recomputed each frame: is the enemy on-screen-within-draw-distance OR close
@@ -177,8 +177,8 @@ export interface Enemy {
   hitImpulse?: THREE.Vector3;
   leftLeg?: THREE.Mesh;
   rightLeg?: THREE.Mesh;
-  leftArm?: THREE.Mesh;
-  rightArm?: THREE.Mesh;
+  leftArm?: THREE.Object3D;  // shoulder-pivot group (arm mesh hangs inside)
+  rightArm?: THREE.Object3D;
   torso?: THREE.Mesh;
   head?: THREE.Mesh;
   // AI state
@@ -254,6 +254,19 @@ export interface Enemy {
   bossNextSummonAt?: number;
   bossSummonCast?: number;
   bossSummonCount?: number;
+  // ── Boss blink/teleport (wave 10+) ───────────────────────────────────
+  // The boss can phase-blink AROUND the player to flank/backstab. It uses a
+  // small pool of CHARGES (the "how many times at once" burst cap) that refill
+  // over time; `bossTeleNextChargeAt` is the next refill timestamp, and
+  // `bossTeleNextAt` is the per-blink cooldown gate. Charges + cadence + flank
+  // smarts scale with difficulty (hardest in Hard). A fairness floor stops it
+  // ever blinking on top of the player.
+  bossTeleCharges?: number;
+  bossTeleMaxCharges?: number;
+  bossTeleNextChargeAt?: number;
+  bossTeleNextAt?: number;
+  // Short fade-in timer after a blink (drives the arrival materialise VFX).
+  bossTeleArriveFx?: number;
   // ── Ranged archetype state ──────────────────────────────────────────
   // Ranged enemies fire a slow telegraphed energy bolt at the player when
   // they have line of sight and the cooldown has elapsed. The cooldown is
@@ -261,6 +274,36 @@ export interface Enemy {
   // so the player sees a glowing muzzle build before the bolt launches.
   rangedNextShotAt?: number;
   rangedChargeMs?: number;
+  // ── Revenant (rare apex trickster) ───────────────────────────────────
+  // The Revenant teleports, shoots, regenerates, and raises its own energy
+  // shield to phase off bullets / dash / fire. It's only vulnerable while the
+  // shield is DOWN (caught off-guard) or after an EXPLOSIVE shatters it.
+  //   revShield        — the custom shield-bubble mesh (distinct from the
+  //                       player's flat riot shield); toggled by visibility.
+  //   revShieldActive  — is the shield currently blocking damage?
+  //   revShieldNextUpAt/revShieldDownAt — the up↔down cycle timestamps (ms);
+  //                       the DOWN gap is the player's "catch it off-guard"
+  //                       window. revShieldBrokenUntil locks the shield OFF
+  //                       after an explosive shatter so the player can finish it.
+  //   revShieldHitFlash — brief 0→1 brighten when a bullet pings off.
+  //   revTele* — blink charges/cooldown (mirrors the boss blink, tuned tighter).
+  //   revRegenNextAt — earliest ms it may use its small, rare self-heal.
+  revShield?: THREE.Object3D;
+  revShieldActive?: boolean;
+  revShieldNextUpAt?: number;
+  revShieldDownAt?: number;
+  revShieldBrokenUntil?: number;
+  revShieldHitFlash?: number;
+  revTeleCharges?: number;
+  revTeleNextChargeAt?: number;
+  revTeleNextAt?: number;
+  revRegenNextAt?: number;
+  // revEvadeUntil — set ONLY when the PLAYER hits it (so it blinks to dodge
+  // your fire, but never flees a subverter-hacked enemy that's hunting it).
+  // revTeleSuppressUntil — while a hacked enemy is mauling it, its teleport AND
+  // shield are suppressed (it can't escape; it stays focused on the player).
+  revEvadeUntil?: number;
+  revTeleSuppressUntil?: number;
   // ── Hacking (Subverter tool) ─────────────────────────────────────────
   // A hacked enemy is overclocked by an intrusion chip: it ignores the
   // player and hunts/melees the nearest non-hacked enemy, jitters
@@ -297,7 +340,7 @@ export interface Bullet {
 }
 
 export type PowerUpType = 'ammo' | 'speed' | 'damage' | 'shield' | 'infinite_ammo' | 'overcharge' | 'phantom'
-  | 'cryo' | 'tesla' | 'shockwave' | 'nuke';
+  | 'cryo' | 'tesla' | 'shockwave' | 'health' | 'nuke';
 
 export interface PowerUp {
   mesh: THREE.Mesh;

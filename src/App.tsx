@@ -1066,8 +1066,14 @@ const ForestSurvivalGame = () => {
       //   Hard   — same scaling cut by ~15%; still meaningfully harder
       //            than Medium but the ranged + sentinel pressure makes
       //            the old 2.6 HP / 2.1 dmg feel grindy.
-      easy:     { healthMult: 0.9, speedMult: 0.6,  damageMult: 0.8,  spawnMult: 0.7, regenRate: 0,    aggroMult: 0.7,  reactionMult: 1.5,  chaseMult: 0.8 },
-      medium:   { healthMult: 1.4, speedMult: 1.05, damageMult: 1.25, spawnMult: 1.0, regenRate: 0.1,  aggroMult: 1.0,  reactionMult: 1.05, chaseMult: 1.0 },
+      // Easy — gentlest mode, nudged a tiny bit above a total walk.
+      easy:     { healthMult: 1.0, speedMult: 0.7,  damageMult: 0.9,  spawnMult: 0.8, regenRate: 0,    aggroMult: 0.78, reactionMult: 1.4,  chaseMult: 0.85 },
+      // Medium — restored to a COMPETITIVE mid challenge (the boss / runner /
+      // Revenant fight at their proper, full strength here). A hair tamer than
+      // the original on speed/reaction so it stays clearly below Hard.
+      medium:   { healthMult: 1.4, speedMult: 1.0,  damageMult: 1.25, spawnMult: 1.0, regenRate: 0.1,  aggroMult: 1.0,  reactionMult: 1.0,  chaseMult: 1.0 },
+      // Hard — the original, brutal, fully-competitive numbers. Apex enemies hit
+      // their hardest here.
       hard:     { healthMult: 2.2, speedMult: 1.5,  damageMult: 1.85, spawnMult: 1.4, regenRate: 0.2,  aggroMult: 1.55, reactionMult: 0.6,  chaseMult: 1.35 },
       adaptive: { healthMult: 1.3, speedMult: 0.95, damageMult: 1.2,  spawnMult: 1.0, regenRate: 0.05, aggroMult: 0.95, reactionMult: 1.0,  chaseMult: 1.0 }, // Starts gentle, AI ramps up
     };
@@ -1102,10 +1108,12 @@ const ForestSurvivalGame = () => {
     // Wire encoding for the host→guest enemy snapshot. APPEND-ONLY — older
     // clients will fall back to 'normal' on an unknown code via the
     // ENEMY_TYPE_FROM_CODE bounds check at the read site.
-    const ENEMY_TYPE_CODE: Record<'normal' | 'fast' | 'tank' | 'boss' | 'ranged', number> = {
-      normal: 0, fast: 1, tank: 2, boss: 3, ranged: 4,
+    const ENEMY_TYPE_CODE: Record<'normal' | 'fast' | 'tank' | 'boss' | 'ranged' | 'revenant', number> = {
+      normal: 0, fast: 1, tank: 2, boss: 3, ranged: 4, revenant: 5,
     };
-    const ENEMY_TYPE_FROM_CODE: Array<'normal' | 'fast' | 'tank' | 'boss' | 'ranged'> = ['normal', 'fast', 'tank', 'boss', 'ranged'];
+    // (Revenant is solo-only — code 5 exists for type-soundness; it never
+    // actually streams over the MP wire.)
+    const ENEMY_TYPE_FROM_CODE: Array<'normal' | 'fast' | 'tank' | 'boss' | 'ranged' | 'revenant'> = ['normal', 'fast', 'tank', 'boss', 'ranged', 'revenant'];
     // Guest-side lookup from netId → mirrored enemy. Host fills netId on spawn.
     const enemyByNetId = new Map<number, Enemy>();
     let nextEnemyNetId = 1;
@@ -1249,8 +1257,14 @@ const ForestSurvivalGame = () => {
     // When adaptive mode is selected, start with 'medium' and let the AI adjust
     const baseDifficulty = classicDifficulty === 'adaptive' ? 'medium' : classicDifficulty;
     const adaptiveDifficulty = new AdaptiveDifficultySystem(baseDifficulty);
-    // Force enable adaptive AI when random/adaptive mode is selected
-    adaptiveDifficulty.setAdaptive(gameSettings.adaptiveDifficulty || classicDifficulty === 'adaptive');
+    // Force enable adaptive AI when random/adaptive mode is selected. In the
+    // dedicated Adaptive MODE the adjustment rate is cranked up so the system
+    // genuinely tracks the player (a true rubber-band), vs the subtle background
+    // assist used in the fixed modes.
+    adaptiveDifficulty.setAdaptive(
+      gameSettings.adaptiveDifficulty || classicDifficulty === 'adaptive',
+      classicDifficulty === 'adaptive' ? 0.4 : 0.15,
+    );
 
     // ── ADAPTIVE MODE LIVE TUNING ────────────────────────────────────────────
     // In Adaptive difficulty ONLY, the AdaptiveDifficultySystem's performance
@@ -2561,7 +2575,17 @@ const ForestSurvivalGame = () => {
       : [];
     let sentinelIntroFired = false; // First-encounter intro banner fires once.
     let rangedEnemyIntroFired = false;
-    let bossIntroFired = false; // First full-boss encounter (wave 10+) banner.
+    let bossIntroFired = false; // First full-boss encounter banner.
+    let revenantIntroFired = false; // First Revenant (rare apex trickster) banner.
+    // ── BOSS ERA START WAVE (difficulty-scaled) ──────────────────────────────
+    // The pink boss (and the Revenant, which appears in the same window) shows
+    // up EARLIER on harder difficulties — only Easy waits until wave 10. From
+    // this wave on, the boss appears EVERY wave and the enemy mix keeps getting
+    // harder with the round count (see the wave-scaled type bump in spawnEnemyBatch).
+    const bossStartWave = classicDifficulty === 'hard' ? 5
+      : classicDifficulty === 'medium' ? 7
+      : classicDifficulty === 'adaptive' ? 8
+      : 10; // easy
 
     // === SPAWN SAFE ZONE ===
     // Random terrain generation can place a tree/rock/wall right on top of the
@@ -3046,14 +3070,19 @@ const ForestSurvivalGame = () => {
     // doing — a dominating player needs more points (kept honest), a struggling
     // one unlocks sooner (kept in the fight). Pistol (unlockScore 0) is always
     // free regardless of multiplier.
+    // Raised so the arsenal is a real, difficulty-scaled grind: Easy is a modest
+    // step up from the native scores, Medium and Hard demand SIGNIFICANTLY more
+    // (a competitive run earns its guns). Pistol (unlockScore 0) is always free.
     const WEAPON_UNLOCK_MULT: Record<'easy' | 'medium' | 'hard', number> = {
-      easy: 1.0, medium: 1.7, hard: 2.5,
+      easy: 1.3, medium: 2.5, hard: 3.5,
     };
     const weaponUnlockMultNow = (): number => {
       if (classicDifficulty === 'adaptive') {
-        // Map the live adaptive difficulty level (20..95) → 1.0..2.4×.
+        // LIVE with skill: the live adaptive level (20..95) maps to 1.2..3.4×, so
+        // a dominating player grinds nearly as long as Hard, a struggling one
+        // unlocks closer to Easy — the requirement breathes with performance.
         const lvl = adaptiveDifficulty.getDifficulty().level;
-        return 1.0 + Math.max(0, Math.min(1, (lvl - 20) / 75)) * 1.4;
+        return 1.2 + Math.max(0, Math.min(1, (lvl - 20) / 75)) * 2.2;
       }
       return WEAPON_UNLOCK_MULT[classicDifficulty] ?? 1.0;
     };
@@ -3152,6 +3181,15 @@ const ForestSurvivalGame = () => {
       depthWrite: false,
       toneMapped: false,
       fog: false,
+    });
+    // Revenant fires a GOLD bolt (its signature) — same geo, gold materials so
+    // its tracer is instantly distinct from the Sniper's cyan one.
+    const _revBoltMat = new THREE.MeshBasicMaterial({
+      color: 0xffd76a, toneMapped: false, fog: false,
+    });
+    const _revBoltGlowMat = new THREE.MeshBasicMaterial({
+      color: 0xffc24a, transparent: true, opacity: 0.45,
+      blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false, fog: false,
     });
     const powerUps: PowerUp[] = [];
     const particles: Particle[] = [];
@@ -3434,14 +3472,101 @@ const ForestSurvivalGame = () => {
       return group;
     };
 
+    // ── REVENANT PHYSICAL GOLD SHIELD (its own look, NOT the player's riot
+    // shield) — a solid, hand-held HEATER SHIELD the Revenant braces in front of
+    // itself: a beveled GOLD metal plate (kite shape, pointed base), a glowing
+    // energy-rim outline, a domed central boss, and rivet studs. Reads as a real,
+    // physical shield (casts a shadow), unmistakably gold + elite. Per-instance
+    // (revenant is rare); fully disposed on death/recycle.
+    const buildRevenantShield = (): THREE.Group => {
+      const g = new THREE.Group();
+      // Heater/kite outline in the XY plane (extruded toward +Z = toward the
+      // player, since the revenant faces the player).
+      const W = 0.72, TOP = 0.92, SHO = 0.4, BOT = -1.02;
+      const s = new THREE.Shape();
+      s.moveTo(-W, SHO);
+      s.lineTo(-W, TOP - 0.14);
+      s.quadraticCurveTo(-W, TOP, -W + 0.2, TOP);
+      s.lineTo(W - 0.2, TOP);
+      s.quadraticCurveTo(W, TOP, W, TOP - 0.14);
+      s.lineTo(W, SHO);
+      s.lineTo(0, BOT);
+      s.closePath();
+      const plateGeo = new THREE.ExtrudeGeometry(s, {
+        depth: 0.16, bevelEnabled: true, bevelSize: 0.05, bevelThickness: 0.06,
+        bevelSegments: 1, curveSegments: 5,
+      });
+      plateGeo.center();
+      // Brushed-gold metal plate.
+      const plate = new THREE.Mesh(plateGeo, new THREE.MeshStandardMaterial({
+        color: 0xb8892a, metalness: 0.9, roughness: 0.28,
+        emissive: 0x3a2606, emissiveIntensity: 0.5, flatShading: true,
+      }));
+      plate.castShadow = true;
+      plate.userData.cannotReceiveAO = true;
+      g.add(plate);
+      // Glowing energy-rim outline (bright gold edges).
+      const rim = new THREE.LineSegments(
+        new THREE.EdgesGeometry(plateGeo),
+        new THREE.LineBasicMaterial({ color: 0xffe79a, toneMapped: false, fog: false }),
+      );
+      g.add(rim);
+      // Domed central boss + emblem (the focal glow — also the hit-flash node).
+      const boss = new THREE.Mesh(
+        new THREE.SphereGeometry(0.16, 12, 10),
+        new THREE.MeshStandardMaterial({ color: 0xe8b545, metalness: 0.95, roughness: 0.2,
+          emissive: 0x5a3a08, emissiveIntensity: 0.7 }),
+      );
+      boss.position.z = 0.12;
+      boss.castShadow = true;
+      boss.userData.cannotReceiveAO = true;
+      g.add(boss);
+      const emblem = new THREE.Mesh(
+        new THREE.OctahedronGeometry(0.13, 0),
+        new THREE.MeshBasicMaterial({ color: 0xffe8a0, toneMapped: false, fog: false }),
+      );
+      emblem.position.z = 0.2;
+      emblem.userData.cannotReceiveAO = true;
+      g.add(emblem);
+      // Rivet studs down the spine + across the shoulders.
+      const studMat = new THREE.MeshStandardMaterial({ color: 0xffe08a, metalness: 1, roughness: 0.25 });
+      const studGeo = new THREE.SphereGeometry(0.05, 8, 6);
+      [[-0.55, 0.6], [0.55, 0.6], [-0.5, -0.2], [0.5, -0.2], [0, -0.7]].forEach(([sx, sy]) => {
+        const stud = new THREE.Mesh(studGeo, studMat);
+        stud.position.set(sx, sy, 0.09);
+        stud.userData.cannotReceiveAO = true;
+        g.add(stud);
+      });
+      // Braced in front of the torso, angled slightly across the body (left-arm
+      // guard), face toward the player.
+      g.position.set(-0.12, 1.05, 0.7);
+      g.rotation.y = 0.12;
+      g.scale.setScalar(0.95);
+      g.userData.isRevShield = true;
+      g.userData.emblem = emblem; // brightened on hit
+      return g;
+    };
+    // Detach + free every geometry/material a Revenant shield owns (Meshes AND
+    // the rim LineSegments) so a recycled pool slot never leaks them.
+    const disposeRevShield = (shield: THREE.Object3D): void => {
+      shield.traverse((o) => {
+        if (o instanceof THREE.Mesh || o instanceof THREE.LineSegments) {
+          o.geometry.dispose();
+          const m = o.material;
+          if (Array.isArray(m)) m.forEach((mm) => mm.dispose());
+          else m.dispose();
+        }
+      });
+    };
+
 // Create enemy with OPTIMIZED pooled meshes from SmartEnemyManager
     // Returns null if enemy limit reached (adaptive performance management)
-    const createEnemy = (x: number, z: number, type: 'normal' | 'fast' | 'tank' | 'boss' | 'ranged' = 'normal'): Enemy | null => {
+    const createEnemy = (x: number, z: number, type: 'normal' | 'fast' | 'tank' | 'boss' | 'ranged' | 'revenant' = 'normal'): Enemy | null => {
       // === SMART ENEMY MANAGER: Acquire pooled mesh ===
       // This uses shared geometries/materials and object pooling for optimal performance
 
       // Get the scale for this enemy type (must match SmartEnemyManager ENEMY_CONFIGS)
-      const bodyScale = type === 'fast' ? 0.7 : type === 'tank' ? 1.5 : type === 'boss' ? 2.0 : type === 'ranged' ? 1.05 : 1.0;
+      const bodyScale = type === 'fast' ? 0.7 : type === 'tank' ? 1.5 : type === 'boss' ? 2.0 : type === 'ranged' ? 1.05 : type === 'revenant' ? 0.85 : 1.0;
       const position = new THREE.Vector3(x, 1.0 * bodyScale, z);
       const acquiredMesh = smartEnemyManager.acquireMeshForEnemy(type as PooledEnemyType, position);
 
@@ -3453,12 +3578,18 @@ const ForestSurvivalGame = () => {
       // Extract mesh and parts from pooled enemy
       const { mesh: enemyGroup, body: torso, leftArm, rightArm, leftLeg, rightLeg, head, poolId } = acquiredMesh;
 
-      // A recycled pooled mesh may still carry a frost-shell child from a
-      // previously-frozen enemy (Cryo Freeze) — strip it so it never reappears
-      // on the fresh spawn. (Shared geo+mat, so we only detach the wrapper.)
+      // A recycled pooled mesh may still carry a frost-shell child (Cryo Freeze)
+      // or a Revenant shield bubble from a previous occupant — strip both so
+      // they never reappear on the fresh spawn. (Frost shell is shared geo+mat,
+      // so we only detach the wrapper; the rev shield owns per-instance mats,
+      // disposed in the death-cleanup, but we belt-and-suspenders dispose here.)
       for (let ci = enemyGroup.children.length - 1; ci >= 0; ci--) {
-        if (enemyGroup.children[ci].userData?.isFrostShell) {
-          enemyGroup.remove(enemyGroup.children[ci]);
+        const ch = enemyGroup.children[ci];
+        if (ch.userData?.isFrostShell) {
+          enemyGroup.remove(ch);
+        } else if (ch.userData?.isRevShield) {
+          enemyGroup.remove(ch);
+          disposeRevShield(ch);
         }
       }
 
@@ -3471,7 +3602,12 @@ const ForestSurvivalGame = () => {
       switch(type) {
         case 'fast':
           enemyHealth = 30;
-          enemySpeed = 0.15;
+          // Runner speed restored toward its proper, competitive value (0.13).
+          // It reads as genuinely fast again — multiplied by the difficulty
+          // speedMult it's notably quicker on Medium (1.0×) and Hard (1.5×) — yet
+          // it's NOT sticky anymore because the real fix was its ATTACK cadence
+          // (1050ms / generous arc), not crippling its legs.
+          enemySpeed = 0.13;
           enemyDamage = 6;
           enemyScore = 15;
           break;
@@ -3496,7 +3632,27 @@ const ForestSurvivalGame = () => {
           enemyDamage = 14;   // per energy bolt
           enemyScore = 28;
           break;
+        case 'revenant':
+          // Apex trickster — LOW HP on purpose: its survivability is the SHIELD
+          // + teleport + regen, not a fat health bar, so once it's caught
+          // off-guard (shield down) or an explosive shatters it, it dies fast —
+          // a fair, skill-rewarding kill. Speed sits between normal (0.08) and
+          // fast (0.15). Big score because it's the rarest, deadliest foe.
+          enemyHealth = 46;
+          enemySpeed = 0.105;
+          enemyDamage = 16;   // per gold bolt
+          enemyScore = 65;
+          break;
       }
+
+      // ── EASY-MODE ELITE TONE-DOWN ────────────────────────────────────────
+      // On Easy the apex threats (pink boss + Revenant) are SIGNIFICANTLY
+      // gentler than on Medium/Hard: roughly half HP and well under half the
+      // bite, so newcomers still get the spectacle without the wall. (Their
+      // shield/summon/teleport behaviour is also eased in their AI blocks.)
+      const easyElite = classicDifficulty === 'easy' && (type === 'boss' || type === 'revenant');
+      const easyEliteHpMult = easyElite ? 0.5 : 1;
+      const easyEliteDmgMult = easyElite ? 0.55 : 1;
 
       // Wave-based AI advancement. Reaction & dodge scaled by difficulty —
       // hard-mode enemies react in ~half the time of easy enemies.
@@ -3515,6 +3671,7 @@ const ForestSurvivalGame = () => {
       else if (type === 'tank') personality = 'defensive';
       else if (type === 'boss') personality = 'aggressive';
       else if (type === 'ranged') personality = 'support'; // hangs back, kites
+      else if (type === 'revenant') personality = 'tactical'; // mobile flanker
 
       // Create AI systems
       const aiBehavior = new AIBehaviorSystem(personality);
@@ -3528,9 +3685,12 @@ const ForestSurvivalGame = () => {
       // actually use this melee path (their bolt-firing logic is per-frame
       // in animate). Map 'ranged' onto 'normal' here so the type checks out
       // and the instance is constructed; the runtime call sites skip it.
-      const attackArchetype: 'normal' | 'fast' | 'tank' | 'boss' = type === 'ranged' ? 'normal' : type;
+      // Ranged + Revenant are SHOOTERS (no melee), but the AttackSystem is still
+      // constructed for them — map both onto 'normal' so the config type checks;
+      // the runtime melee call sites skip both archetypes anyway.
+      const attackArchetype: 'normal' | 'fast' | 'tank' | 'boss' = (type === 'ranged' || type === 'revenant') ? 'normal' : type;
       const attackSystemInstance = new AttackSystem(
-        AttackSystem.createConfigForType(attackArchetype, enemyDamage * diffSettings.damageMult * waveDamageRamp * (runMods.enemyDamageMult ?? 1))
+        AttackSystem.createConfigForType(attackArchetype, enemyDamage * diffSettings.damageMult * waveDamageRamp * easyEliteDmgMult * (runMods.enemyDamageMult ?? 1))
       );
 
       // NEW: Obstacle avoidance system - prevents getting stuck in trees
@@ -3552,16 +3712,16 @@ const ForestSurvivalGame = () => {
       // normal enemy (50 base) is ≥40 HP → always needs ≥2 body shots. This is a
       // no-op in normal play (Easy is 0.9, the lowest, already above the floor),
       // so it only protects the tutorial / future low-multiplier cases.
-      const effectiveHealth = enemyHealth * Math.max(0.8, diffSettings.healthMult * healthMultiplier) * (runMods.enemyHealthMult ?? 1);
+      const effectiveHealth = enemyHealth * Math.max(0.8, diffSettings.healthMult * healthMultiplier) * easyEliteHpMult * (runMods.enemyHealthMult ?? 1);
 
-      return {
+      const enemy: Enemy = {
         mesh: enemyGroup,
         health: effectiveHealth,
         maxHealth: effectiveHealth,
         speed: (enemySpeed + Math.random() * 0.02) * diffSettings.speedMult * waveSpeedRamp * (runMods.enemySpeedMult ?? 1),
         dead: false,
         type,
-        damage: enemyDamage * diffSettings.damageMult * waveDamageRamp * (runMods.enemyDamageMult ?? 1),
+        damage: enemyDamage * diffSettings.damageMult * waveDamageRamp * easyEliteDmgMult * (runMods.enemyDamageMult ?? 1),
         scoreValue: enemyScore,
         // Animation state
         walkTime: Math.random() * Math.PI * 2,
@@ -3602,6 +3762,19 @@ const ForestSurvivalGame = () => {
         // boss arrives so the player has a beat to react before the adds drop.
         bossNextSummonAt: type === 'boss' ? Date.now() + 6000 : undefined,
         bossSummonCast: 0,
+        // Boss blink/teleport — burst-capped charges that refill over time.
+        // Hard mode gets a bigger burst (3) and the medium/adaptive a 2, easy a
+        // lone charge, so the blink pressure scales with difficulty.
+        bossTeleMaxCharges: type === 'boss'
+          ? (classicDifficulty === 'hard' ? 3 : classicDifficulty === 'easy' ? 1 : 2)
+          : undefined,
+        bossTeleCharges: type === 'boss'
+          ? (classicDifficulty === 'hard' ? 3 : classicDifficulty === 'easy' ? 1 : 2)
+          : undefined,
+        bossTeleNextChargeAt: type === 'boss' ? Date.now() + 9000 : undefined,
+        // First blink only after the player has had a few seconds with the boss.
+        bossTeleNextAt: type === 'boss' ? Date.now() + 7000 : undefined,
+        bossTeleArriveFx: 0,
         // NEW: Advanced AI Systems
         aiBehavior,
         perception,
@@ -3614,6 +3787,34 @@ const ForestSurvivalGame = () => {
         // Pool tracking for mesh recycling
         poolId,
       };
+
+      // ── REVENANT SETUP — the rare apex trickster's shield + blink + regen ──
+      // Built here (rare spawn → the tiny per-spawn cost is fine) and torn down
+      // on death/recycle (see the death-cleanup block) so a pooled slot never
+      // inherits a stray shield bubble.
+      if (type === 'revenant') {
+        const shield = buildRevenantShield();
+        enemyGroup.add(shield);
+        enemy.revShield = shield;
+        enemy.revShieldActive = true;       // arrives shielded
+        shield.visible = true;
+        const easyRev = classicDifficulty === 'easy';
+        // Up→down cycle (eased on Easy: shorter shield, LONGER open window so
+        // it's far easier to catch off-guard). The exact durations are read in
+        // the AI block; this just seeds the first cycle.
+        enemy.revShieldDownAt = Date.now() + (easyRev ? 2200 : 3400);
+        enemy.revShieldNextUpAt = 0;
+        enemy.revShieldBrokenUntil = 0;
+        enemy.revShieldHitFlash = 0;
+        // Blink: 2 charges (3 on Hard, just 1 on Easy), tighter cadence than the boss.
+        enemy.revTeleCharges = classicDifficulty === 'hard' ? 3 : easyRev ? 1 : 2;
+        enemy.revTeleNextChargeAt = Date.now() + (easyRev ? 12000 : 6000);
+        enemy.revTeleNextAt = Date.now() + (easyRev ? 5000 : 3500);
+        // Rare self-heal — later + gentler on Easy (handled in the AI block).
+        enemy.revRegenNextAt = Date.now() + (easyRev ? 16000 : 9000);
+      }
+
+      return enemy;
     };
 
     // ═══════════════════════════════════════════════════════════════════
@@ -3929,6 +4130,13 @@ const ForestSurvivalGame = () => {
           shellGeo = _pgeo('pgShellShock', () => new THREE.TorusGeometry(0.5, 0.1, 8, 24));
           innerGeo = _pgeo('pgInnerShock', () => new THREE.DodecahedronGeometry(0.26, 0));
           break;
+        case 'health':
+          // Med-pack — a green box shell + bright green core so it reads
+          // instantly as "heal" (distinct from the radioactive nuke green).
+          color = 0x0f7a36; coreColor = 0x4dff7a;
+          shellGeo = _pgeo('pgShellHp', () => new THREE.BoxGeometry(0.7, 0.55, 0.45));
+          innerGeo = _pgeo('pgInnerHp', () => new THREE.BoxGeometry(0.4, 0.32, 0.26));
+          break;
         case 'nuke':
           // Radioactive-green warhead — a rounded shell with a hot glowing core
           // so the rare nuke drop reads as obviously dangerous/special.
@@ -4022,6 +4230,52 @@ const ForestSurvivalGame = () => {
       impactEffects.push(effect);
     };
 
+    // ── REVENANT SHIELD HELPERS ───────────────────────────────────────────
+    // The shield phases off ALL non-explosive damage (bullets, dash, fire, cryo,
+    // tesla, shockwave): those just PING off it. Only an EXPLOSIVE (barrel /
+    // launcher rocket / nuke) SHATTERS it — which also locks it OFF for 5s so
+    // the player can finish the kill. While the shield is naturally DOWN (its
+    // brief open window) the revenant takes full damage — that's the skill
+    // window. revShieldUp is the single source of truth used at every damage site.
+    const revShieldUp = (e: Enemy): boolean => e.type === 'revenant' && e.revShieldActive === true;
+    const pingRevShield = (e: Enemy, pos: THREE.Vector3): void => {
+      e.revShieldHitFlash = 1;
+      // The player is shooting it → it knows to blink away (evade). This is set
+      // ONLY by player-sourced hits, never by a hacked enemy hunting it, so it
+      // never flees the subverter's attacker.
+      e.revEvadeUntil = Date.now() + 500;
+      robotSparks.push(new RobotHitSparks(scene, pos.clone(), new THREE.Vector3(0, 1, 0), 6));
+      soundManager.play('hit', 0.22, false, 1.75); // metallic "ting" off the field
+    };
+    // A subverter-hacked enemy is mauling this Revenant → strip its protection:
+    // shield forced OFF + teleport SUPPRESSED for a window, so it can't escape
+    // the attacker (it stays locked on the player). Direct health damage from
+    // the hacked enemy already bypasses the shield (it's applied inline).
+    const markRevenantHackedHit = (victim: Enemy): void => {
+      if (victim.type !== 'revenant') return;
+      const now = Date.now();
+      victim.revShieldBrokenUntil = Math.max(victim.revShieldBrokenUntil ?? 0, now + 2500);
+      victim.revTeleSuppressUntil = Math.max(victim.revTeleSuppressUntil ?? 0, now + 2500);
+      victim.revShieldActive = false;
+      if (victim.revShield) victim.revShield.visible = false;
+    };
+    const shatterRevShield = (e: Enemy, pos?: THREE.Vector3): void => {
+      if (e.type !== 'revenant') return;
+      const wasUp = e.revShieldActive === true;
+      e.revShieldActive = false;
+      const now = Date.now();
+      e.revShieldBrokenUntil = now + 5000;   // can't raise for 5s → finish it!
+      e.revShieldNextUpAt = now + 5000;
+      e.ccUntil = Math.max(e.ccUntil ?? 0, now + 650); // staggered by the blast
+      if (e.revShield) e.revShield.visible = false;
+      if (wasUp) {
+        const p = pos ?? e.mesh.position;
+        createParticles(p, 0xffc24a, 28);      // gold shield-shatter burst
+        soundManager.play('hit', 0.6, false, 0.7);
+        soundManager.play('powerUp', 0.4, false, 0.5);
+      }
+    };
+
     // Spawns up to `count` enemies in a ring around the player. Returns how
     // many actually spawned (the enemy cap / pool may permit fewer).
     // Picks an enemy spawn position that doesn't overlap a collidable
@@ -4069,7 +4323,7 @@ const ForestSurvivalGame = () => {
     // the tutorial doubles as a hands-on bestiary. Types are then drawn from the
     // unlocked pool with weights tuned to stay varied without overwhelming a
     // newcomer. The boss is the scripted finale.
-    type EnemyKind = 'normal' | 'fast' | 'tank' | 'boss';
+    type EnemyKind = 'normal' | 'fast' | 'tank' | 'boss' | 'revenant';
     interface TutorialTier {
       type: EnemyKind;
       killsToUnlock: number;
@@ -4102,6 +4356,14 @@ const ForestSurvivalGame = () => {
           name: 'Warden', tag: 'APEX · DEADLY',
           blurb: 'A towering apex predator. Dash to dodge, grab a power-up and unload.',
           accent: '#ef4444', icon: 'crown',
+        },
+      },
+      {
+        type: 'revenant', killsToUnlock: 18, weight: 1,
+        intro: {
+          name: 'Revenant', tag: 'APEX · TRICKSTER',
+          blurb: 'Gold-shielded blink-hunter. It phases off your shots and self-heals — strike it the instant its shield drops, or blow an explosive next to it.',
+          accent: '#ffc24a', icon: 'crown',
         },
       },
     ];
@@ -4146,7 +4408,7 @@ const ForestSurvivalGame = () => {
       }
     };
 
-    const spawnEnemyBatch = (count: number, typeOverride?: 'normal' | 'fast' | 'tank' | 'boss' | 'ranged', miniBoss = false): number => {
+    const spawnEnemyBatch = (count: number, typeOverride?: 'normal' | 'fast' | 'tank' | 'boss' | 'ranged' | 'revenant', miniBoss = false): number => {
       const adaptiveMax = smartEnemyManager.getCurrentMaxEnemies();
       const hardish = classicDifficulty === 'hard' || classicDifficulty === 'adaptive';
       // Spread the batch's spawn bearings evenly around the player (random
@@ -4156,18 +4418,22 @@ const ForestSurvivalGame = () => {
       let spawned = 0;
       for (let i = 0; i < count; i++) {
         if (enemies.length >= adaptiveMax || !smartEnemyManager.canSpawnMore()) break;
-        let type: 'normal' | 'fast' | 'tank' | 'boss' | 'ranged' = typeOverride ?? 'normal';
+        let type: 'normal' | 'fast' | 'tank' | 'boss' | 'ranged' | 'revenant' = typeOverride ?? 'normal';
         if (!typeOverride) {
           if (isTutorialMode) {
             // Tutorial draws from the director's progressively-unlocked roster.
             type = pickTutorialEnemyType();
           } else {
             const rand = Math.random();
-            // Ranged sniper joins from wave 4. Probability ramps with wave
-            // so by wave 10 ~20% of spawns are ranged on Hard, ~14% on
-            // Easy/Medium. Counts BEFORE the other archetype rolls so the
-            // ranged threat is felt even when tanks/bosses are in the mix.
-            if (wave >= 4 && rand < (hardish ? 0.20 : 0.14)) {
+            // Wave-scaled "harder mix" bump — as the round count climbs, MORE of
+            // the spawns roll into the harder archetypes (ranged / tank), in
+            // EVERY difficulty (incl. Easy). Capped so it never fully crowds out
+            // the basic foes. (The Revenant itself is spawned per-wave in
+            // spawnWave, not rolled here.)
+            const waveHardBump = Math.min(0.2, Math.max(0, wave - 2) * 0.007);
+            // Ranged sniper joins from wave 4. Probability ramps with wave so the
+            // long-range threat is felt even when tanks/bosses are in the mix.
+            if (wave >= 4 && rand < (hardish ? 0.20 : 0.14) + waveHardBump) {
               type = 'ranged';
               if (!rangedEnemyIntroFired && !isTutorialMode) {
                 rangedEnemyIntroFired = true;
@@ -4182,8 +4448,8 @@ const ForestSurvivalGame = () => {
                 soundManager.play('powerUp', 0.6, false, 1.4);
               }
             }
-            else if (wave >= 10 && rand < (hardish ? 0.12 : 0.08)) type = 'boss';
-            else if (wave >= 3 && rand < (hardish ? 0.32 : 0.24)) type = 'tank';
+            else if (wave >= bossStartWave && rand < (hardish ? 0.12 : 0.08)) type = 'boss';
+            else if (wave >= 3 && rand < (hardish ? 0.32 : 0.24) + waveHardBump) type = 'tank';
             else if (wave >= 2 && rand < (hardish ? 0.5 : 0.42)) type = 'fast';
           }
         }
@@ -4287,6 +4553,61 @@ const ForestSurvivalGame = () => {
       }
     };
 
+    // ── BOSS BLINK / TELEPORT ─────────────────────────────────────────────
+    // The boss phase-blinks AROUND the player to flank or backstab, then closes
+    // in. Difficulty profile tunes how often it blinks, how fast its charges
+    // refill, and (Hard only) whether it warps behind the player's movement.
+    const BOSS_TELE_MIN_DIST = 9;   // fairness floor — NEVER blink onto the player
+    const BOSS_TELE_MAX_DIST = 16;  // outer ring — close enough to threaten
+    const bossTeleProfile = ({
+      hard:     { perBlink: 1500, regen: 6000,  reposChance: 0.6,  evalDelay: 2200 },
+      medium:   { perBlink: 2600, regen: 9000,  reposChance: 0.35, evalDelay: 2800 },
+      adaptive: { perBlink: 2400, regen: 8000,  reposChance: 0.4,  evalDelay: 2700 },
+      easy:     { perBlink: 4000, regen: 14000, reposChance: 0.15, evalDelay: 3500 },
+    } as const)[classicDifficulty] ?? { perBlink: 2600, regen: 9000, reposChance: 0.35, evalDelay: 2800 };
+    const bossTeleHardMode = classicDifficulty === 'hard';
+    // Place the boss at a fair-distance flank/backstab spot around the player.
+    // Returns false (no move) if every candidate is blocked by terrain.
+    const performBossTeleport = (
+      boss: Enemy, playerX: number, playerZ: number, pVelX: number, pVelZ: number,
+      // Blink VFX colours — purple for the boss, gold for the Revenant so each
+      // reads in its own identity.
+      fxMain = 0xe85aff, fxCast = 0xc060ff,
+    ): boolean => {
+      const pspeed = Math.hypot(pVelX, pVelZ);
+      let baseAngle: number;
+      if (bossTeleHardMode && pspeed > 3) {
+        // Backstab: warp behind the direction the player is moving.
+        baseAngle = Math.atan2(pVelZ, pVelX) + Math.PI;
+      } else {
+        // Flank: jump to roughly the opposite side from where the boss is now.
+        const bearing = Math.atan2(boss.mesh.position.z - playerZ, boss.mesh.position.x - playerX);
+        baseAngle = bearing + (Math.random() < 0.5 ? 1 : -1) * (1.9 + Math.random() * 0.9);
+      }
+      let tx = 0, tz = 0, ok = false;
+      for (let a = 0; a < 5; a++) {
+        const ang = baseAngle + (a === 0 ? 0 : (Math.random() - 0.5) * 1.7);
+        const dist = BOSS_TELE_MIN_DIST + Math.random() * (BOSS_TELE_MAX_DIST - BOSS_TELE_MIN_DIST);
+        const cx = playerX + Math.cos(ang) * dist;
+        const cz = playerZ + Math.sin(ang) * dist;
+        if (!checkTerrainCollision(cx, cz)) { tx = cx; tz = cz; ok = true; break; }
+      }
+      if (!ok) return false;
+      // Vanish flash at the old spot.
+      createParticles(boss.mesh.position, fxMain, 22);
+      castEffects.push(new AbilityCastEffect(scene, boss.mesh.position.clone(), fxCast));
+      soundManager.play('hack_overclock', 0.5, false, 1.25);
+      // Warp.
+      boss.mesh.position.x = tx;
+      boss.mesh.position.z = tz;
+      // Materialise flash at the arrival spot (the per-frame facing re-aims it).
+      createParticles(new THREE.Vector3(tx, 1.0, tz), fxMain, 28);
+      castEffects.push(new AbilityCastEffect(scene, new THREE.Vector3(tx, 0.2, tz), fxMain));
+      boss.bossTeleArriveFx = 0.35;
+      soundManager.play('powerUp', 0.4, false, 1.7);
+      return true;
+    };
+
     // Picks a powerup spawn point that doesn't overlap a collidable
     // terrain object (tree / rock / boulder). Tries up to 10 random
     // positions in a ring around the player; widens the ring slightly
@@ -4344,17 +4665,16 @@ const ForestSurvivalGame = () => {
       waveEnemiesRemaining = Math.max(4, Math.floor((7 + wave * 3) * diffSettings.spawnMult * (runMods.enemySpawnMult ?? 1)));
       const opening = Math.min(5, waveEnemiesRemaining);
       waveEnemiesRemaining -= spawnEnemyBatch(opening);
-      // ── BOSS ERA (wave 10+) ───────────────────────────────────────────
-      // From wave 10 onward the pink SUMMONER BOSS appears EVERY wave — the
-      // apex threat that calls in its own reinforcements (its intro banner
-      // fires once, inside spawnEnemyBatch). Its strength scales with the wave
-      // (per-wave health/damage ramp in createEnemy), so each round is harder
-      // than the last; the 5-wave milestones (15, 20…) drop a SECOND boss for a
-      // spike. Before wave 10, the 5-wave milestone is a crowned mini-boss tank
-      // instead, easing the player toward the boss era.
-      if (wave >= 10) {
+      // ── BOSS ERA (difficulty-scaled start) ────────────────────────────
+      // From `bossStartWave` (Hard 5 / Medium 7 / Adaptive 8 / Easy 10) the pink
+      // SUMMONER BOSS appears EVERY wave — the apex threat that calls in its own
+      // reinforcements (intro banner fires once, inside spawnEnemyBatch). Its
+      // strength scales with the wave (per-wave health/damage/speed ramp in
+      // createEnemy) so each round is harder than the last — true even on Easy.
+      // The 5-wave milestones drop a SECOND boss for a spike. Before the boss
+      // era, the 5-wave milestone is a crowned mini-boss tank, easing the player in.
+      if (wave >= bossStartWave) {
         spawnEnemyBatch(1, 'boss');
-        // Milestone waves get a second boss for an extra surge.
         if (wave % 5 === 0) spawnEnemyBatch(1, 'boss');
       } else if (wave > 0 && wave % 5 === 0) {
         const spawned = spawnEnemyBatch(1, 'tank', true);
@@ -4370,6 +4690,35 @@ const ForestSurvivalGame = () => {
           // Audio cue so the player KNOWS something has changed even if
           // they're not looking at the banner spot.
           soundManager.play('powerUp', 0.85, false, 0.85);
+        }
+      }
+
+      // ── REVENANT (apex trickster) — appears RELIABLY across EVERY difficulty
+      // (it was effectively absent on Easy before: too low a chance + gated
+      // behind Easy's late boss wave). Now a UNIFORM chance from a fixed early
+      // wave so Easy/Medium/Hard/Adaptive all consistently encounter it. Still
+      // 1–2 per wave, capped at 2 alive so it never swarms. Solo only (never MP).
+      // Its DIFFICULTY is what's difficulty-scaled (much gentler on Easy — see
+      // the easyElite / easyRev tuning), NOT how often it shows up.
+      const REVENANT_START_WAVE = 6;
+      if (!isMultiplayer && wave >= REVENANT_START_WAVE) {
+        const revWaveChance = 0.4; // common + uniform in all modes
+        const aliveRev = enemies.reduce((n, e) => n + (e.type === 'revenant' && !e.dead ? 1 : 0), 0);
+        if (aliveRev < 2 && Math.random() < revWaveChance) {
+          const want = 1 + (Math.random() < 0.33 ? 1 : 0); // 1, sometimes 2
+          const got = spawnEnemyBatch(Math.min(want, 2 - aliveRev), 'revenant');
+          if (got > 0 && !revenantIntroFired) {
+            revenantIntroFired = true;
+            setEnemyIntro({
+              id: Date.now(),
+              name: 'Revenant',
+              tag: 'APEX · TRICKSTER',
+              blurb: 'A gold-shielded blink-hunter that phases off your fire and self-heals. Catch it OFF-GUARD (shield down), blow an explosive next to it, or turn a Subverted enemy on it.',
+              accent: '#ffc24a',
+              icon: 'crown',
+            });
+            soundManager.play('powerUp', 0.8, false, 1.5);
+          }
         }
       }
       // Slowed wave spawn frequency from every 2nd wave → every 3rd wave.
@@ -4541,17 +4890,21 @@ const ForestSurvivalGame = () => {
     // emptying the slot. While a power is held, new crates can't be collected —
     // the player must spend the current one first. Truly random per drop.
     type HeldPower = 'ammo' | 'speed' | 'damage' | 'shield' | 'infinite_ammo' | 'overcharge' | 'phantom'
-      | 'cryo' | 'tesla' | 'shockwave' | 'nuke';
+      | 'cryo' | 'tesla' | 'shockwave' | 'health' | 'nuke';
+    // Flat HP restored by a Health pickup / Health airdrop. A meaningful chunk so
+    // it's a real lifeline (fairness), but not a full reset.
+    const HEALTH_PICKUP_AMOUNT = 50;
     // The uniform loot pool deliberately EXCLUDES 'nuke' — the nuke is a rare
     // special roll handled separately in randomLoot so it stays a treat, not a
     // 1-in-N staple. cryo / tesla / shockwave are universal, map-agnostic combat
-    // tools (crowd-control + AoE) that fit every biome.
+    // tools (crowd-control + AoE) that fit every biome. 'health' is in the pool
+    // (user-requested healing) so the run stays survivable.
     const LOOT_POOL: HeldPower[] = ['ammo', 'speed', 'damage', 'shield', 'infinite_ammo', 'overcharge', 'phantom',
-      'cryo', 'tesla', 'shockwave'];
+      'cryo', 'tesla', 'shockwave', 'health'];
     const POWER_LABELS: Record<HeldPower, string> = {
       ammo: 'Ammo', speed: 'Speed', damage: 'Damage', shield: 'Shield',
       infinite_ammo: 'Inf. Ammo', overcharge: 'Overcharge', phantom: 'Phantom',
-      cryo: 'Cryo Freeze', tesla: 'Tesla Coil', shockwave: 'Shockwave', nuke: 'Nuke',
+      cryo: 'Cryo Freeze', tesla: 'Tesla Coil', shockwave: 'Shockwave', health: 'Health', nuke: 'Nuke',
     };
     // ~5% of drops are a tactical nuke (rare); the rest roll the uniform pool.
     const NUKE_LOOT_CHANCE = 0.05;
@@ -4572,6 +4925,7 @@ const ForestSurvivalGame = () => {
       cryo: 0x8fe6ff,
       tesla: 0xfff27a,
       shockwave: 0xffe0a0,
+      health: 0x4dff7a,
       nuke: null,
     };
     const _burstFeet = new THREE.Vector3();
@@ -4594,6 +4948,19 @@ const ForestSurvivalGame = () => {
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Ammo Refilled', 'powerup');
           createParticles(camera.position, 0xffd54a, 12);
           break;
+        case 'health': {
+          // Restore a solid chunk of HP (capped at max). Player-requested
+          // healing so runs stay survivable / fair.
+          const before = health;
+          health = Math.min(playerMaxHealth, health + HEALTH_PICKUP_AMOUNT);
+          const healed = Math.round(health - before);
+          showPowerMessage(healed > 0 ? `+${healed} Health` : 'Health Full');
+          if (gameSettingsManager.getSetting('killFeed') && healed > 0) addKillFeedEntry(`+${healed} Health`, 'powerup');
+          createParticles(camera.position, 0x4dff7a, 18);
+          updateGameState();
+          if (isMultiplayer && multiplayerManager) multiplayerManager.updatePlayerHealth(health);
+          break;
+        }
         case 'speed':
           speedBoostActive = true;
           speedBoostEndTime = nowMs + speedBoostDuration;
@@ -4690,7 +5057,7 @@ const ForestSurvivalGame = () => {
     // nuke, and the two AoE crowd-control casts (cryo + shockwave). Tesla is
     // timed (an aura), so it IS anti-stacked.
     const isTimedPower = (p: HeldPower): boolean =>
-      p !== 'ammo' && p !== 'nuke' && p !== 'cryo' && p !== 'shockwave';
+      p !== 'ammo' && p !== 'nuke' && p !== 'cryo' && p !== 'shockwave' && p !== 'health';
     function anyTimedEffectActive(): boolean {
       return speedBoostActive || damageBoostActive || shieldActive
         || infiniteAmmoActive || overchargeActive || phantomActive || teslaActive;
@@ -4705,6 +5072,19 @@ const ForestSurvivalGame = () => {
       gunModel.triggerAbility();
       soundManager.play('powerUp', 0.85);
       switch (type) {
+        case 'health': {
+          // Streak Health airdrop — a bigger heal than the world med-pack so a
+          // hot streak is a real second wind (fairness).
+          const before = health;
+          health = Math.min(playerMaxHealth, health + 75);
+          const healed = Math.round(health - before);
+          showPowerMessage(healed > 0 ? `+${healed} Health` : 'Health Full', 2200);
+          if (gameSettingsManager.getSetting('killFeed') && healed > 0) addKillFeedEntry(`+${healed} Health`, 'powerup');
+          createParticles(camera.position, 0x4dff7a, 26);
+          updateGameState();
+          if (isMultiplayer && multiplayerManager) multiplayerManager.updatePlayerHealth(health);
+          break;
+        }
         case 'rapid_fire':
           rapidFireActive = true;
           rapidFireEndTime = nowMs + rapidFireDuration;
@@ -4720,18 +5100,25 @@ const ForestSurvivalGame = () => {
           createParticles(camera.position, 0xffff33, 32);
           break;
         case 'random_weapon': {
-          // Mystery Box — pick a random weapon, unlock & equip it, full mag.
-          const keys = Object.keys(WEAPONS);
-          let pick = keys[(Math.random() * keys.length) | 0];
-          // Try a few more rolls to avoid handing back the weapon already held.
-          for (let i = 0; i < 4 && pick === currentWeapon; i++) {
-            pick = keys[(Math.random() * keys.length) | 0];
-          }
+          // Mystery Box — always an UPGRADE: a weapon HIGHER in the tier order
+          // than the one you're holding (WEAPONS is defined in ascending unlock
+          // tier). Prefer a still-LOCKED higher gun (a genuinely new weapon);
+          // otherwise hand the best higher-tier gun available. The caller already
+          // suppresses this reward entirely once every weapon is unlocked.
+          const ordered = Object.keys(WEAPONS);          // tier order
+          const curIdx = ordered.indexOf(currentWeapon);
+          const higher = ordered.filter((_, i) => i > curIdx);
+          const lockedHigher = higher.filter((w) => !unlockedWeapons.includes(w));
+          const pick = lockedHigher[0]                   // next new upgrade
+            ?? ordered.filter((w) => !unlockedWeapons.includes(w)).pop() // any locked gun
+            ?? higher[higher.length - 1]                 // top higher-tier (already owned)
+            ?? ordered[ordered.length - 1];              // last resort
           if (!unlockedWeapons.includes(pick)) unlockedWeapons.push(pick);
           currentWeapon = pick;
           ammo = effectiveMaxAmmo(pick);
           gunModel.switchWeapon(pick as GunWeaponType);
           setGunFillForWeapon(pick);
+          refreshMasteryBonus();
           showPowerMessage(`Mystery Box · ${WEAPONS[pick].name}`, 2200);
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry(`Mystery: ${WEAPONS[pick].name}`, 'powerup');
           createParticles(camera.position, 0xbb33ff, 22);
@@ -4858,6 +5245,16 @@ const ForestSurvivalGame = () => {
     // killStreak (on wave end) so a hot streak across multiple waves still
     // earns every reward tier.
     let lastStreakAwarded = 0;
+    // ── AIRDROP RARITY GATE ──────────────────────────────────────────────
+    // Airdrops were raining down (a crate every ~5–10s on a hot streak). Now
+    // they're gated by a long global cooldown so they're a genuine treat, with
+    // a SHORTER, separate cooldown for HEALTH so reclaiming HP stays reliable
+    // (fairness). Timestamps persist across waves (intentionally — the streak
+    // counter resets each wave but the crate cadence shouldn't).
+    let lastAirdropAt = 0;        // any non-health airdrop
+    let lastHealthAirdropAt = 0;  // health airdrops only
+    const AIRDROP_COOLDOWN_MS = 60000;        // 60s between combat/utility crates
+    const HEALTH_AIRDROP_COOLDOWN_MS = 30000; // 30s — health is a bit more common
 
     // ── ABILITY BALANCE BUDGET ───────────────────────────────────────────
     // House rules so no character's signature move is "the best":
@@ -5553,6 +5950,10 @@ const ForestSurvivalGame = () => {
         // intrusion chip entirely. They can never be hacked, hunted by a hacked
         // minion, or caught in the overclock EMP (see findHackVictim / detonate).
         if (e.type === 'boss') continue;
+        // The Revenant can't be hacked DIRECTLY either (its shield rejects the
+        // chip) — but it IS a valid hunt target for an ALREADY-hacked enemy
+        // (findHackVictim does NOT skip it), which is the intended indirect kill.
+        if (e.type === 'revenant') continue;
         // Don't hack an enemy that hasn't even streamed in its detailed model
         // (the distant minimal stand-in) — same fairness gate bullets use.
         if (e.detailReady === false) continue;
@@ -6338,46 +6739,67 @@ const ForestSurvivalGame = () => {
           combo++;
           killStreak++;
           score += Math.round(combo * 5 * scoreDiffMult * runModifierScoreMult);
-          // ── KILLSTREAK AIRDROP DROPS ─────────────────────────────────
-          // 5/10/15/20 unbroken kills each spawn an escalating airdrop.
-          // `lastStreakAwarded` prevents the threshold from re-firing if the
-          // player happens to cross it twice within one wave (shouldn't be
-          // possible since killStreak only resets on wave end, but cheap to
-          // guard).
-          const streakReward = (
-            killStreak === 5  ? 'rapid_fire' :
-            killStreak === 10 ? 'invincible' :
-            killStreak === 15 ? 'random_weapon' :
-            killStreak === 20 ? 'nuke' :
-            killStreak === 25 ? 'frenzy' :
-            killStreak === 30 ? 'juggernaut' :
+          // ── KILLSTREAK AIRDROP DROPS (RARE) ──────────────────────────
+          // Higher, spread-out streak milestones AND a long global cooldown so
+          // crates are a genuine treat, not a constant rain. HEALTH has its own
+          // shorter cooldown (a reliable way to reclaim HP — fairness). The
+          // MYSTERY BOX (gun upgrade) is skipped entirely once every weapon is
+          // unlocked (it becomes a Health Pack instead, so the streak still pays
+          // off). `lastStreakAwarded` stops a threshold re-firing within a wave.
+          let streakReward: import('./utils/EnhancedPowerUps').PowerUpType | null = (
+            killStreak === 8  ? 'health' :
+            killStreak === 14 ? 'rapid_fire' :
+            killStreak === 20 ? 'invincible' :
+            killStreak === 26 ? 'health' :
+            killStreak === 32 ? 'random_weapon' :
+            killStreak === 40 ? 'nuke' :
+            killStreak === 48 ? 'frenzy' :
+            killStreak === 58 ? 'juggernaut' :
             null
           );
+          // No upgrade left (every weapon unlocked, OR already holding the
+          // top-tier gun)? Turn the Mystery Box into a Health Pack so the streak
+          // still pays off and we never drop a pointless gun crate.
+          const weaponKeys = Object.keys(WEAPONS);
+          const allWeaponsUnlocked = unlockedWeapons.length >= weaponKeys.length;
+          const holdingTopTier = weaponKeys.indexOf(currentWeapon) >= weaponKeys.length - 1;
+          if (streakReward === 'random_weapon' && (allWeaponsUnlocked || holdingTopTier)) streakReward = 'health';
           if (streakReward && killStreak > lastStreakAwarded) {
             lastStreakAwarded = killStreak;
-            // Drop the crate ~10m in front of the player so they don't have
-            // to leave the fight, but far enough that the parachute reads.
-            camera.getWorldDirection(_assistFwd);
-            const dropX = camera.position.x + _assistFwd.x * 10;
-            const dropZ = camera.position.z + _assistFwd.z * 10;
-            enhancedPowerUps.createAirdrop(scene, dropX, dropZ, streakReward);
-            // Layered feedback: kill feed pings the streak, a centred banner
-            // tells them WHICH reward incoming, and the power-up chime is
-            // pitched up so it reads as a "delivery inbound" alert.
-            soundManager.play('powerUp', 0.7, false, 1.25);
-            const rewardLabel = (
-              streakReward === 'rapid_fire'    ? 'Rapid Fire' :
-              streakReward === 'invincible'    ? 'Invincibility' :
-              streakReward === 'random_weapon' ? 'Mystery Box' :
-              streakReward === 'nuke'          ? 'Tactical Nuke' :
-              streakReward === 'frenzy'        ? 'Frenzy' :
-              streakReward === 'juggernaut'    ? 'Juggernaut' :
-              'Airdrop'
-            );
-            if (gameSettingsManager.getSetting('killFeed')) {
-              addKillFeedEntry(`${killStreak} Streak · ${rewardLabel} Inbound`, 'powerup');
+            const isHealthDrop = streakReward === 'health';
+            const now = Date.now();
+            // Rarity gate: skip the drop (but keep the streak credit) if the
+            // relevant cooldown hasn't elapsed.
+            const onCooldown = isHealthDrop
+              ? (now - lastHealthAirdropAt < HEALTH_AIRDROP_COOLDOWN_MS)
+              : (now - lastAirdropAt < AIRDROP_COOLDOWN_MS);
+            if (!onCooldown) {
+              if (isHealthDrop) lastHealthAirdropAt = now; else lastAirdropAt = now;
+              // Drop the crate ~10m in front of the player so they don't have
+              // to leave the fight, but far enough that the parachute reads.
+              camera.getWorldDirection(_assistFwd);
+              const dropX = camera.position.x + _assistFwd.x * 10;
+              const dropZ = camera.position.z + _assistFwd.z * 10;
+              enhancedPowerUps.createAirdrop(scene, dropX, dropZ, streakReward);
+              // Layered feedback: kill feed pings the streak, a centred banner
+              // tells them WHICH reward incoming, and the power-up chime is
+              // pitched up so it reads as a "delivery inbound" alert.
+              soundManager.play('powerUp', 0.7, false, 1.25);
+              const rewardLabel = (
+                streakReward === 'rapid_fire'    ? 'Rapid Fire' :
+                streakReward === 'health'        ? 'Health Pack' :
+                streakReward === 'invincible'    ? 'Invincibility' :
+                streakReward === 'random_weapon' ? 'Mystery Box' :
+                streakReward === 'nuke'          ? 'Tactical Nuke' :
+                streakReward === 'frenzy'        ? 'Frenzy' :
+                streakReward === 'juggernaut'    ? 'Juggernaut' :
+                'Airdrop'
+              );
+              if (gameSettingsManager.getSetting('killFeed')) {
+                addKillFeedEntry(`${killStreak} Streak · ${rewardLabel} Inbound`, 'powerup');
+              }
+              showPowerMessage(`AIRDROP INBOUND · ${rewardLabel}`, 2400);
             }
-            showPowerMessage(`AIRDROP INBOUND · ${rewardLabel}`, 2400);
           }
           // Rising combo chime at each 5x milestone — pitch climbs with the
           // combo so a hot streak audibly escalates. Independent of the kill
@@ -6643,6 +7065,7 @@ const ForestSurvivalGame = () => {
       : type === 'tank' ? 'Tank'
       : type === 'fast' ? 'Stalker'
       : type === 'ranged' ? 'Sniper'
+      : type === 'revenant' ? 'Revenant'
       : 'Forest Creature';
 
     // Apply incoming enemy damage to the LOCAL player. Shared by the local
@@ -7085,6 +7508,9 @@ const ForestSurvivalGame = () => {
         if (isMpGuest && mp) {
           if (e.netId !== undefined) mp.sendEnemyHit(e.netId, dmg, false);
         } else {
+          // EXPLOSIVE — shatters a Revenant's shield (and locks it off), THEN
+          // the blast damage lands. This is the guaranteed "blow it up" kill.
+          if (revShieldUp(e)) shatterRevShield(e, e.mesh.position);
           e.health -= dmg;
         }
         e.damageFlashTime = 0.45;
@@ -7233,6 +7659,8 @@ const ForestSurvivalGame = () => {
           if (e.netId !== undefined) mp.sendEnemyHit(e.netId, dmg, false);
           continue;
         }
+        // Nuke is an EXPLOSIVE — shatter a Revenant's shield, then vaporise it.
+        if (revShieldUp(e)) shatterRevShield(e, e.mesh.position);
         e.health -= dmg;
         if (e.health <= 0) { handleEnemyKilled(e, false); kills++; }
         else { e.damageFlashTime = 0.5; }
@@ -7303,6 +7731,8 @@ const ForestSurvivalGame = () => {
         const dx = e.mesh.position.x - center.x;
         const dz = e.mesh.position.z - center.z;
         if (dx * dx + dz * dz > r2) continue;
+        // A Revenant's shield phases off the cryo blast — no freeze, no damage.
+        if (revShieldUp(e)) { pingRevShield(e, e.mesh.position); continue; }
         // Bosses resist a full encasement — a brief stagger only.
         if (e.type === 'boss') {
           if (!isMpGuest) e.ccUntil = Math.max(e.ccUntil ?? 0, Date.now() + 900);
@@ -7339,6 +7769,9 @@ const ForestSurvivalGame = () => {
         const dz = e.mesh.position.z - center.z;
         const d2 = dx * dx + dz * dz;
         if (d2 > r2) continue;
+        // Shockwave is KINETIC, not explosive — a Revenant's shield phases it
+        // off entirely (no knockback, no damage). Only true explosives break it.
+        if (revShieldUp(e)) { pingRevShield(e, e.mesh.position); continue; }
         hit++;
         const d = Math.sqrt(d2) || 0.001;
         const nx = dx / d, nz = dz / d;
@@ -7447,6 +7880,14 @@ const ForestSurvivalGame = () => {
         const e = enemies[best];
         _teslaVec.set(e.mesh.position.x, e.mesh.position.y + 1.0, e.mesh.position.z);
         spawnLightningBolt(_teslaFrom.clone(), _teslaVec.clone(), 0xfff27a);
+        // A Revenant's shield phases off the arc — the bolt pings and chains on
+        // PAST it without dealing damage (energy, not explosive).
+        if (revShieldUp(e)) {
+          pingRevShield(e, e.mesh.position);
+          _teslaFrom.copy(_teslaVec);
+          hops++;
+          continue;
+        }
         const dmg = TESLA_DAMAGE * (1 - hop * 0.18);
         if (isMpGuest && mp) {
           if (e.netId !== undefined) mp.sendEnemyHit(e.netId, dmg, false);
@@ -7569,6 +8010,8 @@ const ForestSurvivalGame = () => {
           // Guest: report the splash hit; the host resolves it.
           if (e.netId !== undefined) mp.sendEnemyHit(e.netId, dmg, false);
         } else {
+          // Rocket blast is EXPLOSIVE — shatter a Revenant's shield, then hit.
+          if (revShieldUp(e)) shatterRevShield(e, e.mesh.position);
           e.health -= dmg;
         }
         e.damageFlashTime = 0.4;
@@ -8166,9 +8609,10 @@ const ForestSurvivalGame = () => {
       }
 
       // === UPDATE AI SYSTEMS ===
-      // Update adaptive difficulty every 5 seconds
-      if (frameCount % 300 === 0 && (gameSettings.adaptiveDifficulty || isAdaptiveMode)) {
-        adaptiveDifficulty.update(delta * 300);
+      // Poll the adaptive system ~every 2s; it internally re-evaluates on its own
+      // 3.5s cadence (so it stays responsive without thrashing).
+      if (frameCount % 120 === 0 && (gameSettings.adaptiveDifficulty || isAdaptiveMode)) {
+        adaptiveDifficulty.update(delta * 120);
         // ADAPTIVE MODE: push the freshly-computed performance profile onto the
         // live enemy tuning. Health/damage/spawn apply to future spawns; the
         // speed target is smoothed onto existing enemies each frame below.
@@ -8181,9 +8625,9 @@ const ForestSurvivalGame = () => {
         }
       }
       // Smoothly track the adaptive speed target so the swarm's pace eases in
-      // rather than stepping every 5s (no-op outside adaptive mode).
+      // rather than stepping each update (no-op outside adaptive mode).
       if (isAdaptiveMode) {
-        adaptiveSpeedMult += (adaptiveSpeedTarget - adaptiveSpeedMult) * Math.min(1, rawDelta * 0.8);
+        adaptiveSpeedMult += (adaptiveSpeedTarget - adaptiveSpeedMult) * Math.min(1, rawDelta * 1.1);
       }
 
       // Generate missions periodically (every 30 seconds)
@@ -8818,6 +9262,8 @@ const ForestSurvivalGame = () => {
             if (te.dead || dashHitEnemies.has(te)) continue;
             // Bosses are never trample-killed (too important for a 5s cooldown).
             if (te.type === 'boss') continue;
+            // A shielded Revenant phases off the charge — never the lethal target.
+            if (revShieldUp(te)) continue;
             const tdx = te.mesh.position.x - camera.position.x;
             const tdz = te.mesh.position.z - camera.position.z;
             const d2 = tdx * tdx + tdz * tdz;
@@ -8832,6 +9278,8 @@ const ForestSurvivalGame = () => {
           const tdz = te.mesh.position.z - camera.position.z;
           if (tdx * tdx + tdz * tdz > TRAMPLE_RADIUS_SQ) continue;
           dashHitEnemies.add(te);
+          // A Revenant's shield phases off the dash trample — it pings, no damage.
+          if (revShieldUp(te)) { pingRevShield(te, te.mesh.position); continue; }
 
           const isLethal = !dashLethalUsed && te === lethalTarget;
           // The one kill is flattened; everyone else takes a brutal chunk that
@@ -9057,6 +9505,12 @@ const ForestSurvivalGame = () => {
 
       // Track player velocity for AI prediction
       playerVelocity.subVectors(camera.position, lastPlayerPosition).divideScalar(delta > 0 ? delta : 0.016);
+      // Feed the adaptive system the player's MOVEMENT skill (distance + tactical
+      // sprint usage) — it was never recorded, leaving the movement metric at 0
+      // and under-reading skill. Cheap; only while moving + adaptive is active.
+      if ((isAdaptiveMode || gameSettings.adaptiveDifficulty) && isMoving) {
+        adaptiveDifficulty.recordMovement(camera.position.distanceTo(lastPlayerPosition), isRunning);
+      }
       lastPlayerPosition.copy(camera.position);
 
       // ── FOOTSTEPS ────────────────────────────────────────────────────────
@@ -9762,6 +10216,7 @@ const ForestSurvivalGame = () => {
               : enemy.type === 'tank' ? 1.5
               : enemy.type === 'boss' ? 2.0
               : enemy.type === 'ranged' ? 1.05
+              : enemy.type === 'revenant' ? 0.85
               : 1.0;
             const bodyR = Math.max(1.1, 1.1 * eScale);
             const contactY = _bulletPrev.y + (bullet.mesh.position.y - _bulletPrev.y) * tHit;
@@ -9800,6 +10255,7 @@ const ForestSurvivalGame = () => {
               : enemy.type === 'tank' ? 1.5
               : enemy.type === 'boss' ? 2.0
               : enemy.type === 'ranged' ? 1.05
+              : enemy.type === 'revenant' ? 0.85
               : 1.0;
             _tempVec3.set(
               enemy.mesh.position.x,
@@ -9836,8 +10292,21 @@ const ForestSurvivalGame = () => {
               // let it resolve damage and death authoritatively. We still show
               // local sparks / flash / damage numbers below for snappy feedback.
               if (enemy.netId !== undefined) mp.sendEnemyHit(enemy.netId, damage, isCritical);
+            } else if (revShieldUp(enemy)) {
+              // Revenant shield phases the bullet off — it pings, deals NO
+              // damage, and doesn't count toward a kill. Punish it the moment
+              // the shield drops (its open window) or shatter it with a blast.
+              // Consume the round + bail BEFORE any damage/feedback below.
+              pingRevShield(enemy, bullet.mesh.position);
+              scene.remove(bullet.mesh);
+              bullets.splice(i, 1);
+              bulletConsumed = true;
+              break;
             } else {
               enemy.health -= damage;
+              // Landing an open-window shot tells the Revenant it's being shot
+              // at → it blinks to evade (player-sourced evade only).
+              if (enemy.type === 'revenant') enemy.revEvadeUntil = Date.now() + 500;
               // ── BOSS PHASE 2 ─────────────────────────────────────────
               // When a full boss drops below half HP for the first time it
               // enrages: gains +35% speed and +30% damage. Latched so the
@@ -10055,7 +10524,7 @@ const ForestSurvivalGame = () => {
           enemy.deathTime -= delta;
 
           // Base scale for this enemy type (pooled enemies use type-based scaling)
-          const baseScale = enemy.type === 'fast' ? 0.7 : enemy.type === 'tank' ? 1.5 : enemy.type === 'boss' ? 2.0 : 1.0;
+          const baseScale = enemy.type === 'fast' ? 0.7 : enemy.type === 'tank' ? 1.5 : enemy.type === 'boss' ? 2.0 : enemy.type === 'revenant' ? 0.85 : 1.0;
 
           if (enemy.deathVel) {
             // ── RAGDOLL ──
@@ -10113,6 +10582,13 @@ const ForestSurvivalGame = () => {
             // is recycled, so the next enemy in this slot never inherits one.
             if (enemy.hackVisuals) { disposeHackVisuals(enemy.hackVisuals); enemy.hackVisuals = undefined; }
             enemy.hacked = false;
+            // Revenant shield — detach + dispose its per-instance geo/mats so
+            // the recycled slot never carries a stray gold shield.
+            if (enemy.revShield) {
+              enemy.revShield.removeFromParent();
+              disposeRevShield(enemy.revShield);
+              enemy.revShield = undefined;
+            }
             // Release mesh back to pool for reuse (SmartEnemyManager handles scene removal)
             if (enemy.poolId !== undefined) {
               smartEnemyManager.releaseMeshById(enemy.poolId);
@@ -10132,7 +10608,7 @@ const ForestSurvivalGame = () => {
         if (enemy.dead) continue;
 
         // Compute baseScale for ALL living enemies (needed for grounding)
-        const baseScale = enemy.type === 'fast' ? 0.7 : enemy.type === 'tank' ? 1.5 : enemy.type === 'boss' ? 2.0 : 1.0;
+        const baseScale = enemy.type === 'fast' ? 0.7 : enemy.type === 'tank' ? 1.5 : enemy.type === 'boss' ? 2.0 : enemy.type === 'revenant' ? 0.85 : 1.0;
         const groundY = 1.0 * baseScale;
 
         // ── GUEST MIRROR ──────────────────────────────────────────────────
@@ -10350,7 +10826,10 @@ const ForestSurvivalGame = () => {
               distanceToPlayer: distance,
               health: enemy.health,
               maxHealth: enemy.maxHealth,
-              type: enemy.type,
+              // The Revenant has no AI archetype of its own in the behaviour tree
+              // — steer it like a 'fast' flanker (its real behaviour comes from
+              // the dedicated revenant block: blink + shoot + shield).
+              type: enemy.type === 'revenant' ? 'fast' : enemy.type,
               allEnemies: enemies,
               terrainObjects: terrainObjects,
               canSeePlayer,
@@ -10677,8 +11156,15 @@ const ForestSurvivalGame = () => {
               enemy.rightLeg.rotation.x = THREE.MathUtils.lerp(enemy.rightLeg.rotation.x, Math.sin(walkPhase + Math.PI) * stride, 0.2);
             }
             if (enemy.leftArm && enemy.rightArm) {
-              enemy.leftArm.rotation.x = THREE.MathUtils.lerp(enemy.leftArm.rotation.x, Math.sin(walkPhase + Math.PI) * stride * 0.7, 0.18);
-              enemy.rightArm.rotation.x = THREE.MathUtils.lerp(enemy.rightArm.rotation.x, Math.sin(walkPhase) * stride * 0.7, 0.18);
+              // Arms now pivot at the shoulder, so the hand travels on a longer
+              // lever — a gentler 0.5 swing reads natural (the old 0.7 over-swung).
+              enemy.leftArm.rotation.x = THREE.MathUtils.lerp(enemy.leftArm.rotation.x, Math.sin(walkPhase + Math.PI) * stride * 0.5, 0.18);
+              enemy.rightArm.rotation.x = THREE.MathUtils.lerp(enemy.rightArm.rotation.x, Math.sin(walkPhase) * stride * 0.5, 0.18);
+              // Settle the arms back to the side — clears any leftover splay/roll
+              // from a summon telegraph or stagger so the hands never fold across
+              // the body (was the boss "arms overlapping the torso" bug).
+              enemy.leftArm.rotation.z = THREE.MathUtils.lerp(enemy.leftArm.rotation.z, 0, 0.18);
+              enemy.rightArm.rotation.z = THREE.MathUtils.lerp(enemy.rightArm.rotation.z, 0, 0.18);
             }
             // Body bob synced to the stride
             const bodyBob = Math.abs(Math.sin(walkPhase)) * 0.07 * (movedLen > 0.0005 ? 1 : 0);
@@ -10700,14 +11186,18 @@ const ForestSurvivalGame = () => {
               enemy.rightLeg.rotation.x = THREE.MathUtils.lerp(enemy.rightLeg.rotation.x, 0, 0.08);
             }
 
-            // Gentle arm sway while idle
+            // Gentle arm sway while idle, with the arms settling back to the
+            // side (rotation.z → 0) so a post-summon/stagger splay never leaves
+            // the hands folded across the torso.
             if (enemy.leftArm) {
               const idleArmLeft = Math.sin(idlePhase * 0.5) * 0.05;
               enemy.leftArm.rotation.x = THREE.MathUtils.lerp(enemy.leftArm.rotation.x, idleArmLeft, 0.08);
+              enemy.leftArm.rotation.z = THREE.MathUtils.lerp(enemy.leftArm.rotation.z, 0, 0.1);
             }
             if (enemy.rightArm) {
               const idleArmRight = Math.sin(idlePhase * 0.5 + 0.5) * 0.05;
               enemy.rightArm.rotation.x = THREE.MathUtils.lerp(enemy.rightArm.rotation.x, idleArmRight, 0.08);
+              enemy.rightArm.rotation.z = THREE.MathUtils.lerp(enemy.rightArm.rotation.z, 0, 0.1);
             }
 
             // Subtle breathing motion on body
@@ -10851,6 +11341,90 @@ const ForestSurvivalGame = () => {
           }
         }
 
+        // === HACKED SNIPER (subverter on a ranged enemy) ===
+        // A subverted shooter keeps SHOOTING — at its own kind. Previously a
+        // hacked ranged unit had its bolts disabled and was shoved into the
+        // melee path, but the "support" AI kites away from its target so it
+        // never connected — it just wandered uselessly until it burned out. Now
+        // it snipes the hunt victim with overclocked bolts (faster charge +
+        // shorter cooldown) and actually contributes kills before it detonates.
+        if (enemy.type === 'ranged' && enemy.hacked && !enemy.dead && enemy.health > 0
+            && hackVictim && !hackVictim.dead && hackVictim.health > 0) {
+          const HACK_SNIPE_RANGE = 55;
+          const dxs = hackVictim.mesh.position.x - enemy.mesh.position.x;
+          const dzs = hackVictim.mesh.position.z - enemy.mesh.position.z;
+          if (Math.hypot(dxs, dzs) <= HACK_SNIPE_RANGE) {
+            if ((enemy.rangedNextShotAt ?? 0) <= frameNowMs) {
+              enemy.rangedChargeMs = (enemy.rangedChargeMs ?? 0) + delta * 1000;
+              if ((enemy.rangedChargeMs ?? 0) >= 380) { // overclocked → snappy charge
+                const origin = new THREE.Vector3(
+                  enemy.mesh.position.x, enemy.mesh.position.y + 1.2, enemy.mesh.position.z,
+                );
+                const tgt = hackVictim.mesh.position.clone(); tgt.y += 0.9;
+                // Green overclock bolt streak + impact sparks on the victim.
+                hackBeams.push(new HackBeam(scene, origin, tgt));
+                const sd = tgt.clone().sub(origin).normalize();
+                robotSparks.push(new RobotHitSparks(scene, tgt.clone(), sd, 10));
+                soundManager.play('shoot_pistol', 0.5, false, 1.5);
+                // Damage the victim (same overclocked multiplier as a hacked melee).
+                // If the victim is a Revenant, the hacked assault strips its
+                // shield + suppresses its teleport so it can't shrug this off.
+                markRevenantHackedHit(hackVictim);
+                hackVictim.health -= enemy.damage * HACK_VICTIM_DMG_MULT;
+                hackVictim.damageFlashTime = Math.max(hackVictim.damageFlashTime, 0.3);
+                if (hackVictim.health <= 0) handleEnemyKilled(hackVictim, false);
+                enemy.rangedChargeMs = 0;
+                enemy.rangedNextShotAt = frameNowMs + 900; // faster than a normal sniper
+              }
+            }
+          } else {
+            enemy.rangedChargeMs = 0;
+          }
+        }
+
+        // === BOSS BLINK / TELEPORT (wave 10+) ===
+        // A genuinely smart boss doesn't just trundle at the player — it warps
+        // around them to flank/backstab, and blinks away the moment it's being
+        // focused. Burst-capped by recharging CHARGES so it can't chain-blink
+        // forever, never lands inside the fairness floor, and is host/solo-only
+        // (guests mirror the host's authoritative position). Decays its arrival
+        // VFX timer here too.
+        if (enemy.bossTeleArriveFx && enemy.bossTeleArriveFx > 0) {
+          enemy.bossTeleArriveFx = Math.max(0, enemy.bossTeleArriveFx - delta);
+        }
+        if (enemy.type === 'boss' && !enemy.hacked && !enemy.dead && enemy.health > 0 && !isMpGuest
+            && (enemy.bossSummonCast ?? 0) <= 0 && enemy.engageable !== false) {
+          // Refill one charge when due.
+          const maxCharges = enemy.bossTeleMaxCharges ?? 2;
+          if ((enemy.bossTeleCharges ?? 0) < maxCharges && frameNowMs >= (enemy.bossTeleNextChargeAt ?? 0)) {
+            enemy.bossTeleCharges = (enemy.bossTeleCharges ?? 0) + 1;
+            enemy.bossTeleNextChargeAt = frameNowMs + bossTeleProfile.regen;
+          }
+          // Consider a blink when off the per-blink cooldown AND a charge is ready.
+          if ((enemy.bossTeleCharges ?? 0) > 0 && frameNowMs >= (enemy.bossTeleNextAt ?? 0)) {
+            const distToPlayer = Math.hypot(focusPos.x - enemy.mesh.position.x, focusPos.z - enemy.mesh.position.z);
+            const beingFocused = enemy.damageFlashTime > 0.12; // just got shot → evade
+            const tooFar = distToPlayer > 26;                  // can't close the gap → blink in
+            let doTele = beingFocused || tooFar;
+            // Otherwise periodically reposition to a flank (more often in Hard).
+            if (!doTele && Math.random() < bossTeleProfile.reposChance) doTele = true;
+            if (doTele) {
+              if (performBossTeleport(enemy, focusPos.x, focusPos.z, focusVel.x, focusVel.z)) {
+                enemy.bossTeleCharges = (enemy.bossTeleCharges ?? 1) - 1;
+                enemy.bossTeleNextAt = frameNowMs + bossTeleProfile.perBlink;
+                // Schedule the first charge refill from now if the pool was full.
+                if ((enemy.bossTeleCharges ?? 0) === maxCharges - 1) {
+                  enemy.bossTeleNextChargeAt = frameNowMs + bossTeleProfile.regen;
+                }
+              } else {
+                enemy.bossTeleNextAt = frameNowMs + 1200; // blocked — retry soon
+              }
+            } else {
+              enemy.bossTeleNextAt = frameNowMs + bossTeleProfile.evalDelay; // reconsider later
+            }
+          }
+        }
+
         // === BOSS SUMMONER (wave 10+) ===
         // The boss periodically calls in reinforcements. It first rears up in a
         // telegraph (arms thrown overhead, rising motes) so the player can read
@@ -10889,11 +11463,16 @@ const ForestSurvivalGame = () => {
             const headroom = enemies.length < smartEnemyManager.getCurrentMaxEnemies() - 2
               && smartEnemyManager.canSpawnMore();
             if (enemy.engageable !== false && headroom) {
-              // Enraged (phase-2) bosses summon bigger packs more often.
+              // Enraged (phase-2) bosses summon bigger packs more often. On EASY
+              // the boss summons a SMALLER pack far LESS often — half the spawns
+              // on a much longer fuse — so the wave stays manageable.
               const phase2 = (enemy.bossPhase ?? 1) === 2;
-              enemy.bossSummonCount = (phase2 ? 4 : 3) + (Math.random() < 0.4 ? 1 : 0);
+              const easyBoss = classicDifficulty === 'easy';
+              enemy.bossSummonCount = easyBoss
+                ? (phase2 ? 2 : 1) + (Math.random() < 0.3 ? 1 : 0)
+                : (phase2 ? 4 : 3) + (Math.random() < 0.4 ? 1 : 0);
               enemy.bossSummonCast = SUMMON_TELEGRAPH;
-              const cooldown = (phase2 ? 9000 : 13000) + Math.random() * 3000;
+              const cooldown = (easyBoss ? (phase2 ? 16000 : 22000) : (phase2 ? 9000 : 13000)) + Math.random() * 3000;
               enemy.bossNextSummonAt = frameNowMs + cooldown + SUMMON_TELEGRAPH * 1000;
               soundManager.play('powerUp', 0.7, false, 0.55); // charge-up roar
             } else {
@@ -10902,11 +11481,118 @@ const ForestSurvivalGame = () => {
           }
         }
 
+        // === REVENANT (rare apex trickster) ===
+        // The smartest, deadliest enemy: it shoots gold bolts, BLINKS around the
+        // player to flank/evade (fairness-floored, charge-limited), rarely
+        // self-heals, and cycles a gold energy SHIELD that phases off everything
+        // but explosives. Host/solo only (it never spawns in MP).
+        if (enemy.type === 'revenant' && !enemy.hacked && !enemy.dead && enemy.health > 0 && !isMpGuest) {
+          // EASY significantly tones the Revenant down (matches the boss): shorter
+          // shield, LONGER open window, fewer/slower blinks, weaker rare heal.
+          const easyRev = classicDifficulty === 'easy';
+          // ── Shield cycle (up ↔ open window) ──
+          if (enemy.revShieldHitFlash && enemy.revShieldHitFlash > 0) {
+            enemy.revShieldHitFlash = Math.max(0, enemy.revShieldHitFlash - delta * 3);
+          }
+          if (frameNowMs < (enemy.revShieldBrokenUntil ?? 0)) {
+            enemy.revShieldActive = false;                 // shattered → stays open
+          } else if (enemy.revShieldActive) {
+            if (frameNowMs >= (enemy.revShieldDownAt ?? 0)) {
+              enemy.revShieldActive = false;
+              enemy.revShieldNextUpAt = frameNowMs + (easyRev ? 2100 : 1300);  // OPEN window (Easy = longer)
+            }
+          } else if (frameNowMs >= (enemy.revShieldNextUpAt ?? 0)) {
+            enemy.revShieldActive = true;
+            enemy.revShieldDownAt = frameNowMs + (easyRev ? 2200 : 3400);      // shielded (Easy = shorter)
+            createParticles(enemy.mesh.position, 0xffc24a, 8); // re-raise shimmer
+          }
+          // Drive the physical shield: a subtle brace-bob + a bright emblem
+          // pulse that flares when a shot pings off it. (It's held, not spun.)
+          if (enemy.revShield) {
+            enemy.revShield.visible = enemy.revShieldActive === true;
+            if (enemy.revShield.visible) {
+              const flash = enemy.revShieldHitFlash ?? 0;
+              enemy.revShield.position.y = 1.05 + Math.sin(frameNowMs * 0.004) * 0.025;
+              enemy.revShield.scale.setScalar(0.95 + flash * 0.07);
+              const emblem = enemy.revShield.userData.emblem as THREE.Mesh | undefined;
+              if (emblem) {
+                const b = 0.85 + 0.2 * Math.sin(frameNowMs * 0.006) + flash * 1.1;
+                (emblem.material as THREE.MeshBasicMaterial).color.setRGB(b, b * 0.82, b * 0.4);
+              }
+            }
+          }
+          // ── Rare self-heal — small, gated by NOT being under fire (Easy: a
+          // smaller trickle on a much longer fuse) ──
+          if (frameNowMs >= (enemy.revRegenNextAt ?? Infinity)
+              && enemy.health < enemy.maxHealth && enemy.damageFlashTime <= 0.05) {
+            enemy.health = Math.min(enemy.maxHealth, enemy.health + enemy.maxHealth * (easyRev ? 0.07 : 0.15));
+            enemy.revRegenNextAt = frameNowMs + (easyRev ? 22000 : 13000) + Math.random() * 6000; // rarely
+            _tempVec3.copy(enemy.mesh.position); _tempVec3.y += 1.0;
+            createParticles(_tempVec3, 0x9bff8a, 12);  // green heal motes
+            soundManager.play('powerUp', 0.4, false, 1.9);
+          }
+          // ── Blink: refill charges, then decide ──
+          const revMax = classicDifficulty === 'hard' ? 3 : easyRev ? 1 : 2;
+          if ((enemy.revTeleCharges ?? 0) < revMax && frameNowMs >= (enemy.revTeleNextChargeAt ?? 0)) {
+            enemy.revTeleCharges = (enemy.revTeleCharges ?? 0) + 1;
+            enemy.revTeleNextChargeAt = frameNowMs + (easyRev ? 13000 : 7000);
+          }
+          // Teleport is SUPPRESSED while a subverter-hacked enemy is mauling it.
+          if ((enemy.revTeleCharges ?? 0) > 0 && frameNowMs >= (enemy.revTeleNextAt ?? 0)
+              && frameNowMs >= (enemy.revTeleSuppressUntil ?? 0) && enemy.engageable !== false) {
+            const dTo = Math.hypot(focusPos.x - enemy.mesh.position.x, focusPos.z - enemy.mesh.position.z);
+            // Evade ONLY player fire (revEvadeUntil) — never flee a hacked hunter.
+            const beingFocused = (enemy.revEvadeUntil ?? 0) > frameNowMs;
+            // Blink to evade fire or to close a big gap — but DON'T auto-flee when
+            // close: it should press in and MELEE at point-blank, not just kite.
+            let doTele = beingFocused || dTo > 30;
+            if (!doTele && Math.random() < (classicDifficulty === 'hard' ? 0.5 : easyRev ? 0.14 : 0.32)) doTele = true;
+            if (doTele) {
+              if (performBossTeleport(enemy, focusPos.x, focusPos.z, focusVel.x, focusVel.z, 0xffc24a, 0xffe0a0)) {
+                enemy.revTeleCharges = (enemy.revTeleCharges ?? 1) - 1;
+                enemy.revTeleNextAt = frameNowMs + (classicDifficulty === 'hard' ? 1400 : easyRev ? 3400 : 2200);
+              } else {
+                enemy.revTeleNextAt = frameNowMs + 1000;
+              }
+            } else {
+              enemy.revTeleNextAt = frameNowMs + 2400;
+            }
+          }
+          // ── Shoot a gold bolt at the player (faster cadence than a Sniper) ──
+          const dxv = focusPos.x - enemy.mesh.position.x;
+          const dzv = focusPos.z - enemy.mesh.position.z;
+          const distV = Math.hypot(dxv, dzv);
+          const canFire = distV >= 6 && distV <= 48 && !phantomActive
+            && frameNowMs >= (enemy.ccUntil ?? 0) && enemy.engageable !== false;
+          if (canFire) {
+            if ((enemy.rangedNextShotAt ?? 0) <= frameNowMs) {
+              enemy.rangedChargeMs = (enemy.rangedChargeMs ?? 0) + delta * 1000;
+              if ((enemy.rangedChargeMs ?? 0) >= 520) {
+                const origin = new THREE.Vector3(enemy.mesh.position.x, enemy.mesh.position.y + 1.0, enemy.mesh.position.z);
+                const target = new THREE.Vector3(focusPos.x, camera.position.y - 0.2, focusPos.z);
+                const dir = target.clone().sub(origin).normalize();
+                const bolt = new THREE.Mesh(_enemyBulletGeo, _revBoltMat);   // GOLD bolt
+                bolt.position.copy(origin);
+                bolt.add(new THREE.Mesh(_enemyBulletGlowGeo, _revBoltGlowMat));
+                scene.add(bolt);
+                enemyBullets.push({ mesh: bolt, velocity: dir.multiplyScalar(0.62), damage: enemy.damage, life: 240 });
+                soundManager.play('shoot_pistol', 0.5, false, 1.55);
+                enemy.rangedChargeMs = 0;
+                enemy.rangedNextShotAt = frameNowMs + 1600;
+              }
+            }
+          } else {
+            enemy.rangedChargeMs = 0;
+          }
+        }
+
         // === ATTACK SYSTEM ===
-        // Skipped for 'ranged' — they don't melee, they shoot above.
-        // Ranged enemies normally skip melee — but a HACKED one becomes a
-        // melee berserker (its bolt-firing is disabled above), so let it swing.
-        if ((enemy.type !== 'ranged' || enemy.hacked) && enemy.attackSystem) {
+        // Skipped ONLY for the 'ranged' Sniper — it purely shoots (or, once
+        // subverted, snipes its own kind; both handled above) and never melees.
+        // EVERY other archetype melees here — including the Revenant, which both
+        // shoots gold bolts AND lunges in for a close-range strike like a normal
+        // enemy. (Hacked units strike their hunt victim instead of the player.)
+        if (enemy.type !== 'ranged' && enemy.attackSystem) {
           enemy.attackSystem.update(delta);
 
           // Try to attack if in range (increased range).
@@ -10945,6 +11631,9 @@ const ForestSurvivalGame = () => {
             if (enemy.hacked) {
               // ── HACKED: the strike lands on its victim enemy, not the player.
               if (hackVictim && !hackVictim.dead && hackVictim.health > 0) {
+                // Revenant victim: strip its shield + suppress its teleport so
+                // the hacked attacker can actually finish it.
+                markRevenantHackedHit(hackVictim);
                 hackVictim.health -= raw * HACK_VICTIM_DMG_MULT;
                 hackVictim.damageFlashTime = 0.3;
                 _tempVec3.copy(hackVictim.mesh.position); _tempVec3.y += 0.9;
@@ -11242,7 +11931,7 @@ const ForestSurvivalGame = () => {
 
       // ── STAGE 2: spawn warmup pickups (every type) ─────────────────
       await stage('Pickups', false, () => {
-        const warmPowerUpTypes: PowerUp['type'][] = ['overcharge', 'ammo', 'speed', 'damage', 'shield', 'infinite_ammo', 'phantom', 'cryo', 'tesla', 'shockwave', 'nuke'];
+        const warmPowerUpTypes: PowerUp['type'][] = ['overcharge', 'ammo', 'speed', 'damage', 'shield', 'infinite_ammo', 'phantom', 'cryo', 'tesla', 'shockwave', 'health', 'nuke'];
         warmPowerUpTypes.forEach((type, index) => {
           const warmPowerUp = createPowerUp(
             wp.x + (index - warmPowerUpTypes.length / 2) * 0.85,
