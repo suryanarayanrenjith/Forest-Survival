@@ -229,6 +229,18 @@ export class AdaptiveDifficultySystem {
     this.updateDerivedMetrics();
   }
 
+  /**
+   * Register a landed hit WITHOUT counting another shot fired. Pair this with a
+   * `recordShot(false)` per trigger-pull so accuracy = hits / triggers stays
+   * honest — previously only hits were recorded, so accuracy read ~100% and the
+   * skill estimate (and thus adaptive difficulty) was badly inflated.
+   */
+  public recordHit(headshot: boolean = false): void {
+    this.metrics.shotsHit++;
+    if (headshot) this.metrics.headshotCount++;
+    this.updateDerivedMetrics();
+  }
+
   public recordKill(killTime?: number): void {
     this.metrics.killCount++;
     this.metrics.currentStreak++;
@@ -300,9 +312,11 @@ export class AdaptiveDifficultySystem {
     this.metrics.totalPlayTime = elapsedSeconds;
     this.metrics.timeAlive = elapsedSeconds;
 
-    // Calculate accuracy
+    // Calculate accuracy (clamped to ≤1 so multi-pellet weapons like the
+    // shotgun, which can land several hits per trigger-pull, can't push the
+    // rate above 100%).
     if (this.metrics.shotsFired > 0) {
-      this.metrics.accuracyRate = this.metrics.shotsHit / this.metrics.shotsFired;
+      this.metrics.accuracyRate = Math.min(1, this.metrics.shotsHit / this.metrics.shotsFired);
     }
 
     // Calculate KPM

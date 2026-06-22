@@ -114,6 +114,11 @@ interface RemotePlayerRecord {
   smoothedSpeed: number;
   walkPhase: number;
   bobPhase: number;
+  // Crouch blend (eased toward data.crouch) + smoothed aim pitch (from the
+  // sender's camera pitch) so the avatar visibly kneels and points its weapon
+  // where the player is actually looking.
+  crouchAmount: number;
+  aimPitch: number;
   // Health bar canvas + texture
   healthCanvas: HTMLCanvasElement;
   healthCtx: CanvasRenderingContext2D;
@@ -421,21 +426,37 @@ export class RemotePlayerManager {
         rec.walkPhase += delta * walkFreq;
         rec.bobPhase += delta * (1.5 + moveGate * 0.5);
 
-        // Legs stride — full range when running, slight idle sway when still
-        const legSwing = 0.06 + moveGate * 0.85;
-        rec.joints.leftHip.rotation.x = Math.sin(rec.walkPhase) * legSwing;
-        rec.joints.rightHip.rotation.x = Math.sin(rec.walkPhase + Math.PI) * legSwing;
+        // Crouch blend (snappy in, smooth out) + smoothed aim pitch from the
+        // sender's camera pitch, so the avatar kneels and tracks its aim.
+        rec.crouchAmount += ((rec.data.crouch ? 1 : 0) - rec.crouchAmount) * Math.min(1, delta * 12);
+        const crouch = rec.crouchAmount;
+        const targetPitch = THREE.MathUtils.clamp(rec.data.rotation?.x ?? 0, -0.7, 0.7);
+        rec.aimPitch += (targetPitch - rec.aimPitch) * Math.min(1, delta * 12);
+        const pitch = rec.aimPitch;
+
+        // Vertical compression for the crouch (feet stay planted; the scale
+        // origin sits at the feet). x/z keep the native model scale.
+        rec.body.scale.set(MODEL_SCALE, MODEL_SCALE * (1 - 0.2 * crouch), MODEL_SCALE);
+
+        // Legs stride — full range when running, slight idle sway when still,
+        // compressed + knee-folded when crouched.
+        const legSwing = (0.06 + moveGate * 0.85) * (1 - 0.5 * crouch);
+        const hipFold = crouch * 0.55;
+        rec.joints.leftHip.rotation.x = Math.sin(rec.walkPhase) * legSwing + hipFold;
+        rec.joints.rightHip.rotation.x = Math.sin(rec.walkPhase + Math.PI) * legSwing + hipFold;
 
         // Arms are held in a per-weapon "ready" pose. The right shoulder
         // is the dominant grip; the left reaches forward to the foregrip
         // for two-handed weapons or hangs at the side for the pistol.
-        // Sway is intentionally muted so the muzzle stays on-target.
+        // Sway is intentionally muted so the muzzle stays on-target, and the
+        // aim pitch tilts both arms so the weapon points where they look.
         const pose = getWeaponPose(rec.currentWeaponType);
         const armSway = 0.06 + moveGate * 0.14;
-        rec.joints.rightShoulder.rotation.x = pose.rightShoulderX + Math.sin(rec.walkPhase + Math.PI) * armSway;
+        const armPitch = pitch * 0.6 + crouch * 0.12;
+        rec.joints.rightShoulder.rotation.x = pose.rightShoulderX + armPitch + Math.sin(rec.walkPhase + Math.PI) * armSway;
         rec.joints.rightShoulder.rotation.z = pose.rightShoulderZ;
         if (pose.twoHanded) {
-          rec.joints.leftShoulder.rotation.x = pose.leftShoulderX + Math.sin(rec.walkPhase) * armSway;
+          rec.joints.leftShoulder.rotation.x = pose.leftShoulderX + armPitch + Math.sin(rec.walkPhase) * armSway;
           rec.joints.leftShoulder.rotation.z = pose.leftShoulderZ;
         } else {
           // Pistol: left arm hangs and only sways naturally with the stride.
@@ -444,12 +465,12 @@ export class RemotePlayerManager {
         }
 
         // Head bob with footfalls (and idle breath when still)
-        const bobAmp = 0.03 + moveGate * 0.12;
+        const bobAmp = (0.03 + moveGate * 0.12) * (1 - 0.4 * crouch);
         const breath = Math.sin(rec.bobPhase * 2) * 0.012;
         rec.body.position.y = Math.abs(Math.sin(rec.walkPhase)) * bobAmp + breath;
 
-        // Subtle head bob (counter-rotation so it stays "level")
-        rec.joints.headJoint.rotation.x = Math.sin(rec.walkPhase * 2) * 0.025 * moveGate;
+        // Head tracks aim pitch + a subtle counter-rotated bob and crouch hunch.
+        rec.joints.headJoint.rotation.x = pitch + crouch * 0.22 + Math.sin(rec.walkPhase * 2) * 0.025 * moveGate;
       } else {
         // ── 3. Death pose — fall forward, then hide nameplate/healthbar ─
         rec.deathT = Math.min(1.4, rec.deathT + delta / 0.65);
@@ -764,6 +785,8 @@ export class RemotePlayerManager {
       smoothedSpeed: 0,
       walkPhase: Math.random() * Math.PI * 2,
       bobPhase: Math.random() * Math.PI * 2,
+      crouchAmount: 0,
+      aimPitch: 0,
       healthCanvas,
       healthCtx,
       healthTexture,

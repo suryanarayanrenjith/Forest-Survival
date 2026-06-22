@@ -69,6 +69,9 @@ export class LocalPlayerShadow {
   private bobPhase: number = 0;
   private smoothedSpeed: number = 0;
   private lastPosition = new THREE.Vector3();
+  // Crouch — eased 0→1 so the shadow compresses into a believable kneel.
+  private crouchAmount: number = 0;
+  private crouchTarget: number = 0;
 
   // Lifecycle
   private isAlive: boolean = true;
@@ -117,6 +120,11 @@ export class LocalPlayerShadow {
     this.applyInvisibilityToAll();
   }
 
+  /** Set crouch state — the shadow eases into a compact kneel. */
+  setCrouch(crouching: boolean): void {
+    this.crouchTarget = crouching ? 1 : 0;
+  }
+
   /** Toggle the shadow on / off without tearing down the body. */
   setVisible(visible: boolean): void {
     this.root.visible = visible;
@@ -156,16 +164,25 @@ export class LocalPlayerShadow {
     this.smoothedSpeed += (frameSpeed - this.smoothedSpeed) * Math.min(1, delta * 6);
     this.lastPosition.copy(camera.position);
 
+    // Ease the crouch blend (snappy in, smooth out).
+    this.crouchAmount += (this.crouchTarget - this.crouchAmount) * Math.min(1, delta * 12);
+    const crouch = this.crouchAmount;
+
     if (this.isAlive) {
       const moveGate = Math.min(1, this.smoothedSpeed / 7);
       const walkFreq = 4.0 + moveGate * 4.0;
       this.walkPhase += delta * walkFreq;
       this.bobPhase += delta * (1.5 + moveGate * 0.5);
 
-      // Legs stride
-      const legSwing = 0.06 + moveGate * 0.85;
-      this.joints.leftHip.rotation.x = Math.sin(this.walkPhase) * legSwing;
-      this.joints.rightHip.rotation.x = Math.sin(this.walkPhase + Math.PI) * legSwing;
+      // Vertical compression — feet stay planted (scale origin is at the feet)
+      // while the body sinks, reading as a crouch in the cast shadow.
+      this.body.scale.set(MODEL_SCALE, MODEL_SCALE * (1 - 0.2 * crouch), MODEL_SCALE);
+
+      // Legs stride — shorter when crouched, plus a forward knee-fold offset.
+      const legSwing = (0.06 + moveGate * 0.85) * (1 - 0.5 * crouch);
+      const hipFold = crouch * 0.55;
+      this.joints.leftHip.rotation.x = Math.sin(this.walkPhase) * legSwing + hipFold;
+      this.joints.rightHip.rotation.x = Math.sin(this.walkPhase + Math.PI) * legSwing + hipFold;
 
       // Per-weapon arm pose
       const pose = getWeaponPose(this.currentWeaponType);
@@ -182,14 +199,15 @@ export class LocalPlayerShadow {
 
       // Aim pitch — tilt the upper torso so the weapon shadow tracks where
       // the player is looking. We rotate the head + shoulder joints by the
-      // camera pitch, clamped so the body never folds in half.
+      // camera pitch, clamped so the body never folds in half. A crouch adds
+      // a small forward hunch on top.
       const pitch = THREE.MathUtils.clamp(euler.x, -0.7, 0.7);
-      this.joints.headJoint.rotation.x = pitch + Math.sin(this.walkPhase * 2) * 0.025 * moveGate;
-      this.joints.rightShoulder.rotation.x += pitch * 0.6;
-      this.joints.leftShoulder.rotation.x += pitch * 0.6;
+      this.joints.headJoint.rotation.x = pitch + crouch * 0.22 + Math.sin(this.walkPhase * 2) * 0.025 * moveGate;
+      this.joints.rightShoulder.rotation.x += pitch * 0.6 + crouch * 0.12;
+      this.joints.leftShoulder.rotation.x += pitch * 0.6 + crouch * 0.12;
 
       // Body bob with footfalls (and idle breath)
-      const bobAmp = 0.03 + moveGate * 0.12;
+      const bobAmp = (0.03 + moveGate * 0.12) * (1 - 0.4 * crouch);
       const breath = Math.sin(this.bobPhase * 2) * 0.012;
       this.body.position.y = Math.abs(Math.sin(this.walkPhase)) * bobAmp + breath;
     } else {

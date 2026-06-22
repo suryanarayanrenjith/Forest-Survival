@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import {
   Heart, Crosshair, Skull, Waves, Flame, Lock,
   Zap, Shield as ShieldIcon, Wind, Ghost, Footprints,
-  Swords, Infinity as InfinityIcon, Boxes, PackageSearch, Bomb, type LucideIcon,
+  Swords, Infinity as InfinityIcon, Boxes, PackageSearch, Bomb,
+  Snowflake, Bolt, type LucideIcon,
 } from 'lucide-react';
 import { WEAPONS } from '../types/game';
 import { getAbilityIcon } from './abilityIcons';
@@ -33,6 +34,9 @@ const POWER_ICONS: Record<string, LucideIcon> = {
   infinite_ammo: InfinityIcon,
   overcharge: Zap,
   phantom: Ghost,
+  cryo: Snowflake,
+  tesla: Bolt,
+  shockwave: Waves,
   nuke: Bomb,
 };
 
@@ -79,6 +83,10 @@ interface HUDProps {
   /** When the top-center FPS counter is on, the combo pill drops below it so
    *  the two never overlap. */
   fpsVisible?: boolean;
+  /** Difficulty-scaled multiplier on weapon unlock scores (easy 1×, medium/hard
+   *  higher, adaptive dynamic). The locked-weapon tooltip shows the scaled
+   *  requirement. Defaults to 1. */
+  weaponUnlockMult?: number;
 }
 
 const HUD = ({
@@ -86,7 +94,7 @@ const HUD = ({
   unlockedWeapons, currentWeapon, hideStatsPanel = false, unlimitedHealth = false,
   hideWave = false, abilities = [],
   staminaRatio = 1, staminaExhausted = false, unlimitedStamina = false,
-  isTouch = false, fpsVisible = false, weaponMastery,
+  isTouch = false, fpsVisible = false, weaponMastery, weaponUnlockMult = 1,
 }: HUDProps) => {
   const [scorePopup, setScorePopup] = useState(false);
   const [prevScore, setPrevScore] = useState(score);
@@ -344,7 +352,7 @@ const HUD = ({
               return (
                 <div
                   key={key}
-                  title={isUnlocked ? `${WEAPONS[key].name} (${index + 1})` : `Unlocks at ${WEAPONS[key].unlockScore} pts`}
+                  title={isUnlocked ? `${WEAPONS[key].name} (${index + 1})` : `Unlocks at ${Math.round(WEAPONS[key].unlockScore * weaponUnlockMult)} pts`}
                   className={`relative flex items-center justify-center w-11 h-11 rounded-lg border transition-all duration-200 ${
                     isCurrent
                       ? 'border-emerald-400/70 bg-emerald-500/15'

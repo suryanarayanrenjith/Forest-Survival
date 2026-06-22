@@ -87,10 +87,18 @@ async function findStats(ctx: QueryCtx, userId: Id<"users">): Promise<Doc<"playe
     .unique();
 }
 
-async function getOrCreateStats(ctx: MutationCtx, userId: Id<"users">): Promise<Doc<"playerStats">> {
+export async function getOrCreateStats(ctx: MutationCtx, userId: Id<"users">): Promise<Doc<"playerStats">> {
   const existing = await findStats(ctx, userId);
   if (existing) return existing;
-  const id = await ctx.db.insert("playerStats", defaultStats(userId));
+  // Brand-new progression doc → assign a RANDOM starting avatar instead of
+  // always defaulting to avatar 0, so fresh accounts feel distinct out of the
+  // box. The player can still change it any time in the profile. Only ever
+  // runs at first creation (existing docs return above), so it never disturbs
+  // an avatar the player has already chosen.
+  const id = await ctx.db.insert("playerStats", {
+    ...defaultStats(userId),
+    avatarIndex: Math.floor(Math.random() * AVATAR_COUNT),
+  });
   return (await ctx.db.get(id))!;
 }
 

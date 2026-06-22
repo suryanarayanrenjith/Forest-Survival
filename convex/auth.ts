@@ -14,6 +14,7 @@ import {
   normalizeDob,
   normalizeUsername,
 } from "./authValidation";
+import { getOrCreateStats } from "./playerStats";
 
 function readStringParam(params: Record<string, unknown>, key: string): string {
   const value = params[key];
@@ -164,6 +165,11 @@ export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
       await ctx.db.patch(userId, {
         lastLoginAt: Date.now(),
       });
+      // Materialise the player's progression doc at first sign-in (i.e. right
+      // after registration). This is what assigns a brand-new account its
+      // RANDOM starting avatar (see getOrCreateStats). No-op for returning
+      // users — their doc already exists, so their chosen avatar is untouched.
+      await getOrCreateStats(ctx, userId);
     },
   },
 });

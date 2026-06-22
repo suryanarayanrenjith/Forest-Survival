@@ -23,6 +23,15 @@ class SoundManager {
   private muted: boolean = false;
   private activeSources: Set<AudioBufferSourceNode> = new Set();
 
+  // ── Master bus ──────────────────────────────────────────────────────────
+  // Every voice routes gain → masterBus → lowpass → destination. The lowpass
+  // is wide-open in normal play; the low-health / slow-mo "muffle" drags its
+  // cutoff down so the world goes underwater-muffled and quiet during the
+  // adrenaline time-dilation, then opens back up when health recovers.
+  private masterBus: GainNode | null = null;
+  private lowpassFilter: BiquadFilterNode | null = null;
+  private slowMoAmount: number = 0; // 0 = open/normal, 1 = fully muffled
+
   constructor() {
     // Audio context will be initialized on first user interaction
   }
@@ -35,11 +44,39 @@ class SoundManager {
       const Ctor = window.AudioContext ?? (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
       if (!Ctor) throw new Error('AudioContext not supported');
       this.audioContext = new Ctor();
+      // Build the master bus: bus gain → lowpass → speakers.
+      this.masterBus = this.audioContext.createGain();
+      this.lowpassFilter = this.audioContext.createBiquadFilter();
+      this.lowpassFilter.type = 'lowpass';
+      this.lowpassFilter.frequency.value = 22000; // fully open
+      this.lowpassFilter.Q.value = 0.0001;
+      this.masterBus.connect(this.lowpassFilter);
+      this.lowpassFilter.connect(this.audioContext.destination);
       this.initialized = true;
       this.generateSounds();
     } catch (error) {
       console.warn('Web Audio API not supported', error);
     }
+  }
+
+  /**
+   * Drive the slow-motion / low-health audio muffle. `amount` 0→1 smoothly
+   * drags the master lowpass cutoff from fully-open (~22kHz) down to a dull
+   * ~600Hz and ducks the bus a touch, so combat reads as a muffled, slowed
+   * "near-death" moment. Idempotent + cheap — safe to call every frame.
+   */
+  setSlowMo(amount: number): void {
+    const a = Math.max(0, Math.min(1, amount));
+    if (Math.abs(a - this.slowMoAmount) < 0.002) return;
+    this.slowMoAmount = a;
+    if (!this.audioContext || !this.lowpassFilter || !this.masterBus) return;
+    const now = this.audioContext.currentTime;
+    // Exponential map sounds far more natural than linear for filter cutoff.
+    const cutoff = 22000 * Math.pow(600 / 22000, a);
+    const gain = 1 - 0.32 * a;
+    this.lowpassFilter.frequency.setTargetAtTime(cutoff, now, 0.08);
+    this.lowpassFilter.Q.setTargetAtTime(0.0001 + a * 1.1, now, 0.08);
+    this.masterBus.gain.setTargetAtTime(gain, now, 0.08);
   }
 
   // Generate procedural sound effects
@@ -508,7 +545,9 @@ class SoundManager {
     gainNode.gain.value = this.masterVolume * volume;
 
     source.connect(gainNode);
-    gainNode.connect(this.audioContext.destination);
+    // Route through the master bus (lowpass-muffle chain) when available so the
+    // slow-mo effect can muffle every voice; fall back to direct out otherwise.
+    gainNode.connect(this.masterBus ?? this.audioContext.destination);
 
     // Track active sources for cleanup
     this.activeSources.add(source);

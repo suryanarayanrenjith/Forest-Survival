@@ -36,6 +36,10 @@ export interface PlayerData {
   /** True when this client is playing on a touch device (phone/tablet). Broadcast
    *  so peers can show a "mobile" indicator on the nameplate / scoreboard. */
   isMobile?: boolean;
+  /** Crouch state (0 = standing, 1 = crouched), broadcast so peers can drop the
+   *  avatar into a believable crouch pose from their POV. Rides along with the
+   *  throttled position stream. */
+  crouch?: 0 | 1;
   /**
    * Motion-timeline metadata stamped on every broadcast:
    *   t   = sender's `performance.now()` at send time
@@ -805,8 +809,23 @@ export class MultiplayerManager {
    * Update player position with throttling to reduce network load
    * Instead of sending 60 updates/sec, we send ~15 updates/sec
    */
-  updatePlayerPosition(position: THREE.Vector3, rotation: THREE.Euler) {
+  /**
+   * Update the held weapon broadcast to peers. Only fires a network update when
+   * the weapon actually changes (weapon swaps are rare), so remote clients
+   * rebuild the avatar's held mesh + grip pose the instant we switch. Without
+   * this every remote avatar was stuck holding the spawn pistol forever.
+   */
+  setCurrentWeapon(weapon: string): void {
+    if (this.localPlayer.currentWeapon === weapon) return;
+    this.updateLocalPlayer({ currentWeapon: weapon });
+  }
+
+  updatePlayerPosition(position: THREE.Vector3, rotation: THREE.Euler, crouch: boolean = false) {
     const now = Date.now();
+
+    // Crouch rides along with the next throttled position broadcast (it's part
+    // of localPlayer, which updateLocalPlayer sends whole).
+    this.localPlayer.crouch = crouch ? 1 : 0;
 
     // Store the pending update
     this.pendingPositionUpdate = { position: position.clone(), rotation: rotation.clone() };

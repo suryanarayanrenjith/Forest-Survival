@@ -272,6 +272,15 @@ export interface Enemy {
   hackDuration?: number;   // total hack window (drives the indicator ring)
   hackVisuals?: THREE.Group;
   hackNextSparkAt?: number;
+  // ── Crowd-control (Cryo Freeze / Shockwave pickups) ──────────────────────
+  // ccUntil: ms timestamp until which the enemy is stunned — it can't move or
+  // attack (frozen solid or staggered by a shockwave). frozenUntil: ms until
+  // which it carries the frost VISUAL + takes bonus damage (cryo only).
+  // frostShell: the per-enemy icy encasement mesh attached while frozen
+  // (shared geo+mat, just a lightweight wrapper) — removed on thaw.
+  ccUntil?: number;
+  frozenUntil?: number;
+  frostShell?: THREE.Mesh;
   // Twitch offsets so the instability jitter can be cleanly zeroed out.
   hackJitter?: THREE.Vector3;
 }
@@ -287,7 +296,8 @@ export interface Bullet {
   isRocket?: boolean;
 }
 
-export type PowerUpType = 'ammo' | 'speed' | 'damage' | 'shield' | 'infinite_ammo' | 'overcharge' | 'phantom' | 'nuke';
+export type PowerUpType = 'ammo' | 'speed' | 'damage' | 'shield' | 'infinite_ammo' | 'overcharge' | 'phantom'
+  | 'cryo' | 'tesla' | 'shockwave' | 'nuke';
 
 export interface PowerUp {
   mesh: THREE.Mesh;
@@ -341,4 +351,8 @@ export interface GameState {
    *  XP sliver under the ammo counter. Omitted when the player isn't
    *  signed in / in tutorial / on guest play. */
   weaponMastery?: { level: number; intoLevel: number; nextLevelXp: number };
+  /** Difficulty-scaled multiplier applied to every weapon's unlockScore (easy 1×,
+   *  medium/hard higher, adaptive dynamic). Drives the locked-weapon "Unlocks at
+   *  N pts" readout in the HUD. Defaults to 1 when omitted. */
+  weaponUnlockMult?: number;
 }

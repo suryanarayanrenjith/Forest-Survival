@@ -15,6 +15,19 @@ const FLARE_GEO = {
   phantom: new THREE.TorusGeometry(1.3, 0.08, 8, 24),
 };
 
+// ── Shared geometries for the AAA activation burst ────────────────────────
+// Created once, reused for every burst (never disposed). Only the per-burst
+// materials are allocated/freed, so casting a power never builds GPU geometry
+// mid-fight. MeshBasicMaterial + AdditiveBlending is already compiled by the
+// pickup/nuke VFX, so these add no new shader permutation (no warmup stutter).
+const BURST_GEO = {
+  flash: new THREE.SphereGeometry(0.32, 18, 14),
+  ring: new THREE.TorusGeometry(0.62, 0.045, 12, 48),
+  mote: new THREE.SphereGeometry(0.055, 6, 6),
+  pillar: new THREE.CylinderGeometry(0.55, 0.85, 4.4, 24, 1, true),
+};
+const _easeOut = (t: number): number => 1 - Math.pow(1 - t, 3);
+
 export interface Ability {
   type: AbilityType;
   name: string;
@@ -202,6 +215,130 @@ export class AbilitySystem {
 
   getEffects(): AbilityEffects {
     return { ...this.effects };
+  }
+
+  /**
+   * AAA power-up activation burst. A self-animating, theme-coloured flourish
+   * built from a bright core flash, twin expanding ground shockwave rings, a
+   * rising energy pillar and a spray of spark motes that arc up and out. Drives
+   * itself with requestAnimationFrame for ~0.9s, then disposes its per-burst
+   * materials (shared geometries persist). Centre `position` at the player's
+   * FEET — the rings ride the ground and the pillar rises through the body.
+   */
+  createActivationBurst(
+    scene: THREE.Scene,
+    position: THREE.Vector3,
+    color: THREE.ColorRepresentation,
+    opts: { intensity?: number } = {},
+  ): void {
+    const intensity = opts.intensity ?? 1;
+    const col = new THREE.Color(color);
+    const colHot = col.clone().lerp(new THREE.Color(0xffffff), 0.45);
+    const group = new THREE.Group();
+    group.position.copy(position);
+    group.renderOrder = 994;
+
+    const mats: THREE.Material[] = [];
+    const mk = (c: THREE.Color, opacity: number): THREE.MeshBasicMaterial => {
+      const m = new THREE.MeshBasicMaterial({
+        color: c, transparent: true, opacity, depthWrite: false,
+        blending: THREE.AdditiveBlending, toneMapped: false,
+      });
+      mats.push(m);
+      return m;
+    };
+
+    // Core flash — a hot pop at chest height.
+    const flash = new THREE.Mesh(BURST_GEO.flash, mk(colHot, 1));
+    flash.position.y = 2.2;
+    group.add(flash);
+
+    // Twin ground shockwave rings (laid flat, expand outward).
+    const ring1 = new THREE.Mesh(BURST_GEO.ring, mk(col, 0.95));
+    ring1.rotation.x = Math.PI / 2;
+    ring1.position.y = 0.08;
+    group.add(ring1);
+    const ring2 = new THREE.Mesh(BURST_GEO.ring, mk(colHot, 0.8));
+    ring2.rotation.x = Math.PI / 2;
+    ring2.position.y = 0.05;
+    group.add(ring2);
+
+    // Vertical energy pillar (open-ended cylinder), rises + fades.
+    const pillar = new THREE.Mesh(BURST_GEO.pillar, mk(col, 0.42));
+    pillar.position.y = 2.2;
+    pillar.scale.set(0.55, 0.4, 0.55);
+    group.add(pillar);
+
+    // Spark motes — arc up and outward, gravity-pulled.
+    const moteCount = Math.round(16 * intensity);
+    const motes: { mesh: THREE.Mesh; vx: number; vy: number; vz: number }[] = [];
+    for (let i = 0; i < moteCount; i++) {
+      const mote = new THREE.Mesh(BURST_GEO.mote, mk(Math.random() > 0.5 ? colHot : col, 1));
+      mote.position.y = 1.0 + Math.random() * 1.2;
+      group.add(mote);
+      const ang = Math.random() * Math.PI * 2;
+      const spd = 2.2 + Math.random() * 3.6;
+      motes.push({
+        mesh: mote,
+        vx: Math.cos(ang) * spd,
+        vy: 3.5 + Math.random() * 4.5,
+        vz: Math.sin(ang) * spd,
+      });
+    }
+
+    scene.add(group);
+
+    const DURATION = 0.92;
+    let elapsed = 0;
+    let last = performance.now();
+    const tick = () => {
+      if (!group.parent) { mats.forEach((m) => m.dispose()); return; }
+      const now = performance.now();
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      elapsed += dt;
+      const t = Math.min(1, elapsed / DURATION);
+      const e = _easeOut(t);
+
+      // Flash: quick pop then fade in the first third.
+      const ft = Math.min(1, t / 0.32);
+      flash.scale.setScalar(0.4 + _easeOut(ft) * 3.2);
+      (flash.material as THREE.MeshBasicMaterial).opacity = (1 - ft) * 1;
+
+      // Rings: expand + fade (second ring lags for a layered ripple).
+      const r1 = 0.4 + e * 7.5;
+      ring1.scale.set(r1, r1, 1);
+      (ring1.material as THREE.MeshBasicMaterial).opacity = (1 - t) * 0.95;
+      const t2 = Math.max(0, (t - 0.12) / 0.88);
+      const r2 = 0.4 + _easeOut(t2) * 5.4;
+      ring2.scale.set(r2, r2, 1);
+      (ring2.material as THREE.MeshBasicMaterial).opacity = (1 - t2) * 0.8;
+
+      // Pillar: flares wide then thins as it lifts and fades.
+      const pw = 0.55 + e * 0.9;
+      pillar.scale.set(pw, 0.5 + e * 1.1, pw);
+      pillar.position.y = 2.0 + e * 1.6;
+      (pillar.material as THREE.MeshBasicMaterial).opacity = (1 - t) * 0.42;
+
+      // Motes: ballistic arcs, shrink + fade out.
+      for (const m of motes) {
+        m.vy -= 11 * dt;
+        m.mesh.position.x += m.vx * dt;
+        m.mesh.position.y += m.vy * dt;
+        m.mesh.position.z += m.vz * dt;
+        const s = Math.max(0.01, 1 - t);
+        m.mesh.scale.setScalar(s);
+        (m.mesh.material as THREE.MeshBasicMaterial).opacity = 1 - t;
+      }
+
+      if (t >= 1) {
+        scene.remove(group);
+        mats.forEach((m) => m.dispose());
+        return;
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
   }
 
   // Create visual effect for ability use. Geometries are shared (FLARE_GEO);

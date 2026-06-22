@@ -27,7 +27,6 @@ import { RemotePlayerManager } from './utils/RemotePlayerManager';
 import { SnapshotInterpolator, type TransformSample } from './utils/SnapshotInterpolator';
 import Minimap, { renderMinimapFrame, isMinimapActive, toggleMinimapExpanded, type MinimapBlip } from './components/Minimap';
 import { LocalPlayerShadow } from './utils/LocalPlayerShadow';
-import { EffectIndicators, type EffectKey } from './utils/EffectIndicators';
 import type { ClassId } from './utils/CharacterModels';
 import { AbilitySystem } from './utils/AbilitySystem';
 import { AchievementSystem, type Achievement } from './utils/AchievementSystem';
@@ -73,7 +72,7 @@ import { spawnRangedSentinels, updateSentinelGlow, type RangedSentinel } from '.
 import { CHARACTER_PASSIVES } from './utils/CharacterPassiveRegistry';
 import { getCharacterAbility } from './utils/CharacterAbilityRegistry';
 import { DAILY_CHALLENGES, getTodayChallengeId } from './utils/DailyChallengeRegistry';
-import { bonusForLevel, levelFromXp, xpPerKill, xpProgressAtLevel, type MasteryBonus } from './utils/WeaponMasterySystem';
+import { bonusForLevel, levelFromXp, xpPerKill, xpProgressAtLevel, MAX_MASTERY_LEVEL, type MasteryBonus } from './utils/WeaponMasterySystem';
 import { TITLE_FOR_ACHIEVEMENT } from './utils/CosmeticTitles';
 import { EnhancedSettings, type GameSettings } from './components/EnhancedSettings';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -1253,6 +1252,17 @@ const ForestSurvivalGame = () => {
     // Force enable adaptive AI when random/adaptive mode is selected
     adaptiveDifficulty.setAdaptive(gameSettings.adaptiveDifficulty || classicDifficulty === 'adaptive');
 
+    // ── ADAPTIVE MODE LIVE TUNING ────────────────────────────────────────────
+    // In Adaptive difficulty ONLY, the AdaptiveDifficultySystem's performance
+    // read drives enemy stats LIVE: health/damage/spawn are pushed onto
+    // diffSettings (applied to newly-spawned enemies), and a smoothed speed
+    // multiplier is applied to EVERY enemy's movement each frame so the swarm
+    // visibly speeds up when the player dominates and eases off when they
+    // struggle. Fixed difficulties (easy/medium/hard) never touch these.
+    const isAdaptiveMode = classicDifficulty === 'adaptive';
+    let adaptiveSpeedTarget = 1.0;  // refreshed each adaptive update from the profile
+    let adaptiveSpeedMult = 1.0;    // per-frame smoothed value used in movement
+
     // 2. Procedural Mission System - Generates unique missions
     const missionSystem = new ProceduralMissionSystem();
 
@@ -2133,12 +2143,22 @@ const ForestSurvivalGame = () => {
     // by this so it can never miss a big boulder/tree it should test against.
     // Only ever grows (an over-estimate just widens the query → still correct).
     let maxCollidableRadius = 0;
+    // ── Bush index (non-collidable foliage) ────────────────────────────────
+    // Bushes are walk-THROUGH props, so they're not in the collidable grid —
+    // but the player should WADE through them (movement slowdown). This second
+    // grid indexes only bushes so the per-frame "am I in brush?" test stays
+    // O(near) instead of scanning every loaded prop. Maintained on add/remove.
+    const bushGrid = new SpatialGrid<TerrainObject>(8);
+    let maxBushRadius = 0;
     const addTerrainObject = (obj: TerrainObject) => {
       if (!terrainInstancer.add(obj.mesh)) scene.add(obj.mesh);
       terrainObjects.push(obj);
       if (obj.collidable) {
         if (obj.radius > maxCollidableRadius) maxCollidableRadius = obj.radius;
         collidableGrid.insert(obj, obj.x, obj.z);
+      } else if (obj.type === 'bush') {
+        if (obj.radius > maxBushRadius) maxBushRadius = obj.radius;
+        bushGrid.insert(obj, obj.x, obj.z);
       }
       terrainVersion++;
     };
@@ -2146,8 +2166,32 @@ const ForestSurvivalGame = () => {
       const obj = terrainObjects[index];
       if (!terrainInstancer.remove(obj.mesh)) scene.remove(obj.mesh);
       if (obj.collidable) collidableGrid.remove(obj, obj.x, obj.z);
+      else if (obj.type === 'bush') bushGrid.remove(obj, obj.x, obj.z);
       terrainObjects.splice(index, 1);
       terrainVersion++;
+    };
+
+    // ── BUSH WADE SLOWDOWN ──────────────────────────────────────────────────
+    // Returns a movement multiplier ≤1 while the player is pushing through
+    // foliage — deepest where they're dead-centre in a bush, tapering to none
+    // at the edge. Most felt in the dense forest biome (highest bush density),
+    // but works on any map with brush. Cheap: a single near-query per frame.
+    const PLAYER_BUSH_RADIUS = 0.9;     // how wide the player "catches" on brush
+    const BUSH_MAX_SLOW = 0.45;         // up to 45% slower at the densest point
+    const bushWadeAt = (x: number, z: number): number => {
+      if (maxBushRadius === 0) return 1;
+      const cands = bushGrid.queryRadius(x, z, PLAYER_BUSH_RADIUS + maxBushRadius);
+      let deepest = 0; // 0 (edge) → 1 (centre) of the most-overlapped bush
+      for (let i = 0; i < cands.length; i++) {
+        const b = cands[i];
+        const dx = b.x - x, dz = b.z - z;
+        const reach = b.radius + PLAYER_BUSH_RADIUS;
+        const d2 = dx * dx + dz * dz;
+        if (d2 >= reach * reach) continue;
+        const pen = 1 - Math.sqrt(d2) / reach;
+        if (pen > deepest) deepest = pen;
+      }
+      return deepest > 0 ? 1 - BUSH_MAX_SLOW * deepest : 1;
     };
 
     // Returns true if a collidable object of the given radius placed at (x,z)
@@ -2734,9 +2778,6 @@ const ForestSurvivalGame = () => {
       camera.add(shieldMesh);
     }
 
-    // Floating effect indicators above the player (one icon per active effect).
-    const effectIndicators = new EffectIndicators(scene);
-    const _effectAnchor = new THREE.Vector3();
 
     // Phantom translucency — fade the visible weapon while cloaked so the
     // local player gets clear feedback. Delegated to GunModel.setPhantom so the
@@ -2813,7 +2854,11 @@ const ForestSurvivalGame = () => {
     const masteryRunXp: Record<string, number> = {};
     const masteryLastSentXp: Record<string, number> = {};
     let masteryFlushAccum = 0;
-    let masteryBonus: MasteryBonus = bonusForLevel(0);
+    // Tutorial hands the player a FULLY-MASTERED arsenal — every weapon is
+    // maxed by default (full magazine bonus, reload speedup, recoil reduction)
+    // and never levels up, so the tutorial is purely about learning the
+    // controls, not grinding. Normal play starts at level 0.
+    let masteryBonus: MasteryBonus = bonusForLevel(isTutorialMode ? MAX_MASTERY_LEVEL : 0);
     // Initial XP comes from the persisted record on the convex side. We
     // read it once via the React profile data outside the useEffect; the
     // initial bonus snapshot is taken below once `currentWeapon` is set.
@@ -2821,7 +2866,10 @@ const ForestSurvivalGame = () => {
     const masteryTotalXp = (weapon: string): number =>
       (masteryPersistedXpRef[weapon] ?? 0) + (masteryRunXp[weapon] ?? 0);
     const refreshMasteryBonus = () => {
-      masteryBonus = bonusForLevel(levelFromXp(masteryTotalXp(currentWeapon)));
+      // Tutorial stays pinned at max mastery (see the masteryBonus init above).
+      masteryBonus = isTutorialMode
+        ? bonusForLevel(MAX_MASTERY_LEVEL)
+        : bonusForLevel(levelFromXp(masteryTotalXp(currentWeapon)));
     };
     const flushMasteryXp = () => {
       for (const weapon in masteryRunXp) {
@@ -2951,7 +2999,16 @@ const ForestSurvivalGame = () => {
     // Tutorial mode hands the player every weapon so they can try them all.
     const unlockedWeapons = isTutorialMode ? Object.keys(WEAPONS) : ['pistol'];
     let isAiming = false;
-    let timeScale = 1.0; // For slow-mo effects (1.0 = normal speed)
+    let timeScale = 1.0; // For transient slow-mo effects (1.0 = normal speed)
+    // ── Critical-health adrenaline time-dilation ──────────────────────────
+    // Separate, *continuous* slow-mo factor that smoothly ramps in while the
+    // player is critically wounded (a "near-death" bullet-time / heartbeat
+    // beat) and eases back out as they heal. Kept independent of `timeScale`
+    // so the transient kill/headshot slow-mos (which snap timeScale and reset
+    // it via setTimeout) never stomp it. Final sim delta multiplies both.
+    let healthTimeScale = 1.0;       // eased value applied to delta
+    const CRIT_HP_FRACTION = 0.24;   // below this fraction of max HP → slow-mo
+    const CRIT_HP_MIN_SCALE = 0.62;  // hardest slow-down at near-zero HP
     let fovPunch = 0; // FOV punch on shooting (additive degrees)
     let fovCheckAccum = 0; // throttles re-reading the FOV setting
     let abilityHudAccum = 0; // throttles ability-bar HUD updates
@@ -2982,12 +3039,33 @@ const ForestSurvivalGame = () => {
       }, ms);
     };
 
-    // Check and unlock weapons based on score
+    // ── DIFFICULTY-SCALED WEAPON UNLOCKS ─────────────────────────────────────
+    // Easy uses the weapons' native unlock scores; Medium and Hard demand
+    // progressively more points, so a harder run is a longer grind to the full
+    // arsenal. Adaptive varies the requirement LIVE with how well the player is
+    // doing — a dominating player needs more points (kept honest), a struggling
+    // one unlocks sooner (kept in the fight). Pistol (unlockScore 0) is always
+    // free regardless of multiplier.
+    const WEAPON_UNLOCK_MULT: Record<'easy' | 'medium' | 'hard', number> = {
+      easy: 1.0, medium: 1.7, hard: 2.5,
+    };
+    const weaponUnlockMultNow = (): number => {
+      if (classicDifficulty === 'adaptive') {
+        // Map the live adaptive difficulty level (20..95) → 1.0..2.4×.
+        const lvl = adaptiveDifficulty.getDifficulty().level;
+        return 1.0 + Math.max(0, Math.min(1, (lvl - 20) / 75)) * 1.4;
+      }
+      return WEAPON_UNLOCK_MULT[classicDifficulty] ?? 1.0;
+    };
+    const effectiveUnlockScore = (weapon: { unlockScore: number }): number =>
+      Math.round(weapon.unlockScore * weaponUnlockMultNow());
+
+    // Check and unlock weapons based on score (difficulty-scaled threshold).
     const checkWeaponUnlocks = () => {
       let newUnlock = false;
       Object.keys(WEAPONS).forEach(weaponKey => {
         const weapon = WEAPONS[weaponKey];
-        if (score >= weapon.unlockScore && !unlockedWeapons.includes(weaponKey)) {
+        if (score >= effectiveUnlockScore(weapon) && !unlockedWeapons.includes(weaponKey)) {
           unlockedWeapons.push(weaponKey);
           showPowerMessage(`${weapon.name} Unlocked`, 3000);
           newUnlock = true;
@@ -3375,6 +3453,15 @@ const ForestSurvivalGame = () => {
       // Extract mesh and parts from pooled enemy
       const { mesh: enemyGroup, body: torso, leftArm, rightArm, leftLeg, rightLeg, head, poolId } = acquiredMesh;
 
+      // A recycled pooled mesh may still carry a frost-shell child from a
+      // previously-frozen enemy (Cryo Freeze) — strip it so it never reappears
+      // on the fresh spawn. (Shared geo+mat, so we only detach the wrapper.)
+      for (let ci = enemyGroup.children.length - 1; ci >= 0; ci--) {
+        if (enemyGroup.children[ci].userData?.isFrostShell) {
+          enemyGroup.remove(enemyGroup.children[ci]);
+        }
+      }
+
       // Get enemy stats based on type (kept for AI calculations)
       let enemyHealth = 50;
       let enemySpeed = 0.08;
@@ -3416,6 +3503,11 @@ const ForestSurvivalGame = () => {
       const dodgeSkill = Math.min((0.1 + wave * 0.03) / Math.max(0.5, diffSettings.reactionMult), 0.95);
       const reactionTime = Math.max((800 - wave * 30) * diffSettings.reactionMult, 110);
       const healthMultiplier = 1 + (wave * 0.15); // 15% more health per wave
+      // Per-wave damage + speed ramp so each round genuinely hits harder and
+      // moves a touch faster — difficulty climbs with the round count, not just
+      // enemy health. Capped at wave 40 so late waves stay intense, not unfair.
+      const waveDamageRamp = 1 + Math.min(wave, 40) * 0.02; // up to +80% by wave 40
+      const waveSpeedRamp = 1 + Math.min(wave, 40) * 0.006; // up to +24% by wave 40
 
       // Determine AI personality based on type
       let personality: 'aggressive' | 'tactical' | 'defensive' | 'support' = 'aggressive';
@@ -3438,7 +3530,7 @@ const ForestSurvivalGame = () => {
       // and the instance is constructed; the runtime call sites skip it.
       const attackArchetype: 'normal' | 'fast' | 'tank' | 'boss' = type === 'ranged' ? 'normal' : type;
       const attackSystemInstance = new AttackSystem(
-        AttackSystem.createConfigForType(attackArchetype, enemyDamage * diffSettings.damageMult * (runMods.enemyDamageMult ?? 1))
+        AttackSystem.createConfigForType(attackArchetype, enemyDamage * diffSettings.damageMult * waveDamageRamp * (runMods.enemyDamageMult ?? 1))
       );
 
       // NEW: Obstacle avoidance system - prevents getting stuck in trees
@@ -3466,10 +3558,10 @@ const ForestSurvivalGame = () => {
         mesh: enemyGroup,
         health: effectiveHealth,
         maxHealth: effectiveHealth,
-        speed: (enemySpeed + Math.random() * 0.02) * diffSettings.speedMult * (runMods.enemySpeedMult ?? 1),
+        speed: (enemySpeed + Math.random() * 0.02) * diffSettings.speedMult * waveSpeedRamp * (runMods.enemySpeedMult ?? 1),
         dead: false,
         type,
-        damage: enemyDamage * diffSettings.damageMult * (runMods.enemyDamageMult ?? 1),
+        damage: enemyDamage * diffSettings.damageMult * waveDamageRamp * (runMods.enemyDamageMult ?? 1),
         scoreValue: enemyScore,
         // Animation state
         walkTime: Math.random() * Math.PI * 2,
@@ -3818,6 +3910,24 @@ const ForestSurvivalGame = () => {
           color = 0x4a1d7a; coreColor = 0xb388ff;
           shellGeo = _pgeo('pgShellPh', () => new THREE.TorusKnotGeometry(0.32, 0.12, 64, 8));
           innerGeo = _pgeo('pgInnerPh', () => new THREE.IcosahedronGeometry(0.24, 0));
+          break;
+        case 'cryo':
+          // Icy crystal — sharp octahedron shell + bright frozen core.
+          color = 0x1f6f9c; coreColor = 0x9fe4ff;
+          shellGeo = _pgeo('pgShellCryo', () => new THREE.OctahedronGeometry(0.6, 0));
+          innerGeo = _pgeo('pgInnerCryo', () => new THREE.OctahedronGeometry(0.3, 0));
+          break;
+        case 'tesla':
+          // Charged coil — torus shell wrapping a hot electric core.
+          color = 0xb89a1a; coreColor = 0xfff27a;
+          shellGeo = _pgeo('pgShellTesla', () => new THREE.TorusGeometry(0.4, 0.16, 10, 20));
+          innerGeo = _pgeo('pgInnerTesla', () => new THREE.IcosahedronGeometry(0.26, 0));
+          break;
+        case 'shockwave':
+          // Kinetic ring — flat torus shell with a dense pulse core.
+          color = 0xb8842a; coreColor = 0xffe0a0;
+          shellGeo = _pgeo('pgShellShock', () => new THREE.TorusGeometry(0.5, 0.1, 8, 24));
+          innerGeo = _pgeo('pgInnerShock', () => new THREE.DodecahedronGeometry(0.26, 0));
           break;
         case 'nuke':
           // Radioactive-green warhead — a rounded shell with a hot glowing core
@@ -4234,14 +4344,18 @@ const ForestSurvivalGame = () => {
       waveEnemiesRemaining = Math.max(4, Math.floor((7 + wave * 3) * diffSettings.spawnMult * (runMods.enemySpawnMult ?? 1)));
       const opening = Math.min(5, waveEnemiesRemaining);
       waveEnemiesRemaining -= spawnEnemyBatch(opening);
-      // ── MILESTONE ELITES every 5 waves ───────────────────────────────
-      // Wave 10 onward, every 5th wave (10, 15, 20…) hard-spawns a full
-      // SUMMONER BOSS — the apex threat that calls in its own reinforcements
-      // (its intro banner fires inside spawnEnemyBatch). Before wave 10, the
-      // 5-wave milestone is a crowned mini-boss tank instead, easing the player
-      // toward the boss era.
-      if (wave >= 10 && wave % 5 === 0) {
+      // ── BOSS ERA (wave 10+) ───────────────────────────────────────────
+      // From wave 10 onward the pink SUMMONER BOSS appears EVERY wave — the
+      // apex threat that calls in its own reinforcements (its intro banner
+      // fires once, inside spawnEnemyBatch). Its strength scales with the wave
+      // (per-wave health/damage ramp in createEnemy), so each round is harder
+      // than the last; the 5-wave milestones (15, 20…) drop a SECOND boss for a
+      // spike. Before wave 10, the 5-wave milestone is a crowned mini-boss tank
+      // instead, easing the player toward the boss era.
+      if (wave >= 10) {
         spawnEnemyBatch(1, 'boss');
+        // Milestone waves get a second boss for an extra surge.
+        if (wave % 5 === 0) spawnEnemyBatch(1, 'boss');
       } else if (wave > 0 && wave % 5 === 0) {
         const spawned = spawnEnemyBatch(1, 'tank', true);
         if (spawned > 0) {
@@ -4373,6 +4487,9 @@ const ForestSurvivalGame = () => {
     const standingHeight = 5; // Normal standing camera height
     const crouchSpeedMultiplier = 0.5; // Move slower when crouching
     let currentCameraHeight = standingHeight; // For smooth transitions
+    // Current bush-wade movement multiplier (1 = clear ground). Recomputed each
+    // frame in the movement block and reused by the footstep rustle below.
+    let bushSlowMul = 1;
 
     // ── WEAPON BLOOM (movement + sustained-fire spread) ──────────────────
     // Firing while on the move throws shots off; holding auto-fire opens the
@@ -4423,14 +4540,18 @@ const ForestSurvivalGame = () => {
     // crate stows the power (it is NOT auto-applied); pressing E activates it,
     // emptying the slot. While a power is held, new crates can't be collected —
     // the player must spend the current one first. Truly random per drop.
-    type HeldPower = 'ammo' | 'speed' | 'damage' | 'shield' | 'infinite_ammo' | 'overcharge' | 'phantom' | 'nuke';
+    type HeldPower = 'ammo' | 'speed' | 'damage' | 'shield' | 'infinite_ammo' | 'overcharge' | 'phantom'
+      | 'cryo' | 'tesla' | 'shockwave' | 'nuke';
     // The uniform loot pool deliberately EXCLUDES 'nuke' — the nuke is a rare
     // special roll handled separately in randomLoot so it stays a treat, not a
-    // 1-in-8 staple.
-    const LOOT_POOL: HeldPower[] = ['ammo', 'speed', 'damage', 'shield', 'infinite_ammo', 'overcharge', 'phantom'];
+    // 1-in-N staple. cryo / tesla / shockwave are universal, map-agnostic combat
+    // tools (crowd-control + AoE) that fit every biome.
+    const LOOT_POOL: HeldPower[] = ['ammo', 'speed', 'damage', 'shield', 'infinite_ammo', 'overcharge', 'phantom',
+      'cryo', 'tesla', 'shockwave'];
     const POWER_LABELS: Record<HeldPower, string> = {
       ammo: 'Ammo', speed: 'Speed', damage: 'Damage', shield: 'Shield',
-      infinite_ammo: 'Inf. Ammo', overcharge: 'Overcharge', phantom: 'Phantom', nuke: 'Nuke',
+      infinite_ammo: 'Inf. Ammo', overcharge: 'Overcharge', phantom: 'Phantom',
+      cryo: 'Cryo Freeze', tesla: 'Tesla Coil', shockwave: 'Shockwave', nuke: 'Nuke',
     };
     // ~5% of drops are a tactical nuke (rare); the rest roll the uniform pool.
     const NUKE_LOOT_CHANCE = 0.05;
@@ -4438,6 +4559,22 @@ const ForestSurvivalGame = () => {
       Math.random() < NUKE_LOOT_CHANCE ? 'nuke' : LOOT_POOL[(Math.random() * LOOT_POOL.length) | 0];
     let heldPower: HeldPower | null = null;
     let lastHeldHintAt = 0; // throttles the "use your power first" hint
+    // Activation-burst accent per power (null = no burst; the nuke owns its own
+    // cinematic VFX). Matches each pickup's signature colour for instant read.
+    const POWER_BURST_COLOR: Record<HeldPower, number | null> = {
+      ammo: 0xffd54a,
+      speed: 0x6ef0ff,
+      damage: 0xff8a3a,
+      shield: 0x55b0ff,
+      infinite_ammo: 0xff5aff,
+      overcharge: 0xffcc33,
+      phantom: 0xb388ff,
+      cryo: 0x8fe6ff,
+      tesla: 0xfff27a,
+      shockwave: 0xffe0a0,
+      nuke: null,
+    };
+    const _burstFeet = new THREE.Vector3();
 
     // Activate a looted power's effect (the slot is emptied by the caller).
     // Hoisted so the keydown handler (defined earlier) can call it.
@@ -4494,6 +4631,27 @@ const ForestSurvivalGame = () => {
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Phantom Active!', 'powerup');
           // No world flare — the weapon fading out is the feedback.
           break;
+        case 'cryo': {
+          const frozen = applyCryoBlast(camera.position);
+          showPowerMessage(frozen > 0 ? `Cryo Freeze · ${frozen} frozen` : 'Cryo Freeze', 2200);
+          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Cryo Freeze!', 'powerup');
+          break;
+        }
+        case 'shockwave': {
+          const staggered = applyShockwave(camera.position);
+          fovPunch = Math.min(fovPunch + 9, 14);
+          if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
+          showPowerMessage(staggered > 0 ? `Shockwave · ${staggered} blasted` : 'Shockwave', 2200);
+          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Shockwave!', 'powerup');
+          break;
+        }
+        case 'tesla':
+          teslaActive = true;
+          teslaEndTime = nowMs + teslaDuration;
+          teslaNextArcAt = nowMs; // arc immediately on activation
+          showPowerMessage('Tesla Coil · chain lightning · 8s', 2200);
+          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Tesla Coil Active!', 'powerup');
+          break;
         case 'nuke': {
           // Tactical Nuke — a deployable mushroom-cloud blast that clears a
           // large area around the player (player shielded from their own boom).
@@ -4503,13 +4661,19 @@ const ForestSurvivalGame = () => {
           break;
         }
       }
-      // Quick cast flourish. Only Overcharge spawns a world flare now — Shield
-      // and Phantom each have their own persistent visual (braced mesh / weapon
-      // fade), so their old blue/purple activation bursts were redundant clutter.
+      // Quick cast flourish — a theme-coloured AAA activation burst (core
+      // flash + twin ground shockwave rings + rising energy pillar + spark
+      // motes) at the player's feet. Every power gets one except the nuke,
+      // which already has its full cinematic mushroom-cloud VFX.
       gunModel.triggerAbility();
       soundManager.play('powerUp', 0.7);
-      if (type === 'overcharge') {
-        abilitySystem.createAbilityEffect(scene, camera.position, type);
+      const burstColor = POWER_BURST_COLOR[type];
+      if (burstColor !== null) {
+        abilitySystem.createActivationBurst(
+          scene,
+          _burstFeet.set(camera.position.x, camera.position.y - currentCameraHeight, camera.position.z),
+          burstColor,
+        );
       }
     }
 
@@ -4522,10 +4686,14 @@ const ForestSurvivalGame = () => {
     // `anyTimedEffectActive` are the single source of truth for that rule.
     // Instant powers (applied once, no lingering timer): ammo refill + the
     // tactical nuke. Everything else runs for a duration and is anti-stacked.
-    const isTimedPower = (p: HeldPower): boolean => p !== 'ammo' && p !== 'nuke';
+    // Instant powers (applied once, no lingering timer): ammo, the tactical
+    // nuke, and the two AoE crowd-control casts (cryo + shockwave). Tesla is
+    // timed (an aura), so it IS anti-stacked.
+    const isTimedPower = (p: HeldPower): boolean =>
+      p !== 'ammo' && p !== 'nuke' && p !== 'cryo' && p !== 'shockwave';
     function anyTimedEffectActive(): boolean {
       return speedBoostActive || damageBoostActive || shieldActive
-        || infiniteAmmoActive || overchargeActive || phantomActive;
+        || infiniteAmmoActive || overchargeActive || phantomActive || teslaActive;
     }
 
     // ── KILLSTREAK REWARDS ────────────────────────────────────────────────
@@ -5219,7 +5387,7 @@ const ForestSurvivalGame = () => {
           updateGameState();
         } else if (!unlockedWeapons.includes(weaponName)) {
           const weapon = WEAPONS[weaponName];
-          showPowerMessage(`${weapon.name} Locked — ${weapon.unlockScore} pts needed`);
+          showPowerMessage(`${weapon.name} Locked — ${effectiveUnlockScore(weapon)} pts needed`);
         }
       }
 
@@ -5518,8 +5686,11 @@ const ForestSurvivalGame = () => {
         if (!weapon.name.includes('Launcher')) ejectShellCasing();
         updateGameState();
 
-        // 🤖 Record shot for AI systems (will check for hit later)
+        // 🤖 Record shot for AI systems (will check for hit later). One per
+        // trigger-pull (not per shotgun pellet) so the adaptive accuracy metric
+        // — hits / triggers — stays honest; landed hits call recordHit().
         combatCoach.recordShot(false, false); // Updated when bullet hits
+        adaptiveDifficulty.recordShot(false);
         tutorial.recordAction('shoot', 1);
 
         // Play the weapon-specific report with a subtle random pitch so
@@ -5846,6 +6017,7 @@ const ForestSurvivalGame = () => {
         currentWeapon,
         unlockedWeapons: [...unlockedWeapons],
         weaponMastery: masteryHud,
+        weaponUnlockMult: weaponUnlockMultNow(),
       });
     };
 
@@ -6058,6 +6230,8 @@ const ForestSurvivalGame = () => {
     const handleEnemyKilled = (enemy: Enemy, isCritical: boolean, killerId?: string) => {
       // A dying enemy is no longer hacked — strip the chip/indicator first.
       clearHackState(enemy);
+      // Drop any frost shell / crowd-control so a thawing corpse can't carry it.
+      clearEnemyCC(enemy);
       // ── DECAPITATION ── pop the head off before the corpse flies (so the
       // gib launches from the head's pre-ragdoll position).
       if (canDecapitate(enemy, isCritical)) spawnHeadGib(enemy);
@@ -6123,23 +6297,27 @@ const ForestSurvivalGame = () => {
           if (currentWeapon === 'pistol') dailyCounts.pistol_kill += 1;
         }
         // Weapon Mastery — grant XP on the equipped weapon. Bigger payouts
-        // for bigger fights (bosses are a real grind reward).
-        const xpGrant = xpPerKill(enemy.type, enemy.isMiniBoss);
-        const masteryLevelBefore = levelFromXp(masteryTotalXp(currentWeapon));
-        masteryRunXp[currentWeapon] = (masteryRunXp[currentWeapon] ?? 0) + xpGrant;
-        const masteryLevelAfter = levelFromXp(masteryTotalXp(currentWeapon));
-        if (masteryLevelAfter > masteryLevelBefore) {
-          // Crossed a level boundary — feedback for the player.
-          soundManager.play('powerUp', 0.55, false, 1.4);
-          if (gameSettingsManager.getSetting('killFeed')) {
-            addKillFeedEntry(`${WEAPONS[currentWeapon].name} · Mastery L${masteryLevelAfter}`, 'powerup');
+        // for bigger fights (bosses are a real grind reward). SKIPPED entirely
+        // in tutorial: there every weapon is already maxed by default, so it
+        // must never accrue XP or fire a level-up notification.
+        if (!isTutorialMode) {
+          const xpGrant = xpPerKill(enemy.type, enemy.isMiniBoss);
+          const masteryLevelBefore = levelFromXp(masteryTotalXp(currentWeapon));
+          masteryRunXp[currentWeapon] = (masteryRunXp[currentWeapon] ?? 0) + xpGrant;
+          const masteryLevelAfter = levelFromXp(masteryTotalXp(currentWeapon));
+          if (masteryLevelAfter > masteryLevelBefore) {
+            // Crossed a level boundary — feedback for the player.
+            soundManager.play('powerUp', 0.55, false, 1.4);
+            if (gameSettingsManager.getSetting('killFeed')) {
+              addKillFeedEntry(`${WEAPONS[currentWeapon].name} · Mastery L${masteryLevelAfter}`, 'powerup');
+            }
+            showPowerMessage(`Mastery Unlocked · ${WEAPONS[currentWeapon].name} L${masteryLevelAfter}`, 2200);
           }
-          showPowerMessage(`Mastery Unlocked · ${WEAPONS[currentWeapon].name} L${masteryLevelAfter}`, 2200);
+          // Re-snapshot the bonus for the active weapon so a level-up that
+          // happens mid-kill applies on the next reload / recoil instead of
+          // waiting for the throttled flush.
+          refreshMasteryBonus();
         }
-        // Re-snapshot the bonus for the active weapon so a level-up that
-        // happens mid-kill applies on the next reload / recoil instead of
-        // waiting for the throttled flush.
-        refreshMasteryBonus();
         // Wave-perk healing on kill: Bloodletting (every kill) and Vampiric
         // Edge (headshot kills only). Both cap at playerMaxHealth so they
         // can't over-heal past the Thick-Skin / Iron-Lung max.
@@ -7064,6 +7242,225 @@ const ForestSurvivalGame = () => {
       return kills;
     };
 
+    // ═══════════════════════════════════════════════════════════════════════
+    //  NEW WORLD-PICKUP COMBAT TOOLS  (Cryo Freeze · Shockwave · Tesla Coil)
+    //  ─────────────────────────────────────────────────────────────────────
+    //  Universal, map-agnostic crowd-control + AoE. All enemy STATE changes
+    //  (freeze/stun/knockback) are host/solo-authoritative (`!isMpGuest`) so
+    //  they never desync the shared host-authoritative enemy world; damage is
+    //  routed through `sendEnemyHit` for guests exactly like the nuke. The
+    //  player-facing VFX/SFX always play locally — they're the cast feedback.
+    // ═══════════════════════════════════════════════════════════════════════
+
+    // Frost encasement shell — shared geo + material (just lightweight Mesh
+    // wrappers per frozen enemy). Tagged so a recycled pooled mesh is stripped
+    // of a leftover shell on its next spawn (see createEnemy).
+    const _frostShellGeo = new THREE.IcosahedronGeometry(1.2, 0);
+    const _frostShellMat = new THREE.MeshBasicMaterial({
+      color: 0x9fe4ff, transparent: true, opacity: 0.34, depthWrite: false,
+      blending: THREE.AdditiveBlending, toneMapped: false,
+    });
+    const _teslaVec = new THREE.Vector3();
+    const _teslaFrom = new THREE.Vector3();
+
+    const freezeEnemy = (enemy: Enemy, durationMs: number) => {
+      if (isMpGuest) return; // host owns enemy state
+      const until = Date.now() + durationMs;
+      enemy.ccUntil = Math.max(enemy.ccUntil ?? 0, until);
+      enemy.frozenUntil = enemy.ccUntil;
+      if (!enemy.frostShell) {
+        const shell = new THREE.Mesh(_frostShellGeo, _frostShellMat);
+        shell.position.y = 1.0;
+        shell.userData.cannotReceiveAO = true;
+        shell.userData.isFrostShell = true;
+        enemy.mesh.add(shell);
+        enemy.frostShell = shell;
+      }
+    };
+
+    // Strip + clear an enemy's frost shell / crowd-control (on death or thaw).
+    const clearEnemyCC = (enemy: Enemy) => {
+      if (enemy.frostShell) {
+        enemy.frostShell.removeFromParent();
+        enemy.frostShell = undefined;
+      }
+      enemy.frozenUntil = 0;
+      enemy.ccUntil = 0;
+    };
+
+    const CRYO_RADIUS = 14;
+    const CRYO_FREEZE_MS = 4000;
+    const CRYO_CAST_DAMAGE = 55;
+    const applyCryoBlast = (center: THREE.Vector3): number => {
+      createParticles(center, 0x9fe4ff, 26);
+      soundManager.play('powerUp', 0.7, false, 1.7);
+      soundManager.play('hit', 0.45, false, 1.9);
+      const r2 = CRYO_RADIUS * CRYO_RADIUS;
+      let frozen = 0;
+      for (let i = 0; i < enemies.length; i++) {
+        const e = enemies[i];
+        if (e.dead || e.health <= 0) continue;
+        const dx = e.mesh.position.x - center.x;
+        const dz = e.mesh.position.z - center.z;
+        if (dx * dx + dz * dz > r2) continue;
+        // Bosses resist a full encasement — a brief stagger only.
+        if (e.type === 'boss') {
+          if (!isMpGuest) e.ccUntil = Math.max(e.ccUntil ?? 0, Date.now() + 900);
+        } else {
+          freezeEnemy(e, CRYO_FREEZE_MS);
+        }
+        frozen++;
+        // Chip damage on cast (host-authoritative; guests report the hit).
+        if (isMpGuest && mp) {
+          if (e.netId !== undefined) mp.sendEnemyHit(e.netId, CRYO_CAST_DAMAGE, false);
+        } else {
+          e.health -= CRYO_CAST_DAMAGE;
+          if (e.health <= 0) handleEnemyKilled(e, false);
+          else e.damageFlashTime = Math.max(e.damageFlashTime, 0.4);
+        }
+      }
+      return frozen;
+    };
+
+    const SHOCK_RADIUS = 16;
+    const SHOCK_STUN_MS = 1600;
+    const SHOCK_CENTER_DAMAGE = 95;   // AoE damage at the epicentre (falls off to the rim)
+    const applyShockwave = (center: THREE.Vector3): number => {
+      createParticles(center, 0xffe0a0, 40);
+      soundManager.play('hit', 0.85, false, 0.45);
+      soundManager.play('powerUp', 0.6, false, 0.6);
+      if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
+      const r2 = SHOCK_RADIUS * SHOCK_RADIUS;
+      let hit = 0;
+      for (let i = 0; i < enemies.length; i++) {
+        const e = enemies[i];
+        if (e.dead || e.health <= 0) continue;
+        const dx = e.mesh.position.x - center.x;
+        const dz = e.mesh.position.z - center.z;
+        const d2 = dx * dx + dz * dz;
+        if (d2 > r2) continue;
+        hit++;
+        const d = Math.sqrt(d2) || 0.001;
+        const nx = dx / d, nz = dz / d;
+        // Strong near the centre, still meaningful at the rim (1.0 → 0.45).
+        const falloff = 1 - (d / SHOCK_RADIUS) * 0.55;
+        const dmg = SHOCK_CENTER_DAMAGE * falloff;
+        // Record the radial direction FIRST so a lethal blast ragdoll-launches
+        // the corpse OUTWARD from the epicentre (handleEnemyKilled reads this).
+        if (!e.hitImpulse) e.hitImpulse = new THREE.Vector3();
+        e.hitImpulse.set(nx, 0, nz);
+
+        // ── Damage (host-authoritative; guests report the hit) ──
+        if (isMpGuest) {
+          if (mp && e.netId !== undefined) mp.sendEnemyHit(e.netId, dmg, false);
+          continue; // host owns positions / CC / kills
+        }
+        e.health -= dmg;
+        if (e.health <= 0) { handleEnemyKilled(e, false); continue; } // ragdolls outward
+        e.damageFlashTime = Math.max(e.damageFlashTime, 0.5);
+        e.ccUntil = Math.max(e.ccUntil ?? 0, Date.now() + (e.type === 'boss' ? 600 : SHOCK_STUN_MS));
+
+        // ── Forceful knockback with per-axis wall-slide ──
+        // A big single launch (was a tiny ~5u nudge that dense terrain often
+        // cancelled outright). Sliding per-axis means a blast still throws
+        // enemies along a tree line instead of doing nothing.
+        const shove = (e.type === 'boss' ? 1.6 : e.type === 'tank' ? 5.5 : e.type === 'fast' ? 13 : 11) * falloff;
+        const px = e.mesh.position.x, pz = e.mesh.position.z;
+        const sx = nx * shove, sz = nz * shove;
+        if (!checkTerrainCollision(px + sx, pz + sz)) {
+          e.mesh.position.x = px + sx; e.mesh.position.z = pz + sz;
+        } else if (!checkTerrainCollision(px + sx, pz)) {
+          e.mesh.position.x = px + sx;
+        } else if (!checkTerrainCollision(px, pz + sz)) {
+          e.mesh.position.z = pz + sz;
+        }
+      }
+      return hit;
+    };
+
+    // ── TESLA COIL (timed chain-lightning aura) ──────────────────────────────
+    let teslaActive = false;
+    let teslaEndTime = 0;
+    const teslaDuration = 8000;   // 8s aura
+    let teslaNextArcAt = 0;
+    const TESLA_RANGE = 22;        // arc reach (player→enemy and hop→hop)
+    const TESLA_ARC_INTERVAL = 165; // ms between arc volleys
+    const TESLA_DAMAGE = 24;
+    const TESLA_MAX_CHAIN = 3;
+
+    // Short-lived additive jagged bolt that self-fades (~0.14s) via rAF.
+    const spawnLightningBolt = (from: THREE.Vector3, to: THREE.Vector3, color: number) => {
+      const SEG = 6;
+      const pts: THREE.Vector3[] = [];
+      for (let s = 0; s <= SEG; s++) {
+        const t = s / SEG;
+        const p = from.clone().lerp(to, t);
+        if (s > 0 && s < SEG) {
+          p.x += (Math.random() - 0.5) * 0.9;
+          p.y += (Math.random() - 0.5) * 0.9;
+          p.z += (Math.random() - 0.5) * 0.9;
+        }
+        pts.push(p);
+      }
+      const geo = new THREE.BufferGeometry().setFromPoints(pts);
+      const mat = new THREE.LineBasicMaterial({
+        color, transparent: true, opacity: 1, depthWrite: false,
+        blending: THREE.AdditiveBlending, toneMapped: false,
+      });
+      const line = new THREE.Line(geo, mat);
+      line.renderOrder = 995;
+      scene.add(line);
+      let life = 0;
+      const tick = () => {
+        if (!line.parent) { geo.dispose(); mat.dispose(); return; }
+        life += 0.016;
+        mat.opacity = 1 - life / 0.14;
+        if (mat.opacity <= 0) { scene.remove(line); geo.dispose(); mat.dispose(); return; }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    };
+
+    // Per-frame tesla driver — fires a chained arc volley on its interval.
+    const updateTesla = () => {
+      if (!teslaActive) return;
+      const nowMs = Date.now();
+      if (nowMs < teslaNextArcAt) return;
+      teslaNextArcAt = nowMs + TESLA_ARC_INTERVAL;
+      _teslaFrom.set(camera.position.x, camera.position.y - currentCameraHeight * 0.45, camera.position.z);
+      const used = new Set<number>();
+      let hops = 0;
+      for (let hop = 0; hop < TESLA_MAX_CHAIN; hop++) {
+        let best = -1;
+        let bestD2 = TESLA_RANGE * TESLA_RANGE;
+        for (let i = 0; i < enemies.length; i++) {
+          if (used.has(i)) continue;
+          const e = enemies[i];
+          if (e.dead || e.health <= 0) continue;
+          const dx = e.mesh.position.x - _teslaFrom.x;
+          const dz = e.mesh.position.z - _teslaFrom.z;
+          const d2 = dx * dx + dz * dz;
+          if (d2 < bestD2) { bestD2 = d2; best = i; }
+        }
+        if (best < 0) break;
+        used.add(best);
+        const e = enemies[best];
+        _teslaVec.set(e.mesh.position.x, e.mesh.position.y + 1.0, e.mesh.position.z);
+        spawnLightningBolt(_teslaFrom.clone(), _teslaVec.clone(), 0xfff27a);
+        const dmg = TESLA_DAMAGE * (1 - hop * 0.18);
+        if (isMpGuest && mp) {
+          if (e.netId !== undefined) mp.sendEnemyHit(e.netId, dmg, false);
+        } else {
+          e.health -= dmg;
+          if (e.health <= 0) handleEnemyKilled(e, false);
+          else e.damageFlashTime = Math.max(e.damageFlashTime, 0.22);
+        }
+        _teslaFrom.copy(_teslaVec); // chain from this enemy to the next
+        hops++;
+      }
+      if (hops > 0) soundManager.play('hit', 0.28, false, 1.8);
+    };
+
     // ── ENGINEER DEMOLITION HELPERS ──────────────────────────────────────
     // Build the detonator/antenna/wire "kit" that visually turns a plain red
     // barrel into an armed remote bomb. All per-instance materials/geometries
@@ -7250,7 +7647,33 @@ const ForestSurvivalGame = () => {
       // so steady-state gameplay is byte-for-byte unaffected — this only tames the
       // spike frame. (See also the isTabVisible early-return above.)
       const rawDelta = Math.min(clock.getDelta(), 0.1);
-      const delta = rawDelta * timeScale; // Apply slow-mo effect
+
+      // ── Critical-health adrenaline slow-mo ───────────────────────────────
+      // Compute how deep into "critical" the player is (0 = safe, 1 = at death's
+      // door) and ramp a continuous time-dilation toward it. Only while alive,
+      // in-bounds, and not paused — so death/pause never freezes mid-dilation.
+      {
+        const hpFrac = playerMaxHealth > 0 ? health / playerMaxHealth : 1;
+        // Personal bullet-time is solo/tutorial-only — in multiplayer the world
+        // is shared + host-authoritative, so a per-client time-dilation would
+        // desync interpolation and be unfair. Real-time there.
+        const critActive = !isMultiplayer && health > 0 && !playerEliminated && !paused && !orientationBlockedRef.current;
+        const crit = critActive
+          ? THREE.MathUtils.clamp((CRIT_HP_FRACTION - hpFrac) / CRIT_HP_FRACTION, 0, 1)
+          : 0;
+        // Smoothstep so the dilation eases rather than tracking HP linearly.
+        const eased = crit * crit * (3 - 2 * crit);
+        const targetScale = 1 - (1 - CRIT_HP_MIN_SCALE) * eased;
+        // Ramp IN a touch faster than OUT — the gut-punch should hit promptly,
+        // the recovery should breathe back to normal.
+        const k = targetScale < healthTimeScale ? Math.min(1, rawDelta * 3.2) : Math.min(1, rawDelta * 2.2);
+        healthTimeScale += (targetScale - healthTimeScale) * k;
+        if (Math.abs(healthTimeScale - 1) < 0.002) healthTimeScale = 1;
+        // Drive the matching audio muffle (underwater-dull + ducked).
+        soundManager.setSlowMo(eased);
+      }
+
+      const delta = rawDelta * timeScale * healthTimeScale; // transient + critical slow-mo
 
       // Flush any pending HUD update at a capped rate (see flushGameState) so
       // sustained fire can't trigger a React re-render per shot/hit/kill.
@@ -7637,7 +8060,9 @@ const ForestSurvivalGame = () => {
           const dxS = camera.position.x - sentinel.mesh.position.x;
           const dzS = camera.position.z - sentinel.mesh.position.z;
           const distSq = dxS * dxS + dzS * dzS;
-          if (distSq > sentinel.range * sentinel.range) {
+          // Phantom cloak counts as "out of range" — the sentinel can't lock a
+          // cloaked player, so it drops any charge and stays dormant.
+          if (phantomActive || distSq > sentinel.range * sentinel.range) {
             // Out of range — drop any in-progress charge silently.
             sentinel.isCharging = false;
             sentinel.chargeMs = 0;
@@ -7742,8 +8167,23 @@ const ForestSurvivalGame = () => {
 
       // === UPDATE AI SYSTEMS ===
       // Update adaptive difficulty every 5 seconds
-      if (frameCount % 300 === 0 && gameSettings.adaptiveDifficulty) {
+      if (frameCount % 300 === 0 && (gameSettings.adaptiveDifficulty || isAdaptiveMode)) {
         adaptiveDifficulty.update(delta * 300);
+        // ADAPTIVE MODE: push the freshly-computed performance profile onto the
+        // live enemy tuning. Health/damage/spawn apply to future spawns; the
+        // speed target is smoothed onto existing enemies each frame below.
+        if (isAdaptiveMode) {
+          const prof = adaptiveDifficulty.getDifficulty().multipliers;
+          diffSettings.healthMult = prof.enemyHealth;
+          diffSettings.damageMult = prof.enemyDamage;
+          diffSettings.spawnMult = prof.enemySpawnRate;
+          adaptiveSpeedTarget = prof.enemySpeed;
+        }
+      }
+      // Smoothly track the adaptive speed target so the swarm's pace eases in
+      // rather than stepping every 5s (no-op outside adaptive mode).
+      if (isAdaptiveMode) {
+        adaptiveSpeedMult += (adaptiveSpeedTarget - adaptiveSpeedMult) * Math.min(1, rawDelta * 0.8);
       }
 
       // Generate missions periodically (every 30 seconds)
@@ -7814,9 +8254,12 @@ const ForestSurvivalGame = () => {
         tutorialActiveRef.current = false;
       }
 
-      // Update multiplayer (sync player position)
+      // Update multiplayer (sync player position + crouch + held weapon)
       if (isMultiplayer && multiplayerManager) {
-        multiplayerManager.updatePlayerPosition(camera.position, euler);
+        multiplayerManager.updatePlayerPosition(camera.position, euler, isCrouching);
+        // Broadcast weapon swaps so remote avatars hold the right gun (no-ops
+        // internally until the weapon actually changes).
+        multiplayerManager.setCurrentWeapon(currentWeapon);
       }
 
       // Drive remote-player avatar interpolation / animation / nameplates.
@@ -7832,6 +8275,7 @@ const ForestSurvivalGame = () => {
       // it's a string compare internally, so the swap only allocates
       // when the player actually changes weapon.
       localPlayerShadow.setWeapon(currentWeapon);
+      localPlayerShadow.setCrouch(isCrouching);
       localPlayerShadow.setAlive(!playerEliminated && health > 0);
       localPlayerShadow.update(rawDelta, camera, euler);
 
@@ -8140,6 +8584,12 @@ const ForestSurvivalGame = () => {
         phantomActive = false;
         if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Phantom Faded', 'powerup');
       }
+      if (teslaActive && now >= teslaEndTime) {
+        teslaActive = false;
+        if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Tesla Coil Expired', 'powerup');
+      }
+      // Drive the chain-lightning arcs while the Tesla aura is live.
+      updateTesla();
       if (rapidFireActive && now >= rapidFireEndTime) {
         rapidFireActive = false;
         if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Rapid Fire Expired', 'powerup');
@@ -8187,25 +8637,6 @@ const ForestSurvivalGame = () => {
         shieldBreakFlash = Math.max(0, shieldBreakFlash - delta * 2.5);
       }
       applyPhantomVisual(phantomActive);
-
-      // Floating effect indicators above the player's head (anchored at the
-      // player's feet + a fixed height inside EffectIndicators).
-      {
-        const activeEffects: EffectKey[] = [];
-        // Shield + Phantom intentionally omit their floating overhead icon —
-        // the shield has its braced mesh and Phantom fades the weapon, so the
-        // blue/purple sprites were redundant clutter.
-        if (speedBoostActive) activeEffects.push('speed');
-        if (damageBoostActive) activeEffects.push('damage');
-        if (overchargeActive) activeEffects.push('overcharge');
-        if (infiniteAmmoActive) activeEffects.push('infinite_ammo');
-        _effectAnchor.set(
-          camera.position.x,
-          camera.position.y - currentCameraHeight, // ~feet level
-          camera.position.z,
-        );
-        effectIndicators.update(activeEffects, _effectAnchor, now / 1000);
-      }
 
       // Player movement with weight-based speed and ability effects.
       // On touch, the analog joystick contributes to both "is moving" and the
@@ -8285,7 +8716,11 @@ const ForestSurvivalGame = () => {
       // Apply crouch speed reduction
       const crouchMult = isCrouching ? crouchSpeedMultiplier : 1.0;
 
-      const baseSpeed = moveSpeed * weightSpeedMultiplier * abilityEffects.speedMultiplier * powerupSpeedMult * crouchMult * (1 + skillBonus('moveSpeed')) * (mpMods.speedMult ?? 1) * perkBonuses.moveSpeedMult;
+      // Wading through brush slows the player (deepest dead-centre in a bush).
+      // Recomputed here and reused by the footstep rustle. No-op off foliage.
+      bushSlowMul = bushWadeAt(camera.position.x, camera.position.z);
+
+      const baseSpeed = moveSpeed * weightSpeedMultiplier * abilityEffects.speedMultiplier * powerupSpeedMult * crouchMult * bushSlowMul * (1 + skillBonus('moveSpeed')) * (mpMods.speedMult ?? 1) * perkBonuses.moveSpeedMult;
       let currentSpeed = isRunning ? baseSpeed * sprintMultiplier : baseSpeed;
 
       // Apply dash speed if dashing
@@ -8635,6 +9070,12 @@ const ForestSurvivalGame = () => {
           footstepAccum = 0;
           const vol = isCrouching ? 0.1 : isRunning ? 0.26 : 0.18;
           soundManager.play('footstep', vol, false, 0.9 + Math.random() * 0.16);
+          // Pushing through brush adds a soft high-pitched leaf rustle on the
+          // footfall, so the slowdown is felt as well as seen.
+          if (bushSlowMul < 0.98) {
+            const rustle = (1 - bushSlowMul) * 0.6; // scales with how deep in the bush
+            soundManager.play('footstep', 0.12 + rustle * 0.18, false, 1.7 + Math.random() * 0.3);
+          }
         }
       } else {
         footstepAccum = 0;
@@ -9422,8 +9863,9 @@ const ForestSurvivalGame = () => {
             scene.remove(bullet.mesh);
             bullets.splice(i, 1);
 
-            // 🤖 Record hit for AI systems
-            adaptiveDifficulty.recordShot(true, isCritical);
+            // 🤖 Record hit for AI systems (recordHit, NOT recordShot — the
+            // trigger-pull already counted the shot fired in shoot()).
+            adaptiveDifficulty.recordHit(isCritical);
             adaptiveDifficulty.recordDamage(damage, true);
             combatCoach.recordShot(true, isCritical);
 
@@ -10056,7 +10498,19 @@ const ForestSurvivalGame = () => {
           }
 
           // === MOVEMENT ===
-          const isMoving = distance > 2.2 && (!enemy.attackSystem || enemy.attackSystem.canMove());
+          // Crowd-control (Cryo Freeze / Shockwave) roots the enemy in place —
+          // a frozen/stunned robot can't advance until ccUntil elapses.
+          const ccActive = frameNowMs < (enemy.ccUntil ?? 0);
+          // Maintain the frost encasement: gently pulse while frozen, strip it
+          // (and clear the CC) the instant the enemy thaws.
+          if (enemy.frostShell) {
+            if (frameNowMs >= (enemy.frozenUntil ?? 0)) {
+              clearEnemyCC(enemy);
+            } else {
+              enemy.frostShell.scale.setScalar(1 + Math.sin(frameNowMs * 0.012) * 0.04);
+            }
+          }
+          const isMoving = !ccActive && distance > 2.2 && (!enemy.attackSystem || enemy.attackSystem.canMove());
 
           if (isMoving) {
             // Frame-rate independent step (×60 keeps the original 60fps feel)
@@ -10065,7 +10519,9 @@ const ForestSurvivalGame = () => {
             const speedMul = enemy.isDodging ? 3.0
               : enemy.hacked ? aiDecision.moveSpeed * 1.7
               : aiDecision.moveSpeed;
-            const step = enemy.speed * speedMul * delta * 60;
+            // Adaptive mode scales the whole swarm's pace live with the player's
+            // performance (1.0 elsewhere, so fixed difficulties are unchanged).
+            const step = enemy.speed * speedMul * delta * 60 * (isAdaptiveMode ? adaptiveSpeedMult : 1);
             const px = enemy.mesh.position.x;
             const pz = enemy.mesh.position.z;
 
@@ -10324,7 +10780,11 @@ const ForestSurvivalGame = () => {
           const dxR = focusPos.x - enemy.mesh.position.x;
           const dzR = focusPos.z - enemy.mesh.position.z;
           const distR = Math.hypot(dxR, dzR);
-          const inRange = distR >= RANGED_MIN && distR <= RANGED_MAX;
+          // Phantom cloak makes the player untargetable, and a Cryo/Shockwave
+          // stun locks the weapon — both force the charge to reset (else-branch
+          // below) so the unit lowers its weapon instead of firing.
+          const inRange = distR >= RANGED_MIN && distR <= RANGED_MAX
+            && !phantomActive && frameNowMs >= (enemy.ccUntil ?? 0);
           // Line-of-sight: cheap grid query against terrain. We sample the
           // midpoint between the enemy and the player and check for any
           // collidable within ~half the distance — same trick the ranged
@@ -10449,8 +10909,12 @@ const ForestSurvivalGame = () => {
         if ((enemy.type !== 'ranged' || enemy.hacked) && enemy.attackSystem) {
           enemy.attackSystem.update(delta);
 
-          // Try to attack if in range (increased range)
-          const shouldAttack = distance < 7.0;
+          // Try to attack if in range (increased range).
+          // PHANTOM: while the player is cloaked they're intangible AND
+          // untargetable — enemies fully disengage, so no new melee swing is
+          // started and the lunge/hit checks below are skipped. This is what
+          // makes the cloak read as "they lost me", not "they swing through me".
+          const shouldAttack = distance < 7.0 && !phantomActive && frameNowMs >= (enemy.ccUntil ?? 0);
           if (shouldAttack) {
             enemy.attackSystem.tryAttack(
               enemy.mesh.position,
@@ -10778,7 +11242,7 @@ const ForestSurvivalGame = () => {
 
       // ── STAGE 2: spawn warmup pickups (every type) ─────────────────
       await stage('Pickups', false, () => {
-        const warmPowerUpTypes: PowerUp['type'][] = ['overcharge', 'ammo', 'speed', 'damage', 'shield', 'infinite_ammo', 'phantom', 'nuke'];
+        const warmPowerUpTypes: PowerUp['type'][] = ['overcharge', 'ammo', 'speed', 'damage', 'shield', 'infinite_ammo', 'phantom', 'cryo', 'tesla', 'shockwave', 'nuke'];
         warmPowerUpTypes.forEach((type, index) => {
           const warmPowerUp = createPowerUp(
             wp.x + (index - warmPowerUpTypes.length / 2) * 0.85,
@@ -10813,6 +11277,17 @@ const ForestSurvivalGame = () => {
           abilitySystem.createAbilityEffect(scene, wp, 'overcharge'),
           abilitySystem.createAbilityEffect(scene, wp, 'phantom'),
         );
+        // Pre-warm the new AAA activation-burst shader + the Cryo frost shell +
+        // the Tesla lightning-bolt material so the first cast never stalls
+        // compiling them (all self-dispose; the burst/bolt off-screen overhead).
+        abilitySystem.createActivationBurst(scene, wp.clone(), 0x66e0ff);
+        {
+          const warmShell = new THREE.Mesh(_frostShellGeo, _frostShellMat);
+          warmShell.position.copy(wp);
+          scene.add(warmShell);
+          warm.push(warmShell);
+        }
+        spawnLightningBolt(wp.clone(), wp.clone().add(new THREE.Vector3(0, 0.01, 0.01)), 0xfff27a);
         // Pre-warm the killstreak AIRDROP materials (crate, metal bands, glow
         // panel + label, beacon, parachute vertex-colours, smoke points) so the
         // first real airdrop never stalls compiling them. Spawned high overhead
@@ -11130,6 +11605,9 @@ const ForestSurvivalGame = () => {
       // Cleanup weather system
       weatherSystem.clear();
 
+      // Lift any lingering low-health audio muffle so it can't bleed into menus.
+      soundManager.setSlowMo(0);
+
       // Cleanup sky dome
       skyGeometry.dispose();
       if (skyMaterial instanceof THREE.Material) {
@@ -11146,9 +11624,6 @@ const ForestSurvivalGame = () => {
 
       // Cleanup the local player shadow caster (invisible body)
       localPlayerShadow.dispose();
-
-      // Cleanup floating effect indicators
-      effectIndicators.dispose(scene);
 
       // Cleanup any in-flight Subverter beams + live hacked-enemy visuals so
       // their per-instance materials don't leak when the run tears down.
@@ -11727,6 +12202,7 @@ const ForestSurvivalGame = () => {
           isTouch={isTouch}
           fpsVisible={userSettings.showFPS}
           weaponMastery={gameState.weaponMastery}
+          weaponUnlockMult={gameState.weaponUnlockMult}
         />
       </div>
       )}
