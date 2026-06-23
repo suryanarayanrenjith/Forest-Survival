@@ -533,6 +533,31 @@ const ForestSurvivalGame = () => {
     }));
   }, [gameStarted, isAuthenticated, playerStats]);
 
+  // Shared skill-unlock handler — used by BOTH the in-game (pause) and the
+  // main-menu skill tree so the two access points stay perfectly in sync.
+  // The server validates cost + prerequisites and is the single source of
+  // truth; we mirror its result into the live system so in-match stat bonuses
+  // pick it up on the next refresh, and Convex reactivity re-hydrates
+  // skillTreeData everywhere the moment playerStats changes.
+  const handleUnlockSkill = useCallback(async (skillId: string) => {
+    if (!isAuthenticated || !skillTreeRef.current) return;
+    try {
+      const result = await unlockSkillMutation({ skillId });
+      skillTreeRef.current.hydrate(result.skills, result.skillPoints);
+      const s = skillTreeRef.current.getState();
+      setSkillTreeData({
+        skills: skillTreeRef.current.getAllSkills(),
+        availablePoints: s.availablePoints,
+        spentPoints: s.spentPoints,
+        totalPoints: s.totalPoints,
+        detectedPlayStyle: 'balanced',
+        recommendations: skillTreeRef.current.generateRecommendations(),
+      });
+    } catch {
+      // Validation failure (not enough points / reqs) — leave UI as-is.
+    }
+  }, [isAuthenticated, unlockSkillMutation]);
+
   // Leaving a match (back to lobby / menu / game-over) re-arms the
   // multiplayer start guard so the next match can begin cleanly.
   useEffect(() => {
@@ -12765,7 +12790,7 @@ const ForestSurvivalGame = () => {
 
         <MenuTransition menuKey={menuScreenKey} depth={menuScreenDepth}>
           {gameMode === 'none' && !showClassicMenu && !showTutorialMenu && !showMultiplayerLobby && (
-            <MainMenu onClassicMode={handleModeSelection} onMultiplayerMode={handleMultiplayerMode} onTutorialMode={handleTutorialMode} t={t} />
+            <MainMenu onClassicMode={handleModeSelection} onMultiplayerMode={handleMultiplayerMode} onTutorialMode={handleTutorialMode} onSkillTree={() => setShowSkillTree(true)} t={t} />
           )}
           {showClassicMenu && (
             <ClassicMenu onStartGame={handleClassicGameStart} onBack={() => { setShowClassicMenu(false); setGameMode('none'); }} selectedCharacter={selectedCharacter} onSelectCharacter={setSelectedCharacter} t={t} />
@@ -12801,6 +12826,26 @@ const ForestSurvivalGame = () => {
             />
           )}
         </MenuTransition>
+
+        {/* Skill Tree — reachable straight from the Main Menu (signed-in only,
+            same as the rest of progression). It shares the exact same
+            showSkillTree state, skillTreeData and unlock handler as the in-game
+            pause-menu tree, so spent points + unlocks are always identical
+            across both entry points. Closing only dismisses the overlay here
+            (there's no paused match to restore). */}
+        {showSkillTree && isAuthenticated && (
+          <SkillTreeMenu
+            skills={skillTreeData.skills}
+            availablePoints={skillTreeData.availablePoints}
+            spentPoints={skillTreeData.spentPoints}
+            totalPoints={skillTreeData.totalPoints}
+            detectedPlayStyle={skillTreeData.detectedPlayStyle}
+            recommendations={skillTreeData.recommendations}
+            onUnlockSkill={handleUnlockSkill}
+            onClose={() => setShowSkillTree(false)}
+          />
+        )}
+
         {/* Global music mute — pinned bottom-right, visible across every menu */}
         <MusicMuteButton />
       </>
@@ -13484,27 +13529,7 @@ const ForestSurvivalGame = () => {
           totalPoints={skillTreeData.totalPoints}
           detectedPlayStyle={skillTreeData.detectedPlayStyle}
           recommendations={skillTreeData.recommendations}
-          onUnlockSkill={async (skillId) => {
-            if (!isAuthenticated || !skillTreeRef.current) return;
-            try {
-              // Server validates cost + prerequisites and is the source of truth.
-              const result = await unlockSkillMutation({ skillId });
-              // Mirror the persisted state into the live system so in-match
-              // bonuses pick it up on the next 0.4s refresh.
-              skillTreeRef.current.hydrate(result.skills, result.skillPoints);
-              const s = skillTreeRef.current.getState();
-              setSkillTreeData({
-                skills: skillTreeRef.current.getAllSkills(),
-                availablePoints: s.availablePoints,
-                spentPoints: s.spentPoints,
-                totalPoints: s.totalPoints,
-                detectedPlayStyle: 'balanced',
-                recommendations: skillTreeRef.current.generateRecommendations(),
-              });
-            } catch {
-              // Validation failure (not enough points / reqs) — leave UI as-is.
-            }
-          }}
+          onUnlockSkill={handleUnlockSkill}
           onClose={() => { setShowSkillTree(false); setIsPaused(true); }}
         />
       )}

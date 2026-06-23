@@ -112,9 +112,12 @@ canvas {
   }
 }
 
-/* Custom scrollbar */
+/* Custom scrollbar — width controls vertical bars, height the horizontal ones
+   (e.g. the Activity heatmap's x-scroll). Both kept slim so a horizontal
+   scrollbar never reads as a thick bar under the content. */
 ::-webkit-scrollbar {
   width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {

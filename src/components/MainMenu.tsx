@@ -33,6 +33,9 @@ interface MainMenuProps {
   onClassicMode: () => void;
   onMultiplayerMode: () => void;
   onTutorialMode: () => void;
+  /** Opens the shared Skill Tree overlay (App owns the state). Signed-in only;
+   *  guests are routed through sign-in first. */
+  onSkillTree: () => void;
   t: (key: string) => string;
 }
 
@@ -51,7 +54,7 @@ const accentTile: Record<Accent, string> = {
   amber: 'border-amber-400/30 bg-amber-500/[0.1] group-hover:border-amber-300/55',
 };
 
-const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode }: MainMenuProps) => {
+const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode, onSkillTree }: MainMenuProps) => {
   const [showSettings, setShowSettings] = useState(false);
   const [showCredits, setShowCredits] = useState(false);
   const [showAuth, setShowAuth] = useState(false);
@@ -407,8 +410,8 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode }: MainMenu
       {/* Authentication Menu */}
       {showAuth && <AuthMenu onClose={closeAuth} onSignedIn={() => setShowAuth(false)} initialMode={authMode} />}
 
-      {/* Profile Menu */}
-      {showProfile && <ProfileMenu onClose={closeProfile} />}
+      {/* Profile Menu — the skill tree lives inside here now (Overview tab). */}
+      {showProfile && <ProfileMenu onClose={closeProfile} onSkillTree={onSkillTree} />}
     </div>
   );
 };

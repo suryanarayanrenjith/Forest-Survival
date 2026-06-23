@@ -3,7 +3,8 @@ import { createPortal } from 'react-dom';
 import {
   KeyRound, LogOut, ShieldCheck, X, User, BarChart3, Trophy,
   Lock, Eye, EyeOff, Check, Calendar, Camera, Download, Trash2, ImageOff, Loader2, Maximize2,
-  Crown, AlertTriangle, Loader, Activity, Flame, CalendarDays, Pencil,
+  Crown, AlertTriangle, Loader, Activity, Flame, CalendarDays, Pencil, Network, Coins, ChevronRight,
+  Gauge, ChartPie, Radar, Swords, Users, type LucideIcon,
 } from 'lucide-react';
 import { useAction, useMutation, useQuery } from 'convex/react';
 import type { Id } from '../../convex/_generated/dataModel';
@@ -20,6 +21,9 @@ import { AVATARS } from '../utils/avatars';
 
 interface ProfileMenuProps {
   onClose: () => void;
+  /** Opens the shared Skill Tree overlay (App owns the state, so it's the same
+   *  tree as the in-game pause menu). */
+  onSkillTree: () => void;
 }
 
 type TabKey = 'overview' | 'stats' | 'achievements' | 'leaderboard' | 'photos';
@@ -56,6 +60,23 @@ const SectionLabel = ({ children }: { children: ReactNode }) => (
   <p className="font-hud text-[10px] font-semibold uppercase tracking-[0.22em] text-gray-400">{children}</p>
 );
 
+/** Icon-led header for the left-column settings cards. Keeps every card aligned
+ *  to the same rhythm (emerald glyph tile + label, optional right-aligned slot). */
+const CardHead = ({ icon: Icon, label, right }: { icon: LucideIcon; label: string; right?: ReactNode }) => (
+  <div className="flex items-center justify-between gap-2">
+    <div className="flex items-center gap-2.5">
+      <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg border border-emerald-400/25 bg-emerald-500/[0.08]">
+        <Icon className="h-3.5 w-3.5 text-emerald-300" strokeWidth={2.2} />
+      </span>
+      <p className="font-hud text-[11px] font-semibold uppercase tracking-[0.2em] text-gray-200">{label}</p>
+    </div>
+    {right}
+  </div>
+);
+
+/** Consistent left-column card shell. */
+const LEFT_CARD = 'rounded-2xl border border-white/[0.08] bg-white/[0.02] p-4';
+
 const StatRow = ({ label, value }: { label: string; value: string }) => (
   <div className="flex items-baseline justify-between gap-2">
     <span className="font-hud text-[11px] text-gray-400">{label}</span>
@@ -63,7 +84,7 @@ const StatRow = ({ label, value }: { label: string; value: string }) => (
   </div>
 );
 
-const ProfileMenu = ({ onClose }: ProfileMenuProps) => {
+const ProfileMenu = ({ onClose, onSkillTree }: ProfileMenuProps) => {
   const { signOut } = useAuthActions();
   const { currentUser, playerStats } = usePlayerData();
   const deleteAccount = useAction(api.account.deleteAccount);
@@ -97,9 +118,11 @@ const ProfileMenu = ({ onClose }: ProfileMenuProps) => {
   const solo = playerStats?.solo;
   const mp = playerStats?.multiplayer;
   const avatarIndex = playerStats?.avatarIndex ?? 0;
+  const activeAvatar = AVATARS[avatarIndex] ?? AVATARS[0];
   const statsPublic = playerStats?.statsPublic ?? true;
   const leaderboardOptIn = playerStats?.leaderboardOptIn ?? true;
   const skillsUnlocked = playerStats ? Object.keys(playerStats.skills).length : 0;
+  const skillPoints = playerStats?.skillPoints ?? 0;
   const achievementsUnlocked = playerStats ? popcount(playerStats.achievements) : 0;
   const mpKd = mp ? (mp.totalDeaths > 0 ? (mp.totalKills / mp.totalDeaths).toFixed(2) : `${mp.totalKills}`) : '0';
   const mpWinRate = mp && mp.gamesPlayed > 0 ? Math.round((mp.wins / mp.gamesPlayed) * 100) : 0;
@@ -241,8 +264,12 @@ const ProfileMenu = ({ onClose }: ProfileMenuProps) => {
           {/* ── LEFT · ACCOUNT ─────────────────────────────────────────── */}
           <aside className="w-full flex-shrink-0 space-y-4 border-b border-white/[0.07] p-5 md:w-[340px] md:border-b-0 md:border-r md:overflow-y-auto">
             {/* Identity */}
-            <div className="rounded-2xl border border-emerald-400/20 bg-gradient-to-br from-emerald-500/[0.08] to-transparent p-4">
-              <div className="flex items-center gap-3.5">
+            <div
+              className="hud-frame relative overflow-hidden rounded-2xl border border-emerald-400/20 bg-gradient-to-br from-emerald-500/[0.1] to-transparent p-4"
+              style={{ '--hud-bracket': 'rgba(46,232,180,0.45)' } as CSSProperties}
+            >
+              <div className="pointer-events-none absolute -right-12 -top-12 h-28 w-28 rounded-full" style={{ background: 'radial-gradient(circle, rgba(46,232,180,0.16), transparent 70%)', filter: 'blur(6px)' }} />
+              <div className="relative flex items-center gap-3.5">
                 <UserAvatar name={currentUser?.name} username={currentUser?.username} avatarIndex={avatarIndex} size="lg" className="shadow-[0_0_0_4px_rgba(16,185,129,0.08)]" />
                 <div className="min-w-0">
                   <p className="font-hud text-[10px] tracking-[0.32em] text-emerald-300/90 font-semibold uppercase">Signed In</p>
@@ -298,9 +325,17 @@ const ProfileMenu = ({ onClose }: ProfileMenuProps) => {
             </div>
 
             {/* Avatar picker */}
-            <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
-              <SectionLabel>Avatar</SectionLabel>
-              <p className="mt-1 text-[11px] text-gray-500">Pick how you appear across menus and multiplayer.</p>
+            <div className={LEFT_CARD}>
+              <CardHead
+                icon={User}
+                label="Avatar"
+                right={
+                  <span className="font-hud rounded-md border border-emerald-400/20 bg-emerald-500/[0.07] px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-200">
+                    {activeAvatar.name}
+                  </span>
+                }
+              />
+              <p className="mt-2 text-[11px] text-gray-500">Pick how you appear across menus and multiplayer.</p>
               <div className="mt-3.5 grid grid-cols-6 gap-x-3 gap-y-3.5 sm:gap-x-3.5">
                 {AVATARS.map((a) => {
                   const Icon = a.Icon;
@@ -310,13 +345,13 @@ const ProfileMenu = ({ onClose }: ProfileMenuProps) => {
                       key={a.id}
                       onClick={() => handlePickAvatar(a.id)}
                       title={a.name}
-                      className={`relative aspect-square rounded-xl bg-gradient-to-br ${a.gradient} flex items-center justify-center transition-transform hover:scale-110 ${
-                        active ? 'ring-2 ring-emerald-300 ring-offset-2 ring-offset-[#0a1410]' : 'ring-1 ring-white/10 hover:ring-white/25'
+                      className={`relative aspect-square rounded-xl bg-gradient-to-br ${a.gradient} flex items-center justify-center transition-all duration-200 hover:scale-110 hover:-translate-y-0.5 ${
+                        active ? 'ring-2 ring-emerald-300 ring-offset-2 ring-offset-[#0a1410] shadow-[0_6px_18px_-6px_rgba(52,211,153,0.75)]' : 'ring-1 ring-white/10 hover:ring-white/30'
                       }`}
                     >
                       <Icon className="h-[18px] w-[18px] text-slate-950" strokeWidth={2.3} />
                       {active && (
-                        <span className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-emerald-500">
+                        <span className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-emerald-500 ring-2 ring-[#0a1410]">
                           <Check className="h-2.5 w-2.5 text-white" strokeWidth={3.5} />
                         </span>
                       )}
@@ -327,22 +362,22 @@ const ProfileMenu = ({ onClose }: ProfileMenuProps) => {
             </div>
 
             {/* Privacy */}
-            <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
-              <SectionLabel>Stats Privacy</SectionLabel>
-              <p className="mt-1 text-[11px] text-gray-500">When private, others still see your rank &amp; avatar — but not detailed stats.</p>
+            <div className={LEFT_CARD}>
+              <CardHead icon={Eye} label="Stats Privacy" />
+              <p className="mt-2 text-[11px] leading-relaxed text-gray-500">When private, others still see your rank &amp; avatar — but not detailed stats.</p>
               <div className="mt-3 grid grid-cols-2 gap-2">
                 <button
                   onClick={() => handlePrivacy(true)}
-                  className={`font-hud flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-xs font-semibold uppercase tracking-wider transition-colors ${
-                    statsPublic ? 'border-emerald-400/40 bg-emerald-500/[0.1] text-emerald-200' : 'border-white/10 text-gray-400 hover:bg-white/[0.04]'
+                  className={`font-hud flex items-center justify-center gap-2 rounded-xl border px-3 py-2.5 text-xs font-semibold uppercase tracking-wider transition-all ${
+                    statsPublic ? 'border-emerald-400/45 bg-emerald-500/[0.12] text-emerald-100 shadow-[0_0_18px_-6px_rgba(52,211,153,0.6)]' : 'border-white/10 bg-white/[0.02] text-gray-400 hover:bg-white/[0.05] hover:text-gray-200'
                   }`}
                 >
                   <Eye className="w-4 h-4" strokeWidth={2.2} /> Public
                 </button>
                 <button
                   onClick={() => handlePrivacy(false)}
-                  className={`font-hud flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-xs font-semibold uppercase tracking-wider transition-colors ${
-                    !statsPublic ? 'border-amber-400/40 bg-amber-500/[0.1] text-amber-200' : 'border-white/10 text-gray-400 hover:bg-white/[0.04]'
+                  className={`font-hud flex items-center justify-center gap-2 rounded-xl border px-3 py-2.5 text-xs font-semibold uppercase tracking-wider transition-all ${
+                    !statsPublic ? 'border-amber-400/45 bg-amber-500/[0.12] text-amber-100 shadow-[0_0_18px_-6px_rgba(245,158,11,0.55)]' : 'border-white/10 bg-white/[0.02] text-gray-400 hover:bg-white/[0.05] hover:text-gray-200'
                   }`}
                 >
                   <EyeOff className="w-4 h-4" strokeWidth={2.2} /> Private
@@ -351,22 +386,22 @@ const ProfileMenu = ({ onClose }: ProfileMenuProps) => {
             </div>
 
             {/* Leaderboard visibility */}
-            <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
-              <SectionLabel>Leaderboard</SectionLabel>
-              <p className="mt-1 text-[11px] text-gray-500">Show your name, rank &amp; best wave on the global leaderboard.</p>
+            <div className={LEFT_CARD}>
+              <CardHead icon={Crown} label="Leaderboard" />
+              <p className="mt-2 text-[11px] leading-relaxed text-gray-500">Show your name, rank &amp; best wave on the global leaderboard.</p>
               <div className="mt-3 grid grid-cols-2 gap-2">
                 <button
                   onClick={() => handleLeaderboardOptIn(true)}
-                  className={`font-hud flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-xs font-semibold uppercase tracking-wider transition-colors ${
-                    leaderboardOptIn ? 'border-amber-400/40 bg-amber-500/[0.1] text-amber-200' : 'border-white/10 text-gray-400 hover:bg-white/[0.04]'
+                  className={`font-hud flex items-center justify-center gap-2 rounded-xl border px-3 py-2.5 text-xs font-semibold uppercase tracking-wider transition-all ${
+                    leaderboardOptIn ? 'border-amber-400/45 bg-amber-500/[0.12] text-amber-100 shadow-[0_0_18px_-6px_rgba(245,158,11,0.55)]' : 'border-white/10 bg-white/[0.02] text-gray-400 hover:bg-white/[0.05] hover:text-gray-200'
                   }`}
                 >
                   <Trophy className="w-4 h-4" strokeWidth={2.2} /> Show me
                 </button>
                 <button
                   onClick={() => handleLeaderboardOptIn(false)}
-                  className={`font-hud flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-xs font-semibold uppercase tracking-wider transition-colors ${
-                    !leaderboardOptIn ? 'border-white/30 bg-white/[0.06] text-gray-100' : 'border-white/10 text-gray-400 hover:bg-white/[0.04]'
+                  className={`font-hud flex items-center justify-center gap-2 rounded-xl border px-3 py-2.5 text-xs font-semibold uppercase tracking-wider transition-all ${
+                    !leaderboardOptIn ? 'border-white/30 bg-white/[0.07] text-gray-100' : 'border-white/10 bg-white/[0.02] text-gray-400 hover:bg-white/[0.05] hover:text-gray-200'
                   }`}
                 >
                   <EyeOff className="w-4 h-4" strokeWidth={2.2} /> Hide me
@@ -375,8 +410,8 @@ const ProfileMenu = ({ onClose }: ProfileMenuProps) => {
             </div>
 
             {/* Account — security actions + danger zone, compact */}
-            <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
-              <SectionLabel>Account</SectionLabel>
+            <div className={LEFT_CARD}>
+              <CardHead icon={KeyRound} label="Account" />
               <div className="mt-3 grid gap-2">
                 <button
                   type="button"
@@ -438,12 +473,19 @@ const ProfileMenu = ({ onClose }: ProfileMenuProps) => {
                 <div className="space-y-5">
                   {rank && (
                     <div
-                      className="relative overflow-hidden rounded-2xl border p-5"
-                      style={{ borderColor: `${rank.color}33`, background: `radial-gradient(120% 140% at 0% 0%, ${rank.color}1f, transparent 55%), rgba(255,255,255,0.02)` }}
+                      className="hud-frame relative overflow-hidden rounded-2xl border p-5"
+                      style={{
+                        borderColor: `${rank.color}3a`,
+                        background: `radial-gradient(130% 150% at 0% 0%, ${rank.color}22, transparent 55%), linear-gradient(180deg, rgba(255,255,255,0.025), rgba(255,255,255,0.008))`,
+                        '--hud-bracket': `${rank.color}80`,
+                      } as CSSProperties}
                     >
-                      <p className="font-hud mb-3 text-[10px] tracking-[0.32em] font-semibold uppercase" style={{ color: rank.color }}>
-                        Rank
-                      </p>
+                      <div className="pointer-events-none absolute inset-x-0 top-0 h-px" style={{ background: `linear-gradient(90deg, transparent, ${rank.color}aa, transparent)` }} />
+                      <div className="pointer-events-none absolute -right-10 -top-12 h-36 w-36 rounded-full" style={{ background: `radial-gradient(circle, ${rank.color}26, transparent 70%)`, filter: 'blur(8px)' }} />
+                      <div className="relative mb-3 flex items-center gap-2.5">
+                        <span className="font-hud text-[10px] font-semibold uppercase tracking-[0.32em]" style={{ color: rank.color }}>Rank</span>
+                        <span className="h-px flex-1" style={{ background: `linear-gradient(90deg, ${rank.color}55, transparent)` }} />
+                      </div>
                       <RankBadge rank={rank} />
                     </div>
                   )}
@@ -453,6 +495,34 @@ const ProfileMenu = ({ onClose }: ProfileMenuProps) => {
                     <HeadlineStat label="MP Wins" value={`${mp?.wins ?? 0}`} />
                     <HeadlineStat label="Trophies" value={`${achievementsUnlocked}/${achievements.length}`} accent="amber" />
                   </div>
+
+                  {/* Skill Tree — opens the shared progression overlay (the very
+                      same tree as the in-game pause menu, so points + unlocks are
+                      always in sync). Spend points earned from runs on permanent
+                      upgrades. The live points pill nudges when there's something
+                      to spend. */}
+                  <button
+                    onClick={onSkillTree}
+                    className="group relative flex w-full items-center gap-3.5 overflow-hidden rounded-2xl border border-violet-400/25 bg-gradient-to-br from-violet-500/[0.1] to-transparent p-4 text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-violet-300/45"
+                  >
+                    <span className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-xl border border-violet-400/30 bg-violet-500/[0.12]">
+                      <Network className="h-[22px] w-[22px] text-violet-200" strokeWidth={2} />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="font-display block text-lg font-semibold uppercase tracking-wide leading-none text-white">Skill Tree</span>
+                      <span className="font-hud mt-1 block text-[11px] text-gray-400">
+                        {skillPoints > 0
+                          ? `${skillPoints} point${skillPoints === 1 ? '' : 's'} ready to spend on upgrades`
+                          : 'Earn points from every run, then upgrade here'}
+                      </span>
+                    </span>
+                    {skillPoints > 0 && (
+                      <span className="font-hud flex flex-shrink-0 items-center gap-1.5 rounded-lg border border-emerald-400/35 bg-emerald-500/[0.12] px-2.5 py-1 text-[13px] font-bold tabular-nums text-emerald-200">
+                        <Coins className="h-3.5 w-3.5" strokeWidth={2.25} /> {skillPoints}
+                      </span>
+                    )}
+                    <ChevronRight className="h-5 w-5 flex-shrink-0 text-violet-300/50 transition-all group-hover:translate-x-0.5 group-hover:text-violet-200" strokeWidth={2} />
+                  </button>
 
                   <ActivityHeatmap />
                 </div>
@@ -465,6 +535,20 @@ const ProfileMenu = ({ onClose }: ProfileMenuProps) => {
                     <HeadlineStat label="Skills" value={`${skillsUnlocked}`} />
                     <HeadlineStat label="Trophies" value={`${achievementsUnlocked}/${achievements.length}`} accent="amber" />
                   </div>
+
+                  {/* Switchable stats visualizer — Bars / Donut / Radar. */}
+                  <StatsVisualizer
+                    soloScore={solo?.highScore ?? 0}
+                    soloKills={solo?.totalKills ?? 0}
+                    soloRuns={solo?.totalRuns ?? 0}
+                    bestWave={solo?.highestWave ?? 0}
+                    mpScore={mp?.highScore ?? 0}
+                    mpKills={mp?.totalKills ?? 0}
+                    mpGames={mp?.gamesPlayed ?? 0}
+                    winRate={mpWinRate}
+                    trophiesUnlocked={achievementsUnlocked}
+                    trophiesTotal={achievements.length}
+                  />
 
                   <div className="rounded-xl border border-emerald-400/20 bg-emerald-500/[0.05] p-4">
                     <p className="font-hud text-[11px] font-semibold text-emerald-300 uppercase tracking-[0.18em]">Solo</p>
@@ -1221,6 +1305,250 @@ const PhotosPanel = () => {
     </div>
   );
 };
+
+/* ============================================================
+ * STATS VISUALIZER — one switchable chart (Bars / Donut / Radar)
+ * ============================================================ */
+type StatsView = 'bars' | 'donut' | 'radar';
+
+const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
+const fmtCompact = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : `${n}`);
+
+const SV_VIEWS: { key: StatsView; label: string; Icon: LucideIcon }[] = [
+  { key: 'bars', label: 'Bars', Icon: BarChart3 },
+  { key: 'donut', label: 'Split', Icon: ChartPie },
+  { key: 'radar', label: 'Profile', Icon: Radar },
+];
+const SV_TITLE: Record<StatsView, string> = {
+  bars: 'Solo vs Multiplayer',
+  donut: 'Kill Distribution',
+  radar: 'Operative Profile',
+};
+
+interface StatsVisualizerProps {
+  soloScore: number; soloKills: number; soloRuns: number; bestWave: number;
+  mpScore: number; mpKills: number; mpGames: number;
+  winRate: number; trophiesUnlocked: number; trophiesTotal: number;
+}
+
+const StatsVisualizer = (p: StatsVisualizerProps) => {
+  const [view, setView] = useState<StatsView>('bars');
+
+  return (
+    <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-white/[0.02] p-4 sm:p-5">
+      {/* faint aurora wash */}
+      <div className="pointer-events-none absolute -right-16 -top-16 h-44 w-44 rounded-full" style={{ background: 'radial-gradient(circle, rgba(46,232,180,0.1), transparent 70%)', filter: 'blur(10px)' }} />
+
+      <div className="relative mb-4 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Gauge className="h-4 w-4 text-emerald-300" strokeWidth={2.2} />
+          <p className="font-hud text-[11px] font-semibold uppercase tracking-[0.2em] text-gray-200">{SV_TITLE[view]}</p>
+        </div>
+        <div className="flex items-center gap-0.5 rounded-lg border border-white/10 bg-black/30 p-0.5">
+          {SV_VIEWS.map((v) => {
+            const active = view === v.key;
+            return (
+              <button
+                key={v.key}
+                onClick={() => setView(v.key)}
+                aria-pressed={active}
+                className={`font-hud flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-wider transition-colors ${
+                  active ? 'bg-emerald-500/[0.16] text-emerald-200 shadow-[inset_0_0_0_1px_rgba(52,211,153,0.3)]' : 'text-gray-500 hover:text-gray-300'
+                }`}
+              >
+                <v.Icon className="h-3.5 w-3.5" strokeWidth={2.2} />
+                <span className="hidden sm:inline">{v.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div key={view} className="relative" style={{ animation: 'svViewIn 0.34s cubic-bezier(0.16,1,0.3,1)' }}>
+        {view === 'bars' && <SvBars {...p} />}
+        {view === 'donut' && <SvDonut soloKills={p.soloKills} mpKills={p.mpKills} />}
+        {view === 'radar' && <SvRadar {...p} />}
+      </div>
+
+      <style>{`
+        @keyframes svViewIn { from { opacity: 0; transform: translateY(8px) scale(0.99); } to { opacity: 1; transform: translateY(0) scale(1); } }
+        @keyframes svBarGrow { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+      `}</style>
+    </div>
+  );
+};
+
+const SvBars = ({ soloScore, soloKills, soloRuns, mpScore, mpKills, mpGames }: StatsVisualizerProps) => {
+  const groups = [
+    { label: 'Score', solo: soloScore, mp: mpScore },
+    { label: 'Kills', solo: soloKills, mp: mpKills },
+    { label: 'Games', solo: soloRuns, mp: mpGames },
+  ];
+  return (
+    <div>
+      <div className="flex h-44 items-end justify-around gap-2 px-1">
+        {groups.map((g) => {
+          const max = Math.max(g.solo, g.mp, 1);
+          return (
+            <div key={g.label} className="flex h-full items-end gap-2.5">
+              <SvBar value={g.solo} pct={(g.solo / max) * 100} fill="linear-gradient(180deg,#6ee7b7,#059669)" glow="rgba(52,211,153,0.45)" />
+              <SvBar value={g.mp} pct={(g.mp / max) * 100} fill="linear-gradient(180deg,#7dd3fc,#0284c7)" glow="rgba(56,189,248,0.45)" />
+            </div>
+          );
+        })}
+      </div>
+      <div className="mt-2 flex justify-around">
+        {groups.map((g) => (
+          <span key={g.label} className="font-hud text-[10px] font-semibold uppercase tracking-[0.16em] text-gray-500">{g.label}</span>
+        ))}
+      </div>
+      <div className="mt-3.5 flex items-center justify-center gap-5 border-t border-white/[0.06] pt-3">
+        <SvLegend Icon={Swords} color="#34d399" label="Solo" />
+        <SvLegend Icon={Users} color="#38bdf8" label="Multiplayer" />
+      </div>
+    </div>
+  );
+};
+
+const SvBar = ({ value, pct, fill, glow }: { value: number; pct: number; fill: string; glow: string }) => (
+  <div className="flex h-full w-9 flex-col items-center justify-end">
+    <span className="font-hud mb-1 text-[10px] font-bold tabular-nums text-gray-300">{fmtCompact(value)}</span>
+    <div
+      className="w-full rounded-t-md"
+      style={{ height: `${Math.max(pct * 0.86, 2)}%`, background: fill, boxShadow: `0 0 14px ${glow}`, transformOrigin: 'bottom', animation: 'svBarGrow 0.7s cubic-bezier(0.16,1,0.3,1)' }}
+    />
+  </div>
+);
+
+const SvLegend = ({ Icon, color, label }: { Icon: LucideIcon; color: string; label: string }) => (
+  <div className="flex items-center gap-1.5">
+    <Icon className="h-3.5 w-3.5" strokeWidth={2.2} style={{ color }} />
+    <span className="font-hud text-[10px] font-semibold uppercase tracking-wider text-gray-400">{label}</span>
+  </div>
+);
+
+const SvDonut = ({ soloKills, mpKills }: { soloKills: number; mpKills: number }) => {
+  const total = soloKills + mpKills;
+  if (total === 0) {
+    return <SvEmpty label="No kills recorded yet" hint="Play a run to chart how your kills split between Solo and Multiplayer." />;
+  }
+  const soloPct = (soloKills / total) * 100;
+  const mpPct = 100 - soloPct;
+  const R = 46;
+  return (
+    <div className="flex flex-col items-center gap-5 py-2 sm:flex-row sm:justify-center sm:gap-9">
+      <div className="relative" style={{ width: 168, height: 168 }}>
+        <svg viewBox="0 0 120 120" className="h-full w-full -rotate-90">
+          <defs>
+            <linearGradient id="svSolo" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stopColor="#6ee7b7" /><stop offset="1" stopColor="#059669" />
+            </linearGradient>
+            <linearGradient id="svMp" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stopColor="#7dd3fc" /><stop offset="1" stopColor="#0284c7" />
+            </linearGradient>
+          </defs>
+          <circle cx="60" cy="60" r={R} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="13" />
+          <circle cx="60" cy="60" r={R} fill="none" stroke="url(#svSolo)" strokeWidth="13" pathLength={100}
+            strokeDasharray={`${soloPct} 100`} style={{ filter: 'drop-shadow(0 0 4px rgba(52,211,153,0.5))' }} />
+          <circle cx="60" cy="60" r={R} fill="none" stroke="url(#svMp)" strokeWidth="13" pathLength={100}
+            strokeDasharray={`${mpPct} 100`} strokeDashoffset={-soloPct} style={{ filter: 'drop-shadow(0 0 4px rgba(56,189,248,0.5))' }} />
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <span className="font-display text-2xl font-bold tabular-nums leading-none text-white">{total.toLocaleString()}</span>
+          <span className="font-hud mt-1 text-[9px] font-semibold uppercase tracking-[0.18em] text-gray-500">Total Kills</span>
+        </div>
+      </div>
+      <div className="w-full max-w-[220px] space-y-2.5 sm:w-auto">
+        <SvDonutRow Icon={Swords} color="#34d399" label="Solo" value={soloKills} pct={soloPct} />
+        <SvDonutRow Icon={Users} color="#38bdf8" label="Multiplayer" value={mpKills} pct={mpPct} />
+      </div>
+    </div>
+  );
+};
+
+const SvDonutRow = ({ Icon, color, label, value, pct }: { Icon: LucideIcon; color: string; label: string; value: number; pct: number }) => (
+  <div className="flex items-center gap-2.5 rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2 sm:min-w-[180px]">
+    <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg" style={{ background: `${color}1f`, boxShadow: `inset 0 0 0 1px ${color}44` }}>
+      <Icon className="h-3.5 w-3.5" strokeWidth={2.2} style={{ color }} />
+    </span>
+    <div className="min-w-0 flex-1">
+      <div className="font-hud text-[10px] font-semibold uppercase tracking-wider text-gray-400">{label}</div>
+      <div className="text-sm font-bold tabular-nums text-white">
+        {value.toLocaleString()} <span className="text-[11px] font-semibold text-gray-500">· {Math.round(pct)}%</span>
+      </div>
+    </div>
+  </div>
+);
+
+const RADAR_AXES = ['Firepower', 'Survival', 'Victory', 'Experience', 'Mastery'];
+const SvRadar = ({ soloKills, mpKills, bestWave, winRate, soloRuns, mpGames, trophiesUnlocked, trophiesTotal }: StatsVisualizerProps) => {
+  const values = [
+    clamp01((soloKills + mpKills) / 1500),
+    clamp01(bestWave / 25),
+    clamp01(winRate / 100),
+    clamp01((soloRuns + mpGames) / 120),
+    clamp01(trophiesTotal ? trophiesUnlocked / trophiesTotal : 0),
+  ];
+  const N = values.length;
+  const C = 110, R = 78;
+  const ang = (i: number) => ((-90 + (i * 360) / N) * Math.PI) / 180;
+  const coord = (i: number, r: number): [number, number] => [C + r * Math.cos(ang(i)), C + r * Math.sin(ang(i))];
+  const poly = (mapR: (i: number) => number) => values.map((_, i) => coord(i, mapR(i)).map((n) => n.toFixed(1)).join(',')).join(' ');
+  const overall = Math.round((values.reduce((a, b) => a + b, 0) / N) * 100);
+
+  return (
+    <div className="flex flex-col items-center">
+      <svg viewBox="0 0 220 220" className="h-[230px] w-full max-w-[260px] overflow-visible">
+        <defs>
+          <radialGradient id="svRadarFill" cx="50%" cy="45%" r="65%">
+            <stop offset="0" stopColor="rgba(46,232,180,0.45)" /><stop offset="1" stopColor="rgba(46,232,180,0.08)" />
+          </radialGradient>
+        </defs>
+        {[0.25, 0.5, 0.75, 1].map((f) => (
+          <polygon key={f} points={poly(() => R * f)} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="1" />
+        ))}
+        {values.map((_, i) => {
+          const [x, y] = coord(i, R);
+          return <line key={i} x1={C} y1={C} x2={x} y2={y} stroke="rgba(255,255,255,0.08)" strokeWidth="1" />;
+        })}
+        <polygon
+          points={poly((i) => R * Math.max(values[i], 0.02))}
+          fill="url(#svRadarFill)"
+          stroke="#2ee8b4"
+          strokeWidth="2"
+          strokeLinejoin="round"
+          style={{ filter: 'drop-shadow(0 0 6px rgba(46,232,180,0.5))' }}
+        />
+        {values.map((v, i) => {
+          const [x, y] = coord(i, R * Math.max(v, 0.02));
+          return <circle key={i} cx={x} cy={y} r="3" fill="#2ee8b4" stroke="#06281f" strokeWidth="1" />;
+        })}
+        {RADAR_AXES.map((label, i) => {
+          const [x, y] = coord(i, R + 16);
+          const c = Math.cos(ang(i));
+          const anchor = c > 0.3 ? 'start' : c < -0.3 ? 'end' : 'middle';
+          return (
+            <text key={label} x={x.toFixed(1)} y={y.toFixed(1)} textAnchor={anchor} dominantBaseline="middle"
+              fontSize="8.5" fill="#94a3b8" className="font-hud" style={{ letterSpacing: '0.06em' }}>
+              {label.toUpperCase()}
+            </text>
+          );
+        })}
+      </svg>
+      <p className="font-hud -mt-1 text-[10px] uppercase tracking-[0.16em] text-gray-500">
+        Power Index <span className="font-bold text-emerald-300">{overall}</span> · relative profile
+      </p>
+    </div>
+  );
+};
+
+const SvEmpty = ({ label, hint }: { label: string; hint: string }) => (
+  <div className="flex flex-col items-center justify-center gap-1.5 py-10 text-center">
+    <Activity className="h-7 w-7 text-gray-600" strokeWidth={1.8} />
+    <p className="text-sm font-semibold text-gray-300">{label}</p>
+    <p className="max-w-[16rem] text-[11px] text-gray-500">{hint}</p>
+  </div>
+);
 
 const HeadlineStat = ({ label, value, accent }: { label: string; value: string; accent?: 'violet' | 'amber' }) => {
   const color =
