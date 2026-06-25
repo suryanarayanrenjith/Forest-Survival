@@ -174,6 +174,11 @@ export interface Enemy {
   deathVel?: THREE.Vector3;
   deathSpin?: THREE.Vector3;
   deathStarted?: boolean;
+  // Engine-grade ragdoll (Rapier) handle, set on death when the physics world
+  // is ready (solo only). While set, the death loop drives the corpse transform
+  // from the rigid body instead of the lightweight deathVel integrator above;
+  // released back to the physics world when the corpse finishes fading.
+  ragdollBodyId?: number;
   hitImpulse?: THREE.Vector3;
   leftLeg?: THREE.Mesh;
   rightLeg?: THREE.Mesh;

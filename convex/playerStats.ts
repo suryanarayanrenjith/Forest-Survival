@@ -371,8 +371,17 @@ export const setLeaderboardOptIn = mutation({
 const MAX_SETTINGS_BYTES = 4000;
 
 /**
- * Persist the player's full settings (volumes, sensitivity, FOV, graphics
- * quality, crosshair, toggles…) as a compact JSON blob for cross-device sync.
+ * Persist the player's full settings as ONE compact JSON blob for cross-device
+ * sync. The blob is sparse (only values that differ from defaults) and carries
+ * a dedicated `graphics` section, so it stays tiny. This is the single settings
+ * field — there are no per-setting columns.
+ *
+ * Reverse-compat + storage cleanup: the long-retired flat `graphicsQuality`
+ * column (superseded by the blob's `graphics` section) is STRIPPED from the doc
+ * here on the next write, so legacy accounts shed it the first time they touch
+ * settings. The column stays declared `v.optional` in the schema so untouched
+ * legacy docs keep validating (removing it outright would break patches on docs
+ * that still carry it — Convex validates the whole doc on write).
  */
 export const setSettings = mutation({
   args: { settings: v.string() },
@@ -382,7 +391,12 @@ export const setSettings = mutation({
     if (userId === null) return null; // preference only — never hard-fail
     if (settings.length > MAX_SETTINGS_BYTES) return null; // guard runaway blobs
     const stats = await getOrCreateStats(ctx, userId);
-    await ctx.db.patch(stats._id, { settings, updatedAt: Date.now() });
+    await ctx.db.patch(stats._id, {
+      settings,
+      // `undefined` deletes the field — drops the legacy column from the doc.
+      graphicsQuality: undefined,
+      updatedAt: Date.now(),
+    });
     return null;
   },
 });

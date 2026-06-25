@@ -23,7 +23,19 @@ export const skyDomeVertexShader = `
     // The dome follows the camera, so the normalised local vertex position
     // is a stable view direction independent of world translation.
     vDir = normalize(position);
-    gl_Position = projectionMatrix * viewMatrix * modelMatrix * vec4(position, 1.0);
+    vec4 clipPos = projectionMatrix * viewMatrix * modelMatrix * vec4(position, 1.0);
+    // ── FAR-PLANE PIN (skybox technique) ──
+    // Force the dome to the far plane (z = w → NDC z = 1.0). The dome's world
+    // radius (500u) EXCEEDS the camera far plane on the LOW (460u) and ULTRA-LOW
+    // (360u) presets, and a perspective far plane clips by VIEW-SPACE DEPTH (a
+    // flat plane), not radius — so the dome was being sliced exactly where it
+    // crosses the view axis, revealing the flat scene.background as a coloured
+    // disc that tracked the aim direction. Pinning the depth makes the dome
+    // un-clippable at any far distance, so it renders identically on every
+    // preset. depthTest/Write are off (see material), so the pinned z only needs
+    // to stay inside the clip volume — it never affects occlusion.
+    clipPos.z = clipPos.w;
+    gl_Position = clipPos;
   }
 `;
 
@@ -36,6 +48,18 @@ export const skyDomeFragmentShader = `
   uniform vec3 skyColorHorizon;
   uniform float time;
   uniform bool isNight;
+  // 1.0 = full bloom-tuned sun (the tight glow + HDR disk read as a radiant sun
+  // once the bloom pass spreads them). 0.0 = no post-processing (low tiers): the
+  // tight glow + disk are dropped — without bloom they'd render as a hard pale
+  // disc — and a softer wide glow takes over so the sky still feels sun-lit.
+  uniform float sunGlowScale;
+  // true on the LOW / ULTRA-LOW presets. The sky dome draws first and FULLSCREEN
+  // every frame (renderOrder -1000), so its per-pixel cost is paid for the whole
+  // viewport. lowDetail skips the heavy fbm layers (volumetric clouds by day;
+  // the per-pixel star hash, milky-way band + drifting aurora by night) and keeps
+  // only the cheap gradient + sun/moon glow — a real fragment-shader saving on
+  // exactly the GPUs that need it, while the sky still reads as the same world.
+  uniform bool lowDetail;
 
   varying vec3 vDir;
 
@@ -100,13 +124,18 @@ export const skyDomeFragmentShader = `
       vec3 sunColor = vec3(1.0, 0.94, 0.80);
       float glow = pow(sunAmount, 14.0);
       float wideGlow = pow(sunAmount, 4.5);
-      sky += sunColor * wideGlow * 0.022;
-      sky += sunColor * glow * 0.26;
+      // Soft wide sun-side scatter. When sunGlowScale → 0 (no bloom) we lean on
+      // a STRONGER soft glow (mix → 0.085) and drop the tight glow + HDR disk
+      // below, so the sun reads as a gentle edge-free brightening instead of a
+      // hard pale circle. With bloom (scale = 1) the original look is preserved.
+      sky += sunColor * wideGlow * mix(0.085, 0.022, sunGlowScale);
+      sky += sunColor * glow * 0.26 * sunGlowScale;
 
       // Compact HDR sun disk — bright enough to drive bloom + god rays
-      // but the disc itself stays a small, readable light source.
+      // but the disc itself stays a small, readable light source. Dropped on the
+      // bloom-less low tiers (it only looks right once the bloom pass blurs it).
       float disk = smoothstep(0.99930, 0.99965, sd);
-      sky += sunColor * disk * 2.1;
+      sky += sunColor * disk * 2.1 * sunGlowScale;
 
       // Atmospheric horizon haze for depth — thicker band so the horizon
       // dissolves into atmosphere instead of ending at a hard edge.
@@ -117,19 +146,23 @@ export const skyDomeFragmentShader = `
       // Two fBm layers at different scales + opposing drift give parallax
       // depth; a second density sample offset toward the sun cheaply lights
       // the sun-facing billows and shadows the far side, so clouds read as
-      // 3D volumes instead of flat cirrus sheets.
-      float cloudMask = smoothstep(0.03, 0.42, dir.y);
-      vec2 cuv = dir.xz / max(dir.y, 0.15) * 1.05 + vec2(time * 0.010, time * 0.004);
-      float c1 = fbm(cuv);
-      float c2 = fbm(cuv * 2.4 + vec2(-time * 0.008, time * 0.006));
-      float density = c1 * 0.62 + c2 * 0.38;
-      float clouds = smoothstep(0.5, 0.9, density) * cloudMask;
-      vec2 towardSun = normalize(sunDir.xz - dir.xz + vec2(1e-4)) * 0.05;
-      float densSun = fbm(cuv + towardSun) * 0.62 + fbm(cuv * 2.4 + towardSun) * 0.38;
-      float lit = clamp((density - densSun) * 3.5 + 0.45, 0.0, 1.0);
-      vec3 cloudCol = mix(vec3(0.55, 0.58, 0.66), vec3(1.0, 0.97, 0.90), lit);
-      cloudCol = mix(cloudCol, sunColor, glow * 0.5);
-      sky = mix(sky, cloudCol, clouds * 0.5);
+      // 3D volumes instead of flat cirrus sheets. Four fbm calls per pixel —
+      // the dome's single heaviest term — so it is dropped on the low tiers,
+      // leaving a clean, sun-lit clear sky.
+      if (!lowDetail) {
+        float cloudMask = smoothstep(0.03, 0.42, dir.y);
+        vec2 cuv = dir.xz / max(dir.y, 0.15) * 1.05 + vec2(time * 0.010, time * 0.004);
+        float c1 = fbm(cuv);
+        float c2 = fbm(cuv * 2.4 + vec2(-time * 0.008, time * 0.006));
+        float density = c1 * 0.62 + c2 * 0.38;
+        float clouds = smoothstep(0.5, 0.9, density) * cloudMask;
+        vec2 towardSun = normalize(sunDir.xz - dir.xz + vec2(1e-4)) * 0.05;
+        float densSun = fbm(cuv + towardSun) * 0.62 + fbm(cuv * 2.4 + towardSun) * 0.38;
+        float lit = clamp((density - densSun) * 3.5 + 0.45, 0.0, 1.0);
+        vec3 cloudCol = mix(vec3(0.55, 0.58, 0.66), vec3(1.0, 0.97, 0.90), lit);
+        cloudCol = mix(cloudCol, sunColor, glow * 0.5);
+        sky = mix(sky, cloudCol, clouds * 0.5);
+      }
     } else {
       // ===== NIGHT (NEON-NOIR TWIST) =====
       // A deep cobalt zenith fading through cyan-violet at the horizon —
@@ -153,25 +186,31 @@ export const skyDomeFragmentShader = `
       // Crisp moon disk.
       sky += moonColor * smoothstep(0.99905, 0.99965, md) * 2.6;
 
-      // Twinkling star field (sky only, above the horizon).
-      vec2 suv = dir.xz / max(abs(dir.y) + 0.06, 0.06) * 64.0;
-      float sv = hash(floor(suv));
-      if (sv > 0.973 && dir.y > 0.03) {
-        float twinkle = 0.55 + 0.45 * sin(time * 3.0 + sv * 120.0);
-        // Star colour drifts between cool white and faint blue based on hash.
-        vec3 starCol = mix(vec3(1.0, 1.0, 1.05), vec3(0.7, 0.85, 1.1), fract(sv * 41.0));
-        sky += starCol * ((sv - 0.973) * 40.0 * twinkle) * (0.5 + 0.5 * h);
+      // Per-pixel star hashing + two fbm washes (milky-way band, drifting
+      // aurora) are the night dome's heavy terms — skipped on the low tiers,
+      // which keep the cobalt gradient + magenta belt + moon for a clean,
+      // still-atmospheric night sky.
+      if (!lowDetail) {
+        // Twinkling star field (sky only, above the horizon).
+        vec2 suv = dir.xz / max(abs(dir.y) + 0.06, 0.06) * 64.0;
+        float sv = hash(floor(suv));
+        if (sv > 0.973 && dir.y > 0.03) {
+          float twinkle = 0.55 + 0.45 * sin(time * 3.0 + sv * 120.0);
+          // Star colour drifts between cool white and faint blue based on hash.
+          vec3 starCol = mix(vec3(1.0, 1.0, 1.05), vec3(0.7, 0.85, 1.1), fract(sv * 41.0));
+          sky += starCol * ((sv - 0.973) * 40.0 * twinkle) * (0.5 + 0.5 * h);
+        }
+
+        // Faint milky-way style band — slightly warm against the cool sky.
+        float band = fbm(dir.xz * 2.6 + 12.0) * smoothstep(0.12, 0.7, dir.y);
+        sky += mix(zenith, vec3(0.45, 0.35, 0.55), 0.4) * band * 0.10;
+
+        // Aurora-style colour wash slow-drifting along the upper sky —
+        // subtle but reads as "alive" rather than a static skybox.
+        float aurora = fbm(vec2(dir.x * 1.8 + time * 0.05, dir.z * 1.8 - time * 0.03))
+                     * smoothstep(0.3, 0.85, dir.y);
+        sky += vec3(0.08, 0.22, 0.30) * aurora * 0.15;
       }
-
-      // Faint milky-way style band — slightly warm against the cool sky.
-      float band = fbm(dir.xz * 2.6 + 12.0) * smoothstep(0.12, 0.7, dir.y);
-      sky += mix(zenith, vec3(0.45, 0.35, 0.55), 0.4) * band * 0.10;
-
-      // Aurora-style colour wash slow-drifting along the upper sky —
-      // subtle but reads as "alive" rather than a static skybox.
-      float aurora = fbm(vec2(dir.x * 1.8 + time * 0.05, dir.z * 1.8 - time * 0.03))
-                   * smoothstep(0.3, 0.85, dir.y);
-      sky += vec3(0.08, 0.22, 0.30) * aurora * 0.15;
     }
 
     gl_FragColor = vec4(sky, 1.0);
@@ -182,7 +221,9 @@ export function createSkyDomeMaterial(
   skyColorTop: THREE.Color,
   skyColorHorizon: THREE.Color,
   sunPosition: THREE.Vector3,
-  isNight: boolean
+  isNight: boolean,
+  sunGlowScale: number = 1.0,
+  lowDetail: boolean = false
 ): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     uniforms: {
@@ -191,7 +232,9 @@ export function createSkyDomeMaterial(
       skyColorTop: { value: skyColorTop },
       skyColorHorizon: { value: skyColorHorizon },
       time: { value: 0 },
-      isNight: { value: isNight }
+      isNight: { value: isNight },
+      sunGlowScale: { value: sunGlowScale },
+      lowDetail: { value: lowDetail }
     },
     vertexShader: skyDomeVertexShader,
     fragmentShader: skyDomeFragmentShader,

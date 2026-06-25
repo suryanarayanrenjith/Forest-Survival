@@ -267,7 +267,9 @@ class SmartEnemyManager {
   // Adaptive limits
   private currentMaxEnemies: number = 40;
   private baseMaxEnemies: number = 40;
-  private isNightMode: boolean = false;
+  // Continuous day→night blend for the enemy "powered" glow (0 = full daylight,
+  // 1 = full night). Seeded to -1 so the first setNightFactor() always applies.
+  private nightFactor: number = -1;
 
   // Frustum culling
   private frustum: THREE.Frustum = new THREE.Frustum();
@@ -304,15 +306,23 @@ class SmartEnemyManager {
 
   }
 
-  /** Boost emissive strength for night scenes so enemies never crush to black. */
-  setNightMode(isNight: boolean): void {
-    if (this.isNightMode === isNight) return;
-    this.isNightMode = isNight;
+  /**
+   * Blend the enemy emissive between its low DAYTIME floor and its full NIGHT
+   * glow. `t` = 0 (full daylight — the body is lit purely by the sun) → 1 (full
+   * night — the internal glow takes over so enemies never crush to black). The
+   * caller drives `t` smoothly off the sun's altitude, so the artificial glow
+   * fades up at dusk instead of popping. Cached: a steady factor early-returns
+   * without touching a single material.
+   */
+  setNightFactor(t: number): void {
+    const clamped = t < 0 ? 0 : t > 1 ? 1 : t;
+    if (Math.abs(this.nightFactor - clamped) < 0.001) return;
+    this.nightFactor = clamped;
 
     this.sharedMaterials.forEach((material) => {
-      const base = (material.userData.baseEmissiveIntensity as number | undefined) ?? material.emissiveIntensity;
-      const nightMultiplier = (material.userData.nightMultiplier as number | undefined) ?? 1.0;
-      material.emissiveIntensity = isNight ? base * nightMultiplier : base;
+      const dayI = (material.userData.dayEmissiveIntensity as number | undefined) ?? material.emissiveIntensity;
+      const nightI = (material.userData.nightEmissiveIntensity as number | undefined) ?? material.emissiveIntensity;
+      material.emissiveIntensity = dayI + (nightI - dayI) * clamped;
     });
   }
 
@@ -374,9 +384,18 @@ class SmartEnemyManager {
       key: string,
       material: THREE.MeshStandardMaterial,
       nightMultiplier: number,
+      dayFactor: number = 0.22,
     ) => {
-      material.userData.baseEmissiveIntensity = material.emissiveIntensity;
-      material.userData.nightMultiplier = nightMultiplier;
+      // Absolute DAY + NIGHT emissive targets, lerped by setNightFactor(). NIGHT
+      // is the original look (creation value × nightMultiplier — unchanged); DAY
+      // floors the self-illumination down so daylight reads off the SUN, not the
+      // material. dayFactor stays higher for structural/energy parts so joints
+      // and the eye/core never vanish.
+      const created = material.emissiveIntensity;
+      material.userData.dayEmissiveIntensity = created * dayFactor;
+      material.userData.nightEmissiveIntensity = created * nightMultiplier;
+      // Seed at the day floor; the first setNightFactor() sets the real value.
+      material.emissiveIntensity = created * dayFactor;
       this.sharedMaterials.set(key, material);
     };
 
@@ -446,7 +465,7 @@ class SmartEnemyManager {
         metalness: 0.0,
         roughness: 0.68,
         flatShading: true,
-      }), 1.3);
+      }), 1.3, 0.55);
 
       // Glowing energy material (chest core, eye bar) — strong emissive so it
       // catches the bloom pass and reads as a light source.
@@ -457,7 +476,7 @@ class SmartEnemyManager {
         metalness: 0,
         roughness: 0.3,
         flatShading: true,
-      }), 1.4);
+      }), 1.4, 0.5);
     }
   }
 

@@ -63,11 +63,17 @@ export default defineSchema({
     // (0=easy,1=medium,2=hard,3=adaptive). Drives the diminishing-returns /
     // variety math so grinding one difficulty (esp. easy) decays its payout.
     recentDiffs: v.optional(v.array(v.number())),
-    // Legacy single-field graphics pref (superseded by `settings` JSON blob;
-    // kept optional so existing docs validate).
+    // DEPRECATED legacy graphics pref. Superseded by the `graphics` section
+    // inside the `settings` blob below. New docs never write it, and
+    // `setSettings` actively STRIPS it from any doc it touches (patch →
+    // undefined). Kept declared `v.optional` ONLY so untouched legacy docs still
+    // validate — do NOT remove this line until every doc is confirmed migrated
+    // (Convex validates the whole document on write, so a premature removal
+    // would break patches on docs that still carry the field).
     graphicsQuality: v.optional(v.string()),
-    // Full user settings synced for cross-device use, stored as a compact JSON
-    // string (one field instead of ~13 columns — storage-efficient).
+    // Full user settings synced for cross-device use, stored as ONE compact,
+    // SPARSE JSON string (only non-default values; includes a `graphics`
+    // section). One field instead of per-setting columns — storage-efficient.
     settings: v.optional(v.string()),
     // Per-weapon cumulative XP (weaponId → xp). Levels are derived client-side
     // from XP via WeaponMasterySystem. Optional so legacy docs still validate.

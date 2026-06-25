@@ -1,18 +1,6 @@
 import { useEffect, useReducer, useRef } from 'react';
 import { Skull } from 'lucide-react';
 
-interface DamageNumber {
-  id: string;
-  damage: number;
-  x: number;
-  y: number;
-  isHeadshot: boolean;
-  isCritical: boolean;
-  timestamp: number;
-  /** Small random horizontal drift so stacked hits fan out instead of overlapping. */
-  driftX: number;
-}
-
 interface HitMarker {
   id: string;
   timestamp: number;
@@ -21,32 +9,11 @@ interface HitMarker {
   isKill?: boolean;
 }
 
-// Lifetimes (ms). Damage numbers float for a beat; markers are a quick flash.
-const DAMAGE_TTL = 1000;
+// Marker lifetime (ms) — a quick flash.
 const MARKER_TTL = 300;
 
-let damageNumbers: DamageNumber[] = [];
 let hitMarkers: HitMarker[] = [];
 let updateCallback: (() => void) | null = null;
-
-export const addDamageNumber = (damage: number, x: number, y: number, isHeadshot: boolean = false, isCritical: boolean = false) => {
-  const damageNum: DamageNumber = {
-    id: `${Date.now()}-${Math.random()}`,
-    damage,
-    x,
-    y,
-    isHeadshot,
-    isCritical,
-    timestamp: Date.now(),
-    driftX: (Math.random() - 0.5) * 3.2, // ±1.6% screen-width drift
-  };
-
-  damageNumbers.push(damageNum);
-
-  if (updateCallback) {
-    updateCallback();
-  }
-};
 
 export const addHitMarker = (isHeadshot: boolean = false, isKill: boolean = false) => {
   const marker: HitMarker = {
@@ -64,22 +31,17 @@ export const addHitMarker = (isHeadshot: boolean = false, isKill: boolean = fals
 };
 
 /**
- * Clears all pending hit markers + damage numbers. Used by the shader
- * pre-warm path: we call addHitMarker / addDamageNumber once at game
- * start to force React to mount the marker DOM nodes (eliminating the
- * first-shot reconciliation hitch), then immediately clear them so the
- * player never sees the fake marks.
+ * Clears all pending hit markers. Used by the shader pre-warm path: we call
+ * addHitMarker once at game start to force React to mount the marker DOM nodes
+ * (eliminating the first-shot reconciliation hitch), then immediately clear
+ * them so the player never sees the fake marks.
  */
 export const clearHitMarkers = () => {
-  damageNumbers = [];
   hitMarkers = [];
   if (updateCallback) {
     updateCallback();
   }
 };
-
-// Cubic ease-out — fast rise that settles, for the float-up motion.
-const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
 
 const HitMarkers = () => {
   // Module arrays are the source of truth; this just kicks React to re-read
@@ -93,18 +55,17 @@ const HitMarkers = () => {
     // ROBUST RENDER: a single rAF runs for the whole mounted lifetime instead of
     // parking/unparking itself. The previous park-on-empty scheme depended on a
     // module callback re-arming the loop at exactly the right moment; if that
-    // arming was ever missed, freshly-added numbers silently never rendered
-    // (the "damage numbers don't show" bug). The always-on loop is dirt cheap
-    // (two filters over usually-empty arrays) and CANNOT miss an update.
+    // arming was ever missed, freshly-added markers silently never rendered.
+    // The always-on loop is dirt cheap (one filter over a usually-empty array)
+    // and CANNOT miss an update.
     let mounted = true;
     let prevCount = 0;
     const tick = () => {
       if (!mounted) return;
       const now = Date.now();
-      damageNumbers = damageNumbers.filter((d) => now - d.timestamp < DAMAGE_TTL);
       // Kill markers linger a touch longer so the confirm ring fully sweeps out.
       hitMarkers = hitMarkers.filter((m) => now - m.timestamp < (m.isKill ? 460 : MARKER_TTL));
-      const count = damageNumbers.length + hitMarkers.length;
+      const count = hitMarkers.length;
       // Re-render while anything is live (to animate it) and for one extra frame
       // after the last item clears (to flush it out of the DOM).
       if (count > 0 || prevCount > 0) forceRender();
@@ -113,8 +74,8 @@ const HitMarkers = () => {
     };
     rafRef.current = requestAnimationFrame(tick);
 
-    // Flush a new marker/number to the screen on the SAME tick it's added so it
-    // never waits a frame (and never depends on the loop being re-armed).
+    // Flush a new marker to the screen on the SAME tick it's added so it never
+    // waits a frame (and never depends on the loop being re-armed).
     updateCallback = () => forceRender();
 
     return () => {
@@ -126,8 +87,6 @@ const HitMarkers = () => {
       }
     };
   }, []);
-
-  const now = Date.now();
 
   return (
     <>
@@ -180,62 +139,6 @@ const HitMarkers = () => {
                   </div>
                 )}
               </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Floating Damage Numbers — z-[45] so the damage/kill/headshot screen
-          flashes (z-40..42 in ScreenEffects) can never paint over the numbers. */}
-      <div className="fixed inset-0 pointer-events-none z-[45]">
-        {damageNumbers.map((dmg) => {
-          const age = now - dmg.timestamp;
-          const progress = Math.min(1, age / DAMAGE_TTL);
-          // Smooth eased rise (px), with a quick spawn pop then a gentle drift.
-          const yOffset = easeOutCubic(progress) * 86;
-          // Stay readable, then fade over the final 40% of life.
-          const opacity = progress < 0.6 ? 1 : Math.max(0, 1 - (progress - 0.6) / 0.4);
-          // Bigger numbers for bigger hits — chunky tiers read as a real "thunk".
-          const magBoost = dmg.damage >= 100 ? 1.32 : dmg.damage >= 50 ? 1.16 : dmg.damage >= 25 ? 1.04 : 0.94;
-          const baseScale = (dmg.isHeadshot ? 1.32 : dmg.isCritical ? 1.16 : 1) * magBoost;
-          // Spawn pop: punch in big, then settle.
-          const popScale = progress < 0.16
-            ? baseScale * (0.5 + easeOutCubic(progress / 0.16) * 0.85)
-            : baseScale;
-          // Clamp so a number near a screen edge never disappears off-screen.
-          const left = Math.max(3, Math.min(97, dmg.x + dmg.driftX * easeOutCubic(progress)));
-          const top = Math.max(7, Math.min(93, dmg.y));
-          // Crisp, readable on ANY background: a dark stroke + a coloured glow.
-          const stroke = '-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000';
-          const glow = dmg.isHeadshot
-            ? '0 0 16px rgba(248,113,113,0.95), 0 2px 5px rgba(0,0,0,0.95)'
-            : dmg.isCritical
-            ? '0 0 14px rgba(250,204,21,0.85), 0 2px 5px rgba(0,0,0,0.95)'
-            : '0 0 10px rgba(0,0,0,0.9), 0 2px 4px rgba(0,0,0,0.85)';
-
-          return (
-            <div
-              key={dmg.id}
-              className={`absolute font-black tabular-nums leading-none ${
-                dmg.isHeadshot
-                  ? 'text-red-400 text-4xl'
-                  : dmg.isCritical
-                  ? 'text-yellow-300 text-3xl'
-                  : 'text-white text-2xl'
-              }`}
-              style={{
-                left: `${left}%`,
-                top: `${top}%`,
-                transform: `translate(-50%, -${yOffset}px) scale(${popScale})`,
-                opacity,
-                textShadow: `${stroke}, ${glow}`,
-                letterSpacing: '-0.02em',
-                pointerEvents: 'none',
-                willChange: 'transform, opacity',
-              }}
-            >
-              {dmg.isHeadshot && <span className="align-middle mr-0.5">☠</span>}
-              {dmg.damage}
             </div>
           );
         })}

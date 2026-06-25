@@ -33,6 +33,19 @@ export class BulletDodging {
   private dodgeSkill: number = 0.5; // 0-1, probability of successful dodge
   private lastReactionCheck: number = 0;
 
+  // Reused output/scratch so the dodge tick never allocates. The old version
+  // allocated a fresh result object every call plus several Vector3s PER bullet
+  // inspected (clones for direction/closest-point) and built+sorted a throwaway
+  // threats array — all of which churned the GC hard during sustained fire.
+  // These members make the whole scan allocation-free with identical results.
+  private readonly _dodgeDir = new THREE.Vector3();
+  private readonly _result: DodgeResult = {
+    shouldDodge: false,
+    dodgeDirection: this._dodgeDir,
+    dodgeUrgency: 0,
+    detectedBullet: null,
+  };
+
   constructor(dodgeSkill: number = 0.5, reactionTime: number = 300) {
     this.dodgeSkill = Math.max(0, Math.min(1, dodgeSkill));
     this.reactionTime = reactionTime;
@@ -46,40 +59,78 @@ export class BulletDodging {
     bullets: DodgeableBullet[],
     currentTime: number
   ): DodgeResult {
+    const result = this._result;
+
     // Check cooldown
     if (currentTime - this.lastDodgeTime < this.dodgeCooldown) {
-      return {
-        shouldDodge: false,
-        dodgeDirection: new THREE.Vector3(0, 0, 0),
-        dodgeUrgency: 0,
-        detectedBullet: null
-      };
+      this._dodgeDir.set(0, 0, 0);
+      result.shouldDodge = false;
+      result.dodgeUrgency = 0;
+      result.detectedBullet = null;
+      return result;
     }
 
-    // Find threatening bullets
-    const threats = this.detectThreateningBullets(enemyPosition, bullets);
+    // Find the single most-threatening bullet in one allocation-free pass.
+    // (Identical to the old detect → sort → threats[0]: strict `>` keeps the
+    // first-seen bullet on a tie, matching the stable sort's tie-break.)
+    let bestBullet: DodgeableBullet | null = null;
+    let bestUrgency = -1;
+    const rangeSq = this.detectionRange * this.detectionRange;
+    for (let b = 0; b < bullets.length; b++) {
+      const bullet = bullets[b];
+      const bp = bullet.mesh.position;
+      const toEnemyX = enemyPosition.x - bp.x;
+      const toEnemyY = enemyPosition.y - bp.y;
+      const toEnemyZ = enemyPosition.z - bp.z;
+      const distSq = toEnemyX * toEnemyX + toEnemyY * toEnemyY + toEnemyZ * toEnemyZ;
 
-    if (threats.length === 0) {
-      return {
-        shouldDodge: false,
-        dodgeDirection: new THREE.Vector3(0, 0, 0),
-        dodgeUrgency: 0,
-        detectedBullet: null
-      };
+      // Only consider bullets within detection range
+      if (distSq > rangeSq) continue;
+
+      const v = bullet.velocity;
+      const vLenSq = v.x * v.x + v.y * v.y + v.z * v.z;
+      const vLen = Math.sqrt(vLenSq);
+      if (vLen < 0.01) continue; // stationary bullet (old code returned t = -1 → skipped)
+
+      // Alignment: normalised bullet direction · normalised to-enemy direction.
+      const dist = Math.sqrt(distSq);
+      if (dist < 1e-6) continue;
+      const alignment = (v.x * toEnemyX + v.y * toEnemyY + v.z * toEnemyZ) / (vLen * dist);
+      if (alignment <= 0.5) continue;
+
+      // Time to closest approach: toEnemy · velocity / |velocity|².
+      const t = (toEnemyX * v.x + toEnemyY * v.y + toEnemyZ * v.z) / vLenSq;
+      if (t <= 0 || t >= 2.0) continue;
+
+      // Closest point on the bullet's path → 3D distance to the enemy.
+      const cpDX = (bp.x + v.x * t) - enemyPosition.x;
+      const cpDY = (bp.y + v.y * t) - enemyPosition.y;
+      const cpDZ = (bp.z + v.z * t) - enemyPosition.z;
+      const closestDistance = Math.sqrt(cpDX * cpDX + cpDY * cpDY + cpDZ * cpDZ);
+      if (closestDistance >= 3.0) continue;
+
+      const urgency = 1.0 - (closestDistance / 3.0);
+      if (urgency > bestUrgency) {
+        bestUrgency = urgency;
+        bestBullet = bullet;
+      }
     }
 
-    // Pick most threatening bullet
-    const mostThreatening = threats[0];
+    if (!bestBullet) {
+      this._dodgeDir.set(0, 0, 0);
+      result.shouldDodge = false;
+      result.dodgeUrgency = 0;
+      result.detectedBullet = null;
+      return result;
+    }
 
     // Reaction time check - don't react instantly (more realistic)
     if (currentTime - this.lastReactionCheck < this.reactionTime) {
-      // Still in reaction delay
-      return {
-        shouldDodge: false,
-        dodgeDirection: new THREE.Vector3(0, 0, 0),
-        dodgeUrgency: mostThreatening.urgency,
-        detectedBullet: mostThreatening.bullet
-      };
+      this._dodgeDir.set(0, 0, 0);
+      result.shouldDodge = false;
+      result.dodgeUrgency = bestUrgency;
+      result.detectedBullet = bestBullet;
+      return result;
     }
 
     this.lastReactionCheck = currentTime;
@@ -88,132 +139,49 @@ export class BulletDodging {
     const dodgeRoll = Math.random();
     if (dodgeRoll > this.dodgeSkill) {
       // Failed to dodge
-      return {
-        shouldDodge: false,
-        dodgeDirection: new THREE.Vector3(0, 0, 0),
-        dodgeUrgency: mostThreatening.urgency,
-        detectedBullet: mostThreatening.bullet
-      };
+      this._dodgeDir.set(0, 0, 0);
+      result.shouldDodge = false;
+      result.dodgeUrgency = bestUrgency;
+      result.detectedBullet = bestBullet;
+      return result;
     }
 
-    // Calculate dodge direction (perpendicular to bullet trajectory)
-    const dodgeDirection = this.calculateDodgeDirection(
-      enemyPosition,
-      mostThreatening.bullet
-    );
+    // Calculate dodge direction (perpendicular to bullet trajectory) into the
+    // reused vector.
+    this.writeDodgeDirection(bestBullet, this._dodgeDir);
 
     this.lastDodgeTime = currentTime;
 
-    return {
-      shouldDodge: true,
-      dodgeDirection,
-      dodgeUrgency: mostThreatening.urgency,
-      detectedBullet: mostThreatening.bullet
-    };
+    result.shouldDodge = true;
+    result.dodgeUrgency = bestUrgency;
+    result.detectedBullet = bestBullet;
+    return result;
   }
 
   /**
-   * Detect bullets that pose a threat to the enemy
+   * Calculate the best direction to dodge — writes into `out` (no allocation).
    */
-  private detectThreateningBullets(
-    enemyPosition: THREE.Vector3,
-    bullets: DodgeableBullet[]
-  ): Array<{ bullet: DodgeableBullet; distance: number; urgency: number }> {
-    const threats: Array<{ bullet: DodgeableBullet; distance: number; urgency: number }> = [];
+  private writeDodgeDirection(bullet: DodgeableBullet, out: THREE.Vector3): void {
+    const v = bullet.velocity;
+    const vLen = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z) || 1;
+    const dirX = v.x / vLen;
+    const dirY = v.y / vLen;
+    const dirZ = v.z / vLen;
 
-    for (const bullet of bullets) {
-      const bulletPosition = bullet.mesh.position;
-      const distance = bulletPosition.distanceTo(enemyPosition);
+    // Perpendicular (sideways dodge) — randomly left or right (50/50).
+    let outX: number, outZ: number;
+    if (Math.random() > 0.5) { outX = -dirZ; outZ = dirX; }
+    else { outX = dirZ; outZ = -dirX; }
+    let outY = 0;
 
-      // Only consider bullets within detection range
-      if (distance > this.detectionRange) continue;
-
-      // Calculate if bullet is heading toward enemy
-      const bulletDirection = bullet.velocity.clone().normalize();
-      const toEnemy = new THREE.Vector3()
-        .subVectors(enemyPosition, bulletPosition)
-        .normalize();
-
-      // Dot product > 0.5 means bullet is roughly aimed at enemy
-      const alignment = bulletDirection.dot(toEnemy);
-
-      if (alignment > 0.5) {
-        // Calculate closest approach distance
-        const timeToClosest = this.calculateTimeToClosestApproach(
-          bulletPosition,
-          bullet.velocity,
-          enemyPosition
-        );
-
-        if (timeToClosest > 0 && timeToClosest < 2.0) {
-          const closestPoint = bulletPosition.clone().add(
-            bullet.velocity.clone().multiplyScalar(timeToClosest)
-          );
-          const closestDistance = closestPoint.distanceTo(enemyPosition);
-
-          // Bullet will pass within 3 units - threat!
-          if (closestDistance < 3.0) {
-            const urgency = 1.0 - (closestDistance / 3.0);
-            threats.push({ bullet, distance, urgency });
-          }
-        }
-      }
-    }
-
-    // Sort by urgency (most urgent first)
-    threats.sort((a, b) => b.urgency - a.urgency);
-
-    return threats;
-  }
-
-  /**
-   * Calculate time until bullet reaches closest point to enemy
-   */
-  private calculateTimeToClosestApproach(
-    bulletPosition: THREE.Vector3,
-    bulletVelocity: THREE.Vector3,
-    enemyPosition: THREE.Vector3
-  ): number {
-    const toEnemy = new THREE.Vector3().subVectors(enemyPosition, bulletPosition);
-    const velocityMagnitude = bulletVelocity.length();
-
-    if (velocityMagnitude < 0.01) return -1; // Stationary bullet
-
-    const t = toEnemy.dot(bulletVelocity) / (velocityMagnitude * velocityMagnitude);
-    return t;
-  }
-
-  /**
-   * Calculate the best direction to dodge
-   */
-  private calculateDodgeDirection(
-    _enemyPosition: THREE.Vector3,
-    bullet: DodgeableBullet
-  ): THREE.Vector3 {
-    const bulletDirection = bullet.velocity.clone().normalize();
-
-    // Create perpendicular vector (sideways dodge)
-    const perpendicular1 = new THREE.Vector3(
-      -bulletDirection.z,
-      0,
-      bulletDirection.x
-    );
-    const perpendicular2 = new THREE.Vector3(
-      bulletDirection.z,
-      0,
-      -bulletDirection.x
-    );
-
-    // Randomly choose left or right dodge (50/50)
-    const chosenDirection = Math.random() > 0.5 ? perpendicular1 : perpendicular2;
-
-    // Sometimes add a bit of backward movement (tactical retreat)
+    // Sometimes add a bit of backward movement (tactical retreat).
     if (Math.random() > 0.7) {
-      const backward = bulletDirection.clone().multiplyScalar(-0.5);
-      chosenDirection.add(backward);
+      outX += dirX * -0.5;
+      outY += dirY * -0.5;
+      outZ += dirZ * -0.5;
     }
 
-    return chosenDirection.normalize();
+    out.set(outX, outY, outZ).normalize();
   }
 
   /**

@@ -157,9 +157,14 @@ export function createTerrainSeed(): number {
 // graphics preset's terrainDetail. The flat near-zone needs far fewer triangles
 // than the undulating far field, but a uniform grid is simplest and robust.
 export function terrainSegments(terrainDetail: number): number {
-  if (terrainDetail >= 1.0) return 200;
-  if (terrainDetail >= 0.82) return 160;
-  return 112;
+  if (terrainDetail >= 1.0) return 200;   // HIGH / ULTRA
+  if (terrainDetail >= 0.82) return 160;  // MEDIUM
+  if (terrainDetail >= 0.50) return 112;  // LOW
+  // ULTRA LOW (terrainDetail 0.40): the ground plane's displaced vertices are
+  // processed every frame by the terrain vertex shader, so halving the grid
+  // (~6.4k vs 12.5k quads) is a direct vertex-shader saving. The far hills read
+  // a touch more faceted, but the tight fog wall + low render scale hide it.
+  return 80;
 }
 
 // ── Uniform holders ─────────────────────────────────────────────────────────

@@ -1,6 +1,5 @@
 import * as THREE from 'three';
 import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
-import type { GraphicsQuality } from './GameSettingsManager';
 import type { MapType } from './MapSystem';
 
 export interface HDRIEnvironmentProfile {
@@ -87,10 +86,6 @@ const HDRI_ENVIRONMENTS: Record<MapType, HDRIEnvironmentProfile> = {
   },
 };
 
-function getHDRIResolution(quality: GraphicsQuality): '1k' | '2k' {
-  return quality === 'ultra' ? '2k' : '1k';
-}
-
 function getHDRIUrl(slug: string, resolution: '1k' | '2k') {
   return `${POLY_HAVEN_HDR_BASE}/${resolution}/${slug}_${resolution}.hdr`;
 }
@@ -111,12 +106,18 @@ export function getHDRIEnvironmentIntensity(
 export async function loadHDRIEnvironment(
   renderer: THREE.WebGLRenderer,
   mapType: MapType,
-  quality: GraphicsQuality,
+  // Derived from the EFFECTIVE graphics settings (custom-safe), not a preset
+  // name: `load` is false on the performance path (post-processing off — i.e.
+  // LOW / ULTRA-LOW or any custom mix with post off), where the network fetch,
+  // PMREM convolution and env-target VRAM cost more than they're worth. Those
+  // fall back to the cheap local scene PMREM captured in App.tsx, so
+  // reflections/IBL still work. `highRes` lifts the texture to 2k (ULTRA only).
+  opts: { load: boolean; highRes: boolean },
 ): Promise<LoadedHDRIEnvironment | null> {
-  if (quality === 'low') return null;
+  if (!opts.load) return null;
 
   const profile = getHDRIEnvironmentProfile(mapType);
-  const resolution = getHDRIResolution(quality);
+  const resolution: '1k' | '2k' = opts.highRes ? '2k' : '1k';
   const url = getHDRIUrl(profile.slug, resolution);
   const loader = new HDRLoader().setDataType(THREE.HalfFloatType);
   const hdrTexture = await loader.loadAsync(url);

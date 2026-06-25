@@ -1,6 +1,10 @@
 // Game Settings Manager - Handles reading/writing user settings from localStorage
 
-export type GraphicsQuality = 'low' | 'medium' | 'high' | 'ultra';
+export type GraphicsQuality = 'ultralow' | 'low' | 'medium' | 'high' | 'ultra';
+/** The active graphics selection: one of the named tiers, or a hand-tuned mix. */
+export type GraphicsPresetName = GraphicsQuality | 'custom';
+/** Shadow fidelity, mapped to a shadow-map resolution (or disabled). */
+export type ShadowQuality = 'off' | 'low' | 'medium' | 'high' | 'ultra';
 
 export interface GraphicsPreset {
   /** Internal render scale (0-1). 1 = native resolution. */
@@ -30,15 +34,37 @@ export interface GraphicsPreset {
 // difficulty multiplier — keeping it low prevents the screen from ever
 // filling with robots even on Hard.
 export const GRAPHICS_PRESETS: Record<GraphicsQuality, GraphicsPreset> = {
+  // ULTRA LOW — the "potato" floor: absolute maximum FPS for the weakest
+  // hardware (old integrated GPUs, low-end phones, thin laptops on battery).
+  // One full step below LOW. Everything that costs frames is pushed as low as
+  // it can go while the world still reads as the same game:
+  //   • 50% render scale — quarter of native's fragment work; pixelated upscale
+  //   • No shadows / no post-FX / no MSAA (same as LOW — the big WebGL costs)
+  //   • No atmospheric haze sphere, no gun fill-lights (handled in App via the
+  //     shared "low tier" gate) — fewer draw calls + lights
+  //   • particleDensity 0.25 + terrainDetail 0.40 — sparse but not barren
+  //   • maxEnemies 10 — fewer multi-mesh enemy rigs = less CPU (AI) + GPU (draws)
+  //   • viewDistance 72m — tighter fog wall, much less overdraw + culling work
+  ultralow: {
+    pixelRatio: 0.50,
+    shadowMapSize: 256,
+    shadowsEnabled: false,
+    antialias: false,
+    postProcessing: false,
+    particleDensity: 0.25,
+    maxEnemies: 10,
+    viewDistance: 72,
+    terrainDetail: 0.40,
+  },
   // LOW — maximum performance for older / integrated GPUs.
   //   • No real-time shadows (single biggest WebGL cost)
   //   • No post-processing (composer + bloom is ~2-3ms per frame)
-  //   • 70% pixel ratio + nearest-neighbour scaling = ~half the fragment work
-  //   • Particle density 0.40 + terrain detail 0.55 — still readable
+  //   • 65% pixel ratio + nearest-neighbour scaling = ~42% of the fragment work
+  //   • Particle density 0.42 + terrain detail 0.55 — still readable
   //     world, no "empty plain" feel
-  //   • viewDistance 100m — fog masks the cull boundary
+  //   • viewDistance 92m — fog masks the cull boundary
   low: {
-    pixelRatio: 0.70,
+    pixelRatio: 0.65,
     shadowMapSize: 512,
     shadowsEnabled: false,
     antialias: false,
@@ -46,11 +72,13 @@ export const GRAPHICS_PRESETS: Record<GraphicsQuality, GraphicsPreset> = {
     // Particles (pooled, capped) + grass are the cheapest way to keep the
     // shadow-less, post-less LOW world from reading as an empty plain, so they
     // get a small lift; the heavy levers (resolution / shadows / post-FX) stay
-    // off to protect the frame-rate target on integrated GPUs.
-    particleDensity: 0.50,
+    // off to protect the frame-rate target on integrated GPUs. Tightened a notch
+    // (res 0.70→0.65, particles 0.50→0.42, view 100→92, terrain 0.62→0.55) to
+    // squeeze out more headroom; ULTRA LOW sits below this for weaker hardware.
+    particleDensity: 0.42,
     maxEnemies: 14,
-    viewDistance: 100,
-    terrainDetail: 0.62,
+    viewDistance: 92,
+    terrainDetail: 0.55,
   },
   // MEDIUM — soft shadows + lightweight bloom, ~85% pixel ratio.
   //   • Soft 1024² shadow map (8MB) — visible directional shadows
@@ -98,6 +126,137 @@ export const GRAPHICS_PRESETS: Record<GraphicsQuality, GraphicsPreset> = {
     terrainDetail: 1.0,
   },
 };
+
+// ── Graphics section (AAA-style presets + custom mix) ────────────────────────
+// The user picks a named preset OR a "custom" mix of individual knobs. The
+// engine only ever reads the resolved `GraphicsPreset` above (via
+// resolveGraphicsPreset), so adding a knob here is the ONLY place that needs to
+// know about custom vs preset — every consumer keeps reading the same shape.
+//
+// `baseTier` is the representative named tier used for the few QUALITATIVE /
+// cosmetic engine choices that aren't captured by the numeric knobs (shadow
+// penumbra softness, HDRI reflection resolution, haze-sphere density). For a
+// named preset it equals `preset`; for a custom mix it's whatever tier the
+// player was on when they started tweaking, so those choices stay sensible.
+export interface GraphicsSettings {
+  preset: GraphicsPresetName;
+  baseTier: GraphicsQuality;
+  /** Internal render scale 0.40–1.20 (1 = native). */
+  resolution: number;
+  shadows: ShadowQuality;
+  antialias: boolean;
+  postProcessing: boolean;
+  /** Particle-effect density 0–1. */
+  particleDensity: number;
+  /** World draw distance in metres. */
+  viewDistance: number;
+  /** Grass / scattered-prop density 0–1. */
+  terrainDetail: number;
+  /** Hard ceiling on simultaneous enemies. */
+  maxEnemies: number;
+}
+
+const SHADOW_MAP_SIZE: Record<ShadowQuality, number> = {
+  off: 256, low: 512, medium: 1024, high: 2048, ultra: 4096,
+};
+
+// Sensible bounds for the custom knobs. viewDistance is floored at 72m: the
+// camera far plane is viewDistance×5 and the streamed 5×5 chunk grid reaches
+// ~360m at its corner, so going lower would hard-clip loaded terrain corners
+// (the sky dome itself is far-plane-pinned, so it is unaffected). See the sky
+// dome shader note in Shaders.ts.
+export const GRAPHICS_LIMITS = {
+  resolution: { min: 0.40, max: 1.20 },
+  particleDensity: { min: 0, max: 1 },
+  viewDistance: { min: 72, max: 300 },
+  terrainDetail: { min: 0.25, max: 1 },
+  maxEnemies: { min: 6, max: 40 },
+} as const;
+
+const clampNum = (v: unknown, min: number, max: number, fallback: number): number => {
+  const n = typeof v === 'number' && Number.isFinite(v) ? v : fallback;
+  return Math.min(max, Math.max(min, n));
+};
+
+const isShadowQuality = (v: unknown): v is ShadowQuality =>
+  v === 'off' || v === 'low' || v === 'medium' || v === 'high' || v === 'ultra';
+
+const shadowQualityForPreset = (p: GraphicsPreset): ShadowQuality => {
+  if (!p.shadowsEnabled) return 'off';
+  if (p.shadowMapSize >= 4096) return 'ultra';
+  if (p.shadowMapSize >= 2048) return 'high';
+  if (p.shadowMapSize >= 1024) return 'medium';
+  return 'low';
+};
+
+/** Expand a named tier into the editable knob set (so the sliders mirror it). */
+export function graphicsSettingsFromPreset(name: GraphicsQuality): GraphicsSettings {
+  const p = GRAPHICS_PRESETS[name];
+  return {
+    preset: name,
+    baseTier: name,
+    resolution: p.pixelRatio,
+    shadows: shadowQualityForPreset(p),
+    antialias: p.antialias,
+    postProcessing: p.postProcessing,
+    particleDensity: p.particleDensity,
+    viewDistance: p.viewDistance,
+    terrainDetail: p.terrainDetail,
+    maxEnemies: p.maxEnemies,
+  };
+}
+
+/** Resolve the editable graphics section into the engine-facing GraphicsPreset.
+ *  Named tiers return their canonical preset verbatim; a custom mix is built
+ *  (and clamped) from the individual knobs. */
+export function resolveGraphicsPreset(g: GraphicsSettings): GraphicsPreset {
+  if (g.preset !== 'custom') return GRAPHICS_PRESETS[g.preset] ?? GRAPHICS_PRESETS.high;
+  const L = GRAPHICS_LIMITS;
+  return {
+    pixelRatio: clampNum(g.resolution, L.resolution.min, L.resolution.max, 0.85),
+    shadowsEnabled: g.shadows !== 'off',
+    shadowMapSize: SHADOW_MAP_SIZE[isShadowQuality(g.shadows) ? g.shadows : 'medium'],
+    antialias: !!g.antialias,
+    postProcessing: !!g.postProcessing,
+    particleDensity: clampNum(g.particleDensity, L.particleDensity.min, L.particleDensity.max, 0.7),
+    maxEnemies: Math.round(clampNum(g.maxEnemies, L.maxEnemies.min, L.maxEnemies.max, 22)),
+    viewDistance: Math.round(clampNum(g.viewDistance, L.viewDistance.min, L.viewDistance.max, 150)),
+    terrainDetail: clampNum(g.terrainDetail, L.terrainDetail.min, L.terrainDetail.max, 0.85),
+  };
+}
+
+/** Build a complete, validated GraphicsSettings from raw/partial/legacy input
+ *  (a saved JSON blob, a legacy flat `graphicsQuality`, or nothing). Pure — used
+ *  by both the localStorage loader and the Convex blob restore. */
+export function parseGraphics(raw: unknown, legacyQuality?: unknown): GraphicsSettings {
+  const isTier = (v: unknown): v is GraphicsQuality =>
+    typeof v === 'string' && v in GRAPHICS_PRESETS;
+
+  if (raw && typeof raw === 'object') {
+    const g = raw as Partial<GraphicsSettings>;
+    if (g.preset === 'custom') {
+      const baseTier: GraphicsQuality = isTier(g.baseTier) ? g.baseTier : 'high';
+      const base = graphicsSettingsFromPreset(baseTier);
+      const L = GRAPHICS_LIMITS;
+      return {
+        preset: 'custom',
+        baseTier,
+        resolution: clampNum(g.resolution, L.resolution.min, L.resolution.max, base.resolution),
+        shadows: isShadowQuality(g.shadows) ? g.shadows : base.shadows,
+        antialias: typeof g.antialias === 'boolean' ? g.antialias : base.antialias,
+        postProcessing: typeof g.postProcessing === 'boolean' ? g.postProcessing : base.postProcessing,
+        particleDensity: clampNum(g.particleDensity, L.particleDensity.min, L.particleDensity.max, base.particleDensity),
+        viewDistance: Math.round(clampNum(g.viewDistance, L.viewDistance.min, L.viewDistance.max, base.viewDistance)),
+        terrainDetail: clampNum(g.terrainDetail, L.terrainDetail.min, L.terrainDetail.max, base.terrainDetail),
+        maxEnemies: Math.round(clampNum(g.maxEnemies, L.maxEnemies.min, L.maxEnemies.max, base.maxEnemies)),
+      };
+    }
+    if (isTier(g.preset)) return graphicsSettingsFromPreset(g.preset);
+  }
+  // Legacy migration: a pre-section flat `graphicsQuality` string.
+  if (isTier(legacyQuality)) return graphicsSettingsFromPreset(legacyQuality);
+  return graphicsSettingsFromPreset('high');
+}
 
 // ── Rebindable controls ──────────────────────────────────────────────────────
 // Every action here is read by the game loop (see App.tsx). The stored value is
@@ -153,7 +312,6 @@ export interface UserSettings {
   haptics: boolean;
   hitMarkers: boolean;
   killFeed: boolean;
-  damageNumbers: boolean;
   /** Cinematic combat impact FX — world-space hit flashes + shockrings when you
    *  land a shot, bullets that shatter into shrapnel off enemy armour, and a
    *  visceral directional impact spark when an enemy lands a hit on you. Purely
@@ -172,7 +330,9 @@ export interface UserSettings {
   showCrosshair: boolean;
   crosshairStyle: 'dot' | 'cross' | 'circle' | 'dynamic';
   crosshairColor: string;
-  graphicsQuality: GraphicsQuality;
+  /** AAA-style graphics section: a named preset OR a hand-tuned custom mix.
+   *  Supersedes the old flat `graphicsQuality` field (auto-migrated on load). */
+  graphics: GraphicsSettings;
   keyBindings: KeyBindings;
 }
 
@@ -187,7 +347,6 @@ export const defaultUserSettings: UserSettings = {
   haptics: true,
   hitMarkers: true,
   killFeed: true,
-  damageNumbers: true,
   impactFeedback: true,
   ragdollPhysics: true,
   autoReload: true,
@@ -195,11 +354,50 @@ export const defaultUserSettings: UserSettings = {
   showCrosshair: true,
   crosshairStyle: 'cross',
   crosshairColor: '#22c55e',
-  graphicsQuality: 'high', // Default to the high tier
+  graphics: graphicsSettingsFromPreset('high'), // Default to the high tier
   keyBindings: { ...defaultKeyBindings },
 };
 
 const STORAGE_KEY = 'gameSettings';
+
+// Rebuild a clean, complete UserSettings from a raw/partial/legacy object (a
+// localStorage blob, a Convex sync blob, or nothing). Explicit field-by-field so
+// that retired keys (`damageNumbers`, the flat `graphicsQuality`) are DROPPED
+// rather than carried forward — that's what keeps the persisted blob small and
+// migrates old accounts in one pass. The graphics section is migrated from a
+// legacy flat `graphicsQuality` when no `graphics` object is present.
+function mergeSettings(raw: unknown): UserSettings {
+  const p = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const d = defaultUserSettings;
+  const num = (k: string, f: number) => (typeof p[k] === 'number' && Number.isFinite(p[k]) ? (p[k] as number) : f);
+  const bool = (k: string, f: boolean) => (typeof p[k] === 'boolean' ? (p[k] as boolean) : f);
+  const str = <T extends string>(k: string, f: T, allowed?: readonly T[]): T => {
+    const v = p[k];
+    if (typeof v === 'string' && (!allowed || (allowed as readonly string[]).includes(v))) return v as T;
+    return f;
+  };
+  return {
+    masterVolume: num('masterVolume', d.masterVolume),
+    sfxVolume: num('sfxVolume', d.sfxVolume),
+    musicVolume: num('musicVolume', d.musicVolume),
+    sensitivity: num('sensitivity', d.sensitivity),
+    fov: num('fov', d.fov),
+    showFPS: bool('showFPS', d.showFPS),
+    screenShake: bool('screenShake', d.screenShake),
+    haptics: bool('haptics', d.haptics),
+    hitMarkers: bool('hitMarkers', d.hitMarkers),
+    killFeed: bool('killFeed', d.killFeed),
+    impactFeedback: bool('impactFeedback', d.impactFeedback),
+    ragdollPhysics: bool('ragdollPhysics', d.ragdollPhysics),
+    autoReload: bool('autoReload', d.autoReload),
+    cameraBob: bool('cameraBob', d.cameraBob),
+    showCrosshair: bool('showCrosshair', d.showCrosshair),
+    crosshairStyle: str('crosshairStyle', d.crosshairStyle, ['dot', 'cross', 'circle', 'dynamic'] as const),
+    crosshairColor: str('crosshairColor', d.crosshairColor),
+    graphics: parseGraphics(p.graphics, p.graphicsQuality),
+    keyBindings: normalizeKeyBindings(p.keyBindings as Partial<KeyBindings> | undefined),
+  };
+}
 
 class GameSettingsManager {
   private settings: UserSettings;
@@ -220,23 +418,15 @@ class GameSettingsManager {
   }
 
   private loadSettings(): UserSettings {
-    if (typeof window === 'undefined') return { ...defaultUserSettings };
+    if (typeof window === 'undefined') return mergeSettings(null);
 
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved) as Partial<UserSettings>;
-        return {
-          ...defaultUserSettings,
-          ...parsed,
-          // Deep-merge bindings so a partial/legacy blob can't drop an action.
-          keyBindings: normalizeKeyBindings(parsed.keyBindings),
-        };
-      }
+      if (saved) return mergeSettings(JSON.parse(saved));
     } catch (e) {
       console.warn('Failed to load game settings:', e);
     }
-    return { ...defaultUserSettings, keyBindings: { ...defaultKeyBindings } };
+    return mergeSettings(null);
   }
 
   getSettings(): UserSettings {
@@ -271,6 +461,19 @@ class GameSettingsManager {
         ...updates.keyBindings,
       });
     }
+    // Validate/clamp a graphics section if one was supplied directly.
+    if (updates.graphics) {
+      this.settings.graphics = parseGraphics(updates.graphics);
+    }
+    this.saveSettings();
+    this.notifyListeners();
+  }
+
+  /** Restore the full settings from a synced account blob (Convex). Rebuilds
+   *  from defaults so retired/stale keys are dropped and the section is migrated
+   *  — used by the sign-in restore path. */
+  importSettings(raw: unknown): void {
+    this.settings = mergeSettings(raw);
     this.saveSettings();
     this.notifyListeners();
   }
@@ -285,7 +488,9 @@ class GameSettingsManager {
   }
 
   resetToDefaults(): void {
-    this.settings = { ...defaultUserSettings };
+    // Fresh deep copy (mergeSettings clones graphics + keyBindings) so the
+    // defaults are never mutated by later edits.
+    this.settings = mergeSettings(null);
     this.saveSettings();
     this.notifyListeners();
   }
@@ -318,21 +523,47 @@ class GameSettingsManager {
     return 0.5 + (this.settings.sensitivity / 100) * 2;
   }
 
-  // Get the current graphics preset based on quality setting
+  // The editable graphics section (preset name + individual knobs).
+  getGraphics(): GraphicsSettings {
+    return { ...this.settings.graphics };
+  }
+
+  // Resolve the section into the engine-facing preset (named tier or custom mix).
+  // This is what the renderer reads at scene init.
   getGraphicsPreset(): GraphicsPreset {
-    const quality = this.getGraphicsQuality();
-    return GRAPHICS_PRESETS[quality] || GRAPHICS_PRESETS.high;
+    return resolveGraphicsPreset(this.settings.graphics);
   }
 
-  // Get graphics quality level
+  // Representative named tier — drives the few cosmetic/qualitative engine
+  // choices not captured by the numeric knobs (shadow softness, HDRI res, haze).
   getGraphicsQuality(): GraphicsQuality {
-    const quality = this.settings.graphicsQuality as GraphicsQuality;
-    return GRAPHICS_PRESETS[quality] ? quality : 'high';
+    return this.settings.graphics.baseTier;
   }
 
-  // Set graphics quality
+  // Select a named preset (resets the knobs to mirror that tier).
+  setGraphicsPreset(name: GraphicsQuality): void {
+    this.settings.graphics = graphicsSettingsFromPreset(name);
+    this.saveSettings();
+    this.notifyListeners();
+  }
+
+  // Tweak one or more individual knobs → switches the section to a CUSTOM mix.
+  // The previously-selected named tier becomes the cosmetic `baseTier`.
+  updateGraphics(patch: Partial<Omit<GraphicsSettings, 'preset' | 'baseTier'>>): void {
+    const current = this.settings.graphics;
+    this.settings.graphics = parseGraphics({
+      ...current,
+      ...patch,
+      preset: 'custom',
+      baseTier: current.preset === 'custom' ? current.baseTier : current.preset,
+    });
+    this.saveSettings();
+    this.notifyListeners();
+  }
+
+  // Back-compat alias (touch auto-detect): select a named preset.
   setGraphicsQuality(quality: GraphicsQuality): void {
-    this.updateSetting('graphicsQuality', quality);
+    this.setGraphicsPreset(quality);
   }
 }
 

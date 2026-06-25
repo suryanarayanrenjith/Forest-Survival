@@ -3,11 +3,14 @@ import {
   Settings, X, Gamepad2, Volume2, SlidersHorizontal, Monitor,
   ChevronsUp, ChevronsDown, ChevronsRight, Wind, Zap,
   Crosshair, Target, RotateCcw, Grid3x3, Pause, Music, MousePointer2,
-  Eye, Activity, Skull, Hash, Check, Headphones, Sparkles, Hand, Radar, Bone, Flame, type LucideIcon,
+  Eye, Activity, Skull, Check, Headphones, Sparkles, Hand, Radar, Bone, Flame,
+  Maximize, Moon, Aperture, Wand2, Trees, Users, type LucideIcon,
 } from 'lucide-react';
 import { soundManager } from '../utils/SoundManager';
-import { gameSettingsManager } from '../utils/GameSettingsManager';
-import { type GraphicsQuality, GRAPHICS_PRESETS } from '../utils/GameSettingsManager';
+import {
+  gameSettingsManager, GRAPHICS_LIMITS,
+  type GraphicsQuality, type GraphicsSettings, type UserSettings,
+} from '../utils/GameSettingsManager';
 import { detectIsTouch } from '../hooks/useDeviceInfo';
 import KeyBindingsEditor from './KeyBindingsEditor';
 
@@ -15,69 +18,65 @@ interface SettingsMenuProps {
   onClose: () => void;
 }
 
-interface GameSettings {
-  masterVolume: number;
-  sfxVolume: number;
-  musicVolume: number;
-  sensitivity: number;
-  fov: number;
-  showFPS: boolean;
-  screenShake: boolean;
-  haptics: boolean;
-  hitMarkers: boolean;
-  killFeed: boolean;
-  damageNumbers: boolean;
-  impactFeedback: boolean;
-  ragdollPhysics: boolean;
-  autoReload: boolean;
-  cameraBob: boolean;
-  showCrosshair: boolean;
-  crosshairStyle: 'dot' | 'cross' | 'circle' | 'dynamic';
-  crosshairColor: string;
-  graphicsQuality: GraphicsQuality;
-}
+// The simple (non-graphics, non-keybinding) settings this panel edits directly.
+// Graphics live in their own section (gameSettingsManager.getGraphics()) and the
+// rebinder owns keyBindings, so neither is mirrored here — that keeps the
+// persisted blob clean and avoids the old "stale key written back" hazard.
+type SimpleSettings = Pick<UserSettings,
+  | 'masterVolume' | 'sfxVolume' | 'musicVolume' | 'sensitivity' | 'fov'
+  | 'showFPS' | 'screenShake' | 'haptics' | 'hitMarkers' | 'killFeed'
+  | 'impactFeedback' | 'ragdollPhysics' | 'autoReload' | 'cameraBob'
+  | 'showCrosshair' | 'crosshairStyle' | 'crosshairColor'>;
 
-const defaultSettings: GameSettings = {
-  masterVolume: 80,
-  sfxVolume: 100,
-  musicVolume: 70,
-  sensitivity: 50,
-  fov: 75,
-  showFPS: false,
-  screenShake: true,
-  haptics: true,
-  hitMarkers: true,
-  killFeed: true,
-  damageNumbers: true,
-  impactFeedback: true,
-  ragdollPhysics: true,
-  autoReload: true,
-  cameraBob: true,
-  showCrosshair: true,
-  crosshairStyle: 'cross',
-  crosshairColor: '#22c55e',
-  graphicsQuality: 'high',
+const SIMPLE_KEYS: (keyof SimpleSettings)[] = [
+  'masterVolume', 'sfxVolume', 'musicVolume', 'sensitivity', 'fov',
+  'showFPS', 'screenShake', 'haptics', 'hitMarkers', 'killFeed',
+  'impactFeedback', 'ragdollPhysics', 'autoReload', 'cameraBob',
+  'showCrosshair', 'crosshairStyle', 'crosshairColor',
+];
+
+const pickSimple = (s: UserSettings): SimpleSettings => {
+  const out = {} as SimpleSettings;
+  for (const k of SIMPLE_KEYS) (out as Record<string, unknown>)[k] = s[k];
+  return out;
 };
+
+const PRESET_META: { id: GraphicsQuality; label: string; desc: string }[] = [
+  { id: 'ultralow', label: 'Ultra Low', desc: 'Max FPS' },
+  { id: 'low', label: 'Low', desc: 'Best performance' },
+  { id: 'medium', label: 'Medium', desc: 'Balanced' },
+  { id: 'high', label: 'High', desc: 'Best visuals' },
+  { id: 'ultra', label: 'Ultra', desc: 'Cinematic' },
+];
 
 const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
   const [activeTab, setActiveTab] = useState<'controls' | 'audio' | 'gameplay' | 'display'>('controls');
-  const [settings, setSettings] = useState<GameSettings>(() => {
-    const saved = localStorage.getItem('gameSettings');
-    return saved ? { ...defaultSettings, ...JSON.parse(saved) } : defaultSettings;
-  });
+  // Seed from the (already-migrated) manager snapshot rather than parsing
+  // localStorage directly, so no retired/stale keys can ride in.
+  const [settings, setSettings] = useState<SimpleSettings>(() => pickSimple(gameSettingsManager.getSettings()));
+  // Graphics section is edited through dedicated manager calls; this mirror just
+  // keeps the UI in sync (preset highlight vs. custom badge, live knob values).
+  const [graphics, setGraphics] = useState<GraphicsSettings>(() => gameSettingsManager.getGraphics());
 
   useEffect(() => {
-    // Persist everything EXCEPT keyBindings: the rebinder (KeyBindingsEditor)
-    // owns those and writes them directly. Including the stale copy that rode in
-    // via the localStorage blob would clobber a fresh rebind made in this panel.
-    const toSave = { ...settings } as Record<string, unknown>;
-    delete toSave.keyBindings;
-    gameSettingsManager.updateSettings(toSave);
+    // Persist the simple fields. Graphics + keyBindings are written via their own
+    // manager calls, so they're never part of this patch.
+    gameSettingsManager.updateSettings(settings);
     soundManager.setVolume((settings.masterVolume / 100) * (settings.sfxVolume / 100));
   }, [settings]);
 
-  const updateSetting = <K extends keyof GameSettings>(key: K, value: GameSettings[K]) => {
+  const updateSetting = <K extends keyof SimpleSettings>(key: K, value: SimpleSettings[K]) => {
     setSettings((prev) => ({ ...prev, [key]: value }));
+  };
+
+  // ── Graphics editing ───────────────────────────────────────────────────────
+  const selectPreset = (name: GraphicsQuality) => {
+    gameSettingsManager.setGraphicsPreset(name);
+    setGraphics(gameSettingsManager.getGraphics());
+  };
+  const editGraphics = (patch: Partial<Omit<GraphicsSettings, 'preset' | 'baseTier'>>) => {
+    gameSettingsManager.updateGraphics(patch);
+    setGraphics(gameSettingsManager.getGraphics());
   };
 
   // Touch devices remap every action to the on-screen controls, so the
@@ -226,7 +225,6 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
                 <Toggle label="Screen Shake" desc="Camera shake on impacts" icon={Activity} value={settings.screenShake} onChange={(v) => updateSetting('screenShake', v)} />
                 <Toggle label="Hit Markers" desc="Feedback when you land hits" icon={Crosshair} value={settings.hitMarkers} onChange={(v) => updateSetting('hitMarkers', v)} />
                 <Toggle label="Kill Feed" desc="Elimination notifications" icon={Skull} value={settings.killFeed} onChange={(v) => updateSetting('killFeed', v)} />
-                <Toggle label="Damage Numbers" desc="Show damage dealt" icon={Hash} value={settings.damageNumbers} onChange={(v) => updateSetting('damageNumbers', v)} />
                 <Toggle label="Impact Feedback" desc="Hit flashes, bullet shatter & impact sparks" icon={Flame} value={settings.impactFeedback} onChange={(v) => updateSetting('impactFeedback', v)} />
                 <Toggle label="Ragdoll Physics" desc="Enemies fly & tumble on death" icon={Bone} value={settings.ragdollPhysics} onChange={(v) => updateSetting('ragdollPhysics', v)} />
                 <Toggle label="Auto Reload" desc="Reload automatically on empty mag" icon={RotateCcw} value={settings.autoReload} onChange={(v) => updateSetting('autoReload', v)} />
@@ -269,30 +267,31 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
 
           {activeTab === 'display' && (
             <div className="space-y-3" style={{ animation: 'smFade 0.2s ease-out' }}>
+              {/* ── GRAPHICS PRESETS ── */}
               <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-4">
-                <div className="flex items-center gap-2 mb-3">
-                  <Monitor className="w-4 h-4 text-gray-400" strokeWidth={2.25} />
-                  <span className="font-hud text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-300">Graphics Quality</span>
+                <div className="flex items-center justify-between gap-2 mb-3">
+                  <div className="flex items-center gap-2">
+                    <Monitor className="w-4 h-4 text-gray-400" strokeWidth={2.25} />
+                    <span className="font-hud text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-300">Graphics Quality</span>
+                  </div>
+                  {graphics.preset === 'custom' && (
+                    <span className="font-hud text-[9px] font-bold uppercase tracking-wider text-amber-300 bg-amber-400/10 border border-amber-400/30 rounded-full px-2 py-0.5">
+                      Custom mix
+                    </span>
+                  )}
                 </div>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                  {(['low', 'medium', 'high', 'ultra'] as const).map((quality) => {
-                    const active = settings.graphicsQuality === quality;
-                    const desc = quality === 'ultra'
-                      ? 'Cinematic'
-                      : quality === 'high'
-                        ? 'Best visuals'
-                        : quality === 'medium'
-                          ? 'Balanced'
-                          : 'Best performance';
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                  {PRESET_META.map(({ id, label, desc }) => {
+                    const active = graphics.preset === id;
                     return (
                       <button
-                        key={quality}
-                        onClick={() => updateSetting('graphicsQuality', quality)}
+                        key={id}
+                        onClick={() => selectPreset(id)}
                         className={`relative py-3 rounded-lg border transition-all ${
                           active ? 'border-emerald-400/50 bg-emerald-500/15' : 'border-white/10 bg-white/[0.03] hover:bg-white/[0.06]'
                         }`}
                       >
-                        <div className={`text-sm font-bold uppercase ${active ? 'text-emerald-300' : 'text-gray-300'}`}>{quality}</div>
+                        <div className={`text-sm font-bold uppercase ${active ? 'text-emerald-300' : 'text-gray-300'}`}>{label}</div>
                         <div className="text-[10px] text-gray-500 mt-0.5">{desc}</div>
                         {active && (
                           <span className="absolute -top-1.5 -right-1.5 flex items-center justify-center w-5 h-5 rounded-full bg-emerald-400">
@@ -303,15 +302,83 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
                     );
                   })}
                 </div>
-                <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-gray-500">
-                  <span>Shadows · {GRAPHICS_PRESETS[settings.graphicsQuality].shadowsEnabled ? 'On' : 'Off'}</span>
-                  <span>Bloom &amp; Post-FX · {GRAPHICS_PRESETS[settings.graphicsQuality].postProcessing ? 'On' : 'Off'}</span>
-                  <span>Resolution · {Math.round(GRAPHICS_PRESETS[settings.graphicsQuality].pixelRatio * 100)}%</span>
-                  <span>Anti-aliasing · {GRAPHICS_PRESETS[settings.graphicsQuality].antialias ? 'On' : 'Off'}</span>
-                  <span>Draw Distance · {GRAPHICS_PRESETS[settings.graphicsQuality].viewDistance}m</span>
-                  <span>Max Enemies · {GRAPHICS_PRESETS[settings.graphicsQuality].maxEnemies}</span>
+                <p className="mt-3 text-[11px] text-gray-500">
+                  Pick a preset or fine-tune any control below to build a <span className="text-amber-300/90 font-semibold">Custom</span> mix.
+                  Graphics changes apply when you start your next match.
+                </p>
+              </div>
+
+              {/* ── ADVANCED GRAPHICS (drives Custom) ── */}
+              <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-4 space-y-3">
+                <div className="flex items-center gap-2">
+                  <SlidersHorizontal className="w-4 h-4 text-gray-400" strokeWidth={2.25} />
+                  <span className="font-hud text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-300">Advanced</span>
+                </div>
+
+                <Slider
+                  label="Resolution Scale" icon={Maximize}
+                  value={Math.round(graphics.resolution * 100)}
+                  min={Math.round(GRAPHICS_LIMITS.resolution.min * 100)}
+                  max={Math.round(GRAPHICS_LIMITS.resolution.max * 100)}
+                  step={5} suffix="%"
+                  onChange={(v) => editGraphics({ resolution: v / 100 })}
+                />
+
+                <Segmented
+                  label="Shadows" icon={Moon}
+                  value={graphics.shadows}
+                  options={[
+                    { value: 'off', label: 'Off' },
+                    { value: 'low', label: 'Low' },
+                    { value: 'medium', label: 'Med' },
+                    { value: 'high', label: 'High' },
+                    { value: 'ultra', label: 'Ultra' },
+                  ]}
+                  onChange={(v) => editGraphics({ shadows: v })}
+                />
+
+                <Slider
+                  label="Particle Density" icon={Sparkles}
+                  value={Math.round(graphics.particleDensity * 100)}
+                  min={Math.round(GRAPHICS_LIMITS.particleDensity.min * 100)}
+                  max={Math.round(GRAPHICS_LIMITS.particleDensity.max * 100)}
+                  step={5} suffix="%"
+                  onChange={(v) => editGraphics({ particleDensity: v / 100 })}
+                />
+
+                <Slider
+                  label="Render Distance" icon={Eye}
+                  value={graphics.viewDistance}
+                  min={GRAPHICS_LIMITS.viewDistance.min}
+                  max={GRAPHICS_LIMITS.viewDistance.max}
+                  step={4} suffix="m"
+                  onChange={(v) => editGraphics({ viewDistance: v })}
+                />
+
+                <Slider
+                  label="Terrain Detail" icon={Trees}
+                  value={Math.round(graphics.terrainDetail * 100)}
+                  min={Math.round(GRAPHICS_LIMITS.terrainDetail.min * 100)}
+                  max={Math.round(GRAPHICS_LIMITS.terrainDetail.max * 100)}
+                  step={5} suffix="%"
+                  onChange={(v) => editGraphics({ terrainDetail: v / 100 })}
+                />
+
+                <Slider
+                  label="Max Enemies" icon={Users}
+                  value={graphics.maxEnemies}
+                  min={GRAPHICS_LIMITS.maxEnemies.min}
+                  max={GRAPHICS_LIMITS.maxEnemies.max}
+                  step={1} suffix=""
+                  onChange={(v) => editGraphics({ maxEnemies: v })}
+                />
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                  <Toggle label="Post-Processing" desc="Bloom, god rays & colour grade" icon={Wand2} value={graphics.postProcessing} onChange={(v) => editGraphics({ postProcessing: v })} />
+                  <Toggle label="Anti-Aliasing" desc="Smooth jagged edges (MSAA/SMAA)" icon={Aperture} value={graphics.antialias} onChange={(v) => editGraphics({ antialias: v })} />
                 </div>
               </div>
+
               <Slider label="Field of View" icon={Eye} value={settings.fov} min={60} max={120} suffix="°" onChange={(v) => updateSetting('fov', v)} />
               <Toggle label="Show FPS Counter" desc="Display frames per second" icon={Activity} value={settings.showFPS} onChange={(v) => updateSetting('showFPS', v)} />
               <div className={`rounded-xl border border-white/[0.07] bg-white/[0.02] p-4 transition-opacity ${settings.showCrosshair ? '' : 'opacity-50'}`}>
@@ -346,7 +413,11 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
         {/* Footer */}
         <div className="flex items-center justify-between px-5 sm:px-6 py-4 border-t border-white/[0.07]">
           <button
-            onClick={() => setSettings(defaultSettings)}
+            onClick={() => {
+              gameSettingsManager.resetToDefaults();
+              setSettings(pickSimple(gameSettingsManager.getSettings()));
+              setGraphics(gameSettingsManager.getGraphics());
+            }}
             className="font-hud text-xs font-semibold uppercase tracking-wider text-gray-400 transition-colors hover:text-white"
           >
             Reset to defaults
@@ -383,8 +454,8 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
   );
 };
 
-const Slider = ({ label, icon: Icon, value, onChange, min = 0, max = 100, suffix = '%' }: {
-  label: string; icon: LucideIcon; value: number; onChange: (v: number) => void; min?: number; max?: number; suffix?: string;
+const Slider = ({ label, icon: Icon, value, onChange, min = 0, max = 100, step = 1, suffix = '%' }: {
+  label: string; icon: LucideIcon; value: number; onChange: (v: number) => void; min?: number; max?: number; step?: number; suffix?: string;
 }) => {
   const pct = ((value - min) / (max - min)) * 100;
   return (
@@ -397,7 +468,7 @@ const Slider = ({ label, icon: Icon, value, onChange, min = 0, max = 100, suffix
         <span className="text-sm font-bold text-emerald-300 tabular-nums">{value}{suffix}</span>
       </div>
       <input
-        type="range" min={min} max={max} value={value}
+        type="range" min={min} max={max} step={step} value={value}
         onChange={(e) => onChange(Number(e.target.value))}
         className="sm-slider w-full h-1.5 rounded-full cursor-pointer"
         style={{ background: `linear-gradient(to right, #34d399 0%, #34d399 ${pct}%, rgba(255,255,255,0.1) ${pct}%, rgba(255,255,255,0.1) 100%)` }}
@@ -405,6 +476,37 @@ const Slider = ({ label, icon: Icon, value, onChange, min = 0, max = 100, suffix
     </div>
   );
 };
+
+// Segmented selector (e.g. shadow quality) — a labelled row of mutually
+// exclusive pills, styled to match the preset/toggle controls.
+function Segmented<T extends string>({ label, icon: Icon, value, options, onChange }: {
+  label: string; icon: LucideIcon; value: T; options: { value: T; label: string }[]; onChange: (v: T) => void;
+}) {
+  return (
+    <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-4 py-3.5">
+      <div className="flex items-center gap-2.5 mb-2.5">
+        <Icon className="w-4 h-4 text-gray-400" strokeWidth={2.25} />
+        <span className="font-hud text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-300">{label}</span>
+      </div>
+      <div className="grid gap-1.5" style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}>
+        {options.map((opt) => {
+          const active = value === opt.value;
+          return (
+            <button
+              key={opt.value}
+              onClick={() => onChange(opt.value)}
+              className={`py-2 rounded-lg text-xs font-semibold transition-all border ${
+                active ? 'border-emerald-400/50 bg-emerald-500/15 text-emerald-300' : 'border-white/10 bg-white/[0.03] text-gray-400 hover:bg-white/[0.06]'
+              }`}
+            >
+              {opt.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 const Toggle = ({ label, desc, icon: Icon, value, onChange }: {
   label: string; desc?: string; icon: LucideIcon; value: boolean; onChange: (v: boolean) => void;

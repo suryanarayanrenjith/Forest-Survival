@@ -42,6 +42,23 @@ export class EnemyPerception {
   private hearingRange: number;
   private hearingSensitivity: number;
 
+  // Reused outputs/scratch so the per-enemy perceive() tick never allocates.
+  // perceive() runs for every nearby enemy several times a second; the old
+  // version allocated a fresh result object + several Vector3s per call (and
+  // two Vector3s PER terrain object inside the line-of-sight scan), which was
+  // the dominant source of gameplay GC churn. These reused members make the
+  // whole perception pass allocation-free with byte-identical results.
+  private readonly _playerDirection = new THREE.Vector3();
+  private readonly _result: PerceptionResult = {
+    canSeePlayer: false,
+    canHearPlayer: false,
+    playerDistance: 0,
+    playerDirection: this._playerDirection,
+    threatLevel: 0,
+    lastSeenPosition: null,
+    timeSinceLastSeen: Infinity,
+  };
+
   constructor(
     visionRange: number = 50,
     visionAngle: number = Math.PI / 2, // 90 degrees
@@ -67,8 +84,8 @@ export class EnemyPerception {
   ): PerceptionResult {
     const currentTime = Date.now();
 
-    // Calculate player direction and distance
-    const playerDirection = new THREE.Vector3()
+    // Calculate player direction and distance (reused vector — no allocation).
+    this._playerDirection
       .subVectors(playerPosition, enemyPosition)
       .normalize();
     const playerDistance = enemyPosition.distanceTo(playerPosition);
@@ -83,9 +100,11 @@ export class EnemyPerception {
       isNight
     );
 
-    // Update last seen tracking
+    // Update last seen tracking — copy into the persistent vector instead of
+    // cloning a fresh one every sighting.
     if (canSee) {
-      this.lastSeenPosition = playerPosition.clone();
+      if (this.lastSeenPosition) this.lastSeenPosition.copy(playerPosition);
+      else this.lastSeenPosition = playerPosition.clone();
       this.lastSeenTime = currentTime;
     }
 
@@ -101,10 +120,16 @@ export class EnemyPerception {
       playerDistance
     );
 
-    // Clean up old hearing memories
-    this.hearingMemory = this.hearingMemory.filter(
-      mem => currentTime - mem.time < this.memoryDuration
-    );
+    // Clean up old hearing memories IN PLACE (only when there's anything to
+    // prune) so a perceive tick never allocates a replacement array.
+    if (this.hearingMemory.length > 0) {
+      let w = 0;
+      for (let r = 0; r < this.hearingMemory.length; r++) {
+        const mem = this.hearingMemory[r];
+        if (currentTime - mem.time < this.memoryDuration) this.hearingMemory[w++] = mem;
+      }
+      this.hearingMemory.length = w;
+    }
 
     // THREAT ASSESSMENT
     const threatLevel = this.assessThreat(
@@ -115,15 +140,14 @@ export class EnemyPerception {
       playerVelocity
     );
 
-    return {
-      canSeePlayer: canSee,
-      canHearPlayer: canHear,
-      playerDistance,
-      playerDirection,
-      threatLevel,
-      lastSeenPosition: this.lastSeenPosition,
-      timeSinceLastSeen
-    };
+    const result = this._result;
+    result.canSeePlayer = canSee;
+    result.canHearPlayer = canHear;
+    result.playerDistance = playerDistance;
+    result.threatLevel = threatLevel;
+    result.lastSeenPosition = this.lastSeenPosition;
+    result.timeSinceLastSeen = timeSinceLastSeen;
+    return result;
   }
 
   /**
@@ -148,18 +172,15 @@ export class EnemyPerception {
       return false;
     }
 
-    // Vision cone check
-    const toPlayer = new THREE.Vector3()
-      .subVectors(playerPosition, enemyPosition)
-      .normalize();
-
-    const enemyForward = new THREE.Vector3(
-      Math.sin(enemyRotation),
-      0,
-      Math.cos(enemyRotation)
-    );
-
-    const angleToPlayer = Math.acos(enemyForward.dot(toPlayer));
+    // Vision cone check — scalar dot product, no temp vectors. Matches the old
+    // result exactly: the forward vector is (sin, 0, cos) so only the X/Z of the
+    // 3D-normalized to-player direction contribute to the dot.
+    const dx = playerPosition.x - enemyPosition.x;
+    const dy = playerPosition.y - enemyPosition.y;
+    const dz = playerPosition.z - enemyPosition.z;
+    const len = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+    const dot = Math.sin(enemyRotation) * (dx / len) + Math.cos(enemyRotation) * (dz / len);
+    const angleToPlayer = Math.acos(dot);
 
     if (angleToPlayer > this.visionAngle) {
       return false;
@@ -177,28 +198,35 @@ export class EnemyPerception {
     end: THREE.Vector3,
     terrainObjects: TerrainShape[]
   ): boolean {
-    const direction = new THREE.Vector3().subVectors(end, start);
-    const distance = direction.length();
-    direction.normalize();
+    // Allocation-free segment scan. This runs over EVERY terrain object for
+    // every enemy that can see the player, several times a second — the old
+    // version allocated two Vector3s per object here, which dominated combat GC.
+    // The maths below are identical (3D-normalised X/Z direction, scalar
+    // projection, XZ closest-point distance) but allocate nothing; the final
+    // test uses a squared compare instead of a sqrt.
+    const ex = end.x - start.x;
+    const ey = end.y - start.y;
+    const ez = end.z - start.z;
+    const distance = Math.sqrt(ex * ex + ey * ey + ez * ez);
+    if (distance < 1e-6) return false;
+    const inv = 1 / distance;
+    const dirX = ex * inv;
+    const dirZ = ez * inv;
 
-    // Check each terrain object for intersection
-    for (const obj of terrainObjects) {
+    for (let i = 0; i < terrainObjects.length; i++) {
+      const obj = terrainObjects[i];
       if (!obj.collidable) continue;
 
-      // Simple sphere intersection test
-      const toObject = new THREE.Vector3(obj.x - start.x, 0, obj.z - start.z);
-      const projection = toObject.dot(direction);
+      const ox = obj.x - start.x;
+      const oz = obj.z - start.z;
+      const projection = ox * dirX + oz * dirZ;
 
       // Object is behind or beyond target
       if (projection < 0 || projection > distance) continue;
 
-      const closestPoint = direction.clone().multiplyScalar(projection).add(start);
-      const distanceToObject = Math.sqrt(
-        Math.pow(closestPoint.x - obj.x, 2) +
-        Math.pow(closestPoint.z - obj.z, 2)
-      );
-
-      if (distanceToObject < obj.radius) {
+      const cpDX = (start.x + dirX * projection) - obj.x;
+      const cpDZ = (start.z + dirZ * projection) - obj.z;
+      if (cpDX * cpDX + cpDZ * cpDZ < obj.radius * obj.radius) {
         return true; // Line is blocked
       }
     }
@@ -229,10 +257,15 @@ export class EnemyPerception {
     const hearingThreshold = (playerDistance / this.hearingRange) * 100;
     const adjustedNoise = movementNoise * this.hearingSensitivity;
 
-    // Check recent sounds (gunshots, etc.)
-    const recentSounds = this.hearingMemory.some(mem =>
-      mem.position.distanceTo(enemyPosition) < this.hearingRange
-    );
+    // Check recent sounds (gunshots, etc.) — plain loop avoids allocating a
+    // closure on every hearing check.
+    let recentSounds = false;
+    for (let i = 0; i < this.hearingMemory.length; i++) {
+      if (this.hearingMemory[i].position.distanceTo(enemyPosition) < this.hearingRange) {
+        recentSounds = true;
+        break;
+      }
+    }
 
     return adjustedNoise > hearingThreshold || recentSounds;
   }

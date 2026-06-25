@@ -7,7 +7,7 @@ import { GunModel, type WeaponType as GunWeaponType } from './utils/GunModel';
 import { MuzzleFlash, MuzzleSmoke, BulletTracer, ImpactEffect, RobotHitSparks, ExplosionEffect, FireNovaEffect, NukeEffect, AbilityCastEffect, ImpactBurst, setMuzzleLightPool, setExplosionLightPool, clearParticleGeometryPools, clearTracerGeometryPool, clearFlashSpritePool } from './utils/Effects';
 import { HackBeam, buildHackVisuals, updateHackVisuals, disposeHackVisuals } from './utils/HackVisuals';
 import { soundManager } from './utils/SoundManager';
-import { gameSettingsManager, type UserSettings, type KeyBindings } from './utils/GameSettingsManager';
+import { gameSettingsManager, defaultUserSettings, defaultKeyBindings, type UserSettings, type KeyBindings } from './utils/GameSettingsManager';
 import { PostProcessingPipeline } from './utils/PostProcessing';
 import { SpatialGrid } from './utils/SpatialGrid';
 import { AIBehaviorSystem } from './utils/AIBehaviorSystem';
@@ -47,7 +47,7 @@ import SpectateScreen from './components/SpectateScreen';
 import ChatSystem from './components/ChatSystem';
 import AchievementNotification from './components/AchievementNotification';
 import KillFeed, { addKillFeedEntry } from './components/KillFeed';
-import HitMarkers, { addHitMarker, addDamageNumber, clearHitMarkers } from './components/HitMarkers';
+import HitMarkers, { addHitMarker, clearHitMarkers } from './components/HitMarkers';
 import DamageDirectionIndicator, { triggerDamageDirection, clearDamageDirections } from './components/DamageDirectionIndicator';
 import ScreenEffects, { triggerDamageFlash, triggerScreenShake, triggerKillFlash, triggerHeadshotFlash, triggerAbilityFlash } from './components/ScreenEffects';
 import ComboDisplay from './components/ComboDisplay';
@@ -59,6 +59,7 @@ import { PredictiveSpawnSystem } from './utils/PredictiveSpawnSystem';
 import { SmartSkillTreeSystem, type Skill, type PlayStyle } from './utils/SmartSkillTreeSystem';
 import { TutorialSystem, type TutorialStep } from './utils/TutorialSystem';
 import { smartEnemyManager, type EnemyType as PooledEnemyType } from './utils/SmartEnemyManager';
+import { RagdollSystem } from './utils/RagdollSystem';
 import { MissionDisplay } from './components/MissionDisplay';
 import { SkillTreeMenu } from './components/SkillTreeMenu';
 import { TutorialOverlay, CoachTipsDisplay } from './components/TutorialOverlay';
@@ -74,7 +75,6 @@ import { getCharacterAbility } from './utils/CharacterAbilityRegistry';
 import { DAILY_CHALLENGES, getTodayChallengeId } from './utils/DailyChallengeRegistry';
 import { bonusForLevel, levelFromXp, xpPerKill, xpProgressAtLevel, MAX_MASTERY_LEVEL, type MasteryBonus } from './utils/WeaponMasterySystem';
 import { TITLE_FOR_ACHIEVEMENT } from './utils/CosmeticTitles';
-import { EnhancedSettings, type GameSettings } from './components/EnhancedSettings';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import ShaderProcessingScreen, { type WarmupErrorInfo } from './components/ShaderProcessingScreen';
 import MenuBackdrop, { type MenuBackdropVariant } from './components/MenuBackdrop';
@@ -176,72 +176,53 @@ interface EnemyIntro {
   icon: 'skull' | 'wind' | 'shield' | 'crown' | 'crosshair';
 }
 
-const createEnhancedSettingsDefaults = (userSettings: UserSettings): GameSettings => ({
-  graphicsQuality: gameSettingsManager.getGraphicsQuality(),
-  shadowQuality: 'medium',
-  postProcessing: true,
-  particles: true,
-  particleDensity: 75,
-  viewDistance: 150,
-  masterVolume: userSettings.masterVolume,
-  musicVolume: userSettings.musicVolume,
-  sfxVolume: userSettings.sfxVolume,
-  difficulty: 'medium',
-  showTutorial: true,
-  showHints: true,
-  showDamageNumbers: userSettings.damageNumbers,
-  screenShake: userSettings.screenShake,
-  ragdollPhysics: userSettings.ragdollPhysics,
-  autoReload: false,
-  adaptiveDifficulty: true,
-  mouseSensitivity: userSettings.sensitivity,
-  invertY: false,
-  toggleAim: false,
-  showFPS: userSettings.showFPS,
-  showMinimap: true,
-  uiScale: 100,
-  colorblindMode: 'none',
-});
-
-const syncEnhancedSettingsWithUserSettings = (currentSettings: GameSettings, userSettings: UserSettings): GameSettings => ({
-  ...currentSettings,
-  graphicsQuality: userSettings.graphicsQuality,
-  masterVolume: userSettings.masterVolume,
-  musicVolume: userSettings.musicVolume,
-  sfxVolume: userSettings.sfxVolume,
-  mouseSensitivity: userSettings.sensitivity,
-  showFPS: userSettings.showFPS,
-  screenShake: userSettings.screenShake,
-  showDamageNumbers: userSettings.damageNumbers,
-  ragdollPhysics: userSettings.ragdollPhysics,
-});
-
-const enhancedSettingsToUserSettings = (settings: GameSettings): Partial<UserSettings> => ({
-  graphicsQuality: settings.graphicsQuality,
-  masterVolume: settings.masterVolume,
-  musicVolume: settings.musicVolume,
-  sfxVolume: settings.sfxVolume,
-  sensitivity: settings.mouseSensitivity,
-  showFPS: settings.showFPS,
-  screenShake: settings.screenShake,
-  damageNumbers: settings.showDamageNumbers,
-  ragdollPhysics: settings.ragdollPhysics,
-});
+// Gameplay/UX preferences that used to sit behind the in-game EnhancedSettings
+// panel (now removed — it was unreachable). They had no live UI, so they stay
+// fixed at their established defaults; behaviour is unchanged. Adaptive
+// difficulty is also driven by the 'adaptive' difficulty mode at the call sites.
+const RUNTIME_PREFS = { adaptiveDifficulty: true, showTutorial: true, showHints: true } as const;
 
 const MENU_MUSIC_URL = '/audio/Beyond_The_Overgrowth.mp3';
 
-// Fixed key order so the serialized settings blob is stable for equality checks
-// (avoids spurious DB writes when the object identity changes but values don't).
-const SYNCED_SETTING_KEYS: (keyof UserSettings)[] = [
+// Scalar settings synced to the account, in a FIXED order so the serialized
+// blob is byte-stable for equality checks (no spurious DB writes when object
+// identity changes but values don't).
+const SYNCED_SCALAR_KEYS = [
   'masterVolume', 'sfxVolume', 'musicVolume', 'sensitivity', 'fov',
-  'showFPS', 'screenShake', 'haptics', 'hitMarkers', 'killFeed', 'damageNumbers',
-  'impactFeedback', 'ragdollPhysics', 'crosshairStyle', 'crosshairColor', 'graphicsQuality', 'keyBindings',
-];
+  'showFPS', 'screenShake', 'haptics', 'hitMarkers', 'killFeed',
+  'impactFeedback', 'ragdollPhysics', 'autoReload', 'cameraBob',
+  'showCrosshair', 'crosshairStyle', 'crosshairColor',
+] as const satisfies readonly (keyof UserSettings)[];
 
+// SPARSE serialization for MAX DB savings: only keys that DIFFER from the
+// defaults are written, so a stock account stores ~nothing and a tweaked one
+// stores only its deltas. mergeSettings() on load fills the rest from defaults,
+// so a missing key always means "default" (and dropping back to a default value
+// shrinks the blob again). The graphics section is stored compactly — just the
+// preset name for a named tier; the full knob set only for a custom mix.
 function serializeSettings(s: UserSettings): string {
-  const ordered: Record<string, unknown> = {};
-  for (const key of SYNCED_SETTING_KEYS) ordered[key] = s[key];
-  return JSON.stringify(ordered);
+  const out: Record<string, unknown> = {};
+  for (const key of SYNCED_SCALAR_KEYS) {
+    if (s[key] !== defaultUserSettings[key]) out[key] = s[key];
+  }
+  // keyBindings: only the actions rebound away from the default.
+  const kb: Record<string, string> = {};
+  for (const action of Object.keys(s.keyBindings) as (keyof typeof s.keyBindings)[]) {
+    if (s.keyBindings[action] !== defaultKeyBindings[action]) kb[action] = s.keyBindings[action];
+  }
+  if (Object.keys(kb).length > 0) out.keyBindings = kb;
+  // Graphics: a named tier needs only its name; a custom mix carries the knobs.
+  const g = s.graphics;
+  if (g.preset === 'custom') {
+    out.graphics = {
+      preset: 'custom', baseTier: g.baseTier, resolution: g.resolution, shadows: g.shadows,
+      antialias: g.antialias, postProcessing: g.postProcessing, particleDensity: g.particleDensity,
+      viewDistance: g.viewDistance, terrainDetail: g.terrainDetail, maxEnemies: g.maxEnemies,
+    };
+  } else if (g.preset !== defaultUserSettings.graphics.preset) {
+    out.graphics = { preset: g.preset };
+  }
+  return JSON.stringify(out);
 }
 
 const ForestSurvivalGame = () => {
@@ -487,7 +468,6 @@ const ForestSurvivalGame = () => {
   const [coachTips, setCoachTips] = useState<CoachTip[]>([]);
   const [showSkillTree, setShowSkillTree] = useState(false);
   const [showTutorial, setShowTutorial] = useState(false);
-  const [showEnhancedSettings, setShowEnhancedSettings] = useState(false);
 
   // Tutorial & Skill Tree refs + state (bridge useEffect closure → React render)
   const tutorialRef = useRef<TutorialSystem | null>(null);
@@ -568,9 +548,6 @@ const ForestSurvivalGame = () => {
     }
   }, [gameStarted]);
 
-  // Game settings
-  const [gameSettings, setGameSettings] = useState<GameSettings>(() => createEnhancedSettingsDefaults(gameSettingsManager.getSettings()));
-
   const menuMusicRef = useRef<HTMLAudioElement | null>(null);
   const menuMusicUnlockCleanupRef = useRef<(() => void) | null>(null);
   const menuMusicVolumeRef = useRef(0);
@@ -621,7 +598,6 @@ const ForestSurvivalGame = () => {
     const unsubscribe = gameSettingsManager.subscribe((settings) => {
       setUserSettings(settings);
       keyBindingsRef.current = settings.keyBindings;
-      setGameSettings((currentSettings) => syncEnhancedSettingsWithUserSettings(currentSettings, settings));
     });
 
     // Also refresh settings periodically in case localStorage was changed from settings menu
@@ -656,8 +632,10 @@ const ForestSurvivalGame = () => {
     const blob = playerStats.settings ?? null;
     if (blob) {
       try {
-        const parsed = JSON.parse(blob) as Partial<UserSettings>;
-        gameSettingsManager.updateSettings(parsed);
+        // importSettings rebuilds from defaults — migrating legacy blobs
+        // (flat graphicsQuality, retired damageNumbers) into the new shape and
+        // dropping stale keys, so old accounts restore cleanly.
+        gameSettingsManager.importSettings(JSON.parse(blob));
         syncedSettingsRef.current = serializeSettings(gameSettingsManager.getSettings());
         return;
       } catch {
@@ -1287,7 +1265,7 @@ const ForestSurvivalGame = () => {
     // genuinely tracks the player (a true rubber-band), vs the subtle background
     // assist used in the fixed modes.
     adaptiveDifficulty.setAdaptive(
-      gameSettings.adaptiveDifficulty || classicDifficulty === 'adaptive',
+      RUNTIME_PREFS.adaptiveDifficulty || classicDifficulty === 'adaptive',
       classicDifficulty === 'adaptive' ? 0.4 : 0.15,
     );
 
@@ -1321,8 +1299,8 @@ const ForestSurvivalGame = () => {
 
     // 6. Tutorial System - Contextual learning
     const tutorial = new TutorialSystem();
-    tutorial.setEnabled(gameSettings.showTutorial);
-    tutorial.setShowHints(gameSettings.showHints);
+    tutorial.setEnabled(RUNTIME_PREFS.showTutorial);
+    tutorial.setShowHints(RUNTIME_PREFS.showHints);
 
     // Store refs so React render can access these systems
     tutorialRef.current = tutorial;
@@ -1482,8 +1460,18 @@ const ForestSurvivalGame = () => {
     scene.background = new THREE.Color(renderAtmosphere.skyColor);
 
     // === GRAPHICS QUALITY SYSTEM ===
+    // `graphicsPreset` is the RESOLVED engine config (named tier OR custom mix).
+    // `graphicsQuality` is the representative named tier (baseTier) for the few
+    // cosmetic choices not captured by the numeric knobs (haze density, HDRI res).
     const graphicsPreset = gameSettingsManager.getGraphicsPreset();
     const graphicsQuality = gameSettingsManager.getGraphicsQuality();
+    // "Low tier" = the performance path: shadow-less / post-less, skipping the
+    // pricier cosmetic extras (atmospheric haze sphere, gun fill-lights) and
+    // using the cheap pixelated upscale + low-detail sky. Derived from the
+    // EFFECTIVE post-processing flag (the only presets with post off are LOW /
+    // ULTRA LOW) so a CUSTOM mix that turns post-processing off coherently gets
+    // the same performance path — no dependence on the preset NAME.
+    const lowTier = !graphicsPreset.postProcessing;
 
     // Camera - use FOV from settings, far plane based on view distance
     const camera = new THREE.PerspectiveCamera(baseFOV, window.innerWidth / window.innerHeight, 0.1, graphicsPreset.viewDistance * 5);
@@ -1535,7 +1523,7 @@ const ForestSurvivalGame = () => {
     renderer.setPixelRatio(1); // Fixed at 1, we handle scaling via renderWidth/Height
     renderer.shadowMap.enabled = graphicsPreset.shadowsEnabled;
     // Soft (PCF) shadows on medium+ for realistic penumbra; basic only on low.
-    renderer.shadowMap.type = graphicsQuality === 'low' ? THREE.BasicShadowMap : THREE.PCFSoftShadowMap;
+    renderer.shadowMap.type = lowTier ? THREE.BasicShadowMap : THREE.PCFSoftShadowMap;
     // Tone mapping happens in the post pipeline (ACES Filmic). When the
     // post FX is disabled (Low preset) the renderer's built-in ACES Filmic
     // takes over so the raw signal still maps cleanly to display range
@@ -1553,8 +1541,9 @@ const ForestSurvivalGame = () => {
     if (renderer.domElement) {
       renderer.domElement.style.width = '100%';
       renderer.domElement.style.height = '100%';
-      // Use smooth scaling for higher quality, pixelated for low quality
-      if (graphicsQuality === 'low') {
+      // Use smooth scaling for higher quality, pixelated for the low tier (the
+      // crisp nearest-neighbour upscale is cheaper than the browser's bilinear).
+      if (lowTier) {
         renderer.domElement.style.imageRendering = 'pixelated';
       } else {
         renderer.domElement.style.imageRendering = 'auto';
@@ -1680,9 +1669,11 @@ const ForestSurvivalGame = () => {
       });
     }
 
-    // Ensure enemies pick up the correct emissive profile on the first frame.
-    const initialLowLight = initialSunDirection.y < 0.18;
-    smartEnemyManager.setNightMode(!atmosphericSettings.sunVisible || initialLowLight);
+    // Ensure enemies pick up the correct (sun-driven) emissive profile on frame 1.
+    const initialNightFactor = atmosphericSettings.sunVisible
+      ? Math.min(1, Math.max(0, (0.30 - initialSunDirection.y) / 0.30))
+      : 1;
+    smartEnemyManager.setNightFactor(initialNightFactor);
 
     /**
      * Render one frame. When post-processing is enabled we drive the
@@ -1759,7 +1750,11 @@ const ForestSurvivalGame = () => {
     // AAA "sun directional shadow" feel.
     mainLight.shadow.camera.near = 1;
     mainLight.shadow.camera.far = graphicsPreset.viewDistance * 2;
-    const shadowRange = graphicsQuality === 'ultra' ? 120 : graphicsQuality === 'high' ? 100 : graphicsQuality === 'medium' ? 72 : 48;
+    // Shadow frustum size derived from the EFFECTIVE shadow-map resolution so a
+    // CUSTOM mix stays coherent (a bigger map covers more ground at the same
+    // texel density): 4096→120, 2048→100, 1024→72, ≤512→48.
+    const sms = graphicsPreset.shadowMapSize;
+    const shadowRange = sms >= 4096 ? 120 : sms >= 2048 ? 100 : sms >= 1024 ? 72 : 48;
     mainLight.shadow.camera.left = -shadowRange;
     mainLight.shadow.camera.right = shadowRange;
     mainLight.shadow.camera.top = shadowRange;
@@ -1769,8 +1764,9 @@ const ForestSurvivalGame = () => {
     mainLight.shadow.bias = -0.00022;
     mainLight.shadow.normalBias = 0.04;
     // Tighter shadow radius (less penumbra) = harder, more defined shadow
-    // edges — the AAA "crisp directional shadow" look. Was 2.5/2.0/1.4/0.9.
-    mainLight.shadow.radius = graphicsQuality === 'ultra' ? 1.6 : graphicsQuality === 'high' ? 1.3 : graphicsQuality === 'medium' ? 1.0 : 0.7;
+    // edges — the AAA "crisp directional shadow" look. Scaled with the map size
+    // (same source as the frustum) so custom mixes stay consistent.
+    mainLight.shadow.radius = sms >= 4096 ? 1.6 : sms >= 2048 ? 1.3 : sms >= 1024 ? 1.0 : 0.7;
     mainLight.shadow.camera.updateProjectionMatrix();
     scene.add(mainLight);
     // Target follows player so directional shadows stay centered on the camera
@@ -1854,7 +1850,7 @@ const ForestSurvivalGame = () => {
     // cool rim light's falloff sphere becomes visible as a flat blue
     // disc on whatever surface is in front of the player. On LOW the
     // gun reads fine with ambient + hemisphere alone.
-    const enableGunFillLights = graphicsQuality !== 'low';
+    const enableGunFillLights = !lowTier;
     const gunKeyLight = new THREE.PointLight(0xffe2b2, enableGunFillLights ? 1.0 : 0, 2.4, 2.0);
     gunKeyLight.position.set(0.35, -0.15, -0.4);
     camera.add(gunKeyLight);
@@ -2038,7 +2034,15 @@ const ForestSurvivalGame = () => {
         renderAtmosphere.lightPosition.y,
         renderAtmosphere.lightPosition.z
       ),
-      !renderAtmosphere.sunVisible
+      !renderAtmosphere.sunVisible,
+      // No post-processing (low / ultra-low) → fade out the bloom-tuned sun disc,
+      // which otherwise renders as a hard pale circle in the sky. Medium+ keep
+      // the full radiant sun (bloom softens it).
+      graphicsPreset.postProcessing ? 1.0 : 0.0,
+      // LOW / ULTRA-LOW → skip the fullscreen fbm sky detail (clouds / stars /
+      // aurora). The dome is drawn fullscreen every frame, so this is a real
+      // per-pixel saving on exactly the GPUs these presets target.
+      lowTier
     );
     const skyDome = new THREE.Mesh(skyGeometry, skyMaterial);
     // Render the sky first and ignore depth so it never appears as a "blob"
@@ -2047,7 +2051,7 @@ const ForestSurvivalGame = () => {
     skyDome.frustumCulled = false;
     scene.add(skyDome);
 
-    const hazeGeometry = graphicsQuality === 'low'
+    const hazeGeometry = lowTier
       ? null
       : new THREE.SphereGeometry(420, 32, 16);
     const hazeMaterial = hazeGeometry
@@ -2111,7 +2115,7 @@ const ForestSurvivalGame = () => {
     // couple of seconds INTO the game and the lit/graded look visibly shifts
     // right after the loader hides. Awaiting it (capped) in warmup means the
     // final image-based lighting is already on screen when the loader lifts.
-    const hdriReadyPromise = loadHDRIEnvironment(renderer, selectedMap, graphicsQuality)
+    const hdriReadyPromise = loadHDRIEnvironment(renderer, selectedMap, { load: !lowTier, highRes: graphicsQuality === 'ultra' })
       .then((loadedEnvironment) => {
         if (!loadedEnvironment) return;
         if (isSceneDisposed) {
@@ -2164,6 +2168,19 @@ const ForestSurvivalGame = () => {
     // problem. Props the instancer can't express (grass InstancedMesh fields,
     // anything non-standard) fall back to plain scene.add unchanged.
     const terrainInstancer = new TerrainInstancer(scene);
+
+    // === RAGDOLL PHYSICS (Rapier) ===
+    // Engine-grade enemy-death ragdolls: corpses tumble with a true inertia
+    // tensor, drape over each other, settle and sleep. Capped + pooled + slow-mo
+    // aware (see RagdollSystem). The WASM is dynamic-import()ed here only — never
+    // on the menu — and only for SOLO play with the Ragdoll Physics setting on;
+    // multiplayer corpses stay on the host-mirrored topple, and until the WASM
+    // finishes loading the death loop transparently uses the old lightweight
+    // launcher. So the menu / first paint and the MP path pay nothing for this.
+    const ragdollSystem = new RagdollSystem(20);
+    if (!isMultiplayer && gameSettingsManager.getSetting('ragdollPhysics')) {
+      void ragdollSystem.init();
+    }
     // Bumped on EVERY add/remove so spatial-grid rebuilds can't be fooled by
     // an add+remove in the same frame leaving the array length unchanged.
     let terrainVersion = 0;
@@ -2284,9 +2301,18 @@ const ForestSurvivalGame = () => {
       const treeDensityMult = mapConfig.treeDensityMult || 1.0;
       const rockDensityMult = mapConfig.rockDensityMult || 1.0;
       const bushDensityMult = mapConfig.bushDensityMult || 1.0;
+      // On the LOW tiers, thin the scattered props by the preset's terrain detail
+      // (low 0.55 / ultra-low 0.40). Trees/rocks/bushes previously ignored the
+      // graphics preset entirely (only grass scaled), so a weak GPU scattered the
+      // SAME prop load as High — the same heavy per-chunk generation that hitches
+      // when you cross a chunk boundary (and which felt WORSE on ultra-low, where
+      // the higher FPS made each spike stand out). Fewer props = a much smaller
+      // generation spike AND fewer draw calls / less overdraw every frame.
+      // Medium and above keep their full density (propDensityScale = 1).
+      const propDensityScale = lowTier ? graphicsPreset.terrainDetail : 1.0;
 
       // Generate trees based on biome density * map multiplier
-      const treesInChunk = Math.floor(CHUNK_SIZE * CHUNK_SIZE * biomeConfig.treeDensity * treeDensityMult / 100);
+      const treesInChunk = Math.floor(CHUNK_SIZE * CHUNK_SIZE * biomeConfig.treeDensity * treeDensityMult * propDensityScale / 100);
       for (let i = 0; i < treesInChunk; i++) {
         const spot = findFreeSpot(startX, startZ, 2.6);
         if (!spot.ok) continue; // Skip if no clear space — avoids overlapping trees
@@ -2294,7 +2320,7 @@ const ForestSurvivalGame = () => {
       }
 
       // Generate rocks based on biome density * map multiplier
-      const rocksInChunk = Math.floor(CHUNK_SIZE * CHUNK_SIZE * biomeConfig.rockDensity * rockDensityMult / 100);
+      const rocksInChunk = Math.floor(CHUNK_SIZE * CHUNK_SIZE * biomeConfig.rockDensity * rockDensityMult * propDensityScale / 100);
       for (let i = 0; i < rocksInChunk; i++) {
         const spot = findFreeSpot(startX, startZ, 2.2);
         if (!spot.ok) continue; // Skip if no clear space — avoids overlapping rocks
@@ -2310,7 +2336,7 @@ const ForestSurvivalGame = () => {
       }
 
       // Generate bushes based on biome density * map multiplier
-      const bushesInChunk = Math.floor(CHUNK_SIZE * CHUNK_SIZE * biomeConfig.bushDensity * bushDensityMult / 100);
+      const bushesInChunk = Math.floor(CHUNK_SIZE * CHUNK_SIZE * biomeConfig.bushDensity * bushDensityMult * propDensityScale / 100);
       for (let i = 0; i < bushesInChunk; i++) {
         const x = startX + Math.random() * CHUNK_SIZE;
         const z = startZ + Math.random() * CHUNK_SIZE;
@@ -2848,7 +2874,9 @@ const ForestSurvivalGame = () => {
     // particleDensity is a 0-1 multiplier — ambient motes spawn on medium+
     // (the old `> 30` check could never be true, so they never appeared).
     const AMBIENT_PARTICLE_COUNT = Math.round(200 * graphicsPreset.particleDensity);
-    if (gameSettings.particles && graphicsPreset.particleDensity >= 0.5) {
+    // Particle density (a real graphics control) gates the ambient motes: they
+    // spawn on medium+ density and scale/disable smoothly toward the low tiers.
+    if (graphicsPreset.particleDensity >= 0.5) {
       const isNight = timeOfDay === 'night';
       const particleGeo = new THREE.BufferGeometry();
       const positions = new Float32Array(AMBIENT_PARTICLE_COUNT * 3);
@@ -6689,16 +6717,28 @@ const ForestSurvivalGame = () => {
         if (launchDir.lengthSq() < 1e-4) launchDir.set(0, 0, 1);
         launchDir.normalize();
         const launchSpeed = (4 + Math.random() * 2.5) * massScale * (isCritical ? 1.5 : 1);
-        enemy.deathVel = new THREE.Vector3(
-          launchDir.x * launchSpeed,
-          (5.5 + Math.random() * 1.6) * massScale,
-          launchDir.z * launchSpeed,
+        const velX = launchDir.x * launchSpeed;
+        const velY = (5.5 + Math.random() * 1.6) * massScale;
+        const velZ = launchDir.z * launchSpeed;
+        const spinX = (Math.random() - 0.5) * 9 * massScale;
+        const spinY = (Math.random() - 0.5) * 7 * massScale;
+        const spinZ = (Math.random() - 0.5) * 11 * massScale;
+        // Prefer the engine-grade Rapier ragdoll (solo only — MP corpses use the
+        // host-mirrored simple topple). spawn() returns -1 until the physics
+        // WASM is ready (or if it failed to load), in which case we fall back to
+        // the lightweight gravity-integrated launcher — identical impulse + feel.
+        const ragBaseScale = enemy.type === 'fast' ? 0.7 : enemy.type === 'tank' ? 1.5
+          : enemy.type === 'boss' ? 2.0 : enemy.type === 'revenant' ? 0.85 : 1.0;
+        const ragId = isMultiplayer ? -1 : ragdollSystem.spawn(
+          enemy.mesh.position.x, enemy.mesh.position.y, enemy.mesh.position.z,
+          velX, velY, velZ, spinX, spinY, spinZ, ragBaseScale,
         );
-        enemy.deathSpin = new THREE.Vector3(
-          (Math.random() - 0.5) * 9,
-          (Math.random() - 0.5) * 7,
-          (Math.random() - 0.5) * 11,
-        ).multiplyScalar(massScale);
+        if (ragId >= 0) {
+          enemy.ragdollBodyId = ragId;
+        } else {
+          enemy.deathVel = new THREE.Vector3(velX, velY, velZ);
+          enemy.deathSpin = new THREE.Vector3(spinX, spinY, spinZ);
+        }
         enemy.deathStarted = true;
       }
 
@@ -8041,12 +8081,6 @@ const ForestSurvivalGame = () => {
         }
         e.damageFlashTime = 0.4;
         adaptiveDifficulty.recordDamage(dmg, true);
-        if (gameSettingsManager.getSetting('damageNumbers')) {
-          _tempVec3_2.copy(e.mesh.position).project(camera);
-          const sx = (_tempVec3_2.x * 0.5 + 0.5) * 100;
-          const sy = (-_tempVec3_2.y * 0.5 + 0.5) * 100;
-          addDamageNumber(Math.floor(dmg), sx, sy, false, false);
-        }
         _tempVec3.subVectors(e.mesh.position, pos).normalize();
         robotSparks.push(new RobotHitSparks(scene, e.mesh.position.clone(), _tempVec3, 10));
         if (!isMpGuest && e.health <= 0) handleEnemyKilled(e, false);
@@ -8206,10 +8240,16 @@ const ForestSurvivalGame = () => {
         groundWetness > 0.001 ? weatherMods.rainAmount * groundWetness : 0;
 
       const sunDirection = computeSunDirection();
-      const lowLight = sunDirection.y < 0.18;
 
-      // Keep enemy emissive intensity in sync with low-light transitions.
-      smartEnemyManager.setNightMode(!atmosphericSettings.sunVisible || lowLight);
+      // Enemy "powered" glow is now sun-driven: during the day the body is lit
+      // purely by sunlight (its emissive is floored low), and the internal glow
+      // only ramps up as the sun sets — so the artificial glow is a NIGHT effect
+      // and enemies still never crush to black. Smooth 0→1 blend across the dusk
+      // band (sun altitude 0.30 → 0.00); a hidden sun (deep storm) forces night.
+      const nightFactor = atmosphericSettings.sunVisible
+        ? Math.min(1, Math.max(0, (0.30 - sunDirection.y) / 0.30))
+        : 1;
+      smartEnemyManager.setNightFactor(nightFactor);
 
       // ── GROUND SHADER UNIFORMS — Cyberpunk-restrained directional sun ──
       // Values intentionally low to avoid the hazy-glow problem from the
@@ -8636,7 +8676,7 @@ const ForestSurvivalGame = () => {
       // === UPDATE AI SYSTEMS ===
       // Poll the adaptive system ~every 2s; it internally re-evaluates on its own
       // 3.5s cadence (so it stays responsive without thrashing).
-      if (frameCount % 120 === 0 && (gameSettings.adaptiveDifficulty || isAdaptiveMode)) {
+      if (frameCount % 120 === 0 && (RUNTIME_PREFS.adaptiveDifficulty || isAdaptiveMode)) {
         adaptiveDifficulty.update(delta * 120);
         // ADAPTIVE MODE: push the freshly-computed performance profile onto the
         // live enemy tuning. Health/damage/spawn apply to future spawns; the
@@ -8676,7 +8716,7 @@ const ForestSurvivalGame = () => {
       }
 
       // Get coach tips every 15 seconds
-      if (frameCount % 900 === 0 && gameSettings.showHints) {
+      if (frameCount % 900 === 0 && RUNTIME_PREFS.showHints) {
         const tip = combatCoach.analyzeAndCoach({
           playerHealth: health,
           maxHealth: playerMaxHealth,
@@ -9344,16 +9384,6 @@ const ForestSurvivalGame = () => {
           if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
           haptic('hit');
           if (gameSettingsManager.getSetting('hitMarkers')) addHitMarker(false);
-          if (gameSettingsManager.getSetting('damageNumbers')) {
-            _tempVec3_2.copy(te.mesh.position).project(camera);
-            addDamageNumber(
-              Math.floor(trampleDmg),
-              (_tempVec3_2.x * 0.5 + 0.5) * 100,
-              (-_tempVec3_2.y * 0.5 + 0.5) * 100,
-              isLethal,
-              false,
-            );
-          }
           // Micro hit-stop so the collision lands with weight.
           timeScale = 0.35;
           setTimeout(() => { timeScale = 1.0; }, 90);
@@ -9533,7 +9563,7 @@ const ForestSurvivalGame = () => {
       // Feed the adaptive system the player's MOVEMENT skill (distance + tactical
       // sprint usage) — it was never recorded, leaving the movement metric at 0
       // and under-reading skill. Cheap; only while moving + adaptive is active.
-      if ((isAdaptiveMode || gameSettings.adaptiveDifficulty) && isMoving) {
+      if ((isAdaptiveMode || RUNTIME_PREFS.adaptiveDifficulty) && isMoving) {
         adaptiveDifficulty.recordMovement(camera.position.distanceTo(lastPlayerPosition), isRunning);
       }
       lastPlayerPosition.copy(camera.position);
@@ -10066,19 +10096,12 @@ const ForestSurvivalGame = () => {
               sentinel.destroyed = true;
               spawnExplosionFX(sentinel.mesh.position.clone());
               scene.remove(sentinel.mesh);
-              // Reward — meaningful score bump + advance elimination mission,
-              // plus a "+150" floating number so the destruction feels earned.
+              // Reward — meaningful score bump + advance elimination mission.
               const sentinelReward = Math.round(150 * scoreDiffMult * runModifierScoreMult);
               score += sentinelReward;
               missionSystem.updateProgress('elimination', 1);
               if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry(`Sentinel Down · +${sentinelReward}`, 'kill');
               triggerKillFlash();
-              if (gameSettingsManager.getSetting('damageNumbers')) {
-                _tempVec3_2.copy(sentinel.mesh.position).project(camera);
-                const sxp = (_tempVec3_2.x * 0.5 + 0.5) * 100;
-                const syp = (-_tempVec3_2.y * 0.5 + 0.5) * 100;
-                addDamageNumber(sentinelReward, sxp, syp, true, true);
-              }
               updateGameState();
             }
             scene.remove(bullet.mesh);
@@ -10400,15 +10423,6 @@ const ForestSurvivalGame = () => {
             // Tactile confirmation on touch (no-op on desktop / haptics off).
             haptic(isCritical ? 'headshot' : 'hit');
 
-            // Calculate screen position for damage number
-            if (gameSettingsManager.getSetting('damageNumbers')) {
-              const damagePos = isCritical ? _tempVec3 : enemy.mesh.position;
-              _tempVec3_2.copy(damagePos).project(camera);
-              const x = (_tempVec3_2.x * 0.5 + 0.5) * 100;
-              const y = (-_tempVec3_2.y * 0.5 + 0.5) * 100;
-              addDamageNumber(Math.floor(damage), x, y, isCritical, isCritical);
-            }
-
             // ROBOT HIT SPARKS - metal/spark burst feedback (reuse temp vector)
             _tempVec3_2.subVectors(enemy.mesh.position, bullet.mesh.position).normalize();
             const sparks = new RobotHitSparks(
@@ -10489,6 +10503,12 @@ const ForestSurvivalGame = () => {
       // Updates LOD, frustum culling, and adaptive enemy limits
       smartEnemyManager.update(delta);
 
+      // === RAGDOLL PHYSICS STEP ===
+      // Advance the Rapier corpse world with the SAME (slow-mo scaled) delta as
+      // everything else, so ragdolls dilate in bullet-time identically. No-op
+      // while no corpses are live; the death loop below reads the results.
+      ragdollSystem.step(delta);
+
       // === NEW ADVANCED AI SYSTEM ===
       // AI update distance scales with graphics quality AND difficulty —
       // hard enemies keep their AI brain online (and continue attacking)
@@ -10551,8 +10571,28 @@ const ForestSurvivalGame = () => {
           // Base scale for this enemy type (pooled enemies use type-based scaling)
           const baseScale = enemy.type === 'fast' ? 0.7 : enemy.type === 'tank' ? 1.5 : enemy.type === 'boss' ? 2.0 : enemy.type === 'revenant' ? 0.85 : 1.0;
 
-          if (enemy.deathVel) {
-            // ── RAGDOLL ──
+          if (enemy.ragdollBodyId !== undefined) {
+            // ── RAGDOLL (Rapier-driven) ── the corpse transform comes straight
+            // off the rigid body: true-inertia tumble, real ground + corpse-on-
+            // corpse collisions, settles and sleeps. Same slack limb pose on the
+            // first frame, same shrink-away fade as the lightweight path.
+            if (enemy.deathStarted) {
+              enemy.deathStarted = false;
+              if (enemy.leftArm) { enemy.leftArm.rotation.z = Math.PI / 2.4; enemy.leftArm.rotation.x = Math.PI / 5; }
+              if (enemy.rightArm) { enemy.rightArm.rotation.z = -Math.PI / 2.4; enemy.rightArm.rotation.x = Math.PI / 5; }
+              if (enemy.leftLeg) enemy.leftLeg.rotation.x = Math.PI / 7;
+              if (enemy.rightLeg) enemy.rightLeg.rotation.x = -Math.PI / 7;
+            }
+            // Copy body → mesh (no allocation). If the body was recycled out from
+            // under a still-fading corpse (heavy cap pressure), drop the handle
+            // and let it fade where it lies.
+            if (!ragdollSystem.read(enemy.ragdollBodyId, enemy.mesh.position, enemy.mesh.quaternion)) {
+              enemy.ragdollBodyId = undefined;
+            }
+            const fade = enemy.deathTime < 0.3 ? Math.max(0.02, enemy.deathTime / 0.3) : 1;
+            enemy.mesh.scale.setScalar(baseScale * fade);
+          } else if (enemy.deathVel) {
+            // ── RAGDOLL (lightweight fallback — pre-WASM / WASM unavailable) ──
             const restY = 0.22 * baseScale; // height the tumbling corpse rests at
 
             // Splay the limbs into a slack ragdoll pose on the first frame.
@@ -10599,6 +10639,12 @@ const ForestSurvivalGame = () => {
           }
 
           if (enemy.deathTime <= 0) {
+            // Retire the Rapier ragdoll body (if this corpse used one) so the
+            // physics world + pool slot are freed for the next death.
+            if (enemy.ragdollBodyId !== undefined) {
+              ragdollSystem.release(enemy.ragdollBodyId);
+              enemy.ragdollBodyId = undefined;
+            }
             // Restore the head we hid on decapitation so the pooled mesh is
             // whole again for the next enemy that reuses this slot (idempotent
             // for enemies that were never decapitated).
@@ -12073,7 +12119,6 @@ const ForestSurvivalGame = () => {
       // ── REACT-SIDE HUD PRE-WARM ──────────────────────────────────────
       await stage('HUD Pre-warm', false, () => {
         addHitMarker(false);
-        addDamageNumber(0, 50, 50, false, false);
         clearHitMarkers();
         clearDamageDirections();
       });
@@ -12369,6 +12414,9 @@ const ForestSurvivalGame = () => {
       // Cleanup SmartEnemyManager (releases pooled resources)
       smartEnemyManager.dispose();
 
+      // Free the Rapier ragdoll world + every live corpse body.
+      ragdollSystem.dispose();
+
       // Cleanup instanced world-prop batches (before BiomeSystem disposes the
       // shared geometries/materials the batches reference).
       terrainInstancer.dispose();
@@ -12452,10 +12500,11 @@ const ForestSurvivalGame = () => {
 
       renderer.dispose();
     };
-    // Settings (gameSettings.*, showTutorial) are intentionally read live
-    // from refs / live closures rather than re-running the entire scene
+    // Settings (graphics preset, key bindings, etc.) are intentionally read
+    // live from refs / live closures rather than re-running the entire scene
     // when they change — re-mounting the scene on every settings tweak
-    // would dispose every enemy / particle mid-play.
+    // would dispose every enemy / particle mid-play. Graphics changes apply on
+    // the next match (the preset is read once at scene init, by design).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gameStarted, gameMode, classicDifficulty, classicTimeOfDay, selectedMap, multiplayerManager, gameRestartKey]);
 
@@ -12604,9 +12653,8 @@ const ForestSurvivalGame = () => {
     setClassicTimeOfDay(pending.timeOfDay);
     setSelectedMap(pending.map);
     setIsClassicRandomSession(pending.isRandom);
-    if (pending.difficulty === 'adaptive') {
-      setGameSettings(prev => ({ ...prev, adaptiveDifficulty: true }));
-    }
+    // Adaptive-difficulty assist is always on (RUNTIME_PREFS); the 'adaptive'
+    // difficulty mode additionally cranks its adjustment rate at scene init.
     soundManager.initialize();
     enterImmersiveMode();
     pendingClassicStartRef.current = null;
@@ -13534,22 +13582,6 @@ const ForestSurvivalGame = () => {
         />
       )}
 
-      {/* Enhanced Settings */}
-      {showEnhancedSettings && (
-        <EnhancedSettings
-          settings={gameSettings}
-          onSettingsChange={(newSettings) => {
-            const nextSettings = { ...gameSettings, ...newSettings };
-            setGameSettings(nextSettings);
-            gameSettingsManager.updateSettings(enhancedSettingsToUserSettings(nextSettings));
-          }}
-          onClose={() => setShowEnhancedSettings(false)}
-          onReset={() => {
-            gameSettingsManager.resetToDefaults();
-            setGameSettings(createEnhancedSettingsDefaults(gameSettingsManager.getSettings()));
-          }}
-        />
-      )}
     </div>
   );
 };

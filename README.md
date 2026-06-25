@@ -4,7 +4,7 @@
 
 # Forest Survival
 
-A 3D first-person survival shooter built entirely through vibe coding — powered by React, TypeScript, Three.js, and AI-assisted development from the ground up.
+A 3D first-person survival shooter built entirely through vibe coding — powered by React, TypeScript, Three.js, Rapier physics, and AI-assisted development from the ground up.
 
 > **Vibe Coded** — Every line of gameplay logic, AI behavior, multiplayer networking, and UI was generated through conversational AI coding. No manual game engine. Just vibes and prompts.
 
@@ -174,7 +174,7 @@ Every weapon has its own **L0 → L10 mastery** ladder. Kills grant XP scaled by
 - **Full-body player shadow** — a class-specific humanoid silhouette (holding the current weapon) is invisible to the camera but casts a believable shadow on the ground
 - Full cinematic post-processing pipeline: GTAO · Unreal Bloom · ACES filmic tonemap · SMAA · HDR chromatic aberration · multi-tap volumetric god rays · anamorphic lens streaks (Ultra) · film halation · aerial perspective · CAS adaptive sharpening — all in a single custom fragment shader pass
 - **Detailed first-person viewmodels with manual reloads** — every weapon is a fully animated, gloved-hands viewmodel (idle sway, walk/run bob, ADS, strafe lean, jump inertia, recoil and a CS:GO-style inspect). **Reloads are now hand-driven and paced to the real reload time**: the support hand dives to the magazine well to swap a mag and rack the action, **thumbs shells into the shotgun one-by-one** before pumping it, or seats a fresh chip cartridge into the Subverter — so the player always reloads "manually" within the reload window
-- **Ragdoll death physics** — enemies crumple with physical joint constraints on death (toggleable in Settings)
+- **Ragdoll death physics (Rapier-powered)** — on death, enemies are handed to a real rigid-body solver (Rapier): corpses tumble with a true inertia tensor, collide with the ground, drape and pile on one another, then settle and sleep. Capped, pooled and lazy-loaded so dozens of kills stay cheap, and it dilates correctly in bullet-time. Toggleable in Settings; multiplayer corpses and the pre-load window fall back to a lightweight launcher with the identical impulse
 - Cinematic direction-aware menu transitions — pure CSS compositor animation, zero JS per-frame cost
 - Blood splatter, muzzle flash and impact effects
 
@@ -212,7 +212,7 @@ Every weapon has its own **L0 → L10 mastery** ladder. Kills grant XP scaled by
 - Screen shake and damage flash effects
 - Skill tree, mission display, stats gallery
 - Themed tutorial that freezes the world while you read each step
-- **Full settings menu** — Graphics (Low / Medium / High / Ultra); Audio (master / SFX / music + sound test); Gameplay toggles (ragdoll physics, **auto-reload**, **camera bob**, **show crosshair**, screen shake, hit markers, kill feed, damage numbers, impact feedback); Controls; UI — all persisted and synced cross-device
+- **Full settings menu** — Graphics (Ultra Low / Low / Medium / High / Ultra — Ultra Low is a max-FPS "potato" tier for the weakest hardware); Audio (master / SFX / music + sound test); Gameplay toggles (ragdoll physics, **auto-reload**, **camera bob**, **show crosshair**, screen shake, hit markers, kill feed, damage numbers, impact feedback); Controls; UI — all persisted and synced cross-device
 - **Key Bindings Editor** — 12 fully rebindable keyboard actions (Move, Jump, Sprint, Crouch, Dash, Reload, Power-Up, Tactical Map, Inspect Weapon)
 - **Colorblind modes** — Protanopia, Deuteranopia and Tritanopia correction filters
 - **Photo Mode** — from the Pause Menu; 8 filter presets (Original, Vivid, Noir, Sepia, Cool, Warm, Dramatic, Faded) + manual Brightness / Contrast / Saturation; captures cloud-saved to Profile → Photos
@@ -365,6 +365,7 @@ npx @convex-dev/auth     # one-time: generate the auth keys on the dev deploymen
 | Framework | React 19 |
 | Language | TypeScript 5 (strict) |
 | 3D Engine | Three.js + @react-three/fiber + @react-three/drei |
+| Physics | Rapier (`@dimforge/rapier3d-compat`) for engine-grade death ragdolls — lazy-loaded WASM; lightweight custom kinematics everywhere else |
 | Post-processing | three.js native (EffectComposer + GTAO + UnrealBloom + SMAA + custom ACES grade) |
 | Build Tool | Vite 7 |
 | Styling | Tailwind CSS |
@@ -411,6 +412,7 @@ forest-survival/
 │       ├── MultiplayerManager.ts
 │       ├── SoundManager.ts
 │       ├── SmartEnemyManager.ts
+│       ├── RagdollSystem.ts             # Rapier rigid-body death ragdolls (lazy WASM)
 │       ├── WavePerkRegistry.ts          # 15 perks + mystery roll
 │       ├── RunModifierSystem.ts         # 6 mutators + daily roll
 │       ├── DailyChallengeRegistry.ts    # 5 challenges + UTC roll
