@@ -114,7 +114,7 @@ Full setup — Convex provisioning, auth keys, environment variables, and troubl
 
 ## Acknowledgements
 
-**[smsolutionsva-byte](https://github.com/smsolutionsva-byte)** — for generously providing the custom domain **[forestsurvival.live](https://forestsurvival.live/)**. Your support gave this project a proper home on the web.
+**[smsolutionsva-byte](https://github.com/smsolutionsva-byte)** — for generously providing the custom domain **[forestsurvival.live](https://forestsurvival.live/)** and for building the comprehensive [project Wiki](https://github.com/suryanarayanrenjith/Forest-Survival/wiki). Your support gave this project a proper home on the web and excellent documentation.
 
 ---
 
