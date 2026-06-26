@@ -8,6 +8,7 @@ import { MuzzleFlash, MuzzleSmoke, BulletTracer, ImpactEffect, RobotHitSparks, E
 import { HackBeam, buildHackVisuals, updateHackVisuals, disposeHackVisuals } from './utils/HackVisuals';
 import { soundManager } from './utils/SoundManager';
 import { gameSettingsManager, defaultUserSettings, defaultKeyBindings, type UserSettings, type KeyBindings } from './utils/GameSettingsManager';
+import { detectHardwareTier } from './utils/hardwareDetect';
 import { PostProcessingPipeline } from './utils/PostProcessing';
 import { SpatialGrid } from './utils/SpatialGrid';
 import { AIBehaviorSystem } from './utils/AIBehaviorSystem';
@@ -189,7 +190,7 @@ const MENU_MUSIC_URL = '/audio/Beyond_The_Overgrowth.mp3';
 // identity changes but values don't).
 const SYNCED_SCALAR_KEYS = [
   'masterVolume', 'sfxVolume', 'musicVolume', 'sensitivity', 'fov',
-  'showFPS', 'screenShake', 'haptics', 'hitMarkers', 'killFeed',
+  'showFPS', 'fpsCap', 'screenShake', 'haptics', 'hitMarkers', 'killFeed',
   'impactFeedback', 'ragdollPhysics', 'autoReload', 'cameraBob',
   'showCrosshair', 'crosshairStyle', 'crosshairColor',
 ] as const satisfies readonly (keyof UserSettings)[];
@@ -351,6 +352,9 @@ const ForestSurvivalGame = () => {
   // so rebinding from the pause-menu settings applies instantly without
   // re-running the long-lived game effect. Refreshed by the settings subscription.
   const keyBindingsRef = useRef<KeyBindings>(gameSettingsManager.getSetting('keyBindings'));
+  // Live FPS cap (0 = unlimited). Read every animation frame, refreshed by the
+  // settings subscription, so changing it applies instantly without restart.
+  const fpsCapRef = useRef<number>(gameSettingsManager.getSetting('fpsCap'));
   const [currentFPS, setCurrentFPS] = useState(0);
   // Live stamina + exhaustion flags pushed from the per-frame game loop
   // so the HUD can draw the bottom-left pie meter at the correct fill.
@@ -576,21 +580,18 @@ const ForestSurvivalGame = () => {
     };
   }, [isTouch]);
 
-  // First-run graphics default for touch devices: phones/tablets start at a
-  // lighter preset (low on weak hardware) instead of desktop's `high`. Only
-  // applied when the user has no saved preference yet, so it never overrides a
-  // choice. Reuses the existing GRAPHICS_PRESETS tiers.
+  // First-run graphics default: probe the browser/device (CPU threads, RAM, GPU)
+  // and pick the matching preset, so the game opens at a sensible tier for the
+  // hardware instead of always `high`. Only applied when the player has NO saved
+  // preference yet (fresh install / cleared storage), so it never overrides a
+  // choice. The player can re-run this any time via "Auto-Detect" in Settings.
   useEffect(() => {
-    if (!isTouch) return;
     try {
       if (!localStorage.getItem('gameSettings')) {
-        const cores = navigator.hardwareConcurrency ?? 8;
-        const mem = (navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 8;
-        const lowEnd = cores <= 4 || mem <= 4;
-        gameSettingsManager.setGraphicsQuality(lowEnd ? 'low' : 'medium');
+        gameSettingsManager.setGraphicsPreset(detectHardwareTier().tier);
       }
     } catch { /* localStorage unavailable — keep defaults */ }
-  }, [isTouch]);
+  }, []);
 
 
   // Sync user settings from localStorage
@@ -598,6 +599,7 @@ const ForestSurvivalGame = () => {
     const unsubscribe = gameSettingsManager.subscribe((settings) => {
       setUserSettings(settings);
       keyBindingsRef.current = settings.keyBindings;
+      fpsCapRef.current = settings.fpsCap;
     });
 
     // Also refresh settings periodically in case localStorage was changed from settings menu
@@ -6495,6 +6497,9 @@ const ForestSurvivalGame = () => {
 
     // Game loop
     let animationId: number;
+    // FPS-cap bookkeeping: timestamp of the last RENDERED frame. When a cap is
+    // set we skip animation frames that arrive earlier than the target interval.
+    let lastCappedFrameMs = 0;
     const clock = new THREE.Clock();
     let frameCount = 0;
     let fpsFrameCount = 0;
@@ -8140,6 +8145,21 @@ const ForestSurvivalGame = () => {
       // Skip expensive updates when tab is not visible (major performance optimization)
       if (!isTabVisible) {
         return;
+      }
+
+      // ── FPS CAP ──────────────────────────────────────────────────────────
+      // 0 = unlimited (render every frame → native V-Sync). Otherwise skip any
+      // frame that arrives earlier than the target interval. The 2ms tolerance
+      // stops a frame landing a hair early (e.g. 16.0ms vs a 16.67ms target)
+      // from being dropped and halving the rate. clock.getDelta() (below) only
+      // runs on rendered frames, so the surviving frame gets the full elapsed
+      // delta — gameplay stays correctly time-stepped at any cap. (rAF can't
+      // exceed the display refresh, so 120 on a 60Hz panel still reads ~60.)
+      const fpsCap = fpsCapRef.current;
+      if (fpsCap > 0) {
+        const nowMs = performance.now();
+        if (nowMs - lastCappedFrameMs < 1000 / fpsCap - 2) return;
+        lastCappedFrameMs = nowMs;
       }
 
       // Clamp the frame delta to a ~10 FPS floor. After a hidden/inactive tab or

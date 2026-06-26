@@ -2,7 +2,7 @@ import {
   Sparkles, Heart, Code2, ExternalLink, X, ArrowLeft,
   Cpu, Wand2, Palette, Boxes, Zap, ArrowUpRight, Layers3,
   Database, ShieldCheck, Triangle, GitFork, Crosshair,
-  Gamepad2, Network, Brush, Cog, Bone,
+  Gamepad2, Network, Brush, Cog, Bone, HeartHandshake,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -213,6 +213,24 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
               </span>
             </span>
           </a>
+
+          {/* ── Special Thanks ─────────────────────────────────────────── */}
+          <div>
+            <SectionLabel>Special Thanks</SectionLabel>
+            <div className="mt-3 flex items-center gap-3 rounded-xl border border-white/[0.07] bg-white/[0.02] px-4 py-3.5">
+              <span className="flex items-center justify-center w-10 h-10 rounded-xl bg-emerald-500/12 border border-emerald-400/30 flex-shrink-0">
+                <HeartHandshake className="w-[18px] h-[18px] text-emerald-300" strokeWidth={2} />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-[13px] text-gray-300/90 leading-snug">
+                  Custom domain provided by <span className="font-bold text-white">smsolutionsva-byte</span>
+                </span>
+                <span className="font-hud block mt-0.5 text-[10.5px] text-gray-500">
+                  Thank you for giving the game a home on the web
+                </span>
+              </span>
+            </div>
+          </div>
 
           {/* ── Tech Stack ─────────────────────────────────────────────── */}
           <div>

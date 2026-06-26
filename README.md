@@ -6,6 +6,10 @@
 
 A 3D first-person survival shooter built entirely through vibe coding — powered by React, TypeScript, Three.js, Rapier physics, and AI-assisted development from the ground up.
 
+### ▶ [**Play it live → forestsurvival.live**](https://forestsurvival.live/)
+
+[![Play Now](https://img.shields.io/badge/Play%20Now-forestsurvival.live-34d399?style=for-the-badge&logo=firefoxbrowser&logoColor=white)](https://forestsurvival.live/)
+
 > **Vibe Coded** — Every line of gameplay logic, AI behavior, multiplayer networking, and UI was generated through conversational AI coding. No manual game engine. Just vibes and prompts.
 
 </div>
@@ -207,12 +211,12 @@ Every weapon has its own **L0 → L10 mastery** ladder. Kills grant XP scaled by
 - Cohesive, professional dark UI built with hand-crafted Tailwind styling
 - **Signature menu identity** applied uniformly across every screen (Main, Credits, Auth, Settings, Profile, Skill Tree, Photo Mode, Multiplayer and the Classic / Tutorial / Raise-the-Stakes flows): a bioluminescent-forest theme with **Oswald** condensed display + **Chakra Petch** HUD typography, dark-green glass panels framed by HUD corner-brackets, and a cinematic WebGL forest backdrop (aurora sky, lens-flare moon, survival campfire, fireflies and god-rays)
 - Crisp `lucide-react` SVG iconography throughout — zero emoji chrome
-- Dynamic crosshair, hit markers and floating damage numbers
+- Dynamic crosshair and hit markers
 - Kill feed (with cosmetic title prefixes), combo display and achievement toasts
 - Screen shake and damage flash effects
 - Skill tree, mission display, stats gallery
 - Themed tutorial that freezes the world while you read each step
-- **Full settings menu** — Graphics (Ultra Low / Low / Medium / High / Ultra — Ultra Low is a max-FPS "potato" tier for the weakest hardware); Audio (master / SFX / music + sound test); Gameplay toggles (ragdoll physics, **auto-reload**, **camera bob**, **show crosshair**, screen shake, hit markers, kill feed, damage numbers, impact feedback); Controls; UI — all persisted and synced cross-device
+- **Full settings menu** — a complete **Graphics & Performance** suite (presets, a hand-tuned **Custom** mix, **hardware auto-detect** and an **FPS cap** — see [Graphics & Performance](#️-graphics--performance)); Audio (master / SFX / music + sound test); Gameplay toggles (ragdoll physics, **auto-reload**, **camera bob**, **show crosshair**, screen shake, hit markers, kill feed, impact feedback); Controls; UI — all persisted and synced cross-device
 - **Key Bindings Editor** — 12 fully rebindable keyboard actions (Move, Jump, Sprint, Crouch, Dash, Reload, Power-Up, Tactical Map, Inspect Weapon)
 - **Colorblind modes** — Protanopia, Deuteranopia and Tritanopia correction filters
 - **Photo Mode** — from the Pause Menu; 8 filter presets (Original, Vivid, Noir, Sepia, Cool, Warm, Dramatic, Faded) + manual Brightness / Contrast / Saturation; captures cloud-saved to Profile → Photos
@@ -307,6 +311,46 @@ Touch devices are auto-detected and the game remaps to on-screen controls:
 - The HUD, menus and multiplayer scoreboard/chat all adapt to a compact,
   non-overlapping touch layout sized to the visible viewport.
 - **Haptic feedback** — context-sensitive vibration patterns for fire, hit, headshot, reload, dash, damage received, kill and explosion; rate-limited on full-auto so it never becomes a continuous buzz; toggleable in Settings.
+
+---
+
+## ⚙️ Graphics & Performance
+
+A full AAA-style graphics suite lives under **Settings → Display**. Everything is persisted locally and **synced to your account** as a single compact, sparse blob (only values that differ from the defaults are stored), so your setup follows you across devices.
+
+### Presets
+
+Five one-click quality tiers, each a balanced bundle of resolution, shadows, post-FX, particles, draw distance, terrain detail and the enemy cap:
+
+| Preset | Target | Highlights |
+|--------|--------|------------|
+| **Ultra Low** | Max FPS · weakest hardware | 50% render scale, no shadows/post-FX, minimal particles, tightest draw distance, lowest terrain tessellation |
+| **Low** | Best performance | 65% render scale, no shadows/post-FX, sparse particles |
+| **Medium** | Balanced | Soft 1024² shadows, bloom + cinematic grade, ~85% render scale |
+| **High** | Best visuals *(default)* | Native res, MSAA, crisp 2048² shadows, full post-FX stack |
+| **Ultra** | Cinematic | Super-sampled, 4096² shadows, god rays + SMAA, every effect maxed |
+
+### Custom mix
+
+Tweak any individual control and the preset row flips to a clearly-indicated **Custom** state (an amber "● Custom enabled" badge + a dedicated Custom tile, just like a AAA PC port). Advanced controls:
+
+- **Resolution Scale** (40–120%) — internal render resolution; the single biggest performance lever
+- **Shadows** — Off / Low / Med / High / Ultra (drives shadow-map size + penumbra softness)
+- **Particle Density** (0–100%)
+- **Render Distance** (72–300 m)
+- **Terrain Detail** (25–100%) — grass + scattered-prop density and ground tessellation
+- **Max Enemies** (6–40) — your own hard ceiling on simultaneous foes
+- **Post-Processing** and **Anti-Aliasing** toggles
+
+The engine resolves the active preset (or your custom mix) once at match start.
+
+### Hardware Auto-Detect
+
+One tap on **Auto-Detect Best Preset** probes your browser/device — **CPU threads** (`navigator.hardwareConcurrency`), **device memory**, and the **GPU** (via a throwaway WebGL context's unmasked renderer string + capabilities), plus a mobile check — scores it conservatively, and applies the matching preset. It also runs automatically on a fresh install (no saved preference) so the game opens at a sensible tier for your machine. A short readout shows what it found, e.g. `12-thread CPU · 8GB RAM · NVIDIA GeForce RTX 4070 → Ultra`. *(The browser exposes logical processors/threads, not physical cores.)*
+
+### FPS Cap
+
+Choose **30 / 60 / 120 / Unlimited**. Unlimited follows your display's refresh rate (V-Sync); the capped modes throttle the render loop to the target while keeping gameplay correctly time-stepped. A frame rate can never exceed the monitor's refresh, so e.g. 120 on a 60 Hz panel reads ~60.
 
 ---
 
@@ -439,6 +483,12 @@ forest-survival/
 ├── tsconfig.json
 └── tailwind.config.js
 ```
+
+---
+
+## 🙏 Acknowledgements
+
+- **smsolutionsva-byte** ([github.com/smsolutionsva-byte](https://github.com/smsolutionsva-byte)) — for generously providing the game's custom domain, **[forestsurvival.live](https://forestsurvival.live/)**. Huge thanks for giving Forest Survival a proper home on the web. 💚
 
 ---
 

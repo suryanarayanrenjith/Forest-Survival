@@ -4,13 +4,14 @@ import {
   ChevronsUp, ChevronsDown, ChevronsRight, Wind, Zap,
   Crosshair, Target, RotateCcw, Grid3x3, Pause, Music, MousePointer2,
   Eye, Activity, Skull, Check, Headphones, Sparkles, Hand, Radar, Bone, Flame,
-  Maximize, Moon, Aperture, Wand2, Trees, Users, type LucideIcon,
+  Maximize, Moon, Aperture, Wand2, Trees, Users, Gauge, Cpu, type LucideIcon,
 } from 'lucide-react';
 import { soundManager } from '../utils/SoundManager';
 import {
-  gameSettingsManager, GRAPHICS_LIMITS,
-  type GraphicsQuality, type GraphicsSettings, type UserSettings,
+  gameSettingsManager, GRAPHICS_LIMITS, FPS_CAP_OPTIONS,
+  type GraphicsQuality, type GraphicsSettings, type UserSettings, type FpsCap,
 } from '../utils/GameSettingsManager';
+import { detectHardwareTier } from '../utils/hardwareDetect';
 import { detectIsTouch } from '../hooks/useDeviceInfo';
 import KeyBindingsEditor from './KeyBindingsEditor';
 
@@ -24,16 +25,18 @@ interface SettingsMenuProps {
 // persisted blob clean and avoids the old "stale key written back" hazard.
 type SimpleSettings = Pick<UserSettings,
   | 'masterVolume' | 'sfxVolume' | 'musicVolume' | 'sensitivity' | 'fov'
-  | 'showFPS' | 'screenShake' | 'haptics' | 'hitMarkers' | 'killFeed'
+  | 'showFPS' | 'fpsCap' | 'screenShake' | 'haptics' | 'hitMarkers' | 'killFeed'
   | 'impactFeedback' | 'ragdollPhysics' | 'autoReload' | 'cameraBob'
   | 'showCrosshair' | 'crosshairStyle' | 'crosshairColor'>;
 
 const SIMPLE_KEYS: (keyof SimpleSettings)[] = [
   'masterVolume', 'sfxVolume', 'musicVolume', 'sensitivity', 'fov',
-  'showFPS', 'screenShake', 'haptics', 'hitMarkers', 'killFeed',
+  'showFPS', 'fpsCap', 'screenShake', 'haptics', 'hitMarkers', 'killFeed',
   'impactFeedback', 'ragdollPhysics', 'autoReload', 'cameraBob',
   'showCrosshair', 'crosshairStyle', 'crosshairColor',
 ];
+
+const FPS_CAP_LABEL = (c: FpsCap) => (c === 0 ? 'Unlimited' : String(c));
 
 const pickSimple = (s: UserSettings): SimpleSettings => {
   const out = {} as SimpleSettings;
@@ -57,6 +60,8 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
   // Graphics section is edited through dedicated manager calls; this mirror just
   // keeps the UI in sync (preset highlight vs. custom badge, live knob values).
   const [graphics, setGraphics] = useState<GraphicsSettings>(() => gameSettingsManager.getGraphics());
+  // Last hardware auto-detect result (shown under the Auto-Detect button).
+  const [detectSummary, setDetectSummary] = useState<string | null>(null);
 
   useEffect(() => {
     // Persist the simple fields. Graphics + keyBindings are written via their own
@@ -77,6 +82,19 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
   const editGraphics = (patch: Partial<Omit<GraphicsSettings, 'preset' | 'baseTier'>>) => {
     gameSettingsManager.updateGraphics(patch);
     setGraphics(gameSettingsManager.getGraphics());
+  };
+  // "Custom" tile: fork the current resolved settings into an editable mix.
+  const enterCustom = () => {
+    if (graphics.preset === 'custom') return;
+    gameSettingsManager.updateGraphics({}); // empty patch flips preset → custom
+    setGraphics(gameSettingsManager.getGraphics());
+  };
+  // Probe the device and apply the recommended preset.
+  const autoDetect = () => {
+    const report = detectHardwareTier();
+    gameSettingsManager.setGraphicsPreset(report.tier);
+    setGraphics(gameSettingsManager.getGraphics());
+    setDetectSummary(report.summary);
   };
 
   // Touch devices remap every action to the on-screen controls, so the
@@ -274,13 +292,15 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
                     <Monitor className="w-4 h-4 text-gray-400" strokeWidth={2.25} />
                     <span className="font-hud text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-300">Graphics Quality</span>
                   </div>
-                  {graphics.preset === 'custom' && (
-                    <span className="font-hud text-[9px] font-bold uppercase tracking-wider text-amber-300 bg-amber-400/10 border border-amber-400/30 rounded-full px-2 py-0.5">
-                      Custom mix
-                    </span>
-                  )}
+                  <span className={`font-hud text-[9px] font-bold uppercase tracking-wider rounded-full px-2 py-0.5 border transition-colors ${
+                    graphics.preset === 'custom'
+                      ? 'text-amber-300 bg-amber-400/10 border-amber-400/40'
+                      : 'text-gray-500 bg-white/[0.02] border-white/10'
+                  }`}>
+                    {graphics.preset === 'custom' ? '● Custom enabled' : 'Preset'}
+                  </span>
                 </div>
-                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
                   {PRESET_META.map(({ id, label, desc }) => {
                     const active = graphics.preset === id;
                     return (
@@ -301,11 +321,43 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
                       </button>
                     );
                   })}
+                  {/* CUSTOM tile — lights up amber when a hand-tuned mix is active.
+                      Clicking it forks the current settings into an editable mix. */}
+                  {(() => {
+                    const active = graphics.preset === 'custom';
+                    return (
+                      <button
+                        onClick={enterCustom}
+                        className={`relative py-3 rounded-lg border transition-all ${
+                          active ? 'border-amber-400/60 bg-amber-400/15' : 'border-white/10 bg-white/[0.03] hover:bg-white/[0.06]'
+                        }`}
+                      >
+                        <div className={`text-sm font-bold uppercase ${active ? 'text-amber-300' : 'text-gray-300'}`}>Custom</div>
+                        <div className="text-[10px] text-gray-500 mt-0.5">Your mix</div>
+                        {active && (
+                          <span className="absolute -top-1.5 -right-1.5 flex items-center justify-center w-5 h-5 rounded-full bg-amber-400">
+                            <Check className="w-3 h-3 text-[#1a1204]" strokeWidth={3} />
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })()}
                 </div>
-                <p className="mt-3 text-[11px] text-gray-500">
-                  Pick a preset or fine-tune any control below to build a <span className="text-amber-300/90 font-semibold">Custom</span> mix.
-                  Graphics changes apply when you start your next match.
-                </p>
+                {/* Auto-detect — probe CPU/RAM/GPU and apply the matching preset. */}
+                <button
+                  onClick={autoDetect}
+                  className="mt-3 w-full flex items-center justify-center gap-2 rounded-lg border border-emerald-400/25 bg-emerald-500/[0.08] py-2.5
+                    text-emerald-300 transition-colors hover:bg-emerald-500/15"
+                >
+                  <Cpu className="w-4 h-4" strokeWidth={2.25} />
+                  <span className="font-hud text-[11px] font-bold uppercase tracking-wider">Auto-Detect Best Preset</span>
+                </button>
+                {detectSummary
+                  ? <p className="mt-2 text-[11px] text-emerald-300/80">{detectSummary}</p>
+                  : <p className="mt-3 text-[11px] text-gray-500">
+                      Pick a preset, hit Auto-Detect, or fine-tune any control below for a <span className="text-amber-300/90 font-semibold">Custom</span> mix.
+                      Graphics changes apply on your next match.
+                    </p>}
               </div>
 
               {/* ── ADVANCED GRAPHICS (drives Custom) ── */}
@@ -377,6 +429,34 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
                   <Toggle label="Post-Processing" desc="Bloom, god rays & colour grade" icon={Wand2} value={graphics.postProcessing} onChange={(v) => editGraphics({ postProcessing: v })} />
                   <Toggle label="Anti-Aliasing" desc="Smooth jagged edges (MSAA/SMAA)" icon={Aperture} value={graphics.antialias} onChange={(v) => editGraphics({ antialias: v })} />
                 </div>
+              </div>
+
+              {/* ── FRAME RATE CAP ── */}
+              <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-4 py-3.5">
+                <div className="flex items-center justify-between gap-2 mb-2.5">
+                  <div className="flex items-center gap-2.5">
+                    <Gauge className="w-4 h-4 text-gray-400" strokeWidth={2.25} />
+                    <span className="font-hud text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-300">Frame Rate Cap</span>
+                  </div>
+                  <span className="text-[11px] text-gray-500">{settings.fpsCap === 0 ? 'V-Sync' : `${settings.fpsCap} FPS`}</span>
+                </div>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {FPS_CAP_OPTIONS.map((cap) => {
+                    const active = settings.fpsCap === cap;
+                    return (
+                      <button
+                        key={cap}
+                        onClick={() => updateSetting('fpsCap', cap)}
+                        className={`py-2 rounded-lg text-xs font-semibold transition-all border ${
+                          active ? 'border-emerald-400/50 bg-emerald-500/15 text-emerald-300' : 'border-white/10 bg-white/[0.03] text-gray-400 hover:bg-white/[0.06]'
+                        }`}
+                      >
+                        {FPS_CAP_LABEL(cap)}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="mt-2 text-[10px] text-gray-600">Unlimited follows your display's refresh rate (V-Sync).</p>
               </div>
 
               <Slider label="Field of View" icon={Eye} value={settings.fov} min={60} max={120} suffix="°" onChange={(v) => updateSetting('fov', v)} />

@@ -5,6 +5,11 @@ export type GraphicsQuality = 'ultralow' | 'low' | 'medium' | 'high' | 'ultra';
 export type GraphicsPresetName = GraphicsQuality | 'custom';
 /** Shadow fidelity, mapped to a shadow-map resolution (or disabled). */
 export type ShadowQuality = 'off' | 'low' | 'medium' | 'high' | 'ultra';
+/** Frame-rate cap in FPS. 0 = unlimited (render every animation frame — i.e.
+ *  the display's native V-Sync). 30/60/120 throttle the render loop to that rate
+ *  (you can never exceed the monitor's refresh, so e.g. 120 on a 60Hz panel = 60). */
+export type FpsCap = 0 | 30 | 60 | 120;
+export const FPS_CAP_OPTIONS: FpsCap[] = [30, 60, 120, 0];
 
 export interface GraphicsPreset {
   /** Internal render scale (0-1). 1 = native resolution. */
@@ -306,6 +311,8 @@ export interface UserSettings {
   sensitivity: number;
   fov: number;
   showFPS: boolean;
+  /** Frame-rate cap (0 = unlimited / V-Sync). Independent of the graphics preset. */
+  fpsCap: FpsCap;
   screenShake: boolean;
   /** Vibration feedback on touch devices (fire, hits, damage, button taps).
    *  No-ops on hardware without the Vibration API (e.g. desktop, iOS Safari). */
@@ -343,6 +350,7 @@ export const defaultUserSettings: UserSettings = {
   sensitivity: 50,
   fov: 75,
   showFPS: false,
+  fpsCap: 0, // unlimited / V-Sync — matches the prior (uncapped) behaviour
   screenShake: true,
   haptics: true,
   hitMarkers: true,
@@ -383,6 +391,7 @@ function mergeSettings(raw: unknown): UserSettings {
     sensitivity: num('sensitivity', d.sensitivity),
     fov: num('fov', d.fov),
     showFPS: bool('showFPS', d.showFPS),
+    fpsCap: (FPS_CAP_OPTIONS as number[]).includes(p.fpsCap as number) ? (p.fpsCap as FpsCap) : d.fpsCap,
     screenShake: bool('screenShake', d.screenShake),
     haptics: bool('haptics', d.haptics),
     hitMarkers: bool('hitMarkers', d.hitMarkers),
