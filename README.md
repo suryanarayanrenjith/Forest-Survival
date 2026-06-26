@@ -1,8 +1,6 @@
 <div align="center">
 
-<img src="public/Forest.png" alt="Forest Survival" width="200" />
-
-# Forest Survival
+<img src="public/cover.jpg" alt="Forest Survival — 3D first-person wave-survival shooter" width="800" />
 
 **A 3D first-person wave-survival shooter built entirely through AI-assisted development.**
 

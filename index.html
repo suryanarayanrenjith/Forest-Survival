@@ -2,19 +2,108 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/png" href="/Forest.png" />
-    <link rel="apple-touch-icon" href="/Forest.png" />
+
+    <!-- Favicons / app icons (small, optimised — replaces the 1.4 MB logo
+         that was previously served as the favicon on every page load). -->
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
+
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Forest Survival" />
+    <meta name="application-name" content="Forest Survival" />
     <meta name="theme-color" content="#05080a" />
-    <meta name="description" content="Forest Survival — A 3D wave-based survival shooter. Fight through hordes of enemies, unlock weapons, and survive the night." />
-    <meta property="og:title" content="Forest Survival" />
-    <meta property="og:description" content="A 3D wave-based survival shooter built with React and Three.js." />
-    <meta property="og:image" content="/Forest.png" />
+
+    <!-- Primary SEO metadata -->
+    <title>Forest Survival — Free Online Survival Shooter | Play in Browser</title>
+    <meta name="description" content="Play Forest Survival free in your browser — a 3D multiplayer wave-survival shooter. Battle endless enemy waves across 8 biomes with 8 weapons and 8 classes. No download required." />
+    <meta name="keywords" content="forest survival game, browser survival game, multiplayer survival game, online survival game, free survival game, survival shooter, play in browser, no download game, wave survival, 3D survival game" />
+    <meta name="author" content="Surya Narayan Renjith" />
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
+    <meta name="googlebot" content="index, follow" />
+    <link rel="canonical" href="https://forestsurvival.live/" />
+
+    <!-- Open Graph (Facebook, Discord, LinkedIn, etc.) -->
     <meta property="og:type" content="website" />
-    <title>Forest Survival</title>
+    <meta property="og:site_name" content="Forest Survival" />
+    <meta property="og:url" content="https://forestsurvival.live/" />
+    <meta property="og:title" content="Forest Survival — Free Online Survival Shooter" />
+    <meta property="og:description" content="A 3D multiplayer wave-survival shooter you can play free in any modern browser. Survive endless enemy waves across 8 biomes — no download required." />
+    <meta property="og:image" content="https://forestsurvival.live/og-image.jpg" />
+    <meta property="og:image:secure_url" content="https://forestsurvival.live/og-image.jpg" />
+    <meta property="og:image:type" content="image/jpeg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Forest Survival — 3D wave-survival shooter emblem" />
+    <meta property="og:locale" content="en_US" />
+
+    <!-- Twitter / X Card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Forest Survival — Free Online Survival Shooter" />
+    <meta name="twitter:description" content="A 3D multiplayer wave-survival shooter you can play free in any modern browser. Survive endless enemy waves across 8 biomes — no download required." />
+    <meta name="twitter:image" content="https://forestsurvival.live/og-image.jpg" />
+    <meta name="twitter:image:alt" content="Forest Survival — 3D wave-survival shooter emblem" />
+
+    <!-- Structured data: helps Google present this as a playable video game.
+         (No fabricated ratings — only verifiable facts are declared.) -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "VideoGame",
+          "@id": "https://forestsurvival.live/#game",
+          "name": "Forest Survival",
+          "alternateName": "Forest Survival Game",
+          "url": "https://forestsurvival.live/",
+          "description": "Forest Survival is a free 3D first-person wave-survival shooter you play directly in the browser. Survive escalating enemy waves across eight biome maps with eight unlockable weapons, eight character classes, roguelike perks and peer-to-peer multiplayer.",
+          "image": "https://forestsurvival.live/og-image.jpg",
+          "inLanguage": "en",
+          "genre": ["Survival", "Shooter", "Action", "First-person shooter"],
+          "gamePlatform": ["Web Browser", "PC"],
+          "applicationCategory": "GameApplication",
+          "operatingSystem": "Any (modern web browser with WebGL)",
+          "browserRequirements": "Requires WebGL and JavaScript",
+          "playMode": ["SinglePlayer", "MultiPlayer", "CoOp"],
+          "author": {
+            "@type": "Person",
+            "name": "Surya Narayan Renjith",
+            "url": "https://github.com/suryanarayanrenjith"
+          },
+          "publisher": { "@id": "https://forestsurvival.live/#publisher" },
+          "offers": {
+            "@type": "Offer",
+            "price": "0",
+            "priceCurrency": "USD",
+            "availability": "https://schema.org/InStock",
+            "url": "https://forestsurvival.live/"
+          }
+        },
+        {
+          "@type": "WebSite",
+          "@id": "https://forestsurvival.live/#website",
+          "url": "https://forestsurvival.live/",
+          "name": "Forest Survival",
+          "description": "Free online 3D multiplayer wave-survival shooter — play in your browser.",
+          "inLanguage": "en",
+          "publisher": { "@id": "https://forestsurvival.live/#publisher" }
+        },
+        {
+          "@type": "Organization",
+          "@id": "https://forestsurvival.live/#publisher",
+          "name": "Forest Survival",
+          "url": "https://forestsurvival.live/",
+          "logo": "https://forestsurvival.live/icon-512.png"
+        }
+      ]
+    }
+    </script>
+
     <!-- Menu typography: Oswald (condensed expedition display) + Chakra Petch
          (techy HUD data face). Scoped to menu UI via .font-display / .font-hud
          so the in-game HUD typography is untouched. Loaded with swap so the
@@ -28,6 +117,26 @@
   </head>
   <body>
     <div id="root"></div>
+
+    <!-- Crawler / no-JavaScript fallback. Hidden whenever scripts run (the React
+         app mounts into #root above), but gives search engines and social
+         scrapers immediate, accurate text describing the game. -->
+    <noscript>
+      <main style="max-width:760px;margin:0 auto;padding:40px 24px;color:#e5e7eb;background:#05080a;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.6">
+        <h1 style="color:#34d399;font-size:2rem;margin:0 0 .5rem">Forest Survival — Free Online Survival Shooter</h1>
+        <p><strong>Forest Survival</strong> is a free 3D first-person wave-survival shooter you can play right in your browser — no download or install required. Survive endless, escalating enemy waves across eight distinct biome maps.</p>
+        <h2>What you can do</h2>
+        <ul>
+          <li>Fight five enemy types with eight unlockable weapons, from a pistol to a rocket launcher.</li>
+          <li>Choose from eight character classes, each with a signature active ability and passive.</li>
+          <li>Take on roguelike wave perks, daily challenges, mutators and persistent account progression.</li>
+          <li>Team up in peer-to-peer online multiplayer or play solo.</li>
+        </ul>
+        <h2>Play now</h2>
+        <p>Forest Survival runs entirely in a modern web browser with WebGL. <strong>This page requires JavaScript to play.</strong> Visit <a href="https://forestsurvival.live/" style="color:#34d399">forestsurvival.live</a> with JavaScript enabled to start surviving.</p>
+      </main>
+    </noscript>
+
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

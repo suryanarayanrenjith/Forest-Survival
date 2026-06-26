@@ -3,5 +3,25 @@
   "framework": "vite",
   "buildCommand": "npx convex deploy --cmd 'npm run build'",
   "installCommand": "npm install",
-  "outputDirectory": "dist"
+  "outputDirectory": "dist",
+  "headers": [
+    {
+      "source": "/assets/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }
+      ]
+    },
+    {
+      "source": "/(.*).(png|jpg|jpeg|gif|webp|avif|svg|ico|mp3|ogg|wav|woff2)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=2592000" }
+      ]
+    },
+    {
+      "source": "/(robots.txt|sitemap.xml|site.webmanifest)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=3600, must-revalidate" }
+      ]
+    }
+  ]
 }

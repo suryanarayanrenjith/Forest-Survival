@@ -1,0 +1,15 @@
+# Forest Survival — https://forestsurvival.live
+# Free online 3D multiplayer wave-survival shooter (play in browser).
+
+User-agent: *
+Allow: /
+
+# Session-specific multiplayer deep links carry no standalone, indexable
+# content — keep them out of search results (canonical also points to root).
+Disallow: /*?lobby=
+Disallow: /*?role=
+
+# Note: hashed JS/CSS bundles under /assets/ are intentionally left crawlable
+# so Googlebot can render the single-page app.
+
+Sitemap: https://forestsurvival.live/sitemap.xml
