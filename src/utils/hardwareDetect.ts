@@ -197,18 +197,29 @@ function recommendTier(
   if (maxTexture > 0 && maxTexture < 4096) base = capTier(base, 'ultralow');
   else if (maxTexture > 0 && maxTexture < 8192) base = capTier(base, 'low');
 
-  // RAM ceilings (deviceMemory is coarse — …2,4,8 — and null when hidden, in
-  // which case we apply NO penalty rather than guess low).
-  if (memoryGB != null) {
-    if (memoryGB <= 2) base = capTier(base, 'low');
-    else if (memoryGB <= 4) base = capTier(base, 'high'); // 4GB can't carry Ultra's working set
+  // ── CPU / RAM refinement ───────────────────────────────────────────────────
+  // CRITICAL: `navigator.hardwareConcurrency` and `deviceMemory` are UNRELIABLE.
+  // Privacy features routinely under-report them — Firefox `resistFingerprinting`
+  // and the Tor Browser pin hardwareConcurrency to 2 and hide deviceMemory;
+  // Brave/others cap or quantise both. So a strong DISCRETE GPU reading
+  // "2 threads / 4 GB" is almost always SPOOFING, not a real dual-core, and the
+  // GPU model is the far more trustworthy signal of a capable rig. We therefore
+  // only let low CPU/RAM CRATER the tier for integrated / unknown / software
+  // GPUs; a discrete card keeps the tier its model earned — so a GTX/RTX is never
+  // mis-detected as Low just because the browser hid the core count. (A genuinely
+  // thin machine wouldn't be carrying a discrete GPU in the first place.)
+  if (gpu.kind !== 'discrete') {
+    // RAM ceilings (deviceMemory is coarse — …2,4,8 — null when hidden → no penalty).
+    if (memoryGB != null) {
+      if (memoryGB <= 2) base = capTier(base, 'low');
+      else if (memoryGB <= 4) base = capTier(base, 'high'); // 4GB can't carry Ultra's working set
+    }
+    // CPU-thread ceilings — a thin CPU can't feed the renderer + AI + physics for
+    // the top tiers when the GPU isn't a discrete card pulling the weight.
+    if (threads <= 2) base = capTier(base, 'low');
+    else if (threads <= 3) base = capTier(base, 'medium');
+    else if (threads <= 4) base = capTier(base, 'high'); // block Ultra on a true quad
   }
-
-  // CPU-thread ceilings — a thin CPU can't feed the renderer + AI + physics for
-  // the top tiers no matter how strong the GPU is.
-  if (threads <= 2) base = capTier(base, 'low');
-  else if (threads <= 3) base = capTier(base, 'medium');
-  else if (threads <= 4) base = capTier(base, 'high'); // block Ultra on a true quad
 
   // Large panels (4K-class CSS resolution) cost more GPU per tier. The game
   // renders at innerWidth×pixelRatio (CSS px, setPixelRatio(1)), so the workload

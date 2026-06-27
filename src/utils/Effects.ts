@@ -204,14 +204,24 @@ export class MuzzleSmoke {
   private readonly peakOpacity: number;
   private readonly spin: number;
 
-  constructor(scene: THREE.Scene, position: THREE.Vector3, forward: THREE.Vector3) {
+  // Optional tuning so the SAME smoke sprite (and therefore the same shader
+  // program) can serve both gun-muzzle smoke and the heavier, sootier smoke that
+  // pours off a critically-damaged / hacked robot. Colour is a per-instance
+  // uniform (not a program define), so a darker/greener puff costs no new program.
+  constructor(scene: THREE.Scene, position: THREE.Vector3, forward: THREE.Vector3, opts?: {
+    color?: number;        // tint (default cool gun-smoke grey)
+    sizeScale?: number;    // multiplies start/end scale (bigger billows)
+    lifeScale?: number;    // multiplies lifetime (lingers longer)
+    opacityScale?: number; // multiplies peak opacity (thicker)
+    rise?: number;         // extra upward velocity (m/s) added to the buoyant base
+  }) {
     const material = new THREE.SpriteMaterial({
       map: getSmokeTexture(),
       transparent: true,
       depthWrite: false,
       opacity: 0,
-      // Cool gun-smoke grey; fog ON so it grounds into the scene atmosphere.
-      color: 0x9a9ea6,
+      // Cool gun-smoke grey by default; fog ON so it grounds into the atmosphere.
+      color: opts?.color ?? 0x9a9ea6,
       fog: true,
     });
     this.sprite = new THREE.Sprite(material);
@@ -220,14 +230,15 @@ export class MuzzleSmoke {
     // Drift: a little along the barrel + a buoyant rise + slight random jitter.
     this.vel = new THREE.Vector3(
       forward.x * 0.45 + (Math.random() - 0.5) * 0.4,
-      0.45 + Math.random() * 0.35,
+      0.45 + Math.random() * 0.35 + (opts?.rise ?? 0),
       forward.z * 0.45 + (Math.random() - 0.5) * 0.4,
     );
-    this.startScale = 0.16 + Math.random() * 0.08;
-    this.endScale = 0.85 + Math.random() * 0.5;
-    this.maxLife = 0.55 + Math.random() * 0.4;
+    const sizeScale = opts?.sizeScale ?? 1;
+    this.startScale = (0.16 + Math.random() * 0.08) * sizeScale;
+    this.endScale = (0.85 + Math.random() * 0.5) * sizeScale;
+    this.maxLife = (0.55 + Math.random() * 0.4) * (opts?.lifeScale ?? 1);
     this.life = this.maxLife;
-    this.peakOpacity = 0.26 + Math.random() * 0.12;
+    this.peakOpacity = (0.26 + Math.random() * 0.12) * (opts?.opacityScale ?? 1);
     this.spin = (Math.random() - 0.5) * 1.6;
     this.sprite.scale.setScalar(this.startScale);
     scene.add(this.sprite);

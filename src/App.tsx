@@ -25,6 +25,7 @@ import { TerrainInstancer } from './utils/TerrainInstancer';
 import { getHDRIEnvironmentIntensity, getHDRIEnvironmentProfile, loadHDRIEnvironment, type HDRIEnvironmentProfile } from './utils/HDRIEnvironment';
 import { MultiplayerManager, type PlayerData as MpPlayerData, type NetworkMessage, type EnemyWire } from './utils/MultiplayerManager';
 import { RemotePlayerManager } from './utils/RemotePlayerManager';
+import { prewarmPlayerWounds, disposePlayerWoundAssets } from './utils/PlayerWounds';
 import { SnapshotInterpolator, type TransformSample } from './utils/SnapshotInterpolator';
 import Minimap, { renderMinimapFrame, isMinimapActive, toggleMinimapExpanded, type MinimapBlip } from './components/Minimap';
 import { LocalPlayerShadow } from './utils/LocalPlayerShadow';
@@ -61,6 +62,7 @@ import { SmartSkillTreeSystem, type Skill, type PlayStyle } from './utils/SmartS
 import { TutorialSystem, type TutorialStep } from './utils/TutorialSystem';
 import { smartEnemyManager, type EnemyType as PooledEnemyType } from './utils/SmartEnemyManager';
 import { RagdollSystem } from './utils/RagdollSystem';
+import { BattleDamageSystem } from './utils/BattleDamage';
 import { MissionDisplay } from './components/MissionDisplay';
 import { SkillTreeMenu } from './components/SkillTreeMenu';
 import { TutorialOverlay, CoachTipsDisplay } from './components/TutorialOverlay';
@@ -2208,6 +2210,19 @@ const ForestSurvivalGame = () => {
     if (!isMultiplayer && gameSettingsManager.getSetting('ragdollPhysics')) {
       void ragdollSystem.init();
     }
+
+    // ── BATTLE DAMAGE (persistent dents + scuffs on robots) ────────────────
+    // Every real hit punches a metal dent / scrapes a scuff into the enemy's
+    // armour where it landed; the damage accumulates so a worn-down robot is
+    // visibly battered by the time it's near death. One shared material/program +
+    // pooled quads (see BattleDamageSystem). Caps scale with the particle-density
+    // preset so Low / Ultra-Low barely spend. Warmed in warmUpShaders, cleared on
+    // every (re)spawn + death, disposed in scene teardown.
+    const dmgDensity = graphicsPreset.particleDensity;
+    const battleDamage = new BattleDamageSystem(scene, {
+      maxPerEnemy: Math.max(3, Math.round(12 * dmgDensity)),
+      maxTotal: Math.max(24, Math.round(180 * dmgDensity)),
+    });
     // Bumped on EVERY add/remove so spatial-grid rebuilds can't be fooled by
     // an add+remove in the same frame leaving the array length unchanged.
     let terrainVersion = 0;
@@ -3113,6 +3128,10 @@ const ForestSurvivalGame = () => {
     let healthTimeScale = 1.0;       // eased value applied to delta
     const CRIT_HP_FRACTION = 0.24;   // below this fraction of max HP → slow-mo
     const CRIT_HP_MIN_SCALE = 0.62;  // hardest slow-down at near-zero HP
+    // Last whole-HP value broadcast to peers. The loop re-syncs health on any
+    // change so EVERY heal/damage path (regen, lifesteal, triage, …) propagates
+    // to remote clients — which is what drives remote players' wound display.
+    let lastBroadcastHealth = -1;
     let fovPunch = 0; // FOV punch on shooting (additive degrees)
     let fovCheckAccum = 0; // throttles re-reading the FOV setting
     let abilityHudAccum = 0; // throttles ability-bar HUD updates
@@ -3192,6 +3211,12 @@ const ForestSurvivalGame = () => {
     const muzzleSmokePuffs: MuzzleSmoke[] = [];
     const MAX_MUZZLE_SMOKE = 28;
     let lastMuzzleSmokeMs = 0;
+    // Heavy sooty smoke venting off critically-damaged / hacked robots. Its own
+    // capped pool (independent of the gun-smoke cap so neither starves the other)
+    // built from the SAME MuzzleSmoke class → reuses the smoke shader program.
+    // Cap scales with particle density; skipped entirely on the lowest presets.
+    const enemySmokePuffs: MuzzleSmoke[] = [];
+    const MAX_ENEMY_SMOKE = Math.max(0, Math.round(24 * graphicsPreset.particleDensity));
     const bulletTracers: BulletTracer[] = [];
     const impactEffects: ImpactEffect[] = [];
     const robotSparks: RobotHitSparks[] = [];
@@ -3672,6 +3697,10 @@ const ForestSurvivalGame = () => {
           disposeRevShield(ch);
         }
       }
+      // Clean slate for the recycled pooled mesh — return any battle-damage
+      // dents/scuffs from the previous occupant to the pool so a fresh spawn
+      // doesn't inherit them.
+      battleDamage.clearFor(enemyGroup);
 
       // Get enemy stats based on type (kept for AI calculations)
       let enemyHealth = 50;
@@ -5554,6 +5583,8 @@ const ForestSurvivalGame = () => {
           const triageHeal = Math.min(MEDIC_TRIAGE_HEAL, playerMaxHealth - health);
           health = Math.min(playerMaxHealth, health + MEDIC_TRIAGE_HEAL);
           updateGameState();
+          // Broadcast the heal so teammates' clients close this player's wounds.
+          if (isMultiplayer && multiplayerManager) multiplayerManager.updatePlayerHealth(health);
           showPowerMessage(`Field Triage · +${Math.max(0, Math.round(triageHeal))} HP`);
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Field Triage!', 'powerup');
           createParticles(camera.position, 0x4dff9e, 14);
@@ -6064,6 +6095,11 @@ const ForestSurvivalGame = () => {
       const vis = buildHackVisuals();
       best.mesh.add(vis);
       best.hackVisuals = vis;
+      // The chip fries the target — kick off overclock smoke immediately, then
+      // the living-enemy loop keeps it venting for the whole hack window.
+      best.nextDamageFxAt = 0;
+      ventEnemySmoke(best, true);
+      ventEnemySmoke(best, true);
 
       // Beam from the deck emitter (just in front of the held weapon) to the
       // target's chest, plus a spark burst + chip-clamp pop.
@@ -7509,6 +7545,86 @@ const ForestSurvivalGame = () => {
       craters.push({ mesh: crater, life: 10, maxLife: 10 });
     };
 
+    // ── BATTLE-DAMAGE STAMPING ───────────────────────────────────────────
+    // Per-type body scale (matches SmartEnemyManager's ENEMY_CONFIGS) — used to
+    // size dents to the chassis and place reconstructed contact points.
+    const enemyTypeScale = (t: Enemy['type']) =>
+      t === 'fast' ? 0.7 : t === 'tank' ? 1.5 : t === 'boss' ? 2.0
+      : t === 'revenant' ? 0.85 : t === 'ranged' ? 1.05 : 1.0;
+
+    // Dedicated scratch so a stamp never clobbers a hot-loop temp vector.
+    const _dentNrm = new THREE.Vector3();
+    const _dentPos = new THREE.Vector3();
+    const _dentAxis = new THREE.Vector3();
+    const _smokePos = new THREE.Vector3();
+    const _smokeDir = new THREE.Vector3();
+
+    // Punch a metal dent + scrape a scuff into an enemy's armour where a hit
+    // landed. `contactPos` is the exact world hit point when we have it (bullet
+    // contact); otherwise pass the damage `sourcePos` (blast centre / attacker)
+    // and the mark is reconstructed on the armour surface facing the source. Size
+    // scales with damage (SMG pock → sniper/launcher breach) × crit × enemy type.
+    // Purely cosmetic, so it runs for guests too (event-driven, not health-owned).
+    const stampEnemyDamage = (
+      enemy: Enemy,
+      dmg: number,
+      isCrit: boolean,
+      contactPos?: THREE.Vector3,
+      sourcePos?: THREE.Vector3,
+    ) => {
+      if (!enemy || enemy.dead) return;
+      const ts = enemyTypeScale(enemy.type);
+      // Robot bodies are upright boxes, so the armour normal at any hit is
+      // (almost) HORIZONTAL — measured from the body's central vertical axis AT
+      // THE HIT'S OWN HEIGHT, never from enemy.mesh.position (the group origin
+      // sits at hip height, so subtracting it tilted every mark upward and made
+      // the decal float off at an angle). This keeps the dent lying FLAT on the
+      // plating, square to the surface it hit.
+      if (contactPos) {
+        _dentAxis.set(enemy.mesh.position.x, contactPos.y, enemy.mesh.position.z);
+        _dentNrm.subVectors(contactPos, _dentAxis); // horizontal by construction
+      } else if (sourcePos) {
+        _dentNrm.subVectors(sourcePos, enemy.mesh.position);
+        _dentNrm.y = 0;                              // flatten AOE normals too
+      } else {
+        _dentNrm.set(0, 0, 1);
+      }
+      if (_dentNrm.lengthSq() < 1e-5) _dentNrm.set(0, 0, 1);
+      _dentNrm.normalize();
+      // Sit the mark a hair PROUD of the plating along that horizontal normal so
+      // it never sinks into the body or z-fights (addImpact nudges a touch more).
+      if (contactPos) {
+        _dentPos.copy(contactPos).addScaledVector(_dentNrm, 0.06 * ts);
+      } else {
+        // AOE: reconstruct a chest-height point on the surface facing the blast.
+        _dentPos.set(enemy.mesh.position.x, enemy.mesh.position.y + 0.85 * ts, enemy.mesh.position.z)
+          .addScaledVector(_dentNrm, 0.42 * ts);
+      }
+      const size = Math.min(1.05, 0.26 + dmg * 0.010) * ts * (isCrit ? 1.4 : 1);
+      battleDamage.addImpact(enemy.mesh, _dentPos, _dentNrm, size);
+    };
+
+    // Pour a puff of heavy sooty smoke off a critically-damaged / hacked robot.
+    // Reuses the MuzzleSmoke class (same shader program) with a darker, bigger,
+    // longer-lived, mostly-upward puff; hacked units smoke a sickly overclock
+    // green. Own capped pool; oldest evicted when full.
+    const ventEnemySmoke = (enemy: Enemy, hacked: boolean) => {
+      if (MAX_ENEMY_SMOKE <= 0) return;
+      if (enemySmokePuffs.length >= MAX_ENEMY_SMOKE) {
+        const old = enemySmokePuffs.shift();
+        if (old) old.dispose(scene);
+      }
+      const ts = enemyTypeScale(enemy.type);
+      _smokePos.copy(enemy.mesh.position);
+      _smokePos.x += (Math.random() - 0.5) * 0.5 * ts;
+      _smokePos.y += (0.7 + Math.random() * 0.7) * ts;
+      _smokePos.z += (Math.random() - 0.5) * 0.5 * ts;
+      _smokeDir.set((Math.random() - 0.5) * 0.5, 1, (Math.random() - 0.5) * 0.5);
+      enemySmokePuffs.push(new MuzzleSmoke(scene, _smokePos, _smokeDir, hacked
+        ? { color: 0x4a6a3e, sizeScale: 1.3 * ts, lifeScale: 1.6, opacityScale: 1.1, rise: 0.25 }
+        : { color: 0x303338, sizeScale: 1.4 * ts, lifeScale: 1.7, opacityScale: 1.3, rise: 0.2 }));
+    };
+
     // Explosion flash, sparks, smoke, shake and crater.
     // The animated fireball + shockwave + pooled light is owned by
     // ExplosionEffect (updated in the animate loop). NO fresh PointLight is
@@ -7612,6 +7728,7 @@ const ForestSurvivalGame = () => {
           e.health -= dmg;
         }
         e.damageFlashTime = 0.45;
+        stampEnemyDamage(e, dmg, false, undefined, epos);
         if (!isMpGuest && e.health <= 0) handleEnemyKilled(e, false);
       }
       // Other barrels — chain reaction.
@@ -8120,6 +8237,8 @@ const ForestSurvivalGame = () => {
         adaptiveDifficulty.recordDamage(dmg, true);
         _tempVec3.subVectors(e.mesh.position, pos).normalize();
         robotSparks.push(new RobotHitSparks(scene, e.mesh.position.clone(), _tempVec3, 10));
+        // Big blast breach on the side facing the detonation.
+        stampEnemyDamage(e, dmg, false, undefined, pos);
         if (!isMpGuest && e.health <= 0) handleEnemyKilled(e, false);
       }
       // Chain-detonate any barrels inside the rocket's blast.
@@ -8828,6 +8947,17 @@ const ForestSurvivalGame = () => {
         // Broadcast weapon swaps so remote avatars hold the right gun (no-ops
         // internally until the weapon actually changes).
         multiplayerManager.setCurrentWeapon(currentWeapon);
+        // Catch-all health re-sync: fires only when whole HP actually changes, so
+        // gradual heals (regen/lifesteal) and the Medic patch reach teammates and
+        // their wound overlay opens/closes in real time. Damage/pickups also push
+        // health directly; this just guarantees nothing is missed.
+        if (!isGameOver) {
+          const hpRounded = Math.round(health);
+          if (hpRounded !== lastBroadcastHealth) {
+            lastBroadcastHealth = hpRounded;
+            multiplayerManager.updatePlayerHealth(health);
+          }
+        }
       }
 
       // Drive remote-player avatar interpolation / animation / nameplates.
@@ -9436,6 +9566,9 @@ const ForestSurvivalGame = () => {
           createParticles(te.mesh.position, 0x66e8ff, isLethal ? 18 : 12); // dash-cyan energy burst
           _tempVec3_2.set(dashDirection.x, 0.25, dashDirection.z).normalize();
           robotSparks.push(new RobotHitSparks(scene, te.mesh.position.clone(), _tempVec3_2.clone(), isLethal ? 24 : 14));
+          // Heavy dent on the chassis face the charge ploughed into.
+          _smokeDir.set(te.mesh.position.x - dashDirection.x, te.mesh.position.y - dashDirection.y, te.mesh.position.z - dashDirection.z);
+          stampEnemyDamage(te, trampleDmg, isLethal, undefined, _smokeDir);
           if (gameSettingsManager.getSetting('impactFeedback')) {
             _tempVec3.set(te.mesh.position.x, te.mesh.position.y + 1.0, te.mesh.position.z);
             impactBursts.push(new ImpactBurst(scene, _tempVec3.clone(), 0x8be8ff, isLethal ? 1.6 : 1.1));
@@ -9695,6 +9828,14 @@ const ForestSurvivalGame = () => {
         if (muzzleSmokePuffs[i].update(delta)) {
           muzzleSmokePuffs[i].dispose(scene);
           muzzleSmokePuffs.splice(i, 1);
+        }
+      }
+
+      // Damaged-robot venting smoke (own pool; same MuzzleSmoke update path).
+      for (let i = enemySmokePuffs.length - 1; i >= 0; i--) {
+        if (enemySmokePuffs[i].update(delta)) {
+          enemySmokePuffs[i].dispose(scene);
+          enemySmokePuffs.splice(i, 1);
         }
       }
 
@@ -10500,6 +10641,12 @@ const ForestSurvivalGame = () => {
             );
             robotSparks.push(sparks);
 
+            // ── PERSISTENT BATTLE DAMAGE ──
+            // Punch a metal dent + scrape a scuff into the armour at the exact
+            // point of contact (size scales with damage, bigger on a crit). The
+            // marks accumulate so the robot is visibly battered by low health.
+            stampEnemyDamage(enemy, damage, isCritical, bullet.mesh.position);
+
             // ── CINEMATIC IMPACT FEEDBACK (toggleable) ──
             // A world-space hit-confirm flash + shockring snaps at the exact
             // point of contact, and the round SHATTERS into metal shrapnel that
@@ -10542,6 +10689,7 @@ const ForestSurvivalGame = () => {
                   e.health -= dmgS;
                 }
                 e.damageFlashTime = 0.3;
+                stampEnemyDamage(e, dmgS, false, undefined, splashOrigin);
                 if (!isMpGuest && e.health <= 0) handleEnemyKilled(e, false);
               }
             }
@@ -10727,6 +10875,9 @@ const ForestSurvivalGame = () => {
               disposeRevShield(enemy.revShield);
               enemy.revShield = undefined;
             }
+            // Return this corpse's accumulated dents/scuffs to the pool before
+            // the pooled mesh is recycled (else the next occupant inherits them).
+            battleDamage.clearFor(enemy.mesh);
             // Release mesh back to pool for reuse (SmartEnemyManager handles scene removal)
             if (enemy.poolId !== undefined) {
               smartEnemyManager.releaseMeshById(enemy.poolId);
@@ -10748,6 +10899,28 @@ const ForestSurvivalGame = () => {
         // Compute baseScale for ALL living enemies (needed for grounding)
         const baseScale = enemy.type === 'fast' ? 0.7 : enemy.type === 'tank' ? 1.5 : enemy.type === 'boss' ? 2.0 : enemy.type === 'revenant' ? 0.85 : 1.0;
         const groundY = 1.0 * baseScale;
+
+        // ── BATTLE-DAMAGE VENTING ─────────────────────────────────────────
+        // A critically-wounded robot — or one fried by a Subverter intrusion
+        // chip — pours heavy sooty smoke from its breached plating and arcs the
+        // odd electrical spark, layered over the accumulated dents/scuffs. Solo
+        // /host only (guests don't own authoritative health); rate-limited per
+        // enemy; skipped on the lowest particle presets + on culled enemies.
+        if (!isMpGuest && MAX_ENEMY_SMOKE > 0 && enemy.engageable !== false) {
+          const hpRatio = enemy.maxHealth > 0 ? enemy.health / enemy.maxHealth : 1;
+          const critical = hpRatio < 0.33;
+          if ((critical || enemy.hacked) && frameNowMs >= (enemy.nextDamageFxAt ?? 0)) {
+            ventEnemySmoke(enemy, !!enemy.hacked);
+            // Vent faster (and sparkier) the closer it is to burning out.
+            const interval = enemy.hacked ? 150 : hpRatio < 0.18 ? 120 : 240;
+            enemy.nextDamageFxAt = frameNowMs + interval + Math.random() * 80;
+            if ((enemy.hacked || hpRatio < 0.2) && Math.random() < 0.5) {
+              _tempVec3.set(Math.random() - 0.5, 1, Math.random() - 0.5).normalize();
+              _tempVec3_2.copy(enemy.mesh.position); _tempVec3_2.y += 0.9 * baseScale;
+              robotSparks.push(new RobotHitSparks(scene, _tempVec3_2.clone(), _tempVec3, 5));
+            }
+          }
+        }
 
         // ── GUEST MIRROR ──────────────────────────────────────────────────
         // Guests don't think — they interpolate this enemy toward the host's
@@ -11510,6 +11683,8 @@ const ForestSurvivalGame = () => {
                 markRevenantHackedHit(hackVictim);
                 hackVictim.health -= enemy.damage * HACK_VICTIM_DMG_MULT;
                 hackVictim.damageFlashTime = Math.max(hackVictim.damageFlashTime, 0.3);
+                // A subverter-hacked unit's overclocked bolts dent its kin too.
+                stampEnemyDamage(hackVictim, enemy.damage * HACK_VICTIM_DMG_MULT, false, undefined, enemy.mesh.position);
                 if (hackVictim.health <= 0) handleEnemyKilled(hackVictim, false);
                 enemy.rangedChargeMs = 0;
                 enemy.rangedNextShotAt = frameNowMs + 900; // faster than a normal sniper
@@ -11774,6 +11949,8 @@ const ForestSurvivalGame = () => {
                 markRevenantHackedHit(hackVictim);
                 hackVictim.health -= raw * HACK_VICTIM_DMG_MULT;
                 hackVictim.damageFlashTime = 0.3;
+                // A subverter-hacked unit mauling its kin dents + scuffs them too.
+                stampEnemyDamage(hackVictim, raw * HACK_VICTIM_DMG_MULT, false, undefined, enemy.mesh.position);
                 _tempVec3.copy(hackVictim.mesh.position); _tempVec3.y += 0.9;
                 createParticles(_tempVec3, 0x39ff14, 5);
                 soundManager.play('hit', 0.35, false, 1.4);
@@ -12163,6 +12340,16 @@ const ForestSurvivalGame = () => {
         // data packets — a distinct fogged/toneMapped-off program). Warmed so
         // the first hack in a fight never stalls linking it.
         refs.hackBeam = new HackBeam(scene, wp.clone(), wp.clone().add(new THREE.Vector3(0, 0.02, -2)));
+        // Battle-damage dent/scuff decal (its own polygon-offset alpha-blended
+        // program). Warmed so the first hit in a fight never stalls linking it;
+        // the throwaway quad is removed via `warm`, but the system keeps the
+        // shared material alive for the run so the program stays cached. (The
+        // enemy venting smoke reuses MuzzleSmoke's already-warmed program above.)
+        warm.push(battleDamage.prewarm(wp.clone()));
+        // Human-wound blood decal (lit MeshStandard + polygon-offset program).
+        // Only used on remote avatars, so only warm it in multiplayer; the shared
+        // material persists for the run so the first wounded teammate never stalls.
+        if (isMultiplayer) warm.push(prewarmPlayerWounds(scene, wp.clone()));
 
         // ── SECONDARY ADD-ON VISUALS ─────────────────────────────────────
         // Programs otherwise compiled the first time a mini-boss (no-fog crown),
@@ -12577,6 +12764,9 @@ const ForestSurvivalGame = () => {
       remotePlayerUnsubs.length = 0;
       remotePlayerManager?.dispose();
       remotePlayerManager = null;
+      // Free the shared human-wound blood atlas/material/geometries (per-player
+      // wound meshes were already detached in each record's dispose above).
+      disposePlayerWoundAssets();
 
       // Cleanup the local player shadow caster (invisible body)
       localPlayerShadow.dispose();
@@ -12617,6 +12807,13 @@ const ForestSurvivalGame = () => {
       // Cleanup lingering muzzle smoke (each puff owns its sprite + material).
       for (const p of muzzleSmokePuffs) p.dispose(scene);
       muzzleSmokePuffs.length = 0;
+
+      // Cleanup damaged-robot venting smoke (own pool, same MuzzleSmoke class).
+      for (const p of enemySmokePuffs) p.dispose(scene);
+      enemySmokePuffs.length = 0;
+
+      // Free the battle-damage decal system (shared geos + material + atlas).
+      battleDamage.dispose();
 
       // Free the recycled impact/spark particle + tracer geometries and flash
       // sprites so the pooled buffers don't carry across a remount into a fresh

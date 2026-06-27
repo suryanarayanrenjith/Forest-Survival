@@ -33,6 +33,7 @@ import {
   buildPyro, buildMedic, buildEngineer, buildPhantom,
   buildHeldWeapon, getWeaponPose, type WeaponType,
 } from './CharacterModels';
+import { PlayerWounds, woundSeverityForHealth } from './PlayerWounds';
 
 const VALID_WEAPONS: WeaponType[] = ['pistol', 'rifle', 'shotgun', 'smg', 'sniper', 'minigun', 'launcher'];
 function asWeaponType(name: string | undefined): WeaponType {
@@ -133,6 +134,9 @@ interface RemotePlayerRecord {
   isAlive: boolean;
   deathT: number;
   materials: THREE.Material[];
+  // Realistic human wounds that bleed through as this player nears death and
+  // seal up when they're healed. Driven by data.health each frame.
+  wounds: PlayerWounds;
 }
 
 interface Joints {
@@ -471,6 +475,12 @@ export class RemotePlayerManager {
 
         // Head tracks aim pitch + a subtle counter-rotated bob and crouch hunch.
         rec.joints.headJoint.rotation.x = pitch + crouch * 0.22 + Math.sin(rec.walkPhase * 2) * 0.025 * moveGate;
+
+        // ── Human wounds ── bleed through as this player nears death; seal back
+        // up the instant they're healed (Medic triage / pickup / crate). Driven
+        // by the synced health, so every client sees it in real time.
+        const hpFrac = rec.data.health / Math.max(1, rec.data.maxHealth);
+        rec.wounds.update(woundSeverityForHealth(hpFrac), delta);
       } else {
         // ── 3. Death pose — fall forward, then hide nameplate/healthbar ─
         rec.deathT = Math.min(1.4, rec.deathT + delta / 0.65);
@@ -610,6 +620,9 @@ export class RemotePlayerManager {
   }
 
   private disposeRecord(rec: RemotePlayerRecord): void {
+    // Detach wounds FIRST so the group traverse below doesn't dispose the SHARED
+    // wound geometries (they're freed once, at scene teardown, not per player).
+    rec.wounds.dispose();
     rec.healthTexture.dispose();
     const npMat = rec.nameplate.material as THREE.SpriteMaterial;
     npMat.map?.dispose();
@@ -717,6 +730,18 @@ export class RemotePlayerManager {
     // Pull joint refs that CharacterModels stashed for us.
     const joints = modelRoot.userData.joints as Joints;
 
+    // Build the human wound set, parented to the matching skeletal joints so each
+    // gash/bruise rides the limb it sits on. Seeded by player id so every client
+    // renders the same wounds for the same player.
+    const wounds = new PlayerWounds({
+      root: modelRoot,
+      leftShoulder: joints.leftShoulder,
+      rightShoulder: joints.rightShoulder,
+      leftHip: joints.leftHip,
+      rightHip: joints.rightHip,
+      headJoint: joints.headJoint,
+    }, { seed: fnv1a(data.id) });
+
     // Apply shadow flags + friendly-fire tag to every mesh on the body.
     // (Weapon meshes are tagged separately inside swapWeapon().)
     modelRoot.traverse((obj) => {
@@ -796,6 +821,7 @@ export class RemotePlayerManager {
       isAlive: data.isAlive,
       deathT: 0,
       materials,
+      wounds,
     };
     // Build initial weapon (sets currentWeaponType + applies grip pose)
     this.swapWeapon(rec, asWeaponType(data.currentWeapon));
