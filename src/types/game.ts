@@ -331,6 +331,11 @@ export interface Enemy {
   frostShell?: THREE.Mesh;
   // Twitch offsets so the instability jitter can be cleanly zeroed out.
   hackJitter?: THREE.Vector3;
+  // ── Battle-damage FX throttle ────────────────────────────────────────────
+  // A badly-wounded robot vents smoke + arcs electricity from its breached
+  // plating. This is the next-emit timestamp (ms) so the venting is rate-limited
+  // per enemy rather than spawned every frame. Reset on (re)spawn.
+  nextDamageFxAt?: number;
 }
 
 export interface Bullet {

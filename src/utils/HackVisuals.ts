@@ -426,7 +426,7 @@ export class HackBeam {
     return false;
   }
 
-  dispose(scene: THREE.Scene): void {
+  dispose(scene: THREE.Scene, disposeMaterials = true): void {
     scene.remove(this.group);
     this.group.traverse((o) => {
       const mesh = o as THREE.Mesh;
@@ -435,8 +435,14 @@ export class HackBeam {
     // Variant geometries swapped onto the meshes may not all be currently
     // attached, so dispose the full set explicitly.
     for (const v of this.variants) { v.core.dispose(); v.glow.dispose(); }
-    this.coreMat.dispose();
-    this.glowMat.dispose();
-    this.packetMat.dispose();
+    // disposeMaterials=false is used by the shader warmup: it frees the
+    // per-instance tube geometries but KEEPS the three MeshBasic materials alive
+    // so their linked program stays in the renderer's cache, so the first real
+    // Subverter beam in a fight never stalls compiling it.
+    if (disposeMaterials) {
+      this.coreMat.dispose();
+      this.glowMat.dispose();
+      this.packetMat.dispose();
+    }
   }
 }

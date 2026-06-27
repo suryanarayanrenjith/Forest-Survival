@@ -253,9 +253,9 @@ export class MuzzleSmoke {
     return false;
   }
 
-  dispose(scene: THREE.Scene) {
+  dispose(scene: THREE.Scene, disposeMaterial = true) {
     scene.remove(this.sprite);
-    if (this.sprite.material instanceof THREE.SpriteMaterial) {
+    if (disposeMaterial && this.sprite.material instanceof THREE.SpriteMaterial) {
       this.sprite.material.dispose();
     }
   }
@@ -639,11 +639,13 @@ export class ExplosionEffect {
     return false;
   }
 
-  dispose(scene: THREE.Scene) {
+  dispose(scene: THREE.Scene, disposeMaterials = true) {
     scene.remove(this.group);
-    this.fireMat.dispose();
-    this.flashMat.dispose();
-    this.shockMat.dispose();
+    if (disposeMaterials) {
+      this.fireMat.dispose();
+      this.flashMat.dispose();
+      this.shockMat.dispose();
+    }
     if (this.light) {
       if (_explosionLightRelease) _explosionLightRelease(this.light);
       else scene.remove(this.light);
@@ -813,13 +815,15 @@ export class FireNovaEffect {
     return false;
   }
 
-  dispose(scene: THREE.Scene) {
+  dispose(scene: THREE.Scene, disposeMaterials = true) {
     scene.remove(this.group);
-    this.ringFrontMat.dispose();
-    this.ringBackMat.dispose();
-    this.domeMat.dispose();
-    this.emberMat.dispose();
-    this.emberGeo.dispose();
+    if (disposeMaterials) {
+      this.ringFrontMat.dispose();
+      this.ringBackMat.dispose();
+      this.domeMat.dispose();
+      this.emberMat.dispose();
+      this.emberGeo.dispose();
+    }
     if (this.light) {
       if (_explosionLightRelease) _explosionLightRelease(this.light);
       else scene.remove(this.light);
@@ -1103,17 +1107,19 @@ export class NukeEffect {
     return false;
   }
 
-  dispose(scene: THREE.Scene) {
+  dispose(scene: THREE.Scene, disposeMaterials = true) {
     scene.remove(this.group);
-    this.flashMat.dispose();
-    this.fireMat.dispose();
-    this.stemMat.dispose();
-    this.capMat.dispose();
-    this.collarMat.dispose();
-    this.shockMat.dispose();
-    this.dustMat.dispose();
-    this.debrisMat.dispose();
-    this.debrisGeo.dispose();
+    if (disposeMaterials) {
+      this.flashMat.dispose();
+      this.fireMat.dispose();
+      this.stemMat.dispose();
+      this.capMat.dispose();
+      this.collarMat.dispose();
+      this.shockMat.dispose();
+      this.dustMat.dispose();
+      this.debrisMat.dispose();
+      this.debrisGeo.dispose();
+    }
     if (this.light) {
       if (_explosionLightRelease) _explosionLightRelease(this.light);
       else scene.remove(this.light);
@@ -1266,13 +1272,15 @@ export class AbilityCastEffect {
     return false;
   }
 
-  dispose(scene: THREE.Scene) {
+  dispose(scene: THREE.Scene, disposeMaterials = true) {
     scene.remove(this.group);
-    this.ringMat.dispose();
-    this.pillarMat.dispose();
-    this.coreMat.dispose();
-    this.sparkMat.dispose();
-    this.sparkGeo.dispose();
+    if (disposeMaterials) {
+      this.ringMat.dispose();
+      this.pillarMat.dispose();
+      this.coreMat.dispose();
+      this.sparkMat.dispose();
+      this.sparkGeo.dispose();
+    }
     if (this.light) {
       if (_explosionLightRelease) _explosionLightRelease(this.light);
       else scene.remove(this.light);
@@ -1481,11 +1489,13 @@ export class ImpactBurst {
     return false;
   }
 
-  dispose(scene: THREE.Scene) {
+  dispose(scene: THREE.Scene, disposeMaterials = true) {
     scene.remove(this.core);
     scene.remove(this.ring);
-    this.coreMat.dispose();
-    this.ringMat.dispose();
+    if (disposeMaterials) {
+      this.coreMat.dispose();
+      this.ringMat.dispose();
+    }
     // Textures are shared — never dispose here.
   }
 }

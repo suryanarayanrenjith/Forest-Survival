@@ -51,6 +51,11 @@ export class RagdollSystem {
   private readonly maxActive: number;
   private readonly gravityY: number;
 
+  // Reusable vector-likes for applyRadialImpulse so a blast that shoves several
+  // corpses allocates nothing (Rapier's set*vel accept any {x,y,z}).
+  private readonly _scratchV = { x: 0, y: 0, z: 0 };
+  private readonly _scratchW = { x: 0, y: 0, z: 0 };
+
   constructor(maxActive = 20, gravityY = 18) {
     this.maxActive = maxActive;
     this.gravityY = gravityY;
@@ -148,6 +153,60 @@ export class RagdollSystem {
     const r = rb.rotation();
     outQuat.set(r.x, r.y, r.z, r.w);
     return true;
+  }
+
+  /**
+   * Shove every live corpse near a blast outward + upward — the physical
+   * "bodies fly from the explosion" feel. Velocity-based (not force-based) so the
+   * result is mass-independent and reads consistently for light fast-bots and
+   * heavy tanks alike, with a smooth distance falloff and a satisfying upward
+   * pop. Solo-only by construction (MP never spawns Rapier corpses, so `bodies`
+   * is empty → no-op) and free when no corpse is in range. `strength` scales the
+   * whole kick (1 = a standard grenade; the nuke/airstrike pass more).
+   * Returns how many corpses were affected.
+   */
+  applyRadialImpulse(cx: number, cy: number, cz: number, radius: number, strength = 1): number {
+    const world = this.world;
+    if (!world || !this._ready || this.order.length === 0) return 0;
+    // Corpses just outside the kill radius should still get nudged, so the blast
+    // edge doesn't look like a hard wall.
+    const reach = radius * 1.6;
+    const reachSq = reach * reach;
+    let affected = 0;
+    for (const rb of this.bodies.values()) {
+      const t = rb.translation();
+      const dx = t.x - cx;
+      const dy = t.y - cy;
+      const dz = t.z - cz;
+      const horizSq = dx * dx + dz * dz;
+      if (horizSq > reachSq) continue;
+      const d = Math.sqrt(horizSq);
+      const f = 1 - d / reach;           // 1 at centre → 0 at the edge
+      const ease = f * f;                // bias the kick toward the epicentre
+      // Outward direction (random scatter at the exact centre so a dead-centre
+      // corpse still launches somewhere rather than straight up).
+      let nx: number, nz: number;
+      if (d > 0.01) { nx = dx / d; nz = dz / d; }
+      else { const a = Math.random() * Math.PI * 2; nx = Math.cos(a); nz = Math.sin(a); }
+      // A corpse below the blast centre (typical — bodies are on the ground) gets
+      // a touch more lift so it actually leaves the ground.
+      const lift = dy < 0 ? 1.15 : 1.0;
+      const speed = (6 + 15 * ease) * strength;
+      const up = (5 + 9 * ease) * strength * lift;
+      const v = rb.linvel();
+      this._scratchV.x = v.x + nx * speed;
+      this._scratchV.y = v.y + up;
+      this._scratchV.z = v.z + nz * speed;
+      rb.setLinvel(this._scratchV, true); // `true` wakes a sleeping corpse
+      const av = rb.angvel();
+      const spin = 9 * ease * strength;
+      this._scratchW.x = av.x + (Math.random() - 0.5) * spin;
+      this._scratchW.y = av.y + (Math.random() - 0.5) * spin;
+      this._scratchW.z = av.z + (Math.random() - 0.5) * spin;
+      rb.setAngvel(this._scratchW, true);
+      affected++;
+    }
+    return affected;
   }
 
   /** Retire a corpse body once its visual has finished fading. */

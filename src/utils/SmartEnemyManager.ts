@@ -535,6 +535,54 @@ class SmartEnemyManager {
   }
 
   /**
+   * Build one visible, temporary mesh for every gameplay archetype during the
+   * loader. The regular pool warmup only creates empty Groups; the expensive
+   * per-type mesh assembly and the first WebGL program link otherwise happen
+   * when that species first unlocks mid-run. These slots are released by pool id
+   * after shader warmup, but their type-specific meshes remain in the pool for
+   * instant reuse later.
+   */
+  prewarmEnemyTypes(types: EnemyType[], origin: THREE.Vector3): number[] {
+    const ids: number[] = [];
+    const mid = (types.length - 1) * 0.5;
+
+    for (let i = 0; i < types.length; i++) {
+      const type = types[i];
+      let pooledEnemy = this.enemyPool.find(e => !e.inUse && e.type === type);
+      if (!pooledEnemy) pooledEnemy = this.enemyPool.find(e => !e.inUse);
+
+      // This intentionally bypasses currentMaxEnemies: prewarm slots are not
+      // gameplay spawns and are released before the first playable frame.
+      if (!pooledEnemy && this.poolSize < this.maxPoolSize) {
+        pooledEnemy = this.createPooledEnemy();
+        this.poolSize++;
+      }
+      if (!pooledEnemy) continue;
+
+      this.setupEnemyMeshes(pooledEnemy, type);
+      pooledEnemy.inUse = true;
+      pooledEnemy.type = type;
+      pooledEnemy.lastActivationTime = performance.now();
+      pooledEnemy.group.position.set(origin.x + (i - mid) * 2.4, origin.y, origin.z - 8);
+      pooledEnemy.group.rotation.set(0, 0, 0);
+      pooledEnemy.group.visible = true;
+
+      // Make every LOD branch visible for the compile pass so the low-LOD
+      // material program is also resident before the enemy moves far away.
+      pooledEnemy.lodGroups.high.visible = true;
+      pooledEnemy.lodGroups.medium.visible = true;
+      pooledEnemy.lodGroups.low.visible = true;
+      pooledEnemy.currentLOD = LODLevel.HIGH;
+
+      this.activeEnemies.add(pooledEnemy);
+      this.updateSpatialGrid(pooledEnemy);
+      ids.push(this.enemyPool.indexOf(pooledEnemy));
+    }
+
+    return ids;
+  }
+
+  /**
    * Create a single pooled enemy mesh with all LOD levels
    */
   private createPooledEnemy(): PooledEnemyMesh {

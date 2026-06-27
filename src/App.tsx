@@ -1713,13 +1713,35 @@ const ForestSurvivalGame = () => {
     };
     photoCaptureRef.current = capturePhotoBlob;
 
-    // Check for WebGL errors (with cleanup-safe event handlers)
+    // Set while the GPU context is gone so the render loop pauses cleanly.
+    let webglContextLost = false;
+    // WebGL context loss / restore. A GPU driver reset (TDR) — far more likely
+    // when a too-high preset overwhelms a weak GPU — kills the context mid-game.
+    // The OLD restore handler was a no-op, so after a reset the renderer's
+    // shadow-map + post-FX render targets were never re-established and SHADOWS
+    // (among other effects) silently stayed broken for the rest of the session —
+    // the reported "playing the game sometimes disables shadows entirely" bug.
+    // We now pause rendering while the context is gone (so the loop doesn't spew
+    // GL errors against a dead context) and, on restore, re-assert the shadow
+    // pipeline + resize the targets so shadows come straight back.
     const onWebGLContextLost = (event: Event) => {
-      event.preventDefault();
-      console.error('WebGL context lost!');
+      event.preventDefault(); // signal we'll recover → browser fires `restored`
+      webglContextLost = true;
+      console.error('WebGL context lost — pausing render until restored');
     };
     const onWebGLContextRestored = () => {
-      // WebGL context restored
+      // Re-establish shadow state explicitly (render targets were recreated by
+      // three on restore, but the enabled/type flags + a fresh shadow render
+      // must be re-kicked) and resize the post-FX chain to the live canvas.
+      renderer.shadowMap.enabled = graphicsPreset.shadowsEnabled;
+      renderer.shadowMap.type = lowTier ? THREE.BasicShadowMap : THREE.PCFSoftShadowMap;
+      renderer.shadowMap.needsUpdate = true;
+      const w = Math.floor(window.innerWidth * graphicsPreset.pixelRatio);
+      const h = Math.floor(window.innerHeight * graphicsPreset.pixelRatio);
+      renderer.setSize(w, h, false);
+      postFX?.setSize(w, h);
+      webglContextLost = false;
+      console.warn('WebGL context restored — rendering resumed');
     };
     renderer.domElement.addEventListener('webglcontextlost', onWebGLContextLost);
     renderer.domElement.addEventListener('webglcontextrestored', onWebGLContextRestored);
@@ -2093,6 +2115,9 @@ const ForestSurvivalGame = () => {
     let isSceneDisposed = false;
     let environmentRenderTarget: THREE.WebGLRenderTarget | null = null;
     let hdriEnvironmentProfile: HDRIEnvironmentProfile | null = null;
+    type WarmupRetainedEffect = { dispose: (scene: THREE.Scene, disposeMaterials?: boolean) => void };
+    const warmupRetainedEffects: WarmupRetainedEffect[] = [];
+    let allowLateEnvironmentSwap = true;
     const fallbackEnvProfile = getHDRIEnvironmentProfile(selectedMap);
     try {
       const pmrem = new THREE.PMREMGenerator(renderer);
@@ -2120,7 +2145,7 @@ const ForestSurvivalGame = () => {
     const hdriReadyPromise = loadHDRIEnvironment(renderer, selectedMap, { load: !lowTier, highRes: graphicsQuality === 'ultra' })
       .then((loadedEnvironment) => {
         if (!loadedEnvironment) return;
-        if (isSceneDisposed) {
+        if (isSceneDisposed || !allowLateEnvironmentSwap) {
           loadedEnvironment.renderTarget.dispose();
           return;
         }
@@ -7495,6 +7520,9 @@ const ForestSurvivalGame = () => {
       createParticles(pos, 0x222222, 22);
       explosionEffects.push(new ExplosionEffect(scene, pos, radius));
       createCrater(pos);
+      // Physically blast any nearby ragdoll corpses outward + skyward (solo
+      // Rapier only; no-op in MP / when no corpse is in range).
+      ragdollSystem.applyRadialImpulse(pos.x, pos.y, pos.z, radius, 1);
     };
 
     // ── SUBVERTER hack helpers ──────────────────────────────────────────
@@ -7699,6 +7727,8 @@ const ForestSurvivalGame = () => {
       // Cinematic mushroom-cloud VFX (visual scale a touch under the kill radius
       // so the blast clearly covers what the cloud engulfs).
       nukeEffects.push(new NukeEffect(scene, new THREE.Vector3(center.x, 0.5, center.z), radius * 0.62));
+      // A nuke throws corpses far — a big radius + strong kick (solo Rapier only).
+      ragdollSystem.applyRadialImpulse(center.x, 0.5, center.z, radius * 0.62, 2.4);
       // Screen feedback — blinding flash, heavy shake, wide FOV punch + a deep
       // low-pitched boom (no dedicated explosion sample; reuse the barrel boom).
       triggerKillFlash();
@@ -7827,6 +7857,8 @@ const ForestSurvivalGame = () => {
     const SHOCK_CENTER_DAMAGE = 95;   // AoE damage at the epicentre (falls off to the rim)
     const applyShockwave = (center: THREE.Vector3): number => {
       createParticles(center, 0xffe0a0, 40);
+      // Kinetic shockwave also sends downed corpses tumbling outward (solo Rapier).
+      ragdollSystem.applyRadialImpulse(center.x, center.y, center.z, SHOCK_RADIUS, 1.3);
       soundManager.play('hit', 0.85, false, 0.45);
       soundManager.play('powerUp', 0.6, false, 0.6);
       if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
@@ -8144,6 +8176,13 @@ const ForestSurvivalGame = () => {
 
       // Skip expensive updates when tab is not visible (major performance optimization)
       if (!isTabVisible) {
+        return;
+      }
+
+      // Pause while the GPU context is lost — rendering against a dead context
+      // throws and can't draw anyway. The `webglcontextrestored` handler clears
+      // this and re-establishes the shadow/post-FX pipeline so play resumes.
+      if (webglContextLost) {
         return;
       }
 
@@ -9518,6 +9557,7 @@ const ForestSurvivalGame = () => {
 
       // Land on the dynamic floor (ground or a rock top), accounting for crouch.
       if (camera.position.y <= floorY) {
+        const impactSpeed = -velocityY; // downward speed at touchdown (>0 = falling)
         velocityY = 0;
         // SMOOTH AUTO STEP-UP: when the floor suddenly rises a long way under the
         // player (they walked onto a ledge), DON'T teleport the camera up — leave
@@ -9528,13 +9568,20 @@ const ForestSurvivalGame = () => {
         if (floorRise <= 0.12 || wasJumping) {
           camera.position.y = floorY;
         }
-        // Landing impact — trigger camera dip when touching ground after a jump
+        // Landing impact — weight-based camera dip when touching ground after a
+        // jump. A normal hop (impactSpeed ≈ baseJumpPower 0.45) keeps the exact
+        // old 0.3 dip; a drop off a ledge/boulder lands progressively heavier —
+        // a deeper dip, a louder/lower thud, and (only for real falls) a touch of
+        // screen shake — so verticality carries genuine physical weight.
         if (wasJumping) {
-          landingImpact = 0.3; // Start landing dip effect
+          const heavy = Math.max(0, impactSpeed - 0.45); // 0 for a normal hop
+          landingImpact = THREE.MathUtils.clamp(0.3 + heavy * 1.1, 0.3, 0.8);
           jumpCooldown = JUMP_COOLDOWN_TIME; // Anti-bunny-hop cooldown
           wasJumping = false;
-          // Heavier, lower-pitched footstep for the touchdown thud.
-          soundManager.play('footstep', 0.34, false, 0.78);
+          // Heavier, lower-pitched footstep for the touchdown thud — scaled by fall.
+          const thudVol = THREE.MathUtils.clamp(0.34 + heavy * 0.7, 0.34, 0.7);
+          soundManager.play('footstep', thudVol, false, 0.78 - Math.min(0.18, heavy * 0.5));
+          if (impactSpeed > 0.62 && gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
           footstepAccum = 0; // don't immediately emit a walking step on landing
         }
         isJumping = false;
@@ -11996,6 +12043,16 @@ const ForestSurvivalGame = () => {
       // overcharge motes + blue shield ring visibly hanging in front of the
       // player for the first second of gameplay.
       const warmAbilityFlares: THREE.Object3D[] = [];
+      // Enemy archetype pool slots prewarmed in Stage 3b. Captured so teardown
+      // can release them back to the pool after the compile passes have linked
+      // every species' shared programs.
+      let prewarmEnemyIds: number[] = [];
+      // Per-instance App-level add-on visuals (boss crown, Revenant shield, hack
+      // overlay) warmed for their shader programs, then removed from the scene
+      // but RETAINED so their materials keep the linked programs resident for
+      // the whole session (a disposed material drops the program refcount to 0,
+      // which forces the recompile stall we're eliminating).
+      const warmupRetainedObjects: THREE.Object3D[] = [];
       // Effect references kept on an object so the async stage closures
       // can assign and the teardown can read them. Plain `let` confuses
       // TS's flow analysis across the async callback boundary.
@@ -12006,7 +12063,16 @@ const ForestSurvivalGame = () => {
         tracer: BulletTracer | null;
         impact: ImpactEffect | null;
         sparks: RobotHitSparks | null;
-      } = { rocket: null, flash: null, smoke: null, tracer: null, impact: null, sparks: null };
+        explosion: ExplosionEffect | null;
+        fireNova: FireNovaEffect | null;
+        nuke: NukeEffect | null;
+        abilityCast: AbilityCastEffect | null;
+        impactBurst: ImpactBurst | null;
+        hackBeam: HackBeam | null;
+      } = {
+        rocket: null, flash: null, smoke: null, tracer: null, impact: null, sparks: null,
+        explosion: null, fireNova: null, nuke: null, abilityCast: null, impactBurst: null, hackBeam: null,
+      };
 
       // ── STAGE 1: spawn warmup bullets ──────────────────────────────
       await stage('Bullets', false, () => {
@@ -12078,6 +12144,70 @@ const ForestSurvivalGame = () => {
         // Pre-warm the rain shader (hidden Points mesh) so a dynamic-weather
         // front can roll in mid-fight without a first-rain compile hitch.
         weatherSystem.prewarm();
+
+        // ── HEAVY EXPLOSION-FAMILY EFFECTS ───────────────────────────────
+        // Their per-instance additive Mesh/Points materials own shader PROGRAMS
+        // that none of the bullet/pickup/muzzle warmups above touch (distinct
+        // fog + additive-blend + points-size configs). On a cold program cache
+        // the FIRST rocket detonation / boss cast / nuke linked them mid-frame —
+        // the 300-650ms freeze the trace pinned at the first big combat beat.
+        // Built here so the compile passes below link them; teardown then keeps
+        // their materials alive (dispose(scene, false)) so the programs never
+        // leave the cache for the rest of the run.
+        refs.explosion = new ExplosionEffect(scene, wp.clone(), 9, 0xff7a2a);
+        refs.fireNova = new FireNovaEffect(scene, wp.clone(), 16);
+        refs.nuke = new NukeEffect(scene, wp.clone(), 20);
+        refs.abilityCast = new AbilityCastEffect(scene, wp.clone(), 0x22d3ee);
+        refs.impactBurst = new ImpactBurst(scene, wp.clone(), 0xffe6b0, 1);
+        // Subverter intrusion beam (jagged MeshBasic tube + additive glow +
+        // data packets — a distinct fogged/toneMapped-off program). Warmed so
+        // the first hack in a fight never stalls linking it.
+        refs.hackBeam = new HackBeam(scene, wp.clone(), wp.clone().add(new THREE.Vector3(0, 0.02, -2)));
+
+        // ── SECONDARY ADD-ON VISUALS ─────────────────────────────────────
+        // Programs otherwise compiled the first time a mini-boss (no-fog crown),
+        // a Revenant (gold shield: no-fog MeshBasic emblem + LineBasic rim +
+        // smooth MeshStandard plate/studs) or a hacked enemy (chip/ring/scan
+        // overlay) appears. Built once, kept off-screen-free in the scene for the
+        // compile passes, then removed but retained so their programs persist.
+        const warmCrown = new THREE.Mesh(
+          new THREE.SphereGeometry(0.45, 12, 10),
+          new THREE.MeshBasicMaterial({ color: 0xfbbf24, toneMapped: false, fog: false }),
+        );
+        warmCrown.position.copy(wp);
+        scene.add(warmCrown); warmupRetainedObjects.push(warmCrown);
+        const warmShield = buildRevenantShield();
+        warmShield.position.copy(wp);
+        scene.add(warmShield); warmupRetainedObjects.push(warmShield);
+        const warmHack = buildHackVisuals();
+        warmHack.position.copy(wp);
+        scene.add(warmHack); warmupRetainedObjects.push(warmHack);
+
+        // Enemy + Revenant bolt tracers. Their materials are SHARED session-long
+        // consts, so rendering one of each once links the program for good —
+        // no retain needed (teardown only removes the throwaway meshes via warm).
+        const warmBolt = new THREE.Mesh(_enemyBulletGeo, _enemyBulletMat);
+        warmBolt.position.copy(wp); scene.add(warmBolt); warm.push(warmBolt);
+        const warmBoltGlow = new THREE.Mesh(_enemyBulletGlowGeo, _enemyBulletGlowMat);
+        warmBoltGlow.position.copy(wp); scene.add(warmBoltGlow); warm.push(warmBoltGlow);
+        const warmRevBolt = new THREE.Mesh(_enemyBulletGeo, _revBoltMat);
+        warmRevBolt.position.copy(wp); scene.add(warmRevBolt); warm.push(warmRevBolt);
+        const warmRevBoltGlow = new THREE.Mesh(_enemyBulletGlowGeo, _revBoltGlowMat);
+        warmRevBoltGlow.position.copy(wp); scene.add(warmRevBoltGlow); warm.push(warmRevBoltGlow);
+      });
+      await yieldFrame();
+
+      // ── STAGE 3b: enemy archetypes ─────────────────────────────────────
+      // Build + render one pooled mesh of EVERY enemy species so their shared
+      // MeshStandard body/accent/glow + MeshBasic eye + LOD programs (the single
+      // most expensive compile batch in the game, ~hundreds of ms on a cold
+      // cache) link during the loader instead of the first time each species
+      // walks into view mid-wave. The slots are released back to the pool in
+      // teardown but keep their type-built meshes for instant, allocation-free
+      // reuse on the first real spawn of that archetype.
+      await stage('Enemies', false, () => {
+        const warmEnemyTypes: PooledEnemyType[] = ['normal', 'fast', 'tank', 'boss', 'ranged', 'revenant'];
+        prewarmEnemyIds = smartEnemyManager.prewarmEnemyTypes(warmEnemyTypes, wp);
       });
       await yieldFrame();
 
@@ -12154,6 +12284,14 @@ const ForestSurvivalGame = () => {
       await stage('Environment', false, () =>
         withTimeout(hdriReadyPromise, 4000, 'HDRI Environment').catch(() => { /* keep PMREM fallback */ }),
       );
+      // The HDRI either swapped in during the stage above or timed out. Either
+      // way, forbid a LATE swap from here on: if the fetch only lands after the
+      // loader has handed the canvas to gameplay, swapping the environment map
+      // mid-run forces a full relight + a program revalidation pass — a visible
+      // hitch. Keeping the already-composed PMREM fallback is seamless. (When the
+      // HDRI did arrive in time, its swap .then() ran before this await resolved,
+      // so this only ever blocks the genuinely-late case.)
+      allowLateEnvironmentSwap = false;
       await yieldFrame();
 
       // ── STAGE 6: commit a couple of composed frames ────────────────
@@ -12208,6 +12346,26 @@ const ForestSurvivalGame = () => {
         // Remove the pre-warm airdrop (its shader programs are now cached) and
         // reset the shared glow light to off.
         enhancedPowerUps.clearAll(scene);
+
+        // Heavy explosion-family effects: drop them from the scene and return
+        // their borrowed pooled lights, but KEEP their materials alive
+        // (dispose(scene, false)) so the freshly-linked programs stay in the
+        // cache. Retained on warmupRetainedEffects so GC can't collect the
+        // materials and drop the program refcount to zero before the first real
+        // detonation. Fully disposed in the scene-teardown cleanup.
+        for (const heavy of [refs.explosion, refs.fireNova, refs.nuke, refs.abilityCast, refs.impactBurst, refs.hackBeam]) {
+          if (heavy) { heavy.dispose(scene, false); warmupRetainedEffects.push(heavy); }
+        }
+        // Add-on visuals (crown / Revenant shield / hack overlay): pull them out
+        // of the scene; their materials stay referenced via warmupRetainedObjects
+        // so the programs persist for the run (freed wholesale by renderer
+        // .dispose() when the scene tears down).
+        warmupRetainedObjects.forEach((o) => scene.remove(o));
+        // Release every prewarmed enemy back to the pool. releaseEnemy keeps the
+        // slot's type-built meshes, so the first real spawn of each archetype is
+        // an allocation-free, recompile-free reuse.
+        prewarmEnemyIds.forEach((id) => smartEnemyManager.releaseMeshById(id));
+        prewarmEnemyIds = [];
       } catch (err) {
         console.warn('[Warmup] teardown failed (non-fatal):', err);
       }
@@ -12502,6 +12660,16 @@ const ForestSurvivalGame = () => {
       fireNovas.length = 0;
       for (const ce of castEffects) ce.dispose(scene);
       castEffects.length = 0;
+
+      // Cleanup the retained warmup effects. Their materials were deliberately
+      // kept alive all session (warmup teardown used dispose(scene, false)) to
+      // hold their linked programs in the cache; free the materials now that the
+      // run is ending. They were never in the live gameplay arrays above, so
+      // this is the only place they get fully disposed.
+      for (const re of warmupRetainedEffects) {
+        try { re.dispose(scene, true); } catch { /* best-effort */ }
+      }
+      warmupRetainedEffects.length = 0;
 
       // Detach any in-flight head gibs (clones share pooled geo/mat — just
       // remove the clone objects from the scene).
