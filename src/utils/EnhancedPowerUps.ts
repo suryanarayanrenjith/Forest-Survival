@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { getSoftSparkTexture } from './Effects';
 
 export type PowerUpType =
   | 'health'
@@ -477,9 +478,12 @@ export class EnhancedPowerUpSystem {
 
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
 
+    // Soft-sprite puffs (shared radial texture) — untextured points render as
+    // hard squares, the "cheap particle" look this pass eliminated game-wide.
     const material = new THREE.PointsMaterial({
       color: 0xaaaaaa,
       size: 0.5,
+      map: getSoftSparkTexture(),
       transparent: true,
       opacity: 0.6,
       blending: THREE.AdditiveBlending,

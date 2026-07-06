@@ -271,24 +271,42 @@ export class BattleDamageSystem {
     this.maxPerEnemy = Math.max(1, opts.maxPerEnemy ?? 12);
     this.maxTotal = Math.max(this.maxPerEnemy, opts.maxTotal ?? 180);
 
-    // One unit quad per atlas cell, each remapped to its cell's UV rect. All
-    // share the SAME material → a single program; the per-cell geometry just
-    // gives each stamp a different damage motif.
+    // One quad per atlas cell, each remapped to its cell's UV rect. All share
+    // the SAME material → a single program; the per-cell geometry just gives
+    // each stamp a different damage motif.
+    //
+    // ENGRAVED FIT: the quads are 2×2-segment planes with their EDGES bowed
+    // BACKWARD (−Z, i.e. into the body) like a shallow dish. A dead-flat quad
+    // tangent to curved armour lifts off at its edges — the "sticker hovering
+    // over the robot" look this replaces. The dished rim tucks INTO the
+    // plating instead: where it sinks below the surface the body's own depth
+    // clips it away, so the mark reads as damage carved into the armour, its
+    // silhouette shaped by the plating it's punched into. (The atlas motifs
+    // are centre-weighted, so the clipped rim only ever eats transparent or
+    // faint-scratch pixels.)
     const tex = getDamageAtlas();
+    const EDGE_TUCK = 0.07; // how deep (in quad units) the corners dish into the body
     for (let row = 0; row < ATLAS_ROWS; row++) {
       for (let col = 0; col < ATLAS_COLS; col++) {
-        const g = new THREE.PlaneGeometry(1, 1);
+        const g = new THREE.PlaneGeometry(1, 1, 2, 2);
         const u0 = col / ATLAS_COLS;
         const u1 = (col + 1) / ATLAS_COLS;
         const v0 = 1 - (row + 1) / ATLAS_ROWS;
         const v1 = 1 - row / ATLAS_ROWS;
         const uv = g.getAttribute('uv') as THREE.BufferAttribute;
-        // PlaneGeometry vert order: TL, TR, BL, BR.
-        uv.setXY(0, u0, v1);
-        uv.setXY(1, u1, v1);
-        uv.setXY(2, u0, v0);
-        uv.setXY(3, u1, v0);
+        // Linear-remap every vert's 0..1 uv into the cell rect (9 verts now).
+        for (let i = 0; i < uv.count; i++) {
+          uv.setXY(i, u0 + uv.getX(i) * (u1 - u0), v0 + uv.getY(i) * (v1 - v0));
+        }
         uv.needsUpdate = true;
+        // Dish the quad: centre stays on the surface, rim sinks along −Z.
+        const pos = g.getAttribute('position') as THREE.BufferAttribute;
+        for (let i = 0; i < pos.count; i++) {
+          const px = pos.getX(i);
+          const py = pos.getY(i);
+          pos.setZ(i, -EDGE_TUCK * ((px * px + py * py) / 0.5));
+        }
+        pos.needsUpdate = true;
         this.geos.push(g);
       }
     }
@@ -298,10 +316,13 @@ export class BattleDamageSystem {
       transparent: true,
       depthWrite: false,
       depthTest: true,
-      // Pull the decal toward the camera a hair so it never z-fights the armour.
+      // Depth-bias the decal toward the camera so the FLUSH placement (see
+      // addImpact) never z-fights the armour it sits on. This replaces the old
+      // visible 4cm world-space hover — bias lives in depth space only, so the
+      // mark stays visually welded to the plating.
       polygonOffset: true,
-      polygonOffsetFactor: -2,
-      polygonOffsetUnits: -2,
+      polygonOffsetFactor: -4,
+      polygonOffsetUnits: -4,
       side: THREE.FrontSide,
       toneMapped: true,
       fog: true,
@@ -384,9 +405,11 @@ export class BattleDamageSystem {
     this._roll.setFromAxisAngle(BattleDamageSystem._Z, (Math.random() - 0.5) * 0.18);
     this._quat.multiply(this._roll);
 
-    // Nudge the mark a touch off the surface along the normal so it sits on top
-    // of the plating, and give it a little size variety.
-    decal.position.copy(this._pos).addScaledVector(this._nrm, 0.04);
+    // Sit the mark FLUSH on the plating — the polygonOffset depth bias (not a
+    // world-space gap) is what prevents z-fighting, so this stays at a hair's
+    // breadth. The old 0.04 (4cm!) hover is exactly what made every dent read
+    // as a sticker floating over the enemy instead of damage IN the armour.
+    decal.position.copy(this._pos).addScaledVector(this._nrm, 0.005);
     decal.quaternion.copy(this._quat);
     decal.scale.setScalar(size * (0.85 + Math.random() * 0.4));
 

@@ -156,14 +156,18 @@ const CinematicGradeShader = {
       hdr = clamp(hdr, vec3(0.0), vec3(64.0));
 
       // ─── VOLUMETRIC LIGHT SHAFTS (god rays — additive radial blur) ──
-      // 64-tap radial blur from current pixel toward the projected sun.
+      // 48-tap radial blur from current pixel toward the projected sun.
       // Luminance-weighted so only bright pixels (sun disc + sky halo)
       // shaft outward — geometry occluding the sun reads as crepuscular
       // rays. Off-screen / below-horizon suns are gated by sunIntensity = 0.
       //
       // Two-layer technique:
-      //   1. Long sweep (64 taps, decay-weighted) — the smooth body of
-      //      the shafts, what you see streaming through tree silhouettes
+      //   1. Long sweep (48 taps, decay-weighted) — the smooth body of
+      //      the shafts, what you see streaming through tree silhouettes.
+      //      (Trimmed from 64 in the graphics overhaul: the per-pixel
+      //      jitter below already dithers the sweep, so 48 is visually
+      //      identical while freeing ~25% of the heaviest post cost —
+      //      the budget that pays for the new terrain/prop detail.)
       //   2. Tight halo sweep (8 taps near the sun) — boosts the bright
       //      bloom around the sun disc itself for that "burning hole in
       //      the sky" look
@@ -177,7 +181,7 @@ const CinematicGradeShader = {
         // Tiny per-pixel jitter — kills stepped banding on the long sweep
         float jitter = filmHash(vUv * 1024.0) * 0.5 + 0.5;
         // Step toward the sun, sampling the input texture along the way.
-        const int SAMPLES = 64;
+        const int SAMPLES = 48;
         const float INV_SAMPLES = 1.0 / float(SAMPLES);
         vec3 shaft = vec3(0.0);
         float wAccum = 0.0;

@@ -308,6 +308,10 @@ export interface UserSettings {
   masterVolume: number;
   sfxVolume: number;
   musicVolume: number;
+  /** In-game ambient score volume (the procedural per-map survival music).
+   *  Separate from `musicVolume` (menu music) so players can tune the combat
+   *  soundscape without silencing the menus, and vice versa. */
+  ambienceVolume: number;
   sensitivity: number;
   fov: number;
   showFPS: boolean;
@@ -347,6 +351,7 @@ export const defaultUserSettings: UserSettings = {
   masterVolume: 80,
   sfxVolume: 100,
   musicVolume: 70,
+  ambienceVolume: 70,
   sensitivity: 50,
   fov: 75,
   showFPS: false,
@@ -388,6 +393,7 @@ function mergeSettings(raw: unknown): UserSettings {
     masterVolume: num('masterVolume', d.masterVolume),
     sfxVolume: num('sfxVolume', d.sfxVolume),
     musicVolume: num('musicVolume', d.musicVolume),
+    ambienceVolume: num('ambienceVolume', d.ambienceVolume),
     sensitivity: num('sensitivity', d.sensitivity),
     fov: num('fov', d.fov),
     showFPS: bool('showFPS', d.showFPS),
@@ -525,6 +531,11 @@ class GameSettingsManager {
 
   getEffectiveMusicVolume(): number {
     return (this.settings.masterVolume / 100) * (this.settings.musicVolume / 100);
+  }
+
+  /** Master × ambience — the in-game procedural score's volume (AmbientMusicSystem). */
+  getEffectiveAmbienceVolume(): number {
+    return (this.settings.masterVolume / 100) * (this.settings.ambienceVolume / 100);
   }
 
   // Sensitivity is stored as 10-100, convert to usable multiplier (0.5 to 2.5)

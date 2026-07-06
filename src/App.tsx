@@ -4,9 +4,10 @@ import { GraduationCap, Play, Home, MousePointerClick, ShieldAlert } from 'lucid
 import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
 import { GunModel, type WeaponType as GunWeaponType } from './utils/GunModel';
-import { MuzzleFlash, MuzzleSmoke, BulletTracer, ImpactEffect, RobotHitSparks, ExplosionEffect, FireNovaEffect, NukeEffect, AbilityCastEffect, ImpactBurst, setMuzzleLightPool, setExplosionLightPool, clearParticleGeometryPools, clearTracerGeometryPool, clearFlashSpritePool } from './utils/Effects';
+import { MuzzleFlash, MuzzleSmoke, BulletTracer, ImpactEffect, RobotHitSparks, ExplosionEffect, FireNovaEffect, NukeEffect, AbilityCastEffect, ImpactBurst, setMuzzleLightPool, setExplosionLightPool, clearParticleGeometryPools, clearTracerGeometryPool, clearFlashSpritePool, getSoftSparkTexture } from './utils/Effects';
 import { HackBeam, buildHackVisuals, updateHackVisuals, disposeHackVisuals } from './utils/HackVisuals';
 import { soundManager } from './utils/SoundManager';
+import { ambientMusic } from './utils/AmbientMusicSystem';
 import { gameSettingsManager, defaultUserSettings, defaultKeyBindings, type UserSettings, type KeyBindings } from './utils/GameSettingsManager';
 import { detectHardwareTier } from './utils/hardwareDetect';
 import { PostProcessingPipeline } from './utils/PostProcessing';
@@ -20,7 +21,7 @@ import { WeatherSystem } from './utils/WeatherSystem';
 import { BiomeSystem } from './utils/BiomeSystem';
 import { createAtmosphericHazeMaterial, createSkyDomeMaterial, updateShaderTime } from './utils/Shaders';
 import { getMapConfig, getRandomMap, DEFAULT_MAP, type MapConfig, type MapType } from './utils/MapSystem';
-import { applyGroundTerrainShader, createTerrainSeed, createTerrainUniforms, resolveTerrainProfile, terrainSegments } from './utils/TerrainSystem';
+import { applyGroundTerrainShader, createTerrainSeed, createTerrainUniforms, resolveTerrainProfile, terrainQualityFor, terrainSegments } from './utils/TerrainSystem';
 import { TerrainInstancer } from './utils/TerrainInstancer';
 import { getHDRIEnvironmentIntensity, getHDRIEnvironmentProfile, loadHDRIEnvironment, type HDRIEnvironmentProfile } from './utils/HDRIEnvironment';
 import { MultiplayerManager, type PlayerData as MpPlayerData, type NetworkMessage, type EnemyWire } from './utils/MultiplayerManager';
@@ -191,7 +192,7 @@ const MENU_MUSIC_URL = '/audio/Beyond_The_Overgrowth.mp3';
 // blob is byte-stable for equality checks (no spurious DB writes when object
 // identity changes but values don't).
 const SYNCED_SCALAR_KEYS = [
-  'masterVolume', 'sfxVolume', 'musicVolume', 'sensitivity', 'fov',
+  'masterVolume', 'sfxVolume', 'musicVolume', 'ambienceVolume', 'sensitivity', 'fov',
   'showFPS', 'fpsCap', 'screenShake', 'haptics', 'hitMarkers', 'killFeed',
   'impactFeedback', 'ragdollPhysics', 'autoReload', 'cameraBob',
   'showCrosshair', 'crosshairStyle', 'crosshairColor',
@@ -1966,7 +1967,12 @@ const ForestSurvivalGame = () => {
     // seed is fresh each run, so every playthrough gets a distinct landscape.
     const terrainProfile = resolveTerrainProfile(mapConfig);
     const terrainSeed = createTerrainSeed();
-    const terrainUniforms = createTerrainUniforms(terrainProfile, terrainSeed);
+    // Detail-quality scalar for the ground shader's overhaul layers (strata
+    // mottle, close-range grit + relief octaves): full on High/Ultra, softened
+    // on Medium, zero on the low tiers so they keep their exact frame cost.
+    const terrainUniforms = createTerrainUniforms(
+      terrainProfile, terrainSeed, terrainQualityFor(graphicsPreset.terrainDetail),
+    );
     const groundSegments = terrainSegments(graphicsPreset.terrainDetail);
 
     // INFINITE Ground with GPU terrain displacement, dynamic day/night and
@@ -2177,6 +2183,20 @@ const ForestSurvivalGame = () => {
     // Points draw while a storm is active.
     const weatherSystem = new WeatherSystem(scene);
     weatherSystem.setClimate(selectedMap);
+
+    // === AMBIENT MUSIC — per-map adaptive procedural score (SOLO ONLY) ===
+    // Fully generative (zero audio assets): each map gets its own scale,
+    // chord pools, instrument palette and reverb space, played as sparse
+    // Minecraft-style pieces over an always-on ambient bed. The director is
+    // fed time-of-day / weather / combat every frame from the render loop
+    // below and morphs the score seamlessly.
+    //
+    // USER MANDATE: the in-game ambience score plays in SOLO runs only —
+    // multiplayer stays music-free (voice/comms focus, and it's client-local
+    // with no MP sync anyway) and the tutorial stays quiet so instructions
+    // are the focus. The teardown stop() below is no-op-safe when unstarted.
+    const ambientMusicEnabled = !isMultiplayer && !isTutorialMode;
+    if (ambientMusicEnabled) ambientMusic.start(selectedMap, weatherSystem.getStormKind());
     // Live modifiers, refreshed at the top of every frame.
     let weatherMods = weatherSystem.update(0, camera.position, !atmosphericSettings.sunVisible);
 
@@ -2377,23 +2397,30 @@ const ForestSurvivalGame = () => {
         }
       }
 
-      // Generate bushes based on biome density * map multiplier
+      // Generate bushes based on biome density * map multiplier.
+      // Bushes are non-collidable, so they used to be scattered UNCHECKED —
+      // which regularly dropped them inside rocks, boulders and trunks (green
+      // shapes clipping through stone: the reported "overlapping environment"
+      // bug). They now use the same free-spot search as the solid props, so a
+      // bush that can't find clear ground is simply skipped.
       const bushesInChunk = Math.floor(CHUNK_SIZE * CHUNK_SIZE * biomeConfig.bushDensity * bushDensityMult * propDensityScale / 100);
       for (let i = 0; i < bushesInChunk; i++) {
-        const x = startX + Math.random() * CHUNK_SIZE;
-        const z = startZ + Math.random() * CHUNK_SIZE;
-        addTerrainObject(biomeSystem.createBush(x, z, biome));
+        const spot = findFreeSpot(startX, startZ, 1.5);
+        if (!spot.ok) continue; // No clear ground — never clip into a solid prop
+        addTerrainObject(biomeSystem.createBush(spot.x, spot.z, biome));
       }
 
       // Generate special biome features (water, cacti, etc.)
       // 1-3 biome-specific flavour features per chunk (water, cacti, crystals,
       // bunkers etc.) — guarantees at least one per chunk so each map keeps
-      // its distinct character even in less-dense areas.
+      // its distinct character even in less-dense areas. Placed via the same
+      // free-spot search so a fallen log / statue / lava pool never spawns
+      // through a tree or rock (they were previously unchecked too).
       const specialFeaturesCount = 1 + Math.floor(Math.random() * 3);
       for (let i = 0; i < specialFeaturesCount; i++) {
-        const x = startX + Math.random() * CHUNK_SIZE;
-        const z = startZ + Math.random() * CHUNK_SIZE;
-        const specialFeature = biomeSystem.createSpecialFeature(x, z, biome);
+        const spot = findFreeSpot(startX, startZ, 2.6);
+        if (!spot.ok) continue;
+        const specialFeature = biomeSystem.createSpecialFeature(spot.x, spot.z, biome);
         if (specialFeature) {
           addTerrainObject(specialFeature);
           if (specialFeature.type === 'water' && specialFeature.mesh instanceof THREE.Mesh) {
@@ -2915,7 +2942,17 @@ const ForestSurvivalGame = () => {
     let ambientParticles: THREE.Points | null = null;
     // particleDensity is a 0-1 multiplier — ambient motes spawn on medium+
     // (the old `> 30` check could never be true, so they never appeared).
-    const AMBIENT_PARTICLE_COUNT = Math.round(200 * graphicsPreset.particleDensity);
+    //
+    // PREMIUM PASS: the old field was 200 UNTEXTURED additive points — GL
+    // renders those as hard-edged squares, which read as cheap glowing dots
+    // scattered over every map (worst in the forest, where the night tint made
+    // them big green blobs). Now: fewer motes (140 base — the air reads alive,
+    // not littered), each drawn through the shared soft-spark radial sprite so
+    // it resolves as a soft pollen grain by day / a glowing ember-firefly by
+    // night, and confined to a lower, more believable band of air (0.6–5.5m)
+    // instead of raining dots from 8m up. Net: better look AND ~30% less
+    // per-frame mote work.
+    const AMBIENT_PARTICLE_COUNT = Math.round(140 * graphicsPreset.particleDensity);
     // Particle density (a real graphics control) gates the ambient motes: they
     // spawn on medium+ density and scale/disable smoothly toward the low tiers.
     if (graphicsPreset.particleDensity >= 0.5) {
@@ -2927,7 +2964,7 @@ const ForestSurvivalGame = () => {
 
       for (let i = 0; i < AMBIENT_PARTICLE_COUNT; i++) {
         positions[i * 3] = (Math.random() - 0.5) * 60;
-        positions[i * 3 + 1] = 1 + Math.random() * 8;
+        positions[i * 3 + 1] = 0.6 + Math.random() * 4.9;
         positions[i * 3 + 2] = (Math.random() - 0.5) * 60;
         velocities[i * 3] = (Math.random() - 0.5) * 0.3;
         velocities[i * 3 + 1] = (Math.random() - 0.5) * 0.1;
@@ -2942,9 +2979,10 @@ const ForestSurvivalGame = () => {
 
       const particleMat = new THREE.PointsMaterial({
         color: isNight ? 0x88ff88 : 0xffffff,
-        size: isNight ? 0.12 : 0.06,
+        size: isNight ? 0.11 : 0.05,
+        map: getSoftSparkTexture(),
         transparent: true,
-        opacity: isNight ? 0.6 : 0.35,
+        opacity: isNight ? 0.55 : 0.26,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
         sizeAttenuation: true,
@@ -7591,10 +7629,14 @@ const ForestSurvivalGame = () => {
       }
       if (_dentNrm.lengthSq() < 1e-5) _dentNrm.set(0, 0, 1);
       _dentNrm.normalize();
-      // Sit the mark a hair PROUD of the plating along that horizontal normal so
-      // it never sinks into the body or z-fights (addImpact nudges a touch more).
+      // Stamp at the EXACT contact point — flush with the plating. The old
+      // extra 0.06×ts "proud" offset stacked with addImpact's own nudge to
+      // float every mark ~10cm off the body (the reported "damage sits as an
+      // overlay" bug). Z-fighting is handled in depth space by the decal
+      // material's polygonOffset, and the dished decal rim tucks INTO the
+      // armour, so the mark now reads as damage engraved in the surface.
       if (contactPos) {
-        _dentPos.copy(contactPos).addScaledVector(_dentNrm, 0.06 * ts);
+        _dentPos.copy(contactPos);
       } else {
         // AOE: reconstruct a chest-height point on the surface facing the blast.
         _dentPos.set(enemy.mesh.position.x, enemy.mesh.position.y + 0.85 * ts, enemy.mesh.position.z)
@@ -8404,6 +8446,26 @@ const ForestSurvivalGame = () => {
       renderAtmosphere.fogDensity *= weatherMods.fogDensityMult;
       renderAtmosphere.saturation *= weatherMods.saturationMult;
       renderAtmosphere.bloomStrength *= weatherMods.bloomMult;
+
+      // ── AMBIENT MUSIC — feed the adaptive score director (solo only) ──
+      // The music tracks the same clock + weather front the sky renders, so
+      // dusk darkens the score exactly as it darkens the world and a rolling
+      // storm ducks/recolours the piece in step with the visuals. Combat
+      // pressure and wave escalation shape it too. Internally throttled to
+      // ~4 Hz — this call is a handful of field writes on most frames.
+      // Skipped entirely in multiplayer/tutorial (score never started there).
+      if (ambientMusicEnabled) ambientMusic.update({
+        hour: dayCycleSystem.getCurrentTime(),
+        storm: weatherMods.rainAmount,
+        gloom: weatherMods.skyDarken,
+        // Normalized by the tier's spawn cap — an absolute count would pin at
+        // 1.0 all wave long on high presets (cap 22–40) and starve the score.
+        combat: Math.min(1, enemies.length / Math.max(10, graphicsPreset.maxEnemies)),
+        tension: Math.min(1, Math.max(0, (wave - 2) / 20)),
+        // Blocking UI screens fade the score to silence (fast fade out,
+        // slow bloom back in) — pause menu + wave-complete/mystery-box flow.
+        overlay: paused || wavePerkActiveRef.current,
+      });
       // Live rain → terrain shader: puddles grow with the soak and ripple
       // while precipitation is actually falling. Puddles are intentionally
       // confined to the DEEP FOREST — it is the only map whose floor pools with
@@ -9162,11 +9224,14 @@ const ForestSurvivalGame = () => {
         if (ambientParticles.material instanceof THREE.PointsMaterial) {
           const night = THREE.MathUtils.clamp(atmosphericSettings.starIntensity, 0, 1);
           const mat = ambientParticles.material;
-          mat.size = 0.05 + night * 0.12;
+          // Soft-sprite motes read larger than the old hard squares, so both
+          // size and opacity sit lower — fine luminous pollen by day, gentle
+          // ember-fireflies at night, never a screen of glowing dots.
+          mat.size = 0.045 + night * 0.075;
           mat.color.copy(_moteColor.copy(_moteColorDay).lerp(_moteColorNight, night));
           // Gentle firefly breathing at night; steady, faint motes by day.
           const twinkle = night > 0.12 ? 0.78 + Math.sin(elapsed * 1.6) * 0.22 : 1;
-          mat.opacity = (0.28 + night * 0.5) * twinkle;
+          mat.opacity = (0.22 + night * 0.42) * twinkle;
         }
 
         for (let i = 0; i < AMBIENT_PARTICLE_COUNT; i++) {
@@ -9176,12 +9241,14 @@ const ForestSurvivalGame = () => {
           posAttr.array[ix + 1] += vels[ix + 1] * delta + Math.sin(elapsed * 0.3 + phs[i] * 2) * 0.003;
           posAttr.array[ix + 2] += vels[ix + 2] * delta + Math.cos(elapsed * 0.4 + phs[i]) * 0.005;
 
-          // Re-center particles that drift too far from player
+          // Re-center particles that drift too far from player. The vertical
+          // band matches the lower spawn range — motes live in the air the
+          // player actually looks through, not high above the canopy line.
           const dx = posAttr.array[ix] - camera.position.x;
           const dz = posAttr.array[ix + 2] - camera.position.z;
-          if (Math.abs(dx) > 30 || Math.abs(dz) > 30 || posAttr.array[ix + 1] < 0.5 || posAttr.array[ix + 1] > 12) {
+          if (Math.abs(dx) > 30 || Math.abs(dz) > 30 || posAttr.array[ix + 1] < 0.4 || posAttr.array[ix + 1] > 7) {
             posAttr.array[ix] = camera.position.x + (Math.random() - 0.5) * 50;
-            posAttr.array[ix + 1] = 1 + Math.random() * 8;
+            posAttr.array[ix + 1] = 0.6 + Math.random() * 4.9;
             posAttr.array[ix + 2] = camera.position.z + (Math.random() - 0.5) * 50;
           }
         }
@@ -12747,6 +12814,10 @@ const ForestSurvivalGame = () => {
 
       // Cleanup weather system
       weatherSystem.clear();
+
+      // Fade out + tear down the per-map ambient score (the menu has its own
+      // music). Idempotent — a fresh run rebuilds it from scratch.
+      ambientMusic.stop();
 
       // Lift any lingering low-health audio muffle so it can't bleed into menus.
       soundManager.setSlowMo(0);

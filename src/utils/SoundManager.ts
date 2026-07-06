@@ -32,6 +32,12 @@ class SoundManager {
   private lowpassFilter: BiquadFilterNode | null = null;
   private slowMoAmount: number = 0; // 0 = open/normal, 1 = fully muffled
 
+  // Dedicated input for the ambient music engine. Feeds the master bus so the
+  // slow-mo muffle applies to the score exactly like every SFX voice, while
+  // staying OUTSIDE the SFX volume/mute paths (music has its own settings
+  // volume + musicMute toggle, applied inside AmbientMusicSystem).
+  private musicInput: GainNode | null = null;
+
   constructor() {
     // Audio context will be initialized on first user interaction
   }
@@ -77,6 +83,21 @@ class SoundManager {
     this.lowpassFilter.frequency.setTargetAtTime(cutoff, now, 0.08);
     this.lowpassFilter.Q.setTargetAtTime(0.0001 + a * 1.1, now, 0.08);
     this.masterBus.gain.setTargetAtTime(gain, now, 0.08);
+  }
+
+  /**
+   * Expose the shared context + a music-only gain feeding the master bus.
+   * Lazily initializes the context (safe: callers run after a user gesture).
+   * Returns null when Web Audio is unavailable so music degrades silently.
+   */
+  getMusicInput(): { ctx: AudioContext; input: AudioNode } | null {
+    if (!this.initialized) this.initialize();
+    if (!this.audioContext || !this.masterBus) return null;
+    if (!this.musicInput) {
+      this.musicInput = this.audioContext.createGain();
+      this.musicInput.connect(this.masterBus);
+    }
+    return { ctx: this.audioContext, input: this.musicInput };
   }
 
   // Generate procedural sound effects

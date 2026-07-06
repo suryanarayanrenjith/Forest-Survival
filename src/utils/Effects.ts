@@ -351,6 +351,38 @@ export class BulletTracer {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Shared SOFT-SPARK sprite texture for every point-particle system.
+//
+// An untextured THREE.PointsMaterial rasterises each particle as a hard-edged
+// square — the single biggest "cheap 2005 particles" tell in the whole game
+// (impact bursts, robot sparks, embers, nuke debris, ability sparks all showed
+// it). One shared radial-gradient sprite turns every one of those squares into
+// a soft, hot-cored glowing spark that bloom can catch — the AAA read — for the
+// cost of a single tiny texture fetch per particle fragment. Built once,
+// shared by every points material below, never disposed.
+// ─────────────────────────────────────────────────────────────────────────────
+let _softSparkTex: THREE.CanvasTexture | null = null;
+export function getSoftSparkTexture(): THREE.CanvasTexture {
+  if (_softSparkTex) return _softSparkTex;
+  const canvas = document.createElement('canvas');
+  canvas.width = 64;
+  canvas.height = 64;
+  const ctx = canvas.getContext('2d')!;
+  const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+  // Hot white core → tinted mid falloff → transparent edge. Vertex colours
+  // multiply this, so the core stays near-white (reads "burning") while the
+  // falloff carries the particle's own colour.
+  g.addColorStop(0, 'rgba(255,255,255,1)');
+  g.addColorStop(0.28, 'rgba(255,255,255,0.85)');
+  g.addColorStop(0.62, 'rgba(255,255,255,0.28)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 64, 64);
+  _softSparkTex = new THREE.CanvasTexture(canvas);
+  return _softSparkTex;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Shared particle materials & a small pool of reusable buffer geometries for
 // ImpactEffect and RobotHitSparks. Building a fresh BufferGeometry +
 // Float32Arrays + PointsMaterial for every bullet hit is wasteful on
@@ -358,7 +390,8 @@ export class BulletTracer {
 // a pool of geometry slots.
 // ─────────────────────────────────────────────────────────────────────────────
 const sharedImpactMaterial = new THREE.PointsMaterial({
-  size: 0.15,
+  size: 0.17,
+  map: getSoftSparkTexture(),
   vertexColors: true,
   transparent: true,
   opacity: 1,
@@ -368,7 +401,8 @@ const sharedImpactMaterial = new THREE.PointsMaterial({
 
 // Robot hit sparks — additive so the hot sparks glow against the scene.
 const sharedSparkMaterial = new THREE.PointsMaterial({
-  size: 0.16,
+  size: 0.18,
+  map: getSoftSparkTexture(),
   vertexColors: true,
   transparent: true,
   opacity: 1,
@@ -765,7 +799,7 @@ export class FireNovaEffect {
     this.emberGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     this.emberGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     this.emberMat = new THREE.PointsMaterial({
-      size: 0.4, vertexColors: true, transparent: true, opacity: 1,
+      size: 0.4, map: getSoftSparkTexture(), vertexColors: true, transparent: true, opacity: 1,
       blending: THREE.AdditiveBlending, depthWrite: false,
     });
     this.embers = new THREE.Points(this.emberGeo, this.emberMat);
@@ -1003,7 +1037,7 @@ export class NukeEffect {
     this.debrisGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     this.debrisGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     this.debrisMat = new THREE.PointsMaterial({
-      size: 0.7, vertexColors: true, transparent: true, opacity: 1,
+      size: 0.7, map: getSoftSparkTexture(), vertexColors: true, transparent: true, opacity: 1,
       blending: THREE.AdditiveBlending, depthWrite: false,
     });
     this.debris = new THREE.Points(this.debrisGeo, this.debrisMat);
@@ -1226,7 +1260,7 @@ export class AbilityCastEffect {
     this.sparkGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     this.sparkGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     this.sparkMat = new THREE.PointsMaterial({
-      size: 0.3, vertexColors: true, transparent: true, opacity: 1,
+      size: 0.3, map: getSoftSparkTexture(), vertexColors: true, transparent: true, opacity: 1,
       blending: THREE.AdditiveBlending, depthWrite: false,
     });
     this.sparks = new THREE.Points(this.sparkGeo, this.sparkMat);

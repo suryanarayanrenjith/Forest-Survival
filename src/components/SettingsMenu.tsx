@@ -24,13 +24,13 @@ interface SettingsMenuProps {
 // rebinder owns keyBindings, so neither is mirrored here — that keeps the
 // persisted blob clean and avoids the old "stale key written back" hazard.
 type SimpleSettings = Pick<UserSettings,
-  | 'masterVolume' | 'sfxVolume' | 'musicVolume' | 'sensitivity' | 'fov'
+  | 'masterVolume' | 'sfxVolume' | 'musicVolume' | 'ambienceVolume' | 'sensitivity' | 'fov'
   | 'showFPS' | 'fpsCap' | 'screenShake' | 'haptics' | 'hitMarkers' | 'killFeed'
   | 'impactFeedback' | 'ragdollPhysics' | 'autoReload' | 'cameraBob'
   | 'showCrosshair' | 'crosshairStyle' | 'crosshairColor'>;
 
 const SIMPLE_KEYS: (keyof SimpleSettings)[] = [
-  'masterVolume', 'sfxVolume', 'musicVolume', 'sensitivity', 'fov',
+  'masterVolume', 'sfxVolume', 'musicVolume', 'ambienceVolume', 'sensitivity', 'fov',
   'showFPS', 'fpsCap', 'screenShake', 'haptics', 'hitMarkers', 'killFeed',
   'impactFeedback', 'ragdollPhysics', 'autoReload', 'cameraBob',
   'showCrosshair', 'crosshairStyle', 'crosshairColor',
@@ -208,7 +208,11 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
             <div className="space-y-3" style={{ animation: 'smFade 0.2s ease-out' }}>
               <Slider label="Master Volume" icon={Volume2} value={settings.masterVolume} onChange={(v) => updateSetting('masterVolume', v)} />
               <Slider label="Sound Effects" icon={Zap} value={settings.sfxVolume} onChange={(v) => updateSetting('sfxVolume', v)} />
-              <Slider label="Music" icon={Music} value={settings.musicVolume} onChange={(v) => updateSetting('musicVolume', v)} />
+              <Slider label="Menu Music" icon={Music} value={settings.musicVolume} onChange={(v) => updateSetting('musicVolume', v)} />
+              {/* In-game procedural ambient score (per-map survival music) —
+                  independent of the menu music so either can be tuned alone.
+                  Changes apply live mid-run via the manager subscription. */}
+              <Slider label="Ambience Music" icon={Trees} value={settings.ambienceVolume} onChange={(v) => updateSetting('ambienceVolume', v)} />
 
               <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-4">
                 <div className="flex items-center gap-2 mb-3">

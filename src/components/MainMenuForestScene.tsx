@@ -7,6 +7,7 @@ import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { BokehPass } from 'three/examples/jsm/postprocessing/BokehPass.js';
 import { SSAOPass } from 'three/examples/jsm/postprocessing/SSAOPass.js';
+import { getSoftSparkTexture } from '../utils/Effects';
 
 type PulsingLight = THREE.PointLight & {
   baseIntensity: number;
@@ -1337,6 +1338,7 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
       emberGeometry,
       new THREE.PointsMaterial({
         size: 0.18,
+        map: getSoftSparkTexture(),
         color: variant === 'tutorial' ? 0xffb957 : 0xffd57a,
         transparent: true,
         opacity: 0.85,
@@ -1365,6 +1367,7 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
       dustGeometry,
       new THREE.PointsMaterial({
         size: 0.07,
+        map: getSoftSparkTexture(),
         color: theme.dustColor,
         transparent: true,
         opacity: 0.3,
@@ -1397,6 +1400,7 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
       leafGeometry,
       new THREE.PointsMaterial({
         size: 0.15,
+        map: getSoftSparkTexture(),
         color: theme.leafColor,
         transparent: true,
         opacity: 0.45,

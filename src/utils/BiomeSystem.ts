@@ -63,16 +63,26 @@ const PROP_DETAIL_FRAG_BODY = /* glsl */ `
     vec2 pdFw = fwidth( pdWPv );
     float pdAA = 1.0 - smoothstep( 0.5, 2.2, max( pdFw.x, pdFw.y ) * uPropDetailFreq );
     float pdMicro = pdNear * pdAA;
-    // Macro weathering — broad tonal blotches break the flat fill.
+    // Macro weathering — broad tonal blotches break the flat fill. Slightly
+    // wider swing than the first pass so mid-distance props keep visible
+    // material variation instead of flattening back to a single fill.
     float pdMacro = pdFbm( pdWP * 0.25 * uPropDetailFreq + 7.0 );
-    diffuseColor.rgb *= mix( 0.9, 1.09, pdMacro );
+    diffuseColor.rgb *= mix( 0.88, 1.11, pdMacro );
     // Cavity AO — gently darken creases for grounded depth (floored so dark
     // biomes never muddy).
     float pdCav = pdFbm( pdWPv * 0.7 * uPropDetailFreq + 19.0 );
     diffuseColor.rgb *= 0.9 + 0.1 * smoothstep( 0.2, 0.85, pdCav );
     // Micro grit — fine grain, antialiased so it resolves flat in the distance.
     float pdGrit = pdNoise( pdWPv * 3.1 * uPropDetailFreq );
-    diffuseColor.rgb *= 1.0 + ( pdGrit - 0.5 ) * 0.13 * pdMicro;
+    diffuseColor.rgb *= 1.0 + ( pdGrit - 0.5 ) * 0.15 * pdMicro;
+    // GROUND-CONTACT OCCLUSION — darken the band where the prop meets the
+    // terrain (world y 0 → ~1.3m) so every trunk/rock/wall reads as SEATED in
+    // the ground with a soft contact shadow instead of pasted onto it. This is
+    // the single strongest "grounded AAA prop" cue and costs one smoothstep —
+    // no noise taps, no lighting-path changes. Glowing/emissive materials are
+    // already exempt from this whole pass (they skip the injection).
+    float pdContact = smoothstep( 0.1, 1.3, vPropWP.y );
+    diffuseColor.rgb *= 0.8 + 0.2 * pdContact;
     // Tier strength blends the whole weathering pass in (0 = original colour).
     diffuseColor.rgb = mix( pdBase, diffuseColor.rgb, uPropDetailStr );
   }
@@ -244,6 +254,13 @@ export class BiomeSystem {
   // Shared time uniform driving the grass wind sway (updated each frame)
   private grassTime = { value: 0 };
 
+  // True on Medium+ terrainDetail — gates the EXTRA prop dressing parts (root
+  // flares, moss caps, sand skirts). They're built from POOLED geometries +
+  // materials, so the instancer folds them into existing batches (more
+  // instances, zero new draw calls) — but the low tiers still skip the scatter
+  // CPU + vertex cost entirely.
+  private richProps = false;
+
   constructor(_scene: THREE.Scene, detailLevel = 1) {
     this.biomeConfigs = new Map();
     this.initializeBiomes();
@@ -252,6 +269,7 @@ export class BiomeSystem {
     // Low (0.62) so weak hardware skips the extra fragment work entirely.
     this.propDetailUniforms.uPropDetailStr.value =
       detailLevel >= 1.0 ? 1.0 : detailLevel >= 0.82 ? 0.75 : 0.0;
+    this.richProps = detailLevel >= 0.82;
   }
 
   /** Release every pooled resource. Called when the game scene tears down. */
@@ -627,6 +645,22 @@ export class BiomeSystem {
     trunk.scale.set(1, height, 1);
     trunk.castShadow = true; trunk.receiveShadow = true;
     group.add(trunk);
+    // Root flares (Medium+): short tilted cones splaying from the trunk base
+    // seat the tree into the humus — real trees never rise from a clean
+    // cylinder. Pooled geo + the trunk material → pure instancer batch fill.
+    if (this.richProps) {
+      const rootGeo = this.unitCone(0.5, 5, 'rootFlare');
+      const rootCount = 3 + Math.floor(Math.random() * 2);
+      for (let i = 0; i < rootCount; i++) {
+        const a = (i / rootCount) * Math.PI * 2 + Math.random() * 0.7;
+        const root = new THREE.Mesh(rootGeo, trunkMat);
+        root.scale.set(0.55 + Math.random() * 0.3, 1.0 + Math.random() * 0.5, 0.55);
+        root.position.set(Math.cos(a) * 0.62, -height / 2 + 0.32, Math.sin(a) * 0.62);
+        root.rotation.set(Math.sin(a) * 0.5, 0, -Math.cos(a) * 0.5);
+        root.castShadow = true; root.receiveShadow = true;
+        group.add(root);
+      }
+    }
     // Layered canopy — 4 cones with shared geometry per layer, shared materials per palette color.
     const canopyPalette = [0x0e4d1c, 0x166327, 0x1f7c33, 0x32953f];
     const layers = 4;
@@ -656,8 +690,12 @@ export class BiomeSystem {
     const rock = new THREE.Mesh(this.unitDodec(0), rockMat);
     rock.scale.setScalar(size);
     rock.castShadow = true; rock.receiveShadow = true;
-    rock.position.set(x, size * 0.5, z);
     rock.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+    // NOTE: an earlier pass draped a low-poly moss blob over the crown here —
+    // with the rock's random 3-axis rotation it regularly PIERCED the faces and
+    // read as a green shape clipped into the stone (user-reported overlap bug).
+    // Removed; the procedural weathering shader carries the surface interest.
+    rock.position.set(x, size * 0.5, z);
     return { mesh: rock, x, z, type: 'rock', collidable: true, radius: size + 0.5, height: size * 1.5 };
   }
 
@@ -685,8 +723,31 @@ export class BiomeSystem {
     const boulder = new THREE.Mesh(this.unitIco(0), boulderMat);
     boulder.scale.setScalar(size);
     boulder.castShadow = true; boulder.receiveShadow = true;
-    boulder.position.set(x, size * 0.6, z);
     boulder.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+    // Talus pebbles (Medium+): a couple of shed fragments seated on the ground
+    // at the boulder's base — reads as geology, not a floating grey polyhedron.
+    // (A moss drape was tried here too and removed for the same clipping reason
+    // as the rock moss — the random rotation made it pierce the faces.)
+    if (this.richProps) {
+      const group = new THREE.Group();
+      group.add(boulder);
+      const pebbleGeo = this.unitDodec(0);
+      for (let i = 0; i < 2; i++) {
+        const a = Math.random() * Math.PI * 2;
+        // Kept small + close so the fragments always sit well inside the
+        // boulder's collision radius (size + 1) — purely visual clutter.
+        const ps = size * (0.14 + Math.random() * 0.08);
+        const pebble = new THREE.Mesh(pebbleGeo, boulderMat);
+        pebble.scale.setScalar(ps);
+        pebble.position.set(Math.cos(a) * size * 0.95, -size * 0.6 + ps * 0.5, Math.sin(a) * size * 0.95);
+        pebble.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+        pebble.castShadow = true; pebble.receiveShadow = true;
+        group.add(pebble);
+      }
+      group.position.set(x, size * 0.6, z);
+      return { mesh: group, x, z, type: 'boulder', collidable: true, radius: size + 1, height: size * 1.2 };
+    }
+    boulder.position.set(x, size * 0.6, z);
     return { mesh: boulder, x, z, type: 'boulder', collidable: true, radius: size + 1, height: size * 1.2 };
   }
 
@@ -998,6 +1059,19 @@ export class BiomeSystem {
     const cap = new THREE.Mesh(new THREE.CylinderGeometry(topR + 0.45, topR, 0.9, 7), capMat);
     cap.position.y = height / 2 + 0.45; cap.castShadow = true;
     group.add(cap);
+    // Wind-blown sand skirt (Medium+): a low drift banked against the pillar
+    // base — desert pillars accumulate sand, they don't rise from bare ground.
+    // Shares the sand-dune geo + material → pure instancer batch fill.
+    if (this.richProps) {
+      const duneMat = this.mat({ color: 0xd4a574, flatShading: true, roughness: 0.98, emissive: 0xa47544, emissiveIntensity: 0.05 });
+      const skirt = new THREE.Mesh(this.unitSphere(6, 4, 'duneSph'), duneMat);
+      const sr = botR + 1.2 + Math.random() * 0.8;
+      skirt.scale.set(sr, sr * 0.28, sr * (0.8 + Math.random() * 0.35));
+      skirt.position.y = -height / 2 + sr * 0.1;
+      skirt.rotation.y = Math.random() * Math.PI;
+      skirt.receiveShadow = true;
+      group.add(skirt);
+    }
     group.position.set(x, height / 2, z);
     return { mesh: group, x, z, type: 'tree', collidable: true, radius: topR + 1, height: 99 };
   }
@@ -1125,6 +1199,24 @@ export class BiomeSystem {
       moss.position.set((Math.random() - 0.5) * 2.5, height * 0.3, (Math.random() - 0.5) * 2.5);
       group.add(moss);
     }
+    // Root knees (Medium+): swamp trees push woody knees up through the muck
+    // around their base — the signature bald-cypress silhouette. Pooled geo +
+    // the trunk material → instancer batch fill, no new draws.
+    if (this.richProps) {
+      const kneeGeo = this.unitCone(0.4, 5, 'swampKnee');
+      const kneeCount = 2 + Math.floor(Math.random() * 3);
+      for (let i = 0; i < kneeCount; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const r = 0.9 + Math.random() * 1.3;
+        const kneeH = 0.5 + Math.random() * 0.7;
+        const knee = new THREE.Mesh(kneeGeo, trunkMat);
+        knee.scale.set(0.5 + Math.random() * 0.3, kneeH, 0.5);
+        knee.position.set(Math.cos(a) * r, -height / 2 + kneeH / 2, Math.sin(a) * r);
+        knee.rotation.z = (Math.random() - 0.5) * 0.3;
+        knee.castShadow = true; knee.receiveShadow = true;
+        group.add(knee);
+      }
+    }
     group.position.set(x, height / 2, z);
     return { mesh: group, x, z, type: 'tree', collidable: true, radius: 2.5, height: 99 };
   }
@@ -1170,12 +1262,51 @@ export class BiomeSystem {
   }
 
   private createToxicPool(x: number, z: number): TerrainObject {
+    // TOXIN BLOOM — since the swamp floor is now one global sheet of standing
+    // water (TerrainSystem uTSwampWater), the old bright emissive disc
+    // (opacity 0.85, emissive 0.6, 10 segments) floated on it as a flat NEON
+    // OCTAGON under bloom — the "green texture" the user flagged. Redesigned
+    // as a barely-raised, mostly-transparent film of concentrated toxins with
+    // a faint glow, plus a few small luminous gas bubbles breaking the
+    // surface — reads as a poisoned upwelling IN the water, not a decal on it.
     const radius = 2 + Math.random() * 2;
-    const poolMat = this.mat({ color: 0x33aa44, emissive: 0x22cc33, emissiveIntensity: 0.6, roughness: 0.15, metalness: 0.3, transparent: true, opacity: 0.85 });
-    const pool = new THREE.Mesh(this.circle(1, 10), poolMat);
-    pool.scale.setScalar(radius);
-    pool.rotation.x = -Math.PI / 2; pool.position.set(x, 0.05, z); pool.receiveShadow = true;
-    return { mesh: pool, x, z, type: 'water', collidable: false, radius };
+    const group = new THREE.Group();
+    const filmMat = this.mat({
+      color: 0x123f22, emissive: 0x2fae52, emissiveIntensity: 0.18,
+      roughness: 0.3, metalness: 0.1, transparent: true, opacity: 0.38,
+    });
+    const film = new THREE.Mesh(this.circle(1, 24), filmMat);
+    film.scale.setScalar(radius);
+    film.rotation.x = -Math.PI / 2; film.position.y = 0.04; film.receiveShadow = true;
+    group.add(film);
+    // A denser luminous core where the toxins well up — still far below the
+    // bloom threshold; it reads as depth, not a light source.
+    const coreMat = this.mat({
+      color: 0x0e3019, emissive: 0x3fd167, emissiveIntensity: 0.32,
+      roughness: 0.25, metalness: 0.1, transparent: true, opacity: 0.42,
+    });
+    const core = new THREE.Mesh(this.circle(1, 24), coreMat);
+    core.scale.setScalar(radius * 0.45);
+    core.rotation.x = -Math.PI / 2; core.position.y = 0.05;
+    group.add(core);
+    // Gas bubbles working up through the bloom — small, dim, sparse.
+    const bubbleMat = this.mat({
+      color: 0x0a2413, emissive: 0x54d67c, emissiveIntensity: 0.7,
+      transparent: true, opacity: 0.7, flatShading: true,
+    });
+    const bubbleGeo = this.unitSphere(5, 4, 'toxinBubble');
+    const bubbleCount = 3 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < bubbleCount; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const r = Math.random() * radius * 0.7;
+      const s = 0.06 + Math.random() * 0.09;
+      const bubble = new THREE.Mesh(bubbleGeo, bubbleMat);
+      bubble.scale.set(s, s * 0.6, s);
+      bubble.position.set(Math.cos(a) * r, 0.05, Math.sin(a) * r);
+      group.add(bubble);
+    }
+    group.position.set(x, 0, z);
+    return { mesh: group, x, z, type: 'water', collidable: false, radius };
   }
 
   private createHollowLog(x: number, z: number): TerrainObject {
@@ -1554,10 +1685,22 @@ export class BiomeSystem {
       color: trunkColor, flatShading: true, roughness: 0.94, metalness: 0.05,
       emissive: 0x3a1858, emissiveIntensity: 0.18,
     });
-    // Main trunk leans slightly — gives the "haunted tree" silhouette.
+    // REBUILT (user-reported broken trees): the old tree had TWO stacked
+    // placement bugs — the centred trunk mesh sat on a ground-level group, so
+    // HALF the trunk was buried (visible tree = a short pole), while the
+    // branches were placed at heights computed for a ground-rooted trunk
+    // (0.55–0.9 × height) — i.e. hovering in the air ABOVE the pole as a
+    // detached burst of spikes. The trunk's own lean also moved it away from
+    // the axis the branches were arranged around.
+    //
+    // Now: the trunk is raised so it spans ground → height, the haunted lean
+    // lives on the GROUP (base stays planted, whole tree tilts coherently),
+    // and every branch is built as a growth VECTOR — quaternion-aligned to
+    // its direction with its BASE planted inside the trunk's radius, twigs
+    // forking from the true branch tip. Every piece is connected wood.
     const trunk = new THREE.Mesh(this.unitCyl(0.18, 0.55, 7, 'twilightTrunk'), trunkMat);
     trunk.scale.set(1, height, 1);
-    trunk.rotation.z = (Math.random() - 0.5) * 0.18;
+    trunk.position.y = height / 2;
     trunk.castShadow = true; trunk.receiveShadow = true;
     group.add(trunk);
 
@@ -1565,44 +1708,45 @@ export class BiomeSystem {
     // This is THE signature visual that separates twilight trees from
     // forest pines (which have full conical canopies).
     const branchMat = trunkMat;
+    const up = new THREE.Vector3(0, 1, 0);
+    const dir = new THREE.Vector3();
+    const twigDir = new THREE.Vector3();
     const branchCount = 5 + Math.floor(Math.random() * 4);
     for (let i = 0; i < branchCount; i++) {
       const a = (i / branchCount) * Math.PI * 2 + Math.random() * 0.6;
-      const branchLen = 1.8 + Math.random() * 2.6;
-      const branchTilt = 0.4 + Math.random() * 0.8;
-      const startY = height * (0.55 + Math.random() * 0.35);
+      const branchLen = 1.6 + Math.random() * 2.2;
+      const tilt = 0.55 + Math.random() * 0.65;       // radians from vertical
+      const startY = height * (0.5 + Math.random() * 0.42);
+      dir.set(Math.sin(tilt) * Math.cos(a), Math.cos(tilt), Math.sin(tilt) * Math.sin(a));
 
-      const branch = new THREE.Mesh(this.unitCyl(0.04, 0.13, 5, 'twilightBranch'), branchMat);
+      const branch = new THREE.Mesh(this.unitCyl(0.05, 0.15, 5, 'twilightBranch'), branchMat);
       branch.scale.set(1, branchLen, 1);
-      // Anchor branch BASE at trunk surface, midpoint extends outward
-      branch.position.set(
-        Math.cos(a) * (0.4 + branchLen * 0.5 * Math.sin(branchTilt)),
-        startY,
-        Math.sin(a) * (0.4 + branchLen * 0.5 * Math.sin(branchTilt)),
-      );
-      branch.rotation.z = -Math.cos(a) * branchTilt;
-      branch.rotation.x = Math.sin(a) * branchTilt;
+      branch.quaternion.setFromUnitVectors(up, dir);
+      // Base planted INSIDE the trunk (radius ≈ 0.22–0.35 up here), shaft
+      // extending outward along the growth direction.
+      branch.position.set(Math.cos(a) * 0.12, startY, Math.sin(a) * 0.12)
+        .addScaledVector(dir, branchLen * 0.5);
       branch.castShadow = true;
       group.add(branch);
 
-      // Sub-twigs at the branch tip for a more organic finger silhouette.
-      if (Math.random() > 0.4) {
+      // Sub-twigs forking from the branch TIP for the organic finger
+      // silhouette — anchored at the real tip, angled off the parent's
+      // direction, never free-floating.
+      if (Math.random() > 0.35) {
         const twigCount = 1 + Math.floor(Math.random() * 2);
         for (let t = 0; t < twigCount; t++) {
-          const twigLen = 0.8 + Math.random() * 1.2;
+          const twigLen = 0.7 + Math.random() * 1.1;
+          twigDir.copy(dir);
+          twigDir.x += (Math.random() - 0.5) * 0.9;
+          twigDir.y += Math.random() * 0.55;
+          twigDir.z += (Math.random() - 0.5) * 0.9;
+          twigDir.normalize();
           const twig = new THREE.Mesh(this.unitCyl(0.02, 0.05, 4, 'twilightTwig'), branchMat);
           twig.scale.set(1, twigLen, 1);
-          const tipOffset = branchLen * 0.95;
-          const localDir = (Math.random() - 0.5) * 0.8;
-          twig.position.copy(branch.position).add(
-            new THREE.Vector3(
-              Math.cos(a) * tipOffset * 0.4,
-              tipOffset * 0.45,
-              Math.sin(a) * tipOffset * 0.4,
-            ),
-          );
-          twig.rotation.z = -Math.cos(a) * (branchTilt + localDir);
-          twig.rotation.x = Math.sin(a) * (branchTilt + localDir);
+          twig.quaternion.setFromUnitVectors(up, twigDir);
+          twig.position.set(Math.cos(a) * 0.12, startY, Math.sin(a) * 0.12)
+            .addScaledVector(dir, branchLen * 0.96)
+            .addScaledVector(twigDir, twigLen * 0.5);
           group.add(twig);
         }
       }
@@ -1626,6 +1770,10 @@ export class BiomeSystem {
 
     group.position.set(x, 0, z);
     group.rotation.y = Math.random() * Math.PI * 2;
+    // Haunted lean — applied to the GROUP so the rooted base stays planted
+    // and trunk + branches + wisp all tilt together (the old per-trunk lean
+    // detached the trunk from its own branch cluster).
+    group.rotation.z = (Math.random() - 0.5) * 0.1;
     return { mesh: group, x, z, type: 'tree', collidable: true, radius: 1.8, height: 99 };
   }
 

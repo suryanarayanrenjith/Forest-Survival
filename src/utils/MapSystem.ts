@@ -14,13 +14,21 @@
  *     bloom is already aggressive, per-map multipliers fine-tune feel
  *
  * VOLUMETRIC PARITY RULE — every map keeps the full forest-grade
- * atmosphere stack visibly alive: god rays ≥ ~0.6, volumetric bounce
- * light ≥ ~0.75, haze dome ≥ ~0.7. High-albedo maps (tundra, desert)
- * must NOT fight brightness by zeroing the volumetrics (that just reads
- * as "no shaders on this map") — blow-out is controlled at the correct
- * levers instead: exposure, highlightRecovery/Desaturation, and the
- * bloom threshold bias. The result is the same dreamy light-in-the-air
- * feel on snow and sand as under the forest canopy, without the wash.
+ * atmosphere stack visibly alive: god rays ≥ ~0.8, volumetric bounce
+ * light ≥ ~0.9, haze dome ≥ ~0.8, rim light ≥ ~0.78, ground micro-relief
+ * ≥ ~1.0. High-albedo maps (tundra, desert) must NOT fight brightness by
+ * zeroing the volumetrics (that just reads as "no shaders on this map")
+ * — blow-out is controlled at the correct levers instead: exposure,
+ * highlightRecovery/Desaturation, and the bloom threshold bias. The
+ * result is the same dreamy light-in-the-air feel on snow and sand as
+ * under the forest canopy, without the wash.
+ *
+ * UNIFORMITY PASS (graphics overhaul): the non-forest maps used to run
+ * their atmosphere channels 20–40% below the forest reference, which is
+ * exactly why they read as an older, flatter game next to it. Every map
+ * now holds the floors above — the per-map identity comes from palette,
+ * fog, terrain shape and storm species, never from getting LESS of the
+ * shader stack.
  */
 
 import type { BiomeType } from './BiomeSystem';
@@ -231,23 +239,23 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       exposure: 0.84,
       saturation: 0.9,
       contrast: 1.04,
-      bloomStrength: 0.9,
-      godRayStrength: 0.8,             // ember-laden shafts through the smoke
+      bloomStrength: 1.0,
+      godRayStrength: 0.95,            // ember-laden shafts burn through the smoke
       aerialPerspective: 0.6,
       highlightRecovery: 0.36,
       highlightDesaturation: 0.22,
-      vibrance: 0.9,
+      vibrance: 0.98,                  // lava oranges pushed to forest-grade richness
       shadowLift: 0.92,
-      hazeDensity: 0.88,               // thick volcanic particulate haze
+      hazeDensity: 1.0,                // full volcanic particulate haze dome
       fogDensity: 0.9,
       environmentIntensity: 0.86,
       directLight: 0.92,
       ambientLight: 0.9,
-      volumetricLight: 0.85,           // warm lava-glow bounce, forest parity
-      fillLight: 0.8,
-      rimLight: 0.85,
-      groundSpecular: 0.72,
-      groundNormal: 1.05,
+      volumetricLight: 0.95,           // warm lava-glow bounce, forest parity
+      fillLight: 0.88,
+      rimLight: 1.0,                   // hot rim off obsidian silhouettes
+      groundSpecular: 0.8,
+      groundNormal: 1.15,              // jagged cooled-lava relief, forest-grade
       groundPatch: 1.1,
     },
     // Cracked basalt plates with glowing magma seams running between them.
@@ -263,7 +271,7 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       rockColor: 0x130f0d,
       detailColor: [1.0, 0.7, 0.5],
       detailScale: 1.25,
-      crackGlow: 1.6,
+      crackGlow: 1.9,                  // magma seams read from further out
       crackColor: 0xff4a12,
     },
   },
@@ -316,22 +324,22 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       saturation: 0.78,                   // cold but no longer grey-dead
       contrast: 0.98,
       bloomStrength: 0.72,
-      godRayStrength: 0.62,               // cold shafts between frozen pines
+      godRayStrength: 0.8,                // cold shafts pour between frozen pines
       aerialPerspective: 0.3,
       highlightRecovery: 0.78,            // brightness control lever #2
       highlightDesaturation: 0.6,
-      vibrance: 0.78,
+      vibrance: 0.86,                     // sky blues + pine teals lifted toward parity
       shadowLift: 0.9,
-      hazeDensity: 0.7,                   // visible breathing ice-haze
+      hazeDensity: 0.82,                  // fuller breathing ice-haze dome
       fogDensity: 0.62,
       environmentIntensity: 0.6,
       directLight: 0.78,
       ambientLight: 0.7,
-      volumetricLight: 0.78,              // warm-vs-cold bounce restored
-      fillLight: 0.6,
-      rimLight: 0.68,                     // snow-edge rim sparkle
-      groundSpecular: 0.45,               // crystalline glint, not mirror
-      groundNormal: 0.82,                 // sculpted wind-packed snowdrift relief (toward forest's 1.12)
+      volumetricLight: 0.92,              // warm-vs-cold bounce at forest parity
+      fillLight: 0.68,
+      rimLight: 0.85,                     // strong snow-edge rim sparkle
+      groundSpecular: 0.52,               // crystalline glint, not mirror
+      groundNormal: 1.0,                  // sculpted wind-packed snowdrift relief, forest-grade
       groundPatch: 0.8,
     },
     groundRoughness: 0.88,
@@ -352,8 +360,8 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       detailScale: 0.8,
       rippleDir: [0.86, 0.5],
       rippleScale: 0.5,
-      rippleStrength: 0.22,
-      sparkle: 0.7,
+      rippleStrength: 0.26,               // crisper drift ridges under the low sun
+      sparkle: 0.85,                      // denser crystalline glint field
     },
   },
 
@@ -404,22 +412,22 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       saturation: 0.74,
       contrast: 0.98,
       bloomStrength: 0.74,
-      godRayStrength: 0.7,                // harsh sun shafts off the mesas
+      godRayStrength: 0.88,               // harsh sun shafts rake off the mesas
       aerialPerspective: 0.42,            // golden distance tint (Mie scatter)
       highlightRecovery: 0.72,            // brightness control lever #2
       highlightDesaturation: 0.58,
-      vibrance: 0.72,
+      vibrance: 0.8,                      // richer terracotta strata, still sun-bleached
       shadowLift: 0.86,
-      hazeDensity: 0.72,                  // shimmering heat-haze on the horizon
+      hazeDensity: 0.82,                  // fuller shimmering heat-haze dome
       fogDensity: 0.6,
       environmentIntensity: 0.6,
       directLight: 0.8,
       ambientLight: 0.66,
-      volumetricLight: 0.8,               // warm sand-bounce, forest parity
-      fillLight: 0.55,
-      rimLight: 0.6,
-      groundSpecular: 0.35,               // mica glints in the hardpan
-      groundNormal: 0.96,                 // tactile wind-rippled sand relief (toward forest's 1.12)
+      volumetricLight: 0.92,              // warm sand-bounce at forest parity
+      fillLight: 0.62,
+      rimLight: 0.78,                     // hot rim on mesa + cactus silhouettes
+      groundSpecular: 0.42,               // mica glints in the hardpan
+      groundNormal: 1.1,                  // tactile wind-rippled sand relief, forest-grade
       groundPatch: 0.95,
     },
     groundRoughness: 0.94,
@@ -440,8 +448,8 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       detailScale: 1.0,
       rippleDir: [0.94, 0.34],
       rippleScale: 0.62,
-      rippleStrength: 0.3,
-      sparkle: 0.25,
+      rippleStrength: 0.34,               // deeper wind ripples under the raking sun
+      sparkle: 0.32,
     },
   },
 
@@ -449,7 +457,7 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
   toxic_swamp: {
     id: 'toxic_swamp',
     name: 'Toxic Swamp',
-    description: 'A murky wetland of gnarled trees, glowing mushrooms, and bubbling toxic pools.',
+    description: 'A drowned wetland — one vast sheet of glowing toxic water threading between gnarled trees, silt banks, and luminous fungi.',
     icon: '🍄',
     primaryBiome: 'swamp',
     skyColor: 0x1a2818,
@@ -470,44 +478,52 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     weatherType: 'fog',
     visibilityMult: 0.7,                   // was 0.55 — playable while still murky
     enemySpawnRadiusMult: 0.85,
-    // Strong green-tinted bloom — glowing mushrooms + toxic pools popping
-    // off the dark swamp backdrop.
-    bloomMultiplier: 1.20,                 // was 1.40 — pulled back with new baseline
-    bloomThresholdBias: -0.05,             // was -0.08
+    // Restrained bloom — with the WHOLE floor now standing water, the old
+    // generous multiplier + negative threshold turned every specular ripple
+    // into a wall of glare (user report). Emissive accents (fungi, enemy
+    // cores) still bloom; the water itself stays under the knee.
+    bloomMultiplier: 1.0,
+    bloomThresholdBias: 0.04,
     // Murky wetland grade — green-biased, shadows gently lifted for
     // readability through the fog, strong wet specular on the soaked ground.
     renderProfile: {
       atmosphereWeight: 0.5,
       nightAtmosphereWeight: 0.28,
-      exposure: 0.92,
+      exposure: 0.88,
       saturation: 0.96,
       contrast: 1.02,
       bloomStrength: 1.0,
-      godRayStrength: 0.75,             // murky shafts through the canopy
+      godRayStrength: 0.92,             // murky god-shafts through the canopy
       aerialPerspective: 0.72,
       highlightRecovery: 0.22,
       highlightDesaturation: 0.2,
-      vibrance: 1.0,
+      vibrance: 1.05,                   // luminous fungus greens/purples pushed
       shadowLift: 1.08,
-      hazeDensity: 1.0,                 // swamp breathes — full vapor dome
+      hazeDensity: 1.08,                // swamp breathes — thick vapor dome
       fogDensity: 1.0,
       environmentIntensity: 0.85,
       directLight: 0.9,
       ambientLight: 1.0,
-      volumetricLight: 0.85,            // sickly-warm bounce, forest parity
+      volumetricLight: 0.98,            // sickly-warm bounce at forest parity
       fillLight: 0.92,
-      rimLight: 0.9,
-      groundSpecular: 1.15,
-      groundNormal: 1.05,
+      rimLight: 1.02,                   // wet-bark rim off the gnarled trees
+      // Ground specular pulled well back: this multiplies the sun glint over
+      // what is now a FULL map of water — at 1.25 the whole floor integrated
+      // into blinding sun-glare. The water read comes from the murky mirror
+      // reflections + soft sheen, not raw specular energy.
+      groundSpecular: 0.62,
+      groundNormal: 1.12,               // mud-rut relief at forest grade
       groundPatch: 1.05,
     },
-    // Sodden wetland — near-flat with low silt mounds threaded with black,
-    // standing bog water. The swamp is the ONE map (besides a rained-on deep
-    // forest) that keeps a PERMANENT soaked look: a high STATIC `wetness`
-    // floods the low spots with dark, mirror-still pools all run long. This is
-    // baked terrain identity (uTWetness), independent of the live-rain puddle
-    // gate — it never needs a storm and never spreads to the dry maps. Reads as
-    // a genuine bog: black reflective water between mossy muck banks.
+    // DROWNED wetland — the whole floor is one continuous sheet of standing
+    // TOXIC WATER (user mandate: water globally, not land). `swampWater` floods
+    // everything except noise-raised silt banks through the exact rain-puddle
+    // shading stack (dark water body + fresnel PMREM mirror reflections +
+    // rippling surface + tight sun glint) tinted toxic green with a faint
+    // luminescent glow, so it reads as a luminous poisoned bog rather than wet
+    // dirt. Full-strength static `wetness` (uTWetness) drives the sheen; this
+    // is baked terrain identity, independent of the live-rain gate, and never
+    // spreads to the dry maps.
     terrain: {
       amplitude: 1.9,
       frequency: 0.018,
@@ -519,7 +535,12 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       rockColor: 0x22301c,
       detailColor: [0.85, 1.0, 0.78],
       detailScale: 1.1,
-      wetness: 0.8,
+      wetness: 1.0,
+      swampWater: 1.0,
+      // Murky bog green — desaturated + darkened from the first pass's neon
+      // 0x2fc356, which under bloom read as radioactive slime rather than
+      // realistic standing water with dissolved toxins.
+      waterColor: 0x1e7a38,
     },
   },
 
@@ -561,25 +582,25 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       exposure: 0.96,
       saturation: 0.84,
       contrast: 1.05,
-      bloomStrength: 0.85,
-      godRayStrength: 0.92,             // crisp sun shafts across the compound
+      bloomStrength: 0.9,
+      godRayStrength: 1.05,             // dust-laden sun shafts across the compound
       aerialPerspective: 0.85,
       // Brighter sun → stronger highlight roll-off so concrete + sand stay
       // readable instead of clipping to white.
       highlightRecovery: 0.24,
       highlightDesaturation: 0.2,
-      vibrance: 0.85,
+      vibrance: 0.92,                   // olive drab + rust warmed toward parity
       shadowLift: 0.98,
-      hazeDensity: 1.0,                 // dusty parade-ground air
+      hazeDensity: 1.06,                // dusty parade-ground air, full dome
       fogDensity: 1.0,
       environmentIntensity: 0.95,
       directLight: 1.0,
       ambientLight: 0.98,
-      volumetricLight: 0.98,
+      volumetricLight: 1.05,            // sun-through-dust bounce, forest-grade
       fillLight: 0.95,
-      rimLight: 0.95,
-      groundSpecular: 0.9,
-      groundNormal: 1.15,
+      rimLight: 1.05,                   // crisp metal/concrete edge light
+      groundSpecular: 1.0,
+      groundNormal: 1.2,                // cracked-asphalt + gravel bite
       groundPatch: 1.12,
     },
     // Compacted dirt-and-gravel parade ground with cracked asphalt aprons and
@@ -646,23 +667,23 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       exposure: 0.86,
       saturation: 0.94,
       contrast: 1.04,
-      bloomStrength: 0.9,
-      godRayStrength: 0.88,             // low orange sun rakes long dusk shafts
+      bloomStrength: 0.98,
+      godRayStrength: 1.0,              // low orange sun rakes long dusk shafts
       aerialPerspective: 0.8,
       highlightRecovery: 0.2,
       highlightDesaturation: 0.2,
-      vibrance: 1.06,
+      vibrance: 1.1,                    // deep violets + wisp glows pushed
       shadowLift: 0.95,
-      hazeDensity: 1.0,
+      hazeDensity: 1.08,                // dusk mist hangs between the bare trees
       fogDensity: 1.0,
       environmentIntensity: 0.8,
       directLight: 0.95,
       ambientLight: 0.95,
-      volumetricLight: 0.98,            // dusk bounce — wisps hang in the air
+      volumetricLight: 1.08,            // dusk bounce — wisps hang in the air
       fillLight: 0.9,
-      rimLight: 1.08,
-      groundSpecular: 1.0,
-      groundNormal: 1.0,
+      rimLight: 1.18,                   // signature sunset rim on bare branches
+      groundSpecular: 1.08,
+      groundNormal: 1.1,                // rooty violet-earth relief, forest-grade
       groundPatch: 1.0,
     },
     // Haunted vale floor — soft rolling violet earth with charred dark-purple
@@ -723,23 +744,23 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       saturation: 0.9,
       contrast: 1.03,
       bloomStrength: 1.0,
-      godRayStrength: 0.8,              // storm-light shafts between columns
+      godRayStrength: 0.95,             // storm-light shafts between the columns
       aerialPerspective: 0.78,
       // Sunnier base → firmer highlight roll-off so pale flagstones don't clip.
       highlightRecovery: 0.26,
       highlightDesaturation: 0.22,
-      vibrance: 0.95,
+      vibrance: 1.0,                    // moss greens + warm stone lifted
       shadowLift: 1.0,
-      hazeDensity: 1.0,
+      hazeDensity: 1.06,
       fogDensity: 1.0,
       environmentIntensity: 0.9,
       directLight: 0.95,
       ambientLight: 1.0,
-      volumetricLight: 0.92,            // rain-mist bounce, forest parity
+      volumetricLight: 1.02,            // rain-mist bounce at forest parity
       fillLight: 0.95,
-      rimLight: 0.95,
-      groundSpecular: 1.25,
-      groundNormal: 1.12,
+      rimLight: 1.05,                   // wet-stone edge light on the columns
+      groundSpecular: 1.3,              // rain-glossed flagstones
+      groundNormal: 1.18,               // heaved-tile relief at forest grade
       groundPatch: 1.06,
     },
     // Worn flagstone plaza heaved by centuries of root and frost — broken

@@ -64,6 +64,13 @@ export interface TerrainProfileInput {
   sparkle?: number;
   /** Wet sheen + dark puddle pooling (swamp / rain). */
   wetness?: number;
+  /** 0..1 — GLOBAL standing-water coverage (the toxic swamp's drowned bog).
+   *  Reuses the exact rain-puddle shading stack (dark water body + fresnel
+   *  PMREM mirror reflection + animated ripples + tight sun glint) but floods
+   *  the WHOLE floor, leaving only noise-raised silt banks dry. */
+  swampWater?: number;
+  /** Water-body tint for the global bog (toxic green, black-water, etc.). */
+  waterColor?: number;
   /** Emissive crack veins (lava). */
   crackGlow?: number;
   crackColor?: number;
@@ -86,6 +93,8 @@ export interface ResolvedTerrainProfile {
   rippleStrength: number;
   sparkle: number;
   wetness: number;
+  swampWater: number;
+  waterColor: number;
   crackGlow: number;
   crackColor: number;
 }
@@ -109,6 +118,8 @@ const DEFAULTS: ResolvedTerrainProfile = {
   rippleStrength: 0.0,
   sparkle: 0.0,
   wetness: 0.0,
+  swampWater: 0.0,
+  waterColor: 0x2fc356,
   crackGlow: 0.0,
   crackColor: 0xff5512,
 };
@@ -136,6 +147,8 @@ export function resolveTerrainProfile(map: MapConfig): ResolvedTerrainProfile {
     rippleStrength: t.rippleStrength ?? DEFAULTS.rippleStrength,
     sparkle: t.sparkle ?? DEFAULTS.sparkle,
     wetness: t.wetness ?? DEFAULTS.wetness,
+    swampWater: t.swampWater ?? DEFAULTS.swampWater,
+    waterColor: t.waterColor ?? DEFAULTS.waterColor,
     crackGlow: t.crackGlow ?? DEFAULTS.crackGlow,
     crackColor: t.crackColor ?? DEFAULTS.crackColor,
   };
@@ -151,6 +164,18 @@ export function createTerrainSeed(): number {
   const a = new Uint32Array(1);
   crypto.getRandomValues(a);
   return (a[0] % 100000) * 0.001; // 0 .. 100
+}
+
+/**
+ * Map the preset's terrainDetail to the ground-shader detail-quality scalar.
+ * High/Ultra get the full extra detail stack, Medium a softened cut, the low
+ * tiers exactly the pre-overhaul fragment cost (all new terms multiply to 0
+ * and their texture taps sit behind uniform branches).
+ */
+export function terrainQualityFor(terrainDetail: number): number {
+  if (terrainDetail >= 1.0) return 1.0;   // HIGH / ULTRA
+  if (terrainDetail >= 0.82) return 0.55; // MEDIUM
+  return 0.0;                              // LOW / ULTRA LOW
 }
 
 // Recommended ground-plane segment count for the displaced mesh, scaled by the
@@ -174,11 +199,20 @@ export interface TerrainUniforms {
   [name: string]: { value: number | THREE.Color | THREE.Vector2 | THREE.Vector3 };
 }
 
+/**
+ * `quality` (0..1) gates the EXTRA surface-detail layers added in the graphics
+ * overhaul (mid-frequency strata mottle, close-range grit octave, second
+ * normal-relief octave, talus breakup). 0 = the original shader cost exactly
+ * (Low / Ultra-Low pay nothing new); 1 = full AAA detail (High / Ultra).
+ * Derive it from the preset's terrainDetail — see terrainQualityFor().
+ */
 export function createTerrainUniforms(
   profile: ResolvedTerrainProfile,
   seed: number,
+  quality = 1.0,
 ): TerrainUniforms {
   return {
+    uTQuality: { value: quality },
     uTSeed: { value: seed },
     uTAmp: { value: profile.amplitude },
     uTFreq: { value: profile.frequency },
@@ -196,6 +230,8 @@ export function createTerrainUniforms(
     uTRippleStr: { value: profile.rippleStrength },
     uTSparkle: { value: profile.sparkle },
     uTWetness: { value: profile.wetness },
+    uTSwampWater: { value: profile.swampWater },
+    uTWaterCol: { value: new THREE.Color(profile.waterColor) },
     uTCrackGlow: { value: profile.crackGlow },
     uTCrackCol: { value: new THREE.Color(profile.crackColor) },
   };
@@ -253,6 +289,7 @@ const TERRAIN_FRAG_COMMON = /* glsl */ `
   uniform float uRainWet;
   uniform float uRainRipple;
 
+  uniform float uTQuality;
   uniform vec3  uTMacroA;
   uniform vec3  uTMacroB;
   uniform vec3  uTRock;
@@ -263,6 +300,8 @@ const TERRAIN_FRAG_COMMON = /* glsl */ `
   uniform float uTRippleStr;
   uniform float uTSparkle;
   uniform float uTWetness;
+  uniform float uTSwampWater;
+  uniform vec3  uTWaterCol;
   uniform float uTCrackGlow;
   uniform vec3  uTCrackCol;
 
@@ -408,9 +447,26 @@ export function applyGroundTerrainShader(
       float gGrit = gNoise(gWP * uTDetailScale * 2.4);
       diffuseColor.rgb += (gGrit - 0.5) * 0.035 * gMicro * uTDetailCol;
 
+      // ── QUALITY DETAIL LAYER (High/Ultra; Medium softened; Low = 0) ────
+      // The extra surface richness of the graphics overhaul, all gated by
+      // uTQuality so the low tiers pay the exact pre-overhaul cost. Two
+      // terms: a mid-frequency STRATA MOTTLE that breaks the ground into
+      // organic soil variation between the broad macro patches and the fine
+      // grit (the band the old shader left flat — the main "one-note floor"
+      // tell), and a second, tighter GRIT octave that only resolves close-up.
+      if (uTQuality > 0.01) {
+        float gStrata = gFbm(gWP * (uPatchScale * 3.2) + 57.0);
+        diffuseColor.rgb *= 1.0 + (gStrata - 0.5) * 0.16 * uTQuality;
+        float gFine = gNoise(gWP * uTDetailScale * 6.1 + 3.7);
+        diffuseColor.rgb += (gFine - 0.5) * 0.05 * gMicro * uTQuality * uTDetailCol;
+      }
+
       // Slope → talus rock. Steep terrain (far hills/dunes) reveals bare rock.
+      // The quality tier breaks the blend up with the cavity field so exposed
+      // rock reads as strewn scree rather than a flat colour ramp.
       float gSlope = clamp(vTerrainSlope * 2.4, 0.0, 1.0);
-      diffuseColor.rgb = mix(diffuseColor.rgb, uTRock, gSlope * 0.6);
+      float gTalusBreak = 1.0 - (0.35 * uTQuality) * smoothstep(0.3, 0.7, gCav);
+      diffuseColor.rgb = mix(diffuseColor.rgb, uTRock * gTalusBreak, gSlope * 0.6);
 
       // Wet pooling — low-lying puddle patches darken & desaturate the soil.
       // uTWetness is the map's static base (swamp); uRainWet is the LIVE rain
@@ -421,8 +477,22 @@ export function applyGroundTerrainShader(
       if (wetAmt > 0.001) {
         float pudNoise = gFbm(gWP * 0.06 + 21.0);
         float pud = smoothstep(0.54 - uRainWet * 0.16, 0.8 - uRainWet * 0.2, pudNoise);
+        // ── GLOBAL BOG WATER (toxic swamp) ─────────────────────────────
+        // uTSwampWater floods the WHOLE floor through the same puddle
+        // machinery the rain uses — only noise-raised silt banks break the
+        // surface. Everything downstream (dark water body, fresnel PMREM
+        // mirror, ripples, sun glint) is the proven rain-puddle stack, so
+        // the bog reads as one continuous sheet of standing toxic water.
+        pud = max(pud, uTSwampWater * (1.0 - smoothstep(0.56, 0.74, pudNoise)));
         gWet = pud * wetAmt;
         diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 0.42, gWet);
+        // Toxic water body — tint the flooded soil toward the map's water
+        // colour, deeper (darker) where the puddle noise dips lowest so the
+        // bog has readable depth instead of one flat green sheet.
+        if (uTSwampWater > 0.001) {
+          vec3 bogCol = uTWaterCol * (0.09 + 0.11 * pudNoise);
+          diffuseColor.rgb = mix(diffuseColor.rgb, bogCol, gWet * uTSwampWater * 0.85);
+        }
         // Rain also soak-darkens the ground BETWEEN the puddles.
         diffuseColor.rgb *= 1.0 - uRainWet * 0.16 * (1.0 - pud);
       }
@@ -449,6 +519,18 @@ export function applyGroundTerrainShader(
       vec2 gGrad = gFbmGradient(gWP * (0.32 * uTDetailScale), 0.9);
       vec3 gPerturb = vec3(-gGrad.x, 0.0, -gGrad.y) * uNormalStrength * gMicro;
 
+      // Quality tier: a second, higher-frequency relief octave that only
+      // resolves in the near field (scaled by gMicro so it antialiases to
+      // flat with distance — no shimmer). This is what makes the High/Ultra
+      // floor read as genuinely dimensional up close: pebbles, clods and
+      // hardpan cracks catching the sun instead of a smooth sheet. Gated
+      // above Medium's 0.55 — only High/Ultra (1.0) pay these extra taps;
+      // Medium keeps just the cheap albedo strata/grit terms.
+      if (uTQuality > 0.75) {
+        vec2 gGrad2 = gFbmGradient(gWP * (1.35 * uTDetailScale) + 41.0, 0.45);
+        gPerturb += vec3(-gGrad2.x, 0.0, -gGrad2.y) * uNormalStrength * 0.45 * gMicro * uTQuality;
+      }
+
       // Ripples / drifts — a band-limited sinusoid along a fixed direction.
       if (uTRippleStr > 0.001) {
         float rp = dot(gWP, uTRippleDir) * uTRippleScale;
@@ -461,11 +543,15 @@ export function applyGroundTerrainShader(
     }`,
   );
 
-  // ── Emissive: lava crack glow ────────────────────────────────────────────
+  // ── Emissive: lava crack glow + toxic bog luminescence ──────────────────
+  // The bog water carries a faint self-glow (dissolved toxins luminescing) so
+  // it stays readable — and pops off the bloom pass — even under the swamp's
+  // dark canopy. Subtle by design: the mirror reflections do the heavy lifting.
   shader.fragmentShader = shader.fragmentShader.replace(
     '#include <emissivemap_fragment>',
     `#include <emissivemap_fragment>
-    totalEmissiveRadiance += uTCrackCol * gCrackMask * uTCrackGlow;`,
+    totalEmissiveRadiance += uTCrackCol * gCrackMask * uTCrackGlow;
+    totalEmissiveRadiance += uTWaterCol * gWet * uTSwampWater * 0.024;`,
   );
 
   // ── Lighting: sharp directional sun + crisp specular + wet/sparkle ───────
@@ -492,10 +578,15 @@ export function applyGroundTerrainShader(
       reflectedLight.directSpecular +=
         uSunColor * specPower * uSpecularStrength * specPatch * sunDot * lumaDamp;
 
-      // Wet sheen — puddles throw a tight, bright sun reflection.
+      // Wet sheen — puddles throw a tight, bright sun reflection. Scaled WAY
+      // down when the water is the GLOBAL bog sheet: a rain puddle is a small
+      // bright accent, but the same 1.6× glint over an entire flooded map
+      // integrated into a blinding sun-coloured wall of bloom (user report).
+      // Murky toxin-laden water scatters the sun instead of mirroring it.
       if (gWet > 0.001) {
         float wetSpec = pow(max(dot(normal, halfVec), 0.0), 160.0);
-        reflectedLight.directSpecular += uSunColor * wetSpec * gWet * 1.6 * sunDot;
+        float glint = mix(1.6, 0.35, uTSwampWater);
+        reflectedLight.directSpecular += uSunColor * wetSpec * gWet * glint * sunDot;
       }
 
       // ── PUDDLE MIRROR REFLECTIONS — the "RTX puddle" moment ──────────
@@ -517,7 +608,11 @@ export function applyGroundTerrainShader(
         float rT = uTime * 6.0;
         float rw1 = sin(rWP.x * 9.1 + rT) * sin(rWP.y * 8.3 - rT * 0.9);
         float rw2 = sin((rWP.x + rWP.y) * 13.7 - rT * 1.4);
-        float rAmp = 0.085 * uRainRipple * gMicro;
+        // Rain agitates hard; the global bog keeps a gentle ever-present
+        // shiver (gas bubbles working up through the toxic water). Kept very
+        // small — at 0.035 the wave interference read as a moiré/halftone
+        // pattern ringing the camera on the flooded swamp.
+        float rAmp = (0.085 * uRainRipple + 0.016 * uTSwampWater) * gMicro;
         vec3 puddleN = normalize(vec3(
           (rw1 * 0.7 + rw2 * 0.3) * rAmp,
           1.0,
@@ -529,10 +624,14 @@ export function applyGroundTerrainShader(
         // Fresnel — grazing angles turn the pool into a true mirror.
         float fres = 0.05 + 0.95 * pow(1.0 - max(dot(viewDirW, puddleN), 0.0), 5.0);
         // Sharpest reflection in a full, still puddle; rain agitation and
-        // partial dryness rough it up.
-        float mirrorRough = 0.05 + (1.0 - gWet) * 0.22 + uRainRipple * 0.08;
+        // partial dryness rough it up. The global bog reads MURKY on purpose:
+        // suspended silt/toxins blur the mirror (higher roughness) and absorb
+        // most of the bounce (lower amplitude) — a clean sharp mirror over a
+        // whole map read as blown-out glare, not water.
+        float mirrorRough = 0.05 + (1.0 - gWet) * 0.22 + uRainRipple * 0.08 + uTSwampWater * 0.14;
         vec3 reflCol = textureCubeUV(envMap, envMapRotation * refW, mirrorRough).rgb;
-        reflectedLight.indirectSpecular += reflCol * envMapIntensity * gWet * (0.30 + 0.70 * fres);
+        float mirrorAmp = mix(1.0, 0.38, uTSwampWater);
+        reflectedLight.indirectSpecular += reflCol * envMapIntensity * gWet * (0.30 + 0.70 * fres) * mirrorAmp;
       }
       #endif
 
