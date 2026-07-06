@@ -186,13 +186,48 @@ function getSmokeTexture(): THREE.CanvasTexture {
   return sharedSmokeTexture;
 }
 
+// Pooled smoke sprites. Every puff (muzzle wisp on each throttled shot +
+// damaged-robot venting) used to allocate a fresh SpriteMaterial — a steady
+// drip of heap garbage under sustained fire. Colour is a per-material uniform,
+// so one pooled sprite serves gun-grey, soot-black and overclock-green puffs
+// alike without a new shader program. Bounded to the host's combined caps.
+const _smokeSpritePool: THREE.Sprite[] = [];
+function acquireSmokeSprite(color: number): THREE.Sprite {
+  const s = _smokeSpritePool.pop();
+  if (s) {
+    const m = s.material as THREE.SpriteMaterial;
+    m.color.setHex(color);
+    m.opacity = 0;
+    m.rotation = 0;
+    return s;
+  }
+  const mat = new THREE.SpriteMaterial({
+    map: getSmokeTexture(),
+    transparent: true,
+    depthWrite: false,
+    opacity: 0,
+    color,
+    fog: true,
+  });
+  const sprite = new THREE.Sprite(mat);
+  sprite.userData.cannotReceiveAO = true;
+  return sprite;
+}
+
+/** Free every pooled smoke sprite + its material (game teardown). */
+export function clearSmokeSpritePool(): void {
+  for (const s of _smokeSpritePool) (s.material as THREE.SpriteMaterial).dispose();
+  _smokeSpritePool.length = 0;
+}
+
 /**
  * A single lingering muzzle-smoke puff: one billboard sprite that drifts up and
  * forward off the barrel, expands, slowly tumbles and fades. The host spawns
  * these (throttled + hard-capped) so full-auto leaves a believable haze rather
- * than a wall of sprites. Shared texture + a cheap per-instance material (no
- * texture upload) keeps each puff almost free; the material is disposed on
- * teardown, the texture is shared and never disposed here.
+ * than a wall of sprites. Shared texture + a POOLED sprite/material pair (no
+ * texture upload, no per-puff allocation) keeps each puff almost free; the
+ * sprite returns to the pool on dispose, the texture is shared and never
+ * disposed here.
  */
 export class MuzzleSmoke {
   sprite: THREE.Sprite;
@@ -215,18 +250,10 @@ export class MuzzleSmoke {
     opacityScale?: number; // multiplies peak opacity (thicker)
     rise?: number;         // extra upward velocity (m/s) added to the buoyant base
   }) {
-    const material = new THREE.SpriteMaterial({
-      map: getSmokeTexture(),
-      transparent: true,
-      depthWrite: false,
-      opacity: 0,
-      // Cool gun-smoke grey by default; fog ON so it grounds into the atmosphere.
-      color: opts?.color ?? 0x9a9ea6,
-      fog: true,
-    });
-    this.sprite = new THREE.Sprite(material);
+    // Cool gun-smoke grey by default; fog ON so it grounds into the atmosphere.
+    // Borrowed from the pool — colour/opacity reset on acquire.
+    this.sprite = acquireSmokeSprite(opts?.color ?? 0x9a9ea6);
     this.sprite.position.copy(position);
-    this.sprite.userData.cannotReceiveAO = true;
     // Drift: a little along the barrel + a buoyant rise + slight random jitter.
     this.vel = new THREE.Vector3(
       forward.x * 0.45 + (Math.random() - 0.5) * 0.4,
@@ -264,11 +291,15 @@ export class MuzzleSmoke {
     return false;
   }
 
-  dispose(scene: THREE.Scene, disposeMaterial = true) {
+  private _released = false;
+  dispose(scene: THREE.Scene, _disposeMaterial = true) {
+    if (this._released) return; // idempotent — warmup teardown double-disposes
+    this._released = true;
     scene.remove(this.sprite);
-    if (disposeMaterial && this.sprite.material instanceof THREE.SpriteMaterial) {
-      this.sprite.material.dispose();
-    }
+    // Return the sprite (with its reusable material) to the bounded pool; only
+    // overflow frees the material. 56 covers the muzzle + enemy-vent caps.
+    if (_smokeSpritePool.length < 56) _smokeSpritePool.push(this.sprite);
+    else if (this.sprite.material instanceof THREE.SpriteMaterial) this.sprite.material.dispose();
   }
 }
 
@@ -592,57 +623,93 @@ const EXPLO_SHOCK_GEO = (() => {
 
 const easeOut = (t: number) => 1 - (1 - t) * (1 - t);
 
+// Pooled explosion rigs. Rockets, barrels, splash perks and boss casts each
+// used to build 3 fresh MeshBasicMaterials + meshes per blast — chained barrel
+// detonations turned that into a burst of heap churn right at the frame the
+// player already feels the hit. A rig (group + fireball/flash/shock meshes +
+// their materials) is borrowed whole and reset on acquire; colour is a uniform,
+// so re-tinting costs nothing and no new shader program is ever created.
+interface ExplosionRig {
+  group: THREE.Group;
+  fireball: THREE.Mesh;
+  flash: THREE.Mesh;
+  shock: THREE.Mesh;
+  fireMat: THREE.MeshBasicMaterial;
+  flashMat: THREE.MeshBasicMaterial;
+  shockMat: THREE.MeshBasicMaterial;
+}
+const _explosionRigPool: ExplosionRig[] = [];
+function buildExplosionRig(): ExplosionRig {
+  const group = new THREE.Group();
+  const fireMat = new THREE.MeshBasicMaterial({
+    color: 0xff7a2a, transparent: true, opacity: 1,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const fireball = new THREE.Mesh(EXPLO_FIREBALL_GEO, fireMat);
+  fireball.userData.cannotReceiveAO = true;
+  fireball.renderOrder = 992;
+  group.add(fireball);
+
+  const flashMat = new THREE.MeshBasicMaterial({
+    color: 0xfff2c4, transparent: true, opacity: 1,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const flash = new THREE.Mesh(EXPLO_FLASH_GEO, flashMat);
+  flash.userData.cannotReceiveAO = true;
+  flash.renderOrder = 994;
+  group.add(flash);
+
+  const shockMat = new THREE.MeshBasicMaterial({
+    color: 0xffb066, transparent: true, opacity: 0.85,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+  });
+  const shock = new THREE.Mesh(EXPLO_SHOCK_GEO, shockMat);
+  shock.userData.cannotReceiveAO = true;
+  shock.renderOrder = 991;
+  group.add(shock);
+
+  return { group, fireball, flash, shock, fireMat, flashMat, shockMat };
+}
+
+/** Free every pooled explosion rig (game teardown). */
+export function clearExplosionRigPool(): void {
+  for (const r of _explosionRigPool) {
+    r.fireMat.dispose();
+    r.flashMat.dispose();
+    r.shockMat.dispose();
+  }
+  _explosionRigPool.length = 0;
+}
+
 export class ExplosionEffect {
-  private group: THREE.Group;
-  private fireball: THREE.Mesh;
-  private flash: THREE.Mesh;
-  private shock: THREE.Mesh;
-  private fireMat: THREE.MeshBasicMaterial;
-  private flashMat: THREE.MeshBasicMaterial;
-  private shockMat: THREE.MeshBasicMaterial;
+  private rig: ExplosionRig;
   private light: THREE.PointLight | null;
   private age = 0;
   private readonly life = 0.55;          // total seconds on screen
   private readonly radius: number;       // visual scale driver
   private readonly lightPeak: number;
+  private _released = false;
 
   constructor(scene: THREE.Scene, position: THREE.Vector3, radius = 9, color = 0xff7a2a) {
     this.radius = radius;
     this.lightPeak = Math.min(80, 30 + radius * 4);
-    this.group = new THREE.Group();
-    this.group.position.copy(position);
+    // Borrow a rig (or build the pool's first few) and reset it for this blast.
+    this.rig = _explosionRigPool.pop() ?? buildExplosionRig();
+    const { group, fireball, flash, shock, fireMat, flashMat, shockMat } = this.rig;
+    group.position.copy(position);
+    fireMat.color.setHex(color);
+    fireMat.opacity = 1;
+    flashMat.opacity = 1;
+    shockMat.opacity = 0.85;
+    fireball.position.y = radius * 0.18;
+    fireball.scale.setScalar(radius * 0.22);
+    flash.position.y = radius * 0.18;
+    flash.scale.setScalar(radius * 0.18);
+    flash.visible = true;
+    shock.position.y = 0.12;
+    shock.scale.set(radius * 0.2, 1, radius * 0.2);
 
-    this.fireMat = new THREE.MeshBasicMaterial({
-      color, transparent: true, opacity: 1,
-      blending: THREE.AdditiveBlending, depthWrite: false,
-    });
-    this.fireball = new THREE.Mesh(EXPLO_FIREBALL_GEO, this.fireMat);
-    this.fireball.position.y = radius * 0.18;
-    this.fireball.userData.cannotReceiveAO = true;
-    this.fireball.renderOrder = 992;
-    this.group.add(this.fireball);
-
-    this.flashMat = new THREE.MeshBasicMaterial({
-      color: 0xfff2c4, transparent: true, opacity: 1,
-      blending: THREE.AdditiveBlending, depthWrite: false,
-    });
-    this.flash = new THREE.Mesh(EXPLO_FLASH_GEO, this.flashMat);
-    this.flash.position.y = radius * 0.18;
-    this.flash.userData.cannotReceiveAO = true;
-    this.flash.renderOrder = 994;
-    this.group.add(this.flash);
-
-    this.shockMat = new THREE.MeshBasicMaterial({
-      color: 0xffb066, transparent: true, opacity: 0.85,
-      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
-    });
-    this.shock = new THREE.Mesh(EXPLO_SHOCK_GEO, this.shockMat);
-    this.shock.position.y = 0.12;
-    this.shock.userData.cannotReceiveAO = true;
-    this.shock.renderOrder = 991;
-    this.group.add(this.shock);
-
-    scene.add(this.group);
+    scene.add(group);
 
     // Borrow a pooled light (never scene.add a fresh one — that recompiles).
     this.light = _explosionLightAcquire ? _explosionLightAcquire() : null;
@@ -658,23 +725,24 @@ export class ExplosionEffect {
     this.age += delta;
     const t = this.age / this.life;
     if (t >= 1) return true;
+    const { fireball, flash, shock, fireMat, flashMat, shockMat } = this.rig;
 
     // Fireball: rapid expand then linger-fade.
     const fb = easeOut(Math.min(1, this.age / 0.32));
     const fbScale = this.radius * (0.22 + 0.45 * fb);
-    this.fireball.scale.setScalar(fbScale);
-    this.fireMat.opacity = this.age < 0.16 ? 1 : Math.max(0, 1 - (this.age - 0.16) / 0.34);
+    fireball.scale.setScalar(fbScale);
+    fireMat.opacity = this.age < 0.16 ? 1 : Math.max(0, 1 - (this.age - 0.16) / 0.34);
 
     // White-hot core: very brief, snaps out fast.
     const flScale = this.radius * (0.18 + 0.5 * easeOut(Math.min(1, this.age / 0.09)));
-    this.flash.scale.setScalar(flScale);
-    this.flashMat.opacity = Math.max(0, 1 - this.age / 0.13);
-    this.flash.visible = this.flashMat.opacity > 0.01;
+    flash.scale.setScalar(flScale);
+    flashMat.opacity = Math.max(0, 1 - this.age / 0.13);
+    flash.visible = flashMat.opacity > 0.01;
 
     // Ground shockwave: spreads wide and thin, fades out.
     const sw = easeOut(t);
-    this.shock.scale.set(this.radius * (0.2 + 1.25 * sw), 1, this.radius * (0.2 + 1.25 * sw));
-    this.shockMat.opacity = 0.85 * Math.max(0, 1 - t);
+    shock.scale.set(this.radius * (0.2 + 1.25 * sw), 1, this.radius * (0.2 + 1.25 * sw));
+    shockMat.opacity = 0.85 * Math.max(0, 1 - t);
 
     // Pooled light decays quickly so the bloom doesn't linger.
     if (this.light) {
@@ -684,12 +752,18 @@ export class ExplosionEffect {
     return false;
   }
 
-  dispose(scene: THREE.Scene, disposeMaterials = true) {
-    scene.remove(this.group);
-    if (disposeMaterials) {
-      this.fireMat.dispose();
-      this.flashMat.dispose();
-      this.shockMat.dispose();
+  dispose(scene: THREE.Scene, _disposeMaterials = true) {
+    if (this._released) return; // idempotent — warmup teardown double-disposes
+    this._released = true;
+    scene.remove(this.rig.group);
+    // Return the whole rig (materials included) to the bounded pool — keeping
+    // the materials alive also keeps their linked programs cached for the run.
+    if (_explosionRigPool.length < 10) {
+      _explosionRigPool.push(this.rig);
+    } else {
+      this.rig.fireMat.dispose();
+      this.rig.flashMat.dispose();
+      this.rig.shockMat.dispose();
     }
     if (this.light) {
       if (_explosionLightRelease) _explosionLightRelease(this.light);
@@ -1184,95 +1258,149 @@ export class NukeEffect {
 // ─────────────────────────────────────────────────────────────────────────────
 const CAST_PILLAR_GEO = new THREE.CylinderGeometry(0.7, 1.25, 4.4, 24, 1, true);
 
+// Pooled cast rigs. Every ability/boss/power cast used to allocate 4 fresh
+// materials + a 30-spark BufferGeometry (two Float32Arrays + a GPU buffer).
+// The rig is borrowed whole, re-tinted (colour is a uniform — no new program)
+// and its spark buffer re-seeded in place, so casting mid-fight allocates
+// nothing. Scratch colours below avoid per-cast Color churn too.
+interface CastRig {
+  group: THREE.Group;
+  ring: THREE.Mesh;
+  pillar: THREE.Mesh;
+  core: THREE.Mesh;
+  sparks: THREE.Points;
+  sparkVel: Float32Array;
+  ringMat: THREE.MeshBasicMaterial;
+  pillarMat: THREE.MeshBasicMaterial;
+  coreMat: THREE.MeshBasicMaterial;
+  sparkMat: THREE.PointsMaterial;
+  sparkGeo: THREE.BufferGeometry;
+}
+const CAST_SPARK_COUNT = 30;
+const _castRigPool: CastRig[] = [];
+const _castTint = new THREE.Color();
+const _castHot = new THREE.Color();
+const _castWhite = new THREE.Color(0xffffff);
+function buildCastRig(): CastRig {
+  const group = new THREE.Group();
+
+  const ringMat = new THREE.MeshBasicMaterial({
+    color: 0x22d3ee, transparent: true, opacity: 0.95,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+  });
+  const ring = new THREE.Mesh(NOVA_RING_GEO, ringMat);
+  ring.position.y = 0.12;
+  ring.renderOrder = 990;
+  ring.userData.cannotReceiveAO = true;
+  group.add(ring);
+
+  const pillarMat = new THREE.MeshBasicMaterial({
+    color: 0x22d3ee, transparent: true, opacity: 0.5,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+  });
+  const pillar = new THREE.Mesh(CAST_PILLAR_GEO, pillarMat);
+  pillar.position.y = 2.2;
+  pillar.renderOrder = 991;
+  pillar.userData.cannotReceiveAO = true;
+  group.add(pillar);
+
+  const coreMat = new THREE.MeshBasicMaterial({
+    color: 0xffffff, transparent: true, opacity: 0.9,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const core = new THREE.Mesh(NOVA_DOME_GEO, coreMat);
+  core.position.y = 1.1;
+  core.renderOrder = 992;
+  core.userData.cannotReceiveAO = true;
+  group.add(core);
+
+  const sparkGeo = new THREE.BufferGeometry();
+  sparkGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(CAST_SPARK_COUNT * 3), 3));
+  sparkGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(CAST_SPARK_COUNT * 3), 3));
+  const sparkMat = new THREE.PointsMaterial({
+    size: 0.3, map: getSoftSparkTexture(), vertexColors: true, transparent: true, opacity: 1,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const sparks = new THREE.Points(sparkGeo, sparkMat);
+  sparks.userData.cannotReceiveAO = true;
+  // Spark positions are rewritten per cast, so a pooled rig would carry a stale
+  // boundingSphere; the burst always plays at the point of action (on-screen).
+  sparks.frustumCulled = false;
+  group.add(sparks);
+
+  return {
+    group, ring, pillar, core, sparks,
+    sparkVel: new Float32Array(CAST_SPARK_COUNT * 3),
+    ringMat, pillarMat, coreMat, sparkMat, sparkGeo,
+  };
+}
+
+/** Free every pooled ability-cast rig (game teardown). */
+export function clearCastRigPool(): void {
+  for (const r of _castRigPool) {
+    r.ringMat.dispose();
+    r.pillarMat.dispose();
+    r.coreMat.dispose();
+    r.sparkMat.dispose();
+    r.sparkGeo.dispose();
+  }
+  _castRigPool.length = 0;
+}
+
 export class AbilityCastEffect {
-  private group: THREE.Group;
-  private ring: THREE.Mesh;
-  private pillar: THREE.Mesh;
-  private core: THREE.Mesh;
-  private sparks: THREE.Points;
-  private sparkVel: Float32Array;
-  private ringMat: THREE.MeshBasicMaterial;
-  private pillarMat: THREE.MeshBasicMaterial;
-  private coreMat: THREE.MeshBasicMaterial;
-  private sparkMat: THREE.PointsMaterial;
-  private sparkGeo: THREE.BufferGeometry;
+  private rig: CastRig;
   private light: THREE.PointLight | null;
   private age = 0;
   private readonly life = 0.72;
+  private _released = false;
 
   constructor(scene: THREE.Scene, position: THREE.Vector3, color = 0x22d3ee) {
-    const tint = new THREE.Color(color);
-    this.group = new THREE.Group();
-    this.group.position.set(position.x, 0.05, position.z);
+    this.rig = _castRigPool.pop() ?? buildCastRig();
+    const { group, ring, pillar, core, ringMat, pillarMat, coreMat, sparkMat, sparkGeo, sparkVel } = this.rig;
+    _castTint.setHex(color);
+    _castHot.copy(_castTint).lerp(_castWhite, 0.35);
+    group.position.set(position.x, 0.05, position.z);
 
-    // Expanding ground ring.
-    this.ringMat = new THREE.MeshBasicMaterial({
-      color: tint, transparent: true, opacity: 0.95,
-      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
-    });
-    this.ring = new THREE.Mesh(NOVA_RING_GEO, this.ringMat);
-    this.ring.position.y = 0.12;
-    this.ring.renderOrder = 990;
-    this.ring.userData.cannotReceiveAO = true;
-    this.group.add(this.ring);
+    ringMat.color.copy(_castTint);
+    ringMat.opacity = 0.95;
+    ring.scale.set(0.6, 1, 0.6);
 
-    // Rising pillar of light (open cylinder, walls kept off the camera centre).
-    this.pillarMat = new THREE.MeshBasicMaterial({
-      color: tint, transparent: true, opacity: 0.5,
-      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
-    });
-    this.pillar = new THREE.Mesh(CAST_PILLAR_GEO, this.pillarMat);
-    this.pillar.position.y = 2.2;
-    this.pillar.renderOrder = 991;
-    this.pillar.userData.cannotReceiveAO = true;
-    this.group.add(this.pillar);
+    pillarMat.color.copy(_castTint);
+    pillarMat.opacity = 0.5;
+    pillar.scale.set(0.6, 0, 0.6);
 
-    // Hot core flash.
-    this.coreMat = new THREE.MeshBasicMaterial({
-      color: tint.clone().lerp(new THREE.Color(0xffffff), 0.5), transparent: true, opacity: 0.9,
-      blending: THREE.AdditiveBlending, depthWrite: false,
-    });
-    this.core = new THREE.Mesh(NOVA_DOME_GEO, this.coreMat);
-    this.core.position.y = 1.1;
-    this.core.renderOrder = 992;
-    this.core.userData.cannotReceiveAO = true;
-    this.group.add(this.core);
+    coreMat.color.copy(_castTint).lerp(_castWhite, 0.5);
+    coreMat.opacity = 0.9;
+    core.visible = true;
+    core.scale.setScalar(0.4);
 
-    // Rising spark ring.
-    const sparkCount = 30;
-    this.sparkGeo = new THREE.BufferGeometry();
-    const positions = new Float32Array(sparkCount * 3);
-    const colors = new Float32Array(sparkCount * 3);
-    this.sparkVel = new Float32Array(sparkCount * 3);
-    const hot = tint.clone().lerp(new THREE.Color(0xffffff), 0.35);
-    for (let i = 0; i < sparkCount; i++) {
+    // Re-seed the rising spark ring in place (no new buffers).
+    const positions = sparkGeo.getAttribute('position') as THREE.BufferAttribute;
+    const colors = sparkGeo.getAttribute('color') as THREE.BufferAttribute;
+    const pArr = positions.array as Float32Array;
+    const cArr = colors.array as Float32Array;
+    for (let i = 0; i < CAST_SPARK_COUNT; i++) {
       const i3 = i * 3;
       const ang = Math.random() * Math.PI * 2;
       const out = 1.5 + Math.random() * 2.0;
-      positions[i3] = Math.cos(ang) * 0.6;
-      positions[i3 + 1] = 0.2 + Math.random() * 0.4;
-      positions[i3 + 2] = Math.sin(ang) * 0.6;
-      this.sparkVel[i3] = Math.cos(ang) * out;
-      this.sparkVel[i3 + 1] = 3.5 + Math.random() * 4.0; // strong upward rush
-      this.sparkVel[i3 + 2] = Math.sin(ang) * out;
-      colors[i3] = hot.r; colors[i3 + 1] = hot.g; colors[i3 + 2] = hot.b;
+      pArr[i3] = Math.cos(ang) * 0.6;
+      pArr[i3 + 1] = 0.2 + Math.random() * 0.4;
+      pArr[i3 + 2] = Math.sin(ang) * 0.6;
+      sparkVel[i3] = Math.cos(ang) * out;
+      sparkVel[i3 + 1] = 3.5 + Math.random() * 4.0; // strong upward rush
+      sparkVel[i3 + 2] = Math.sin(ang) * out;
+      cArr[i3] = _castHot.r; cArr[i3 + 1] = _castHot.g; cArr[i3 + 2] = _castHot.b;
     }
-    this.sparkGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    this.sparkGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    this.sparkMat = new THREE.PointsMaterial({
-      size: 0.3, map: getSoftSparkTexture(), vertexColors: true, transparent: true, opacity: 1,
-      blending: THREE.AdditiveBlending, depthWrite: false,
-    });
-    this.sparks = new THREE.Points(this.sparkGeo, this.sparkMat);
-    this.sparks.userData.cannotReceiveAO = true;
-    this.group.add(this.sparks);
+    positions.needsUpdate = true;
+    colors.needsUpdate = true;
+    sparkMat.opacity = 1;
 
-    scene.add(this.group);
+    scene.add(group);
 
     // Brief tinted light so the cast actually illuminates the player + ground.
     this.light = _explosionLightAcquire ? _explosionLightAcquire() : null;
     if (this.light) {
-      this.light.color.copy(tint);
+      this.light.color.copy(_castTint);
       this.light.intensity = 26;
       this.light.distance = 22;
       this.light.position.set(position.x, 1.6, position.z);
@@ -1283,48 +1411,55 @@ export class AbilityCastEffect {
     this.age += delta;
     const t = this.age / this.life;
     if (t >= 1) return true;
+    const { ring, pillar, core, ringMat, pillarMat, coreMat, sparkMat, sparkGeo, sparkVel } = this.rig;
 
     // Ground ring sweeps out + fades.
     const rs = 0.6 + easeOut(t) * 5.4;
-    this.ring.scale.set(rs, 1, rs);
-    this.ringMat.opacity = 0.95 * (1 - t);
+    ring.scale.set(rs, 1, rs);
+    ringMat.opacity = 0.95 * (1 - t);
 
     // Pillar rises (scale.y up from the floor) then dissolves.
     const up = easeOut(Math.min(1, this.age / 0.3));
-    this.pillar.scale.set(0.6 + 0.5 * up, up, 0.6 + 0.5 * up);
-    this.pillarMat.opacity = 0.5 * Math.max(0, 1 - this.age / 0.45);
+    pillar.scale.set(0.6 + 0.5 * up, up, 0.6 + 0.5 * up);
+    pillarMat.opacity = 0.5 * Math.max(0, 1 - this.age / 0.45);
 
     // Core flash — quick punch out.
     const cs = 0.4 + easeOut(Math.min(1, this.age / 0.12)) * 1.3;
-    this.core.scale.setScalar(cs);
-    this.coreMat.opacity = Math.max(0, 1 - this.age / 0.2);
-    this.core.visible = this.coreMat.opacity > 0.01;
+    core.scale.setScalar(cs);
+    coreMat.opacity = Math.max(0, 1 - this.age / 0.2);
+    core.visible = coreMat.opacity > 0.01;
 
     // Sparks rise + spread under light gravity.
-    const pos = this.sparkGeo.getAttribute('position') as THREE.BufferAttribute;
+    const pos = sparkGeo.getAttribute('position') as THREE.BufferAttribute;
     const arr = pos.array as Float32Array;
-    for (let i = 0; i < this.sparkVel.length; i += 3) {
-      arr[i] += this.sparkVel[i] * delta;
-      arr[i + 1] += this.sparkVel[i + 1] * delta;
-      arr[i + 2] += this.sparkVel[i + 2] * delta;
-      this.sparkVel[i + 1] -= 6 * delta;
+    for (let i = 0; i < sparkVel.length; i += 3) {
+      arr[i] += sparkVel[i] * delta;
+      arr[i + 1] += sparkVel[i + 1] * delta;
+      arr[i + 2] += sparkVel[i + 2] * delta;
+      sparkVel[i + 1] -= 6 * delta;
     }
     pos.needsUpdate = true;
-    this.sparkMat.opacity = Math.max(0, 1 - t);
+    sparkMat.opacity = Math.max(0, 1 - t);
 
     if (this.light) this.light.intensity = 26 * Math.max(0, 1 - this.age / 0.28);
 
     return false;
   }
 
-  dispose(scene: THREE.Scene, disposeMaterials = true) {
-    scene.remove(this.group);
-    if (disposeMaterials) {
-      this.ringMat.dispose();
-      this.pillarMat.dispose();
-      this.coreMat.dispose();
-      this.sparkMat.dispose();
-      this.sparkGeo.dispose();
+  dispose(scene: THREE.Scene, _disposeMaterials = true) {
+    if (this._released) return; // idempotent — warmup teardown double-disposes
+    this._released = true;
+    scene.remove(this.rig.group);
+    // Return the rig (materials + spark buffers) to the bounded pool; keeping
+    // the materials alive also keeps their linked programs cached for the run.
+    if (_castRigPool.length < 8) {
+      _castRigPool.push(this.rig);
+    } else {
+      this.rig.ringMat.dispose();
+      this.rig.pillarMat.dispose();
+      this.rig.coreMat.dispose();
+      this.rig.sparkMat.dispose();
+      this.rig.sparkGeo.dispose();
     }
     if (this.light) {
       if (_explosionLightRelease) _explosionLightRelease(this.light);
@@ -1470,49 +1605,83 @@ function getImpactRingTexture(): THREE.CanvasTexture {
   return _impactRingTex;
 }
 
+// Pooled burst sprite pairs. The hit-confirm burst fires on EVERY landed round
+// — on autofire that was two fresh SpriteMaterials per hit, the single biggest
+// remaining per-hit allocation. A pair (core + ring sprite, each with its own
+// reusable material over the shared textures) is borrowed and re-tinted per
+// hit; colour is a uniform, so no new shader program is ever created.
+interface BurstPair { core: THREE.Sprite; ring: THREE.Sprite; }
+const _burstPairPool: BurstPair[] = [];
+function buildBurstPair(): BurstPair {
+  // depthTest off so the flash reads cleanly even though its centre sits at
+  // the body's mid-depth (the front faces would otherwise clip it); the
+  // sub-quarter-second life makes any "through cover" peek imperceptible.
+  const coreMat = new THREE.SpriteMaterial({
+    map: getImpactCoreTexture(),
+    color: 0xffffff,
+    transparent: true, opacity: 1,
+    blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false,
+    fog: false, toneMapped: false,
+  });
+  const core = new THREE.Sprite(coreMat);
+  core.renderOrder = 997;
+  core.userData.cannotReceiveAO = true;
+
+  const ringMat = new THREE.SpriteMaterial({
+    map: getImpactRingTexture(),
+    color: 0xffe6b0,
+    transparent: true, opacity: 1,
+    blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false,
+    fog: false, toneMapped: false,
+  });
+  const ring = new THREE.Sprite(ringMat);
+  ring.renderOrder = 996;
+  ring.userData.cannotReceiveAO = true;
+
+  return { core, ring };
+}
+
+/** Free every pooled impact-burst sprite pair (game teardown). */
+export function clearBurstPairPool(): void {
+  for (const p of _burstPairPool) {
+    (p.core.material as THREE.SpriteMaterial).dispose();
+    (p.ring.material as THREE.SpriteMaterial).dispose();
+  }
+  _burstPairPool.length = 0;
+}
+
+const _burstTint = new THREE.Color();
+const _burstWhite = new THREE.Color(0xffffff);
+
 export class ImpactBurst {
-  private core: THREE.Sprite;
-  private ring: THREE.Sprite;
+  private pair: BurstPair;
   private coreMat: THREE.SpriteMaterial;
   private ringMat: THREE.SpriteMaterial;
   private age = 0;
   private readonly life = 0.24;
   private readonly size: number;
+  private _released = false;
 
   constructor(scene: THREE.Scene, position: THREE.Vector3, color = 0xffe6b0, size = 1) {
     this.size = size;
-    const tint = new THREE.Color(color);
+    this.pair = _burstPairPool.pop() ?? buildBurstPair();
+    const { core, ring } = this.pair;
+    _burstTint.setHex(color);
 
-    // depthTest off so the flash reads cleanly even though its centre sits at
-    // the body's mid-depth (the front faces would otherwise clip it); the
-    // sub-quarter-second life makes any "through cover" peek imperceptible.
-    this.coreMat = new THREE.SpriteMaterial({
-      map: getImpactCoreTexture(),
-      color: tint.clone().lerp(new THREE.Color(0xffffff), 0.55),
-      transparent: true, opacity: 1,
-      blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false,
-      fog: false, toneMapped: false,
-    });
-    this.core = new THREE.Sprite(this.coreMat);
-    this.core.position.copy(position);
-    this.core.scale.setScalar(0.2 * size);
-    this.core.renderOrder = 997;
-    this.core.userData.cannotReceiveAO = true;
-    scene.add(this.core);
+    this.coreMat = core.material as THREE.SpriteMaterial;
+    this.coreMat.color.copy(_burstTint).lerp(_burstWhite, 0.55);
+    this.coreMat.opacity = 1;
+    core.visible = true;
+    core.position.copy(position);
+    core.scale.setScalar(0.2 * size);
+    scene.add(core);
 
-    this.ringMat = new THREE.SpriteMaterial({
-      map: getImpactRingTexture(),
-      color: tint,
-      transparent: true, opacity: 1,
-      blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false,
-      fog: false, toneMapped: false,
-    });
-    this.ring = new THREE.Sprite(this.ringMat);
-    this.ring.position.copy(position);
-    this.ring.scale.setScalar(0.3 * size);
-    this.ring.renderOrder = 996;
-    this.ring.userData.cannotReceiveAO = true;
-    scene.add(this.ring);
+    this.ringMat = ring.material as THREE.SpriteMaterial;
+    this.ringMat.color.copy(_burstTint);
+    this.ringMat.opacity = 1;
+    ring.position.copy(position);
+    ring.scale.setScalar(0.3 * size);
+    scene.add(ring);
   }
 
   update(delta: number): boolean {
@@ -1522,22 +1691,27 @@ export class ImpactBurst {
 
     // Core: snaps out big, then fades fast — the spark of contact.
     const coreT = Math.min(1, this.age / 0.1);
-    this.core.scale.setScalar((0.2 + 0.72 * easeOut(coreT)) * this.size);
+    this.pair.core.scale.setScalar((0.2 + 0.72 * easeOut(coreT)) * this.size);
     this.coreMat.opacity = Math.max(0, 1 - this.age / 0.1);
-    this.core.visible = this.coreMat.opacity > 0.01;
+    this.pair.core.visible = this.coreMat.opacity > 0.01;
 
     // Ring: sweeps outward + thins to nothing.
     const ringS = (0.3 + 2.0 * easeOut(t)) * this.size;
-    this.ring.scale.setScalar(ringS);
+    this.pair.ring.scale.setScalar(ringS);
     this.ringMat.opacity = 0.9 * Math.max(0, 1 - t);
 
     return false;
   }
 
-  dispose(scene: THREE.Scene, disposeMaterials = true) {
-    scene.remove(this.core);
-    scene.remove(this.ring);
-    if (disposeMaterials) {
+  dispose(scene: THREE.Scene, _disposeMaterials = true) {
+    if (this._released) return; // idempotent — warmup teardown double-disposes
+    this._released = true;
+    scene.remove(this.pair.core);
+    scene.remove(this.pair.ring);
+    // Return the pair to the bounded pool; overflow frees its materials.
+    if (_burstPairPool.length < 24) {
+      _burstPairPool.push(this.pair);
+    } else {
       this.coreMat.dispose();
       this.ringMat.dispose();
     }

@@ -156,9 +156,27 @@ export class AIBehaviorSystem {
     }
   }
 
+  /**
+   * Clamp a velocity-lead offset so the led aim point can never overshoot PAST
+   * the enemy. When the player sprints straight AT an enemy, an unclamped lead
+   * (velocity × seconds) lands BEHIND the robot — it would turn around and
+   * chase a phantom point away from the player for a beat (the reported
+   * "enemy turns its back when I run at it" bug). The lead is capped to stop
+   * `margin` metres short of the enemy along the player→enemy line.
+   * Returns the clamped lead scale (0..1) to apply to both axes.
+   */
+  private clampLeadScale(context: AIBehaviorContext, leadSeconds: number, margin: number): number {
+    const lx = context.playerVelocity.x * leadSeconds;
+    const lz = context.playerVelocity.z * leadSeconds;
+    const leadLen = Math.hypot(lx, lz);
+    if (leadLen < 1e-4) return 1;
+    const maxLead = Math.max(0, context.distanceToPlayer - margin);
+    return leadLen > maxLead ? maxLead / leadLen : 1;
+  }
+
   /** ATTACK — close the last few metres onto the (slightly led) player. */
   private buildAttack(context: AIBehaviorContext) {
-    const lead = 0.28;
+    const lead = 0.28 * this.clampLeadScale(context, 0.28, 1.4);
     this._target.set(
       context.playerPosition.x + context.playerVelocity.x * lead,
       0,
@@ -178,7 +196,12 @@ export class AIBehaviorSystem {
    */
   private buildHunt(context: AIBehaviorContext) {
     const dist = context.distanceToPlayer;
-    const lead = Math.min(dist * 0.05, 2.0);
+    // Lead the runner — but clamped so a player charging AT this enemy can't
+    // push the led point past/behind it (see clampLeadScale). At full sprint
+    // the raw lead (speed × up-to-2s) easily exceeded the actual gap, which
+    // made the enemy briefly turn and walk AWAY from an approaching player.
+    const rawLead = Math.min(dist * 0.05, 2.0);
+    const lead = rawLead * this.clampLeadScale(context, rawLead, 2.5);
     const px = context.playerPosition.x + context.playerVelocity.x * lead;
     const pz = context.playerPosition.z + context.playerVelocity.z * lead;
 

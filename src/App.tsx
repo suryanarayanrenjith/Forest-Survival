@@ -4,7 +4,7 @@ import { GraduationCap, Play, Home, MousePointerClick, ShieldAlert } from 'lucid
 import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
 import { GunModel, type WeaponType as GunWeaponType } from './utils/GunModel';
-import { MuzzleFlash, MuzzleSmoke, BulletTracer, ImpactEffect, RobotHitSparks, ExplosionEffect, FireNovaEffect, NukeEffect, AbilityCastEffect, ImpactBurst, setMuzzleLightPool, setExplosionLightPool, clearParticleGeometryPools, clearTracerGeometryPool, clearFlashSpritePool, getSoftSparkTexture } from './utils/Effects';
+import { MuzzleFlash, MuzzleSmoke, BulletTracer, ImpactEffect, RobotHitSparks, ExplosionEffect, FireNovaEffect, NukeEffect, AbilityCastEffect, ImpactBurst, setMuzzleLightPool, setExplosionLightPool, clearParticleGeometryPools, clearTracerGeometryPool, clearFlashSpritePool, clearSmokeSpritePool, clearExplosionRigPool, clearCastRigPool, clearBurstPairPool, getSoftSparkTexture } from './utils/Effects';
 import { HackBeam, buildHackVisuals, updateHackVisuals, disposeHackVisuals } from './utils/HackVisuals';
 import { soundManager } from './utils/SoundManager';
 import { ambientMusic } from './utils/AmbientMusicSystem';
@@ -3351,29 +3351,49 @@ const ForestSurvivalGame = () => {
     });
     const _casRight = new THREE.Vector3();
     const _casFwd = new THREE.Vector3();
+    // Recycled casing records — one brass casing per trigger pull means a
+    // per-shot `new Mesh` + Vector3s on autofire; the free-list makes sustained
+    // fire allocation-free (a minigun cycles the same ≤40 records forever).
+    const _casingFreeList: ShellCasing[] = [];
+    const releaseCasing = (c: ShellCasing) => {
+      scene.remove(c.mesh);
+      if (_casingFreeList.length < MAX_CASINGS) _casingFreeList.push(c);
+    };
     const ejectShellCasing = () => {
       if (shellCasings.length >= MAX_CASINGS) {
         const old = shellCasings.shift();
-        if (old) scene.remove(old.mesh);
+        if (old) releaseCasing(old);
       }
       _casRight.set(1, 0, 0).applyQuaternion(camera.quaternion);
       _casFwd.set(0, 0, -1).applyQuaternion(camera.quaternion);
-      const m = new THREE.Mesh(casingGeo, casingMat);
+      const c = _casingFreeList.pop();
+      const m = c ? c.mesh : new THREE.Mesh(casingGeo, casingMat);
+      m.scale.setScalar(1); // undo the shrink-out from a recycled casing
       m.position.copy(camera.position)
         .addScaledVector(_casRight, 0.32)
         .addScaledVector(_casFwd, 0.55);
       m.position.y -= 0.22;
       m.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
       scene.add(m);
-      const vel = _casRight.clone().multiplyScalar(1.7 + Math.random() * 0.9);
-      vel.y = 2.1 + Math.random() * 1.1;
-      vel.addScaledVector(_casFwd, (Math.random() - 0.5) * 0.7);
-      shellCasings.push({
-        mesh: m,
-        vel,
-        spin: new THREE.Vector3((Math.random() - 0.5) * 20, (Math.random() - 0.5) * 20, (Math.random() - 0.5) * 20),
-        life: 2.4,
-      });
+      if (c) {
+        c.vel.copy(_casRight).multiplyScalar(1.7 + Math.random() * 0.9);
+        c.vel.y = 2.1 + Math.random() * 1.1;
+        c.vel.addScaledVector(_casFwd, (Math.random() - 0.5) * 0.7);
+        c.spin.set((Math.random() - 0.5) * 20, (Math.random() - 0.5) * 20, (Math.random() - 0.5) * 20);
+        c.life = 2.4;
+        c.bounced = false;
+        shellCasings.push(c);
+      } else {
+        const vel = _casRight.clone().multiplyScalar(1.7 + Math.random() * 0.9);
+        vel.y = 2.1 + Math.random() * 1.1;
+        vel.addScaledVector(_casFwd, (Math.random() - 0.5) * 0.7);
+        shellCasings.push({
+          mesh: m,
+          vel,
+          spin: new THREE.Vector3((Math.random() - 0.5) * 20, (Math.random() - 0.5) * 20, (Math.random() - 0.5) * 20),
+          life: 2.4,
+        });
+      }
     };
 
     // ── Bullet shatter shards (deflection debris) ──
@@ -3401,16 +3421,28 @@ const ForestSurvivalGame = () => {
     const _shardDir = new THREE.Vector3();
     // Scatter shards off an impact at `pos`, deflecting back along `-shotDir`
     // (the direction the round was travelling) with a wide upward cone.
+    // Recycled shard records (mesh + velocity/spin vectors). Impact feedback
+    // shatters 5–8 shards on EVERY landed round — per-hit `new Mesh` + two
+    // `new Vector3`s was steady autofire heap churn. Records go back to this
+    // free-list when a shard expires or is evicted; geometry is re-picked from
+    // the shared set on reuse so recycled shards still vary in shape.
+    const _shardFreeList: BulletShard[] = [];
+    const releaseShard = (s: BulletShard) => {
+      scene.remove(s.mesh);
+      if (_shardFreeList.length < MAX_SHARDS) _shardFreeList.push(s);
+    };
     const spawnBulletShards = (pos: THREE.Vector3, shotDir: THREE.Vector3, count: number) => {
       // Deflection bias points back toward the shooter + slightly up.
       _shardDir.copy(shotDir).normalize().multiplyScalar(-1);
       for (let s = 0; s < count; s++) {
         if (bulletShards.length >= MAX_SHARDS) {
           const old = bulletShards.shift();
-          if (old) scene.remove(old.mesh);
+          if (old) releaseShard(old);
         }
         const geo = shardGeos[(Math.random() * shardGeos.length) | 0];
-        const m = new THREE.Mesh(geo, shardMat);
+        const shard = _shardFreeList.pop();
+        const m = shard ? shard.mesh : new THREE.Mesh(geo, shardMat);
+        m.geometry = geo;
         m.castShadow = false;
         m.position.copy(pos);
         m.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
@@ -3421,24 +3453,49 @@ const ForestSurvivalGame = () => {
         // kick so fragments arc before falling.
         const spread = 2.6;
         const speed = 2.4 + Math.random() * 3.2;
-        const vel = new THREE.Vector3(
-          _shardDir.x * speed + (Math.random() - 0.5) * spread,
-          1.8 + Math.random() * 2.6,
-          _shardDir.z * speed + (Math.random() - 0.5) * spread,
-        );
-        bulletShards.push({
-          mesh: m,
-          vel,
-          spin: new THREE.Vector3((Math.random() - 0.5) * 26, (Math.random() - 0.5) * 26, (Math.random() - 0.5) * 26),
-          life: 1.3 + Math.random() * 0.5,
-          restY: 0.03 + Math.random() * 0.04,
-          scale: sc,
-        });
+        if (shard) {
+          shard.vel.set(
+            _shardDir.x * speed + (Math.random() - 0.5) * spread,
+            1.8 + Math.random() * 2.6,
+            _shardDir.z * speed + (Math.random() - 0.5) * spread,
+          );
+          shard.spin.set((Math.random() - 0.5) * 26, (Math.random() - 0.5) * 26, (Math.random() - 0.5) * 26);
+          shard.life = 1.3 + Math.random() * 0.5;
+          shard.restY = 0.03 + Math.random() * 0.04;
+          shard.scale = sc;
+          bulletShards.push(shard);
+        } else {
+          bulletShards.push({
+            mesh: m,
+            vel: new THREE.Vector3(
+              _shardDir.x * speed + (Math.random() - 0.5) * spread,
+              1.8 + Math.random() * 2.6,
+              _shardDir.z * speed + (Math.random() - 0.5) * spread,
+            ),
+            spin: new THREE.Vector3((Math.random() - 0.5) * 26, (Math.random() - 0.5) * 26, (Math.random() - 0.5) * 26),
+            life: 1.3 + Math.random() * 0.5,
+            restY: 0.03 + Math.random() * 0.04,
+            scale: sc,
+          });
+        }
       }
     };
 
-    // Temporary explosion craters left by the rocket launcher
-    interface Crater { mesh: THREE.Object3D; life: number; maxLife: number; }
+    // Temporary explosion craters left by the rocket launcher. `rig` carries
+    // the pooled meshes/materials (see createCrater) so fade + recycling are
+    // direct field access rather than a scene traversal.
+    interface Crater {
+      mesh: THREE.Object3D;
+      rig: {
+        group: THREE.Group;
+        scorchMat: THREE.MeshStandardMaterial;
+        ringMat: THREE.MeshStandardMaterial;
+        debrisMat: THREE.MeshStandardMaterial;
+        chunks: THREE.Mesh[];
+      };
+      life: number;
+      maxLife: number;
+    }
     const craters: Crater[] = [];
 
     // ── REMOTE PLAYERS (multiplayer only) ─────────────────────────────────
@@ -3598,6 +3655,10 @@ const ForestSurvivalGame = () => {
         });
         bulletOuterGlowMatCache.set(cacheKey, outerGlowMat);
       }
+      // Recycle a retired projectile visual when one is available — a Group +
+      // 3 glow meshes per round is real heap churn on autofire weapons.
+      const pooled = _bulletMeshPool.pop();
+      if (pooled) return pooled;
       const group = new THREE.Group();
       const outerGlow = new THREE.Mesh(sharedBulletOuterGlowGeo, outerGlowMat);
       const innerGlow = new THREE.Mesh(sharedBulletInnerGlowGeo, innerGlowMat);
@@ -3613,6 +3674,16 @@ const ForestSurvivalGame = () => {
       group.add(core);
       group.userData.cannotReceiveAO = true;
       return group;
+    };
+    // Free-list of retired bullet visuals (geo/materials all shared, so a
+    // pooled group is fully inert). Rockets are NOT pooled — they carry
+    // per-instance exhaust parts and detonate rarely enough not to matter.
+    const _bulletMeshPool: THREE.Group[] = [];
+    const retireBulletMesh = (b: { mesh: THREE.Object3D; isRocket?: boolean }) => {
+      scene.remove(b.mesh);
+      if (!b.isRocket && _bulletMeshPool.length < 40) {
+        _bulletMeshPool.push(b.mesh as THREE.Group);
+      }
     };
 
     // ── REVENANT PHYSICAL GOLD SHIELD (its own look, NOT the player's riot
@@ -6191,6 +6262,13 @@ const ForestSurvivalGame = () => {
       return spread;
     };
 
+    // Scratch vectors for shoot() — the tracer endpoint, muzzle position and
+    // smoke direction are consumed (copied) inside the effect constructors, so
+    // reusing these removes three heap allocations per trigger pull.
+    const _shotTracerEnd = new THREE.Vector3();
+    const _shotMuzzlePos = new THREE.Vector3();
+    const _shotSmokeDir = new THREE.Vector3();
+
     const shoot = () => {
       // Empty magazine — dry-fire click + auto-reload so pulling the trigger on
       // an empty mag actually does something instead of a dead click. The
@@ -6305,18 +6383,19 @@ const ForestSurvivalGame = () => {
             isRocket: isLauncher,
           });
 
-          // Bullet tracer — rockets skip it (they trail their own exhaust glow)
+          // Bullet tracer — rockets skip it (they trail their own exhaust glow).
+          // BulletTracer copies both endpoints into its pooled geometry in the
+          // constructor, so passing scratch/live vectors is allocation-free.
           if (!isLauncher) {
-            const tracerEnd = camera.position.clone().add(direction.clone().multiplyScalar(50));
-            const tracer = new BulletTracer(scene, camera.position.clone(), tracerEnd, weapon.bulletColor);
+            _shotTracerEnd.copy(camera.position).addScaledVector(direction, 50);
+            const tracer = new BulletTracer(scene, camera.position, _shotTracerEnd, weapon.bulletColor);
             bulletTracers.push(tracer);
           }
         }
 
-        // Muzzle flash at gun position
-        const gunWorldPos = new THREE.Vector3();
-        gunModel.group.getWorldPosition(gunWorldPos);
-        const flash = new MuzzleFlash(scene, gunWorldPos, weapon.bulletColor);
+        // Muzzle flash at gun position (scratch — MuzzleFlash copies it)
+        gunModel.group.getWorldPosition(_shotMuzzlePos);
+        const flash = new MuzzleFlash(scene, _shotMuzzlePos, weapon.bulletColor);
         muzzleFlashes.push(flash);
 
         // Lingering muzzle smoke — a soft grey wisp drifting up off the barrel.
@@ -6332,9 +6411,8 @@ const ForestSurvivalGame = () => {
               const oldPuff = muzzleSmokePuffs.shift();
               if (oldPuff) oldPuff.dispose(scene);
             }
-            const smokeDir = new THREE.Vector3();
-            camera.getWorldDirection(smokeDir);
-            muzzleSmokePuffs.push(new MuzzleSmoke(scene, gunWorldPos, smokeDir));
+            camera.getWorldDirection(_shotSmokeDir);
+            muzzleSmokePuffs.push(new MuzzleSmoke(scene, _shotMuzzlePos, _shotSmokeDir));
           }
         }
 
@@ -7539,8 +7617,22 @@ const ForestSurvivalGame = () => {
     const sharedCraterRingGeo = new THREE.RingGeometry(3.1, 4.85, 28);
     const sharedCraterDebrisGeo = new THREE.BoxGeometry(1, 0.7, 1);
 
-    const createCrater = (pos: THREE.Vector3) => {
-      const crater = new THREE.Group();
+    // Pooled crater rigs. Every blast used to build 3 fresh MeshStandardMaterials
+    // + 12 meshes, then dispose them (INCLUDING the shared geometries — which
+    // silently forced a GPU re-upload for every crater still alive). A rig is
+    // borrowed whole; the debris ring is re-randomised on acquire so each blast
+    // still looks unique. Materials live in the rig, so fade writes are direct
+    // (no per-frame traverse) and shared geometries are never disposed mid-run.
+    interface CraterRig {
+      group: THREE.Group;
+      scorchMat: THREE.MeshStandardMaterial;
+      ringMat: THREE.MeshStandardMaterial;
+      debrisMat: THREE.MeshStandardMaterial;
+      chunks: THREE.Mesh[];
+    }
+    const _craterRigPool: CraterRig[] = [];
+    const buildCraterRig = (): CraterRig => {
+      const group = new THREE.Group();
       const scorchMat = new THREE.MeshStandardMaterial({
         color: 0x070604, roughness: 1, metalness: 0,
         transparent: true, opacity: 0.92, depthWrite: false,
@@ -7548,7 +7640,7 @@ const ForestSurvivalGame = () => {
       const scorch = new THREE.Mesh(sharedCraterScorchGeo, scorchMat);
       scorch.rotation.x = -Math.PI / 2;
       scorch.receiveShadow = true;
-      crater.add(scorch);
+      group.add(scorch);
       const ringMat = new THREE.MeshStandardMaterial({
         color: 0x241509, roughness: 1,
         transparent: true, opacity: 0.85, depthWrite: false, side: THREE.DoubleSide,
@@ -7556,31 +7648,37 @@ const ForestSurvivalGame = () => {
       const ring = new THREE.Mesh(sharedCraterRingGeo, ringMat);
       ring.rotation.x = -Math.PI / 2;
       ring.position.y = 0.03;
-      crater.add(ring);
-      // Debris chunks thrown up around the rim — shared unit box, scaled per chunk
+      group.add(ring);
       const debrisMat = new THREE.MeshStandardMaterial({
         color: 0x1c1206, roughness: 0.95, transparent: true, opacity: 1,
       });
+      const chunks: THREE.Mesh[] = [];
       for (let d = 0; d < 10; d++) {
-        const a = (d / 10) * Math.PI * 2 + Math.random() * 0.5;
+        const chunk = new THREE.Mesh(sharedCraterDebrisGeo, debrisMat);
+        chunk.castShadow = true;
+        group.add(chunk);
+        chunks.push(chunk);
+      }
+      return { group, scorchMat, ringMat, debrisMat, chunks };
+    };
+    const createCrater = (pos: THREE.Vector3) => {
+      const rig = _craterRigPool.pop() ?? buildCraterRig();
+      // Re-randomise the debris ring so a recycled crater reads as a new blast.
+      for (let d = 0; d < rig.chunks.length; d++) {
+        const chunk = rig.chunks[d];
+        const a = (d / rig.chunks.length) * Math.PI * 2 + Math.random() * 0.5;
         const r = 3 + Math.random() * 1.9;
         const s = 0.3 + Math.random() * 0.55;
-        const chunk = new THREE.Mesh(sharedCraterDebrisGeo, debrisMat);
         chunk.scale.setScalar(s);
         chunk.position.set(Math.cos(a) * r, s * 0.3, Math.sin(a) * r);
         chunk.rotation.set(Math.random(), Math.random(), Math.random());
-        chunk.castShadow = true;
-        crater.add(chunk);
       }
-      // Remember each part's starting opacity so the fade-out is proportional
-      crater.traverse((o) => {
-        if (o instanceof THREE.Mesh && !Array.isArray(o.material)) {
-          o.material.userData.baseOpacity = (o.material as THREE.Material & { opacity: number }).opacity;
-        }
-      });
-      crater.position.set(pos.x, 0.06, pos.z);
-      scene.add(crater);
-      craters.push({ mesh: crater, life: 10, maxLife: 10 });
+      rig.scorchMat.opacity = 0.92;
+      rig.ringMat.opacity = 0.85;
+      rig.debrisMat.opacity = 1;
+      rig.group.position.set(pos.x, 0.06, pos.z);
+      scene.add(rig.group);
+      craters.push({ mesh: rig.group, rig, life: 10, maxLife: 10 });
     };
 
     // ── BATTLE-DAMAGE STAMPING ───────────────────────────────────────────
@@ -10015,7 +10113,7 @@ const ForestSurvivalGame = () => {
         // Shrink away in the final 0.4s (shared material → no per-mesh opacity).
         if (c.life < 0.4) c.mesh.scale.setScalar(Math.max(0.02, c.life / 0.4));
         if (c.life <= 0) {
-          scene.remove(c.mesh);
+          releaseCasing(c); // back to the free-list — no per-casing GC
           shellCasings.splice(i, 1);
         }
       }
@@ -10043,7 +10141,7 @@ const ForestSurvivalGame = () => {
         // Shrink out in the last 0.35s (shared material → no per-mesh opacity).
         if (s.life < 0.35) s.mesh.scale.setScalar(Math.max(0.01, s.scale * (s.life / 0.35)));
         if (s.life <= 0) {
-          scene.remove(s.mesh);
+          releaseShard(s); // back to the free-list — no per-shard GC
           bulletShards.splice(i, 1);
         }
       }
@@ -10064,31 +10162,29 @@ const ForestSurvivalGame = () => {
         }
       }
 
-      // Update explosion craters — fade out, then dispose
+      // Update explosion craters — fade out, then recycle the rig. NEVER
+      // dispose here: the geometries are shared session-long, and the rig's
+      // materials go back to the pool (bounded; overflow frees materials only).
       for (let i = craters.length - 1; i >= 0; i--) {
         const crater = craters[i];
         crater.life -= rawDelta;
         if (crater.life <= 0) {
-          crater.mesh.traverse((o) => {
-            if (o instanceof THREE.Mesh) {
-              o.geometry.dispose();
-              const m = o.material;
-              if (Array.isArray(m)) m.forEach((mm) => mm.dispose());
-              else m.dispose();
-            }
-          });
           scene.remove(crater.mesh);
+          if (_craterRigPool.length < 8) {
+            _craterRigPool.push(crater.rig);
+          } else {
+            crater.rig.scorchMat.dispose();
+            crater.rig.ringMat.dispose();
+            crater.rig.debrisMat.dispose();
+          }
           craters.splice(i, 1);
           continue;
         }
         // Hold fully visible for the first 70%, then fade over the last 30%
         const fadeT = Math.min(1, crater.life / (crater.maxLife * 0.3));
-        crater.mesh.traverse((o) => {
-          if (o instanceof THREE.Mesh && !Array.isArray(o.material)) {
-            const mat = o.material as THREE.Material & { opacity: number };
-            mat.opacity = (mat.userData.baseOpacity ?? 1) * fadeT;
-          }
-        });
+        crater.rig.scorchMat.opacity = 0.92 * fadeT;
+        crater.rig.ringMat.opacity = 0.85 * fadeT;
+        crater.rig.debrisMat.opacity = fadeT;
       }
 
       // Apply camera shake effect — honours the Screen Shake setting. When the
@@ -10340,7 +10436,7 @@ const ForestSurvivalGame = () => {
           }
           if (hitTerrain) {
             explodeRocket(rp.clone(), bullet.damage);
-            scene.remove(bullet.mesh);
+            retireBulletMesh(bullet);
             bullets.splice(i, 1);
             continue;
           }
@@ -10349,7 +10445,7 @@ const ForestSurvivalGame = () => {
         if (bullet.life <= 0) {
           // A rocket that runs out of range still detonates where it stops
           if (bullet.isRocket) explodeRocket(bullet.mesh.position.clone(), bullet.damage);
-          scene.remove(bullet.mesh);
+          retireBulletMesh(bullet);
           bullets.splice(i, 1);
           continue;
         }
@@ -10379,7 +10475,7 @@ const ForestSurvivalGame = () => {
               triggerKillFlash();
               updateGameState();
             }
-            scene.remove(bullet.mesh);
+            retireBulletMesh(bullet);
             bullets.splice(i, 1);
             bulletHitSentinel = true;
             break;
@@ -10409,7 +10505,7 @@ const ForestSurvivalGame = () => {
             // Rockets still trigger their own AOE in addition to the barrel
             // detonation (a rocket landing on a barrel should feel huge).
             if (bullet.isRocket) explodeRocket(bullet.mesh.position.clone(), bullet.damage);
-            scene.remove(bullet.mesh);
+            retireBulletMesh(bullet);
             bullets.splice(i, 1);
             bulletHitBarrel = true;
             break;
@@ -10560,7 +10656,7 @@ const ForestSurvivalGame = () => {
             // Rockets explode on first contact — the blast handles all damage
             if (bullet.isRocket) {
               explodeRocket(bullet.mesh.position.clone(), bullet.damage);
-              scene.remove(bullet.mesh);
+              retireBulletMesh(bullet);
               bullets.splice(i, 1);
               bulletConsumed = true;
               break;
@@ -10621,7 +10717,7 @@ const ForestSurvivalGame = () => {
               // the shield drops (its open window) or shatter it with a blast.
               // Consume the round + bail BEFORE any damage/feedback below.
               pingRevShield(enemy, bullet.mesh.position);
-              scene.remove(bullet.mesh);
+              retireBulletMesh(bullet);
               bullets.splice(i, 1);
               bulletConsumed = true;
               break;
@@ -10652,7 +10748,7 @@ const ForestSurvivalGame = () => {
                 showPowerMessage('BOSS ENRAGED', 2400);
               }
             }
-            scene.remove(bullet.mesh);
+            retireBulletMesh(bullet);
             bullets.splice(i, 1);
 
             // 🤖 Record hit for AI systems (recordHit, NOT recordShot — the
@@ -10776,7 +10872,7 @@ const ForestSurvivalGame = () => {
             impactBursts.push(new ImpactBurst(scene, _tempVec3.clone(), 0xcbb890, 0.6));
           }
           soundManager.play('hit', 0.3);
-          scene.remove(bullet.mesh);
+          retireBulletMesh(bullet);
           bullets.splice(i, 1);
         }
       }
@@ -11517,6 +11613,17 @@ const ForestSurvivalGame = () => {
             let faceX: number, faceZ: number;
             if (movedLen > 0.0005 && distance > ENGAGE_FACE_DIST) { faceX = movedX; faceZ = movedZ; }
             else { faceX = focusPos.x - enemy.mesh.position.x; faceZ = focusPos.z - enemy.mesh.position.z; }
+            // Never show the player your back mid-hunt: if the travel step
+            // points AWAY from a visible player who's already close (a stale
+            // throttled AI target, dodge or separation shove can do this for a
+            // frame or two when the player charges in), square up to the player
+            // instead — the stride keeps playing, so it reads as a backpedal
+            // rather than the old "turns around for a moment" glitch.
+            if (canSeePlayer && distance < 20 && movedLen > 0.0005) {
+              const toPX = focusPos.x - enemy.mesh.position.x;
+              const toPZ = focusPos.z - enemy.mesh.position.z;
+              if (faceX * toPX + faceZ * toPZ < 0) { faceX = toPX; faceZ = toPZ; }
+            }
             const targetAngle = Math.atan2(faceX, faceZ);
             let angleDiff = targetAngle - enemy.mesh.rotation.y;
             while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
@@ -12888,10 +12995,25 @@ const ForestSurvivalGame = () => {
 
       // Free the recycled impact/spark particle + tracer geometries and flash
       // sprites so the pooled buffers don't carry across a remount into a fresh
-      // WebGL context.
+      // WebGL context. (The smoke/explosion/cast/burst pools are cleared further
+      // down, AFTER the in-flight effect arrays dispose into them.)
       clearParticleGeometryPools();
       clearTracerGeometryPool();
       clearFlashSpritePool();
+
+      // Free the pooled + live crater rigs (their geometries are the shared
+      // sharedCrater* set disposed just below).
+      for (const c of craters) {
+        scene.remove(c.mesh);
+        _craterRigPool.push(c.rig);
+      }
+      craters.length = 0;
+      for (const rig of _craterRigPool) {
+        rig.scorchMat.dispose();
+        rig.ringMat.dispose();
+        rig.debrisMat.dispose();
+      }
+      _craterRigPool.length = 0;
 
       // Cleanup bullet shatter shards (shared geos + material across all shards).
       for (const s of bulletShards) scene.remove(s.mesh);
@@ -12938,6 +13060,14 @@ const ForestSurvivalGame = () => {
         try { re.dispose(scene, true); } catch { /* best-effort */ }
       }
       warmupRetainedEffects.length = 0;
+
+      // NOW that every in-flight + retained effect has disposed (returning its
+      // pooled rig/sprite pair), empty the pools themselves so nothing carries
+      // across a remount into a freshly-created WebGL context.
+      clearSmokeSpritePool();
+      clearExplosionRigPool();
+      clearCastRigPool();
+      clearBurstPairPool();
 
       // Detach any in-flight head gibs (clones share pooled geo/mat — just
       // remove the clone objects from the scene).

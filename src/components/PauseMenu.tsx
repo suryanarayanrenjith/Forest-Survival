@@ -34,14 +34,17 @@ const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMe
 
   return (
     <div
-      className="absolute inset-0 flex items-center justify-center overflow-y-auto p-4 menu-overlay-in"
+      className="absolute inset-0 flex overflow-y-auto p-4 menu-overlay-in"
       style={{
         background: 'radial-gradient(ellipse at center, rgba(8,11,16,0.92) 0%, rgba(2,4,8,0.97) 100%)',
         backdropFilter: 'blur(12px)',
       }}
     >
       <div
-        className="relative w-full max-w-sm"
+        // m-auto (not parent items-center): centred when it fits, but on a
+        // short landscape-phone viewport the card scrolls from the TOP instead
+        // of clipping its header off-screen (flex-centred overflow bug).
+        className="relative m-auto w-full max-w-sm"
         style={{ animation: 'pmFade 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards' }}
       >
         {/* Header */}

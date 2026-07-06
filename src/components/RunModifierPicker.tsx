@@ -94,7 +94,7 @@ const RunModifierPicker = ({ options: initialOptions, onChoose, onBack }: RunMod
   }, [options, focusedIdx, onChoose, onBack]);
 
   return (
-    <div className="fixed inset-0 z-[90] flex items-center justify-center overflow-y-auto px-4 py-8">
+    <div className="fixed inset-0 z-[90] flex overflow-y-auto px-4 py-8">
       {/* The shared dark gradient chrome lives at App level (static, outside
           the menu transition). Only this screen's rose identity tint renders
           here — subtle enough that the slide doesn't read as a moving sheet. */}
@@ -102,7 +102,9 @@ const RunModifierPicker = ({ options: initialOptions, onChoose, onBack }: RunMod
         className="fixed inset-0 z-[1] pointer-events-none"
         style={{ background: 'radial-gradient(ellipse 55% 45% at center, rgba(248,113,113,0.20) 0%, transparent 62%)' }}
       />
-      <div className="relative z-20 w-full max-w-3xl">
+      {/* m-auto: centred when it fits, scrolls from the top on short landscape
+          phones instead of clipping the header (flex-centred overflow bug). */}
+      <div className="relative z-20 m-auto w-full max-w-3xl">
         {/* Header */}
         <div className="mb-7 text-center">
           <p className="font-hud text-[10px] font-bold uppercase tracking-[0.5em] text-rose-300/85">

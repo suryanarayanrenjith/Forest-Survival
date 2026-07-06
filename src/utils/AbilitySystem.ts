@@ -269,11 +269,16 @@ export class AbilitySystem {
     pillar.scale.set(0.55, 0.4, 0.55);
     group.add(pillar);
 
-    // Spark motes — arc up and outward, gravity-pulled.
+    // Spark motes — arc up and outward, gravity-pulled. Every mote fades on the
+    // SAME clock (opacity = 1 − t), so TWO shared materials (hot + base tint)
+    // serve the whole spray — the old one-material-per-mote version allocated
+    // ~16 extra materials per activation, pure heap churn mid-fight.
+    const moteMatHot = mk(colHot, 1);
+    const moteMatBase = mk(col, 1);
     const moteCount = Math.round(16 * intensity);
     const motes: { mesh: THREE.Mesh; vx: number; vy: number; vz: number }[] = [];
     for (let i = 0; i < moteCount; i++) {
-      const mote = new THREE.Mesh(BURST_GEO.mote, mk(Math.random() > 0.5 ? colHot : col, 1));
+      const mote = new THREE.Mesh(BURST_GEO.mote, Math.random() > 0.5 ? moteMatHot : moteMatBase);
       mote.position.y = 1.0 + Math.random() * 1.2;
       group.add(mote);
       const ang = Math.random() * Math.PI * 2;
@@ -320,7 +325,10 @@ export class AbilitySystem {
       pillar.position.y = 2.0 + e * 1.6;
       (pillar.material as THREE.MeshBasicMaterial).opacity = (1 - t) * 0.42;
 
-      // Motes: ballistic arcs, shrink + fade out.
+      // Motes: ballistic arcs, shrink + fade out (shared fade — one write for
+      // the two shared materials instead of one per mote).
+      moteMatHot.opacity = 1 - t;
+      moteMatBase.opacity = 1 - t;
       for (const m of motes) {
         m.vy -= 11 * dt;
         m.mesh.position.x += m.vx * dt;
@@ -328,7 +336,6 @@ export class AbilitySystem {
         m.mesh.position.z += m.vz * dt;
         const s = Math.max(0.01, 1 - t);
         m.mesh.scale.setScalar(s);
-        (m.mesh.material as THREE.MeshBasicMaterial).opacity = 1 - t;
       }
 
       if (t >= 1) {
@@ -348,14 +355,15 @@ export class AbilitySystem {
     const effect = new THREE.Group();
 
     switch (type) {
-      case 'dash':
-        // Speed lines
+      case 'dash': {
+        // Speed lines — one shared material for all 10 (identical colour +
+        // opacity, so per-line materials were pure allocation churn).
+        const material = new THREE.MeshBasicMaterial({
+          color: 0x00ffff,
+          transparent: true,
+          opacity: 0.6
+        });
         for (let i = 0; i < 10; i++) {
-          const material = new THREE.MeshBasicMaterial({
-            color: 0x00ffff,
-            transparent: true,
-            opacity: 0.6
-          });
           const line = new THREE.Mesh(FLARE_GEO.dash, material);
           line.position.set(
             Math.random() * 2 - 1,
@@ -365,6 +373,7 @@ export class AbilitySystem {
           effect.add(line);
         }
         break;
+      }
 
       case 'shield': {
         // Quick activation flare only — the persistent shield is a held mesh
@@ -380,15 +389,13 @@ export class AbilitySystem {
         break;
       }
 
-      case 'overcharge':
-        // Electric spark motes that pop on activation.
+      case 'overcharge': {
+        // Electric spark motes that pop on activation — two shared materials
+        // (gold + ember) instead of 18 throwaway ones.
+        const gold = new THREE.MeshBasicMaterial({ color: 0xffd23f, transparent: true, opacity: 0.9 });
+        const ember = new THREE.MeshBasicMaterial({ color: 0xff8a1e, transparent: true, opacity: 0.9 });
         for (let i = 0; i < 18; i++) {
-          const material = new THREE.MeshBasicMaterial({
-            color: Math.random() > 0.5 ? 0xffd23f : 0xff8a1e,
-            transparent: true,
-            opacity: 0.9,
-          });
-          const particle = new THREE.Mesh(FLARE_GEO.overcharge, material);
+          const particle = new THREE.Mesh(FLARE_GEO.overcharge, Math.random() > 0.5 ? gold : ember);
           particle.position.set(
             Math.random() * 2 - 1,
             Math.random() * 2,
@@ -397,6 +404,7 @@ export class AbilitySystem {
           effect.add(particle);
         }
         break;
+      }
 
       case 'explosive': {
         // Fire ring
