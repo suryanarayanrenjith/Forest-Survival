@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { useConvexAuth, useAuthActions } from '@convex-dev/auth/react';
 import { usePlayerData } from '../hooks/usePlayerData';
+import { useDeviceInfo } from '../hooks/useDeviceInfo';
 import SettingsMenu from './SettingsMenu';
 import CreditsMenu from './CreditsMenu';
 import AuthMenu from './AuthMenu';
@@ -54,7 +55,20 @@ const accentTile: Record<Accent, string> = {
   amber: 'border-amber-400/30 bg-amber-500/[0.1] group-hover:border-amber-300/55',
 };
 
+// Same repo the Credits screen links to — kept in sync with that "source of truth".
+const GITHUB_URL = 'https://github.com/suryanarayanrenjith/Forest-Survival';
+
+// lucide-react ships no brand/logo icons (GitHub's mark included), so the
+// canonical Octicons "mark-github" glyph is inlined here instead of pulling
+// in a whole extra icon package for one mark.
+const GithubMark = ({ className }: { className?: string }) => (
+  <svg viewBox="0 0 16 16" fill="currentColor" className={className} aria-hidden="true">
+    <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z" />
+  </svg>
+);
+
 const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode, onSkillTree }: MainMenuProps) => {
+  const { isTouch } = useDeviceInfo();
   const [showSettings, setShowSettings] = useState(false);
   const [showCredits, setShowCredits] = useState(false);
   const [showAuth, setShowAuth] = useState(false);
@@ -189,11 +203,51 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode, onSkillTre
         }
     : null;
 
+  // Hidden behind any full-screen overlay (Settings/Credits/Auth/Profile all
+  // paint above it at the same z-tier) so it never floats over a modal.
+  const menuIdle = !showSettings && !showCredits && !showAuth && !showProfile;
+
   return (
     <div className="relative w-full h-dvh overflow-hidden">
       {/* Backdrop chrome (dark gradients + themed tint) is rendered at App
           level OUTSIDE the menu transition so it stays static while this
           screen slides. Only the content below animates. */}
+
+      {/* Star on GitHub — top-right support CTA, placed where it's seen
+          immediately (not tucked in a corner below the fold). Opens the repo
+          in a new tab — GitHub's own Star control lives there; this app
+          can't star on the user's behalf without OAuth, so linking there is
+          the honest ask. Desktop: a 44px circle that expands into a labeled
+          pill on hover (real :hover only — gated behind isTouch so touch
+          devices, which have no true hover state and are prone to it
+          "sticking" after a tap, never get the expand treatment and always
+          render the plain icon).
+          The hover width is a `max-width` transition (44px → a generous
+          260px ceiling) rather than an animated fixed target width — the box
+          has no explicit `width`, so it always shrink-to-fits its actual
+          content and settles there well before the ceiling is reached. That
+          keeps the icon/text padding symmetric and leaves no dead space
+          after the label, regardless of exact font-metric rendering. */}
+      {menuIdle && (
+        <a
+          href={GITHUB_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="Star Forest Survival on GitHub"
+          className={
+            isTouch
+              ? 'fixed top-5 right-5 z-40 flex h-11 w-11 items-center justify-center overflow-hidden rounded-full border border-white/15 bg-black/55 backdrop-blur-md text-white/85 shadow-[0_8px_24px_-12px_rgba(0,0,0,0.6)] focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/70'
+              : 'group fixed top-5 right-5 z-40 flex h-11 max-w-[44px] items-center gap-2 overflow-hidden rounded-full border border-white/15 bg-black/55 px-[13px] backdrop-blur-md text-white/85 shadow-[0_8px_24px_-12px_rgba(0,0,0,0.6)] transition-all duration-300 ease-out hover:max-w-[260px] hover:-translate-y-0.5 hover:border-amber-400/45 hover:bg-amber-500/[0.14] hover:text-amber-200 hover:shadow-[0_10px_32px_-10px_rgba(251,191,36,0.55)] focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/70'
+          }
+        >
+          <GithubMark className="h-[18px] w-[18px] flex-shrink-0" />
+          {!isTouch && (
+            <span className="font-hud whitespace-nowrap text-xs font-bold uppercase tracking-wider opacity-0 transition-opacity duration-200 group-hover:opacity-100">
+              Star on GitHub
+            </span>
+          )}
+        </a>
+      )}
 
       {/* Main Screen — fills exactly one viewport. A responsive two-column
           layout (identity left / actions right) on large screens keeps every

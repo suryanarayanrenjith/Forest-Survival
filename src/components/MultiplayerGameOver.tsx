@@ -42,14 +42,14 @@ const MultiplayerGameOver = ({
 
   const teamStats = [
     { label: 'Total Kills', value: sortedPlayers.reduce((s, p) => s + p.kills, 0), color: '#fb923c' },
-    { label: 'Total Score', value: sortedPlayers.reduce((s, p) => s + p.score, 0), color: '#38bdf8' },
+    { label: 'Total Score', value: sortedPlayers.reduce((s, p) => s + p.score, 0), color: '#22d3ee' },
     { label: 'Survived', value: sortedPlayers.filter((p) => p.isAlive).length, color: '#34d399' },
     { label: 'Players', value: sortedPlayers.length, color: '#c084fc' },
   ];
 
   return (
     <div
-      className="fixed inset-0 flex items-center justify-center p-4"
+      className="fixed inset-0 flex items-center justify-center p-4 menu-overlay-in"
       style={{ zIndex: 200, background: 'rgba(5,8,10,0.95)', backdropFilter: 'blur(12px)' }}
     >
       <div

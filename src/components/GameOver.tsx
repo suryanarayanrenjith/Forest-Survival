@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react';
 import { Skull, Trophy, Crown, Waves, RotateCcw, Home } from 'lucide-react';
 
 interface GameOverProps {
@@ -49,19 +50,25 @@ const GameOver = ({ isVictory, score, enemiesKilled, wave, onRestart, onMainMenu
               ? <Crown className="w-6 h-6 sm:w-8 sm:h-8" style={{ color: accent }} strokeWidth={2} />
               : <Skull className="w-6 h-6 sm:w-8 sm:h-8" style={{ color: accent }} strokeWidth={2} />}
           </div>
+          <p className="font-hud text-[10px] tracking-[0.36em] font-semibold uppercase mb-1.5" style={{ color: `${accent}cc` }}>
+            {isVictory ? 'Run Complete' : 'Run Ended'}
+          </p>
           <h1
-            className="text-3xl sm:text-5xl font-bold tracking-[0.12em] uppercase"
+            className="font-display text-3xl sm:text-5xl font-semibold tracking-[0.1em] uppercase"
             style={{ color: accent }}
           >
             {isVictory ? 'Victory' : 'Game Over'}
           </h1>
-          <p className="mt-1.5 sm:mt-2 text-xs sm:text-sm font-semibold tracking-[0.2em] uppercase" style={{ color: rating.color }}>
+          <p className="font-hud mt-1.5 sm:mt-2 text-xs sm:text-sm font-semibold tracking-[0.2em] uppercase" style={{ color: rating.color }}>
             {rating.text}
           </p>
         </div>
 
         {/* Stats */}
-        <div className="rounded-2xl border border-white/10 bg-white/[0.03] backdrop-blur-md overflow-hidden mb-4 sm:mb-6">
+        <div
+          className="hud-frame rounded-2xl border bg-white/[0.03] backdrop-blur-md overflow-hidden mb-4 sm:mb-6"
+          style={{ borderColor: `${accent}26`, '--hud-bracket': `${accent}66` } as CSSProperties}
+        >
           {stats.map((s, i) => {
             const Icon = s.icon;
             return (
@@ -71,9 +78,9 @@ const GameOver = ({ isVictory, score, enemiesKilled, wave, onRestart, onMainMenu
               >
                 <div className="flex items-center gap-3">
                   <Icon className="w-[18px] h-[18px]" style={{ color: s.color }} strokeWidth={2.25} />
-                  <span className="text-xs font-semibold tracking-[0.15em] text-gray-400 uppercase">{s.label}</span>
+                  <span className="font-hud text-xs font-semibold tracking-[0.15em] text-gray-400 uppercase">{s.label}</span>
                 </div>
-                <span className="text-2xl font-bold text-white tabular-nums">{s.value}</span>
+                <span className="font-display text-2xl font-semibold text-white tabular-nums">{s.value}</span>
               </div>
             );
           })}
@@ -83,17 +90,18 @@ const GameOver = ({ isVictory, score, enemiesKilled, wave, onRestart, onMainMenu
         <div className="flex gap-3">
           <button
             onClick={onRestart}
-            className="group flex-1 flex items-center justify-center gap-2 rounded-xl px-4 py-3.5
-              border border-emerald-400/40 bg-emerald-500/15 text-emerald-300 font-bold tracking-wide
-              transition-all duration-200 hover:bg-emerald-500/25 hover:border-emerald-400/70"
+            className="font-hud group flex-1 flex items-center justify-center gap-2 rounded-xl px-4 py-3.5
+              text-sm font-bold uppercase tracking-wider text-[#04130a] transition-all duration-200
+              hover:-translate-y-0.5 hover:brightness-110"
+            style={{ background: 'linear-gradient(135deg, #34d399, #22c55e)', boxShadow: '0 12px 30px -12px rgba(46,232,180,0.6)' }}
           >
             <RotateCcw className="w-[18px] h-[18px] group-hover:-rotate-180 transition-transform duration-500" strokeWidth={2.25} />
             Restart
           </button>
           <button
             onClick={onMainMenu}
-            className="group flex-1 flex items-center justify-center gap-2 rounded-xl px-4 py-3.5
-              border border-white/10 bg-white/[0.04] text-gray-300 font-bold tracking-wide
+            className="font-hud group flex-1 flex items-center justify-center gap-2 rounded-xl px-4 py-3.5
+              border border-white/10 bg-white/[0.04] text-gray-300 text-sm font-bold uppercase tracking-wider
               transition-all duration-200 hover:bg-white/[0.08] hover:text-white hover:border-white/20"
           >
             <Home className="w-[18px] h-[18px]" strokeWidth={2.25} />

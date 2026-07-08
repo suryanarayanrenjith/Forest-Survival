@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react';
 import { Pause, Play, Heart, Crosshair, Skull, Waves, Trophy, Network, LogOut, ChevronRight, Lock, Camera } from 'lucide-react';
 
 interface PauseMenuProps {
@@ -52,8 +53,9 @@ const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMe
           <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl border border-white/10 bg-white/[0.04] mb-4">
             <Pause className="w-7 h-7 text-white" strokeWidth={2} fill="currentColor" />
           </div>
-          <h1 className="text-3xl font-bold tracking-[0.2em] text-white uppercase">Paused</h1>
-          <p className="mt-1.5 text-sm text-gray-500">
+          <p className="font-hud text-[10px] tracking-[0.36em] text-gray-400 font-semibold uppercase mb-1.5">Run Suspended</p>
+          <h1 className="font-display text-3xl font-semibold tracking-[0.1em] text-white uppercase">Paused</h1>
+          <p className="font-hud mt-1.5 text-xs text-gray-500">
             {isTouch ? (
               'Tap Resume to keep playing'
             ) : (
@@ -63,7 +65,10 @@ const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMe
         </div>
 
         {/* Stats card */}
-        <div className="rounded-2xl border border-white/10 bg-white/[0.03] backdrop-blur-md overflow-hidden mb-5">
+        <div
+          className="hud-frame rounded-2xl border border-emerald-400/15 bg-white/[0.03] backdrop-blur-md overflow-hidden mb-5"
+          style={{ '--hud-bracket': 'rgba(46,232,180,0.4)' } as CSSProperties}
+        >
           <div className="grid grid-cols-2">
             {stats.map((s, i) => {
               const Icon = s.icon;
@@ -74,8 +79,8 @@ const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMe
                 >
                   <Icon className="w-4 h-4 flex-shrink-0" style={{ color: s.color }} strokeWidth={2.25} />
                   <div className="min-w-0">
-                    <div className="text-[10px] font-semibold tracking-[0.15em] text-gray-500 uppercase">{s.label}</div>
-                    <div className="text-lg font-bold text-white tabular-nums leading-tight">{s.value}</div>
+                    <div className="font-hud text-[10px] font-semibold tracking-[0.15em] text-gray-500 uppercase">{s.label}</div>
+                    <div className="font-display text-lg font-semibold text-white tabular-nums leading-tight">{s.value}</div>
                   </div>
                 </div>
               );
@@ -85,9 +90,9 @@ const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMe
           <div className="flex items-center justify-between px-4 py-3 border-t border-white/[0.07] bg-white/[0.02]">
             <div className="flex items-center gap-2.5">
               <Trophy className="w-4 h-4 text-cyan-400" strokeWidth={2.25} />
-              <span className="text-[10px] font-semibold tracking-[0.15em] text-gray-400 uppercase">Score</span>
+              <span className="font-hud text-[10px] font-semibold tracking-[0.15em] text-gray-400 uppercase">Score</span>
             </div>
-            <span className="text-2xl font-bold text-cyan-300 tabular-nums">{score.toLocaleString()}</span>
+            <span className="font-display text-2xl font-semibold text-cyan-300 tabular-nums">{score.toLocaleString()}</span>
           </div>
         </div>
 
@@ -103,7 +108,7 @@ const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMe
               <span className="flex items-center justify-center w-9 h-9 rounded-lg bg-emerald-500/25">
                 <Play className="w-[18px] h-[18px] text-emerald-300" strokeWidth={2.5} fill="currentColor" />
               </span>
-              <span className="flex-1 text-left text-sm font-bold text-white tracking-wide">Resume</span>
+              <span className="font-display flex-1 text-left text-sm font-semibold uppercase tracking-wide text-white">Resume</span>
               <ChevronRight className="w-4 h-4 text-emerald-400/70 group-hover:translate-x-0.5 transition-all" strokeWidth={2} />
             </button>
           )}
@@ -118,8 +123,8 @@ const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMe
                   <Lock className="w-[18px] h-[18px] text-gray-400" strokeWidth={2} />
                 </span>
                 <span className="flex-1 text-left">
-                  <span className="block text-sm font-bold text-gray-300 tracking-wide">Skill Tree</span>
-                  <span className="block text-[11px] text-gray-500">Sign in to unlock</span>
+                  <span className="font-display block text-sm font-semibold uppercase tracking-wide text-gray-300">Skill Tree</span>
+                  <span className="font-hud block text-[11px] text-gray-500">Sign in to unlock</span>
                 </span>
               </div>
             ) : (
@@ -131,7 +136,7 @@ const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMe
                 <span className="flex items-center justify-center w-9 h-9 rounded-lg bg-violet-500/15">
                   <Network className="w-[18px] h-[18px] text-violet-400" strokeWidth={2} />
                 </span>
-                <span className="flex-1 text-left text-sm font-bold text-white tracking-wide">Skill Tree</span>
+                <span className="font-display flex-1 text-left text-sm font-semibold uppercase tracking-wide text-white">Skill Tree</span>
                 <ChevronRight className="w-4 h-4 text-gray-600 group-hover:text-gray-300 group-hover:translate-x-0.5 transition-all" strokeWidth={2} />
               </button>
             )
@@ -147,8 +152,8 @@ const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMe
                 <Camera className="w-[18px] h-[18px] text-emerald-400" strokeWidth={2} />
               </span>
               <span className="flex-1 text-left">
-                <span className="block text-sm font-bold text-white tracking-wide">Photo Mode</span>
-                <span className="block text-[11px] text-gray-500">Freeze the world & capture the shot</span>
+                <span className="font-display block text-sm font-semibold uppercase tracking-wide text-white">Photo Mode</span>
+                <span className="font-hud block text-[11px] text-gray-500">Freeze the world & capture the shot</span>
               </span>
               <ChevronRight className="w-4 h-4 text-gray-600 group-hover:text-gray-300 group-hover:translate-x-0.5 transition-all" strokeWidth={2} />
             </button>
@@ -162,7 +167,7 @@ const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMe
             <span className="flex items-center justify-center w-9 h-9 rounded-lg bg-red-500/15">
               <LogOut className="w-[18px] h-[18px] text-red-400" strokeWidth={2} />
             </span>
-            <span className="flex-1 text-left text-sm font-bold text-white tracking-wide">Main Menu</span>
+            <span className="font-display flex-1 text-left text-sm font-semibold uppercase tracking-wide text-white">Main Menu</span>
             <ChevronRight className="w-4 h-4 text-gray-600 group-hover:text-gray-300 group-hover:translate-x-0.5 transition-all" strokeWidth={2} />
           </button>
         </div>

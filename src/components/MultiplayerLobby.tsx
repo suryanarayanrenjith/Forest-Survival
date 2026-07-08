@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Users, ArrowLeft, Server, LogIn, Copy, SlidersHorizontal, Clock,
-  ChevronDown, Crown, Play, X, Loader2, Wifi, Check, UserRound,
+  ChevronDown, ChevronRight, Crown, Play, X, Loader2, Wifi, Check, UserRound,
   Trees, Flame, Snowflake, Mountain, Droplet, Shield, Leaf, Landmark,
   Crosshair, Skull, Cpu, Bot, Footprints, ShieldCheck, EyeOff, Flame as FlameIcon,
   HeartPulse, Wrench, Ghost, Lock, Sun, Moon, SunMoon, Smartphone, UserX, type LucideIcon,
@@ -625,7 +625,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
   // Layout-only — the dark tint + full-screen blur behind the lobby panels
   // is rendered statically at App level (outside the menu transition), so
   // the backdrop can't drift while this screen slides in/out.
-  const backdrop = 'fixed inset-0 z-50 flex items-center justify-center p-4 overflow-y-auto';
+  const backdrop = 'fixed inset-0 z-50 flex items-center justify-center p-4 overflow-y-auto menu-overlay-in';
   const backdropStyle = {} as const;
   // Transparent dark-green glass — uniform with the Solo/Tutorial menus so the
   // forest backdrop reads through, instead of the old opaque slab.
@@ -653,7 +653,8 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
           <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-sky-500/12 mb-3">
             <Lock className="w-6 h-6 text-sky-400" strokeWidth={2} />
           </div>
-          <h2 className="text-2xl font-bold text-white tracking-tight">Sign in to play</h2>
+          <p className="font-hud text-[10px] tracking-[0.35em] text-sky-400/90 font-semibold uppercase mb-1">Access Required</p>
+          <h2 className="font-display text-2xl font-semibold uppercase text-white tracking-wide">Sign in to play</h2>
           <p className="mt-2 text-sm text-gray-400">
             Multiplayer uses your account username. Please sign in from the main menu to host or join a game.
           </p>
@@ -690,29 +691,31 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
             <button
               onClick={() => handleChangeView('host')}
               className="group flex items-center gap-3 w-full rounded-xl px-4 py-3.5 border border-white/10
-                bg-white/[0.03] transition-all duration-200 hover:bg-emerald-500/[0.08] hover:border-emerald-400/50"
+                bg-white/[0.03] transition-all duration-200 hover:-translate-y-0.5 hover:bg-emerald-500/[0.08] hover:border-emerald-400/50"
             >
-              <span className="flex items-center justify-center w-9 h-9 rounded-lg bg-emerald-500/15">
+              <span className="flex items-center justify-center w-9 h-9 rounded-lg bg-emerald-500/15 flex-shrink-0">
                 <Server className="w-[18px] h-[18px] text-emerald-400" strokeWidth={2} />
               </span>
-              <span className="flex-1 text-left">
-                <span className="block text-sm font-bold text-white">Host Game</span>
-                <span className="block text-[11px] text-gray-500">Create a lobby for friends</span>
+              <span className="flex-1 text-left min-w-0">
+                <span className="font-display block text-sm font-semibold uppercase tracking-wide text-white">Host Game</span>
+                <span className="font-hud block text-[11px] text-gray-500">Create a lobby for friends</span>
               </span>
+              <ChevronRight className="w-4 h-4 text-gray-600 group-hover:text-gray-300 group-hover:translate-x-0.5 transition-all flex-shrink-0" strokeWidth={2} />
             </button>
 
             <button
               onClick={() => handleChangeView('join')}
               className="group flex items-center gap-3 w-full rounded-xl px-4 py-3.5 border border-white/10
-                bg-white/[0.03] transition-all duration-200 hover:bg-sky-500/[0.08] hover:border-sky-400/50"
+                bg-white/[0.03] transition-all duration-200 hover:-translate-y-0.5 hover:bg-sky-500/[0.08] hover:border-sky-400/50"
             >
-              <span className="flex items-center justify-center w-9 h-9 rounded-lg bg-sky-500/15">
+              <span className="flex items-center justify-center w-9 h-9 rounded-lg bg-sky-500/15 flex-shrink-0">
                 <LogIn className="w-[18px] h-[18px] text-sky-400" strokeWidth={2} />
               </span>
-              <span className="flex-1 text-left">
-                <span className="block text-sm font-bold text-white">Join Game</span>
-                <span className="block text-[11px] text-gray-500">Enter a lobby ID to connect</span>
+              <span className="flex-1 text-left min-w-0">
+                <span className="font-display block text-sm font-semibold uppercase tracking-wide text-white">Join Game</span>
+                <span className="font-hud block text-[11px] text-gray-500">Enter a lobby ID to connect</span>
               </span>
+              <ChevronRight className="w-4 h-4 text-gray-600 group-hover:text-gray-300 group-hover:translate-x-0.5 transition-all flex-shrink-0" strokeWidth={2} />
             </button>
 
             <button
@@ -785,7 +788,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
                 />
                 <button
                   onClick={copyLobbyId}
-                  className="flex items-center gap-1.5 rounded-xl px-3.5 py-2.5 text-xs font-bold text-[#04130a]
+                  className="font-hud flex items-center gap-1.5 rounded-xl px-3.5 py-2.5 text-xs font-bold uppercase tracking-wider text-[#04130a]
                     transition-all hover:-translate-y-0.5"
                   style={{ background: 'linear-gradient(135deg, #34d399, #22c55e)' }}
                 >
@@ -1006,7 +1009,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
                       ? 'Need at least 2 players'
                       : 'Every player must choose a character first')
                   : undefined}
-                className="flex-1 flex items-center justify-center gap-2 rounded-xl px-4 py-3 font-bold tracking-wide text-[#04130a]
+                className="font-hud flex-1 flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-bold uppercase tracking-wider text-[#04130a]
                   transition-all duration-200 enabled:hover:-translate-y-0.5 disabled:opacity-40 disabled:cursor-not-allowed"
                 style={{ background: 'linear-gradient(135deg, #34d399, #22c55e)' }}
               >
@@ -1015,7 +1018,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
               </button>
               <button
                 onClick={handleBack}
-                className="rounded-xl px-5 py-3 font-bold tracking-wide text-gray-400 border border-white/10
+                className="font-hud rounded-xl px-5 py-3 text-sm font-bold uppercase tracking-wider text-gray-400 border border-white/10
                   transition-colors hover:text-white hover:bg-white/[0.06]"
               >
                 Cancel
@@ -1062,7 +1065,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
             <button
               onClick={handleJoinLobby}
               disabled={isConnecting || !joinLobbyId.trim()}
-              className="flex items-center justify-center gap-2 w-full rounded-xl px-4 py-3 font-bold tracking-wide text-[#04131a]
+              className="font-hud flex items-center justify-center gap-2 w-full rounded-xl px-4 py-3 text-sm font-bold uppercase tracking-wider text-[#04131a]
                 transition-all duration-200 enabled:hover:-translate-y-0.5 disabled:opacity-40 disabled:cursor-not-allowed"
               style={{ background: 'linear-gradient(135deg, #38bdf8, #0ea5e9)' }}
             >

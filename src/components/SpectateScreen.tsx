@@ -58,18 +58,22 @@ const SpectateScreen = ({ localPlayer, alivePlayers, allPlayers, killerInfo, onM
 
   return (
     <div
-      className="fixed inset-0 flex items-center justify-center p-4"
+      className="fixed inset-0 flex items-center justify-center p-4 menu-overlay-in"
       style={{ zIndex: 150, background: 'rgba(6,9,13,0.86)', backdropFilter: 'blur(10px)' }}
     >
-      <div className="w-full max-w-3xl max-h-[94dvh] overflow-y-auto space-y-3">
+      <div
+        className="w-full max-w-3xl max-h-[94dvh] overflow-y-auto space-y-3"
+        style={{ animation: 'spFade 0.35s cubic-bezier(0.16,1,0.3,1) forwards' }}
+      >
         {/* Eliminated banner */}
         <div className="rounded-2xl border border-red-500/30 bg-red-500/[0.06] px-6 py-4 flex items-center gap-4">
           <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-red-500/15 flex-shrink-0">
             <Skull className="w-6 h-6 text-red-400" strokeWidth={2} />
           </div>
           <div className="min-w-0">
+            <p className="font-hud text-[10px] tracking-[0.34em] text-red-300/80 font-semibold uppercase mb-0.5">Spectating</p>
             <h1 className="font-display text-2xl sm:text-3xl font-semibold tracking-[0.08em] text-red-400 uppercase">Eliminated</h1>
-            <p className="text-xs text-gray-400 mt-0.5">
+            <p className="font-hud text-xs text-gray-400 mt-0.5">
               {killerInfo?.killerName
                 ? <>Taken down by <span className="text-gray-200 font-semibold">{killerInfo.killerName}</span> · </>
                 : null}
@@ -79,7 +83,7 @@ const SpectateScreen = ({ localPlayer, alivePlayers, allPlayers, killerInfo, onM
         </div>
 
         {/* === SPECTATOR VIEWER === */}
-        <div className="rounded-2xl border border-emerald-400/20 bg-white/[0.03] overflow-hidden">
+        <div className="hud-frame rounded-2xl border border-emerald-400/20 bg-white/[0.03] overflow-hidden">
           <div className="flex items-center justify-between px-5 py-2.5 border-b border-white/[0.07]">
             <div className="flex items-center gap-2">
               <span className="relative flex h-2 w-2">
@@ -139,7 +143,7 @@ const SpectateScreen = ({ localPlayer, alivePlayers, allPlayers, killerInfo, onM
                 {/* Live stats */}
                 <div className="grid grid-cols-4 gap-2">
                   <SpecStat icon={Crosshair} label="Kills" value={focused.kills} color="#fb923c" />
-                  <SpecStat icon={Star} label="Score" value={focused.score} color="#38bdf8" />
+                  <SpecStat icon={Star} label="Score" value={focused.score} color="#22d3ee" />
                   <SpecStat icon={Swords} label="K/D" value={calculateKD(focused.kills, focused.deaths)} color="#34d399" />
                   <SpecStat icon={Crosshair} label="Weapon" value={weaponLabel(focused.currentWeapon)} color="#c084fc" small />
                 </div>
@@ -227,6 +231,13 @@ const SpectateScreen = ({ localPlayer, alivePlayers, allPlayers, killerInfo, onM
           </button>
         </div>
       </div>
+
+      <style>{`
+        @keyframes spFade {
+          from { opacity: 0; transform: scale(0.97) translateY(12px); }
+          to { opacity: 1; transform: scale(1) translateY(0); }
+        }
+      `}</style>
     </div>
   );
 };

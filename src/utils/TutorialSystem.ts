@@ -17,6 +17,13 @@ import { detectIsTouch } from '../hooks/useDeviceInfo';
 
 export type TutorialCategory = 'basic' | 'combat' | 'movement' | 'abilities' | 'advanced' | 'multiplayer';
 
+// Public wiki, kept in sync with the "Star on GitHub" / Credits links (same
+// repo: github.com/suryanarayanrenjith/Forest-Survival). Each step below
+// deep-links to the wiki page (and section anchor, where one exists) that
+// covers it in full numeric detail, so a curious player can go deeper than
+// the short in-tutorial copy without leaving a reference behind.
+export const WIKI_BASE = 'https://github.com/suryanarayanrenjith/Forest-Survival/wiki';
+
 export interface TutorialStep {
   id: string;
   category: TutorialCategory;
@@ -32,6 +39,8 @@ export interface TutorialStep {
   timeCompleted?: number;
   highlightElement?: string; // UI element to highlight
   position?: 'top' | 'bottom' | 'center' | 'left' | 'right';
+  /** Deep link to the wiki page/section that documents this step in full. */
+  wikiUrl?: string;
 }
 
 export interface TutorialCondition {
@@ -96,7 +105,8 @@ export class TutorialSystem {
       completionCondition: { type: 'time', duration: 3000 },
       completed: false,
       skipped: false,
-      position: 'center'
+      position: 'center',
+      wikiUrl: `${WIKI_BASE}/Home`,
     });
 
     this.addStep({
@@ -122,7 +132,8 @@ export class TutorialSystem {
       completionCondition: { type: 'action', action: 'move', count: 30 },
       completed: false,
       skipped: false,
-      position: 'bottom'
+      position: 'bottom',
+      wikiUrl: `${WIKI_BASE}/Controls`,
     });
 
     this.addStep({
@@ -144,7 +155,8 @@ export class TutorialSystem {
       completionCondition: { type: 'action', action: 'look', count: 20 },
       completed: false,
       skipped: false,
-      position: 'top'
+      position: 'top',
+      wikiUrl: `${WIKI_BASE}/Controls`,
     });
 
     // COMBAT TUTORIAL
@@ -167,7 +179,8 @@ export class TutorialSystem {
       completionCondition: { type: 'action', action: 'shoot', count: 10 },
       completed: false,
       skipped: false,
-      position: 'center'
+      position: 'center',
+      wikiUrl: `${WIKI_BASE}/Controls#aim-and-firing`,
     });
 
     this.addStep({
@@ -187,7 +200,8 @@ export class TutorialSystem {
       completionCondition: { type: 'action', action: 'kill', count: 1 },
       completed: false,
       skipped: false,
-      position: 'top'
+      position: 'top',
+      wikiUrl: `${WIKI_BASE}/Enemies`,
     });
 
     this.addStep({
@@ -212,7 +226,8 @@ export class TutorialSystem {
       completed: false,
       skipped: false,
       highlightElement: 'ammo-display',
-      position: 'right'
+      position: 'right',
+      wikiUrl: `${WIKI_BASE}/Weapons#recoil-and-reloads`,
     });
 
     this.addStep({
@@ -234,7 +249,8 @@ export class TutorialSystem {
       completionCondition: { type: 'action', action: 'switch_weapon', count: 1 },
       completed: false,
       skipped: false,
-      position: 'right'
+      position: 'right',
+      wikiUrl: `${WIKI_BASE}/Weapons`,
     });
 
     // ABILITY TUTORIAL
@@ -260,7 +276,8 @@ export class TutorialSystem {
       completed: false,
       skipped: false,
       highlightElement: 'abilities-bar',
-      position: 'bottom'
+      position: 'bottom',
+      wikiUrl: `${WIKI_BASE}/Equipment#held-loot-powers`,
     });
 
     this.addStep({
@@ -284,7 +301,8 @@ export class TutorialSystem {
       completionCondition: { type: 'action', action: 'use_ability', count: 1 },
       completed: false,
       skipped: false,
-      position: 'bottom'
+      position: 'bottom',
+      wikiUrl: `${WIKI_BASE}/Characters#active-abilities`,
     });
 
     this.addStep({
@@ -302,7 +320,8 @@ export class TutorialSystem {
       completionCondition: { type: 'time', duration: 3000 },
       completed: false,
       skipped: false,
-      position: 'bottom'
+      position: 'bottom',
+      wikiUrl: `${WIKI_BASE}/Characters`,
     });
 
     // ADVANCED TUTORIAL
@@ -327,7 +346,8 @@ export class TutorialSystem {
       completionCondition: { type: 'action', action: 'collect_powerup', count: 1 },
       completed: false,
       skipped: false,
-      position: 'center'
+      position: 'center',
+      wikiUrl: `${WIKI_BASE}/Equipment`,
     });
 
     this.addStep({
@@ -346,7 +366,8 @@ export class TutorialSystem {
       completionCondition: { type: 'action', action: 'headshot', count: 1 },
       completed: false,
       skipped: false,
-      position: 'top'
+      position: 'top',
+      wikiUrl: `${WIKI_BASE}/Weapons#projectile-and-hit-behavior`,
     });
 
     this.addStep({
@@ -366,7 +387,8 @@ export class TutorialSystem {
       completed: false,
       skipped: false,
       highlightElement: 'combo-display',
-      position: 'left'
+      position: 'left',
+      wikiUrl: `${WIKI_BASE}/Gameplay#score-combo-and-streaks`,
     });
 
     this.addStep({
@@ -387,7 +409,8 @@ export class TutorialSystem {
       completionCondition: { type: 'time', duration: 8000 },
       completed: false,
       skipped: false,
-      position: 'center'
+      position: 'center',
+      wikiUrl: `${WIKI_BASE}/Enemies#visuals-death-and-weaknesses`,
     });
 
     // MULTIPLAYER TUTORIAL
@@ -407,7 +430,8 @@ export class TutorialSystem {
       completionCondition: { type: 'custom' },
       completed: false,
       skipped: false,
-      position: 'center'
+      position: 'center',
+      wikiUrl: `${WIKI_BASE}/Multiplayer`,
     });
 
     this.addStep({
@@ -426,7 +450,8 @@ export class TutorialSystem {
       completionCondition: { type: 'custom' },
       completed: false,
       skipped: false,
-      position: 'center'
+      position: 'center',
+      wikiUrl: `${WIKI_BASE}/Known-Features`,
     });
   }
 
@@ -486,13 +511,18 @@ export class TutorialSystem {
     this.actionCounts.set(action, currentCount + count);
 
     // Check if current step is completed
-    this.checkStepCompletion();
+    this.checkStepCompletion(action);
   }
 
   /**
-   * Check if current step is completed
+   * Check if current step is completed. `triggeringAction` is the action that
+   * was just recorded — required so an UNRELATED action (e.g. walking) can
+   * never satisfy a step waiting on something else (e.g. a kill) just because
+   * that other action happens to already be past its threshold from earlier
+   * in the session. `actionCounts` is also cleared on every step transition
+   * (see `nextStep`) as a second, independent guard against stale counts.
    */
-  private checkStepCompletion(): boolean {
+  private checkStepCompletion(triggeringAction: string): boolean {
     const step = this.getCurrentStep();
     if (!step || step.completed) return false;
 
@@ -501,7 +531,7 @@ export class TutorialSystem {
 
     switch (condition.type) {
       case 'action':
-        if (condition.action && condition.count) {
+        if (condition.action && condition.count && condition.action === triggeringAction) {
           const actionCount = this.actionCounts.get(condition.action) || 0;
           completed = actionCount >= condition.count;
         }
@@ -559,6 +589,10 @@ export class TutorialSystem {
   private nextStep(): void {
     if (this.state.currentStep < this.steps.length - 1) {
       this.state.currentStep++;
+      // Fresh slate for the new step — an action count left over from an
+      // earlier step (e.g. an incidental kill during shooting practice) must
+      // never let this step's OWN action requirement look pre-satisfied.
+      this.actionCounts.clear();
       const nextStep = this.getCurrentStep();
 
       if (nextStep) {

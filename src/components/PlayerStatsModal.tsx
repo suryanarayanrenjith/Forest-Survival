@@ -27,7 +27,7 @@ const PlayerStatsModal = ({ username, onClose }: PlayerStatsModalProps) => {
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center p-4"
+      className="fixed inset-0 z-[60] flex items-center justify-center p-4 menu-overlay-in"
       style={{ background: 'rgba(5,8,10,0.8)', backdropFilter: 'blur(10px)' }}
       onClick={onClose}
     >

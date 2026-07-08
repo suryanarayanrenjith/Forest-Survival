@@ -1,7 +1,7 @@
 import {
   Sparkles, Heart, Code2, ExternalLink, X, ArrowLeft,
   Cpu, Wand2, Palette, Boxes, Zap, ArrowUpRight, Layers3,
-  Database, ShieldCheck, Triangle, GitFork, Crosshair,
+  Database, ShieldCheck, Triangle, GitFork, Crosshair, BookOpen,
   Gamepad2, Network, Brush, Cog, Bone, HeartHandshake,
   type LucideIcon,
 } from 'lucide-react';
@@ -52,6 +52,7 @@ const TECH_STACK: TechItem[] = [
 const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
   const portfolioUrl = 'https://surya.is-a.dev/';
   const githubUrl = 'https://github.com/suryanarayanrenjith/Forest-Survival';
+  const wikiUrl = 'https://github.com/suryanarayanrenjith/Forest-Survival/wiki';
 
   return (
     <>
@@ -209,6 +210,44 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
               </span>
               <span className="font-hud flex items-center gap-1 text-slate-300 group-hover:translate-x-0.5 transition-transform">
                 <span className="text-[10px] font-bold tracking-[0.24em] uppercase">Star</span>
+                <ArrowUpRight className="w-4 h-4" strokeWidth={2.5} />
+              </span>
+            </span>
+          </a>
+
+          {/* ── Wiki CTA ───────────────────────────────────────────────── */}
+          <a
+            href={wikiUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="group relative flex items-center gap-4 w-full rounded-2xl overflow-hidden p-[1px]
+              transition-transform duration-300 hover:-translate-y-0.5"
+            style={{
+              background: 'linear-gradient(135deg, rgba(251,191,36,0.45), rgba(52,211,153,0.3), rgba(56,189,248,0.25))',
+            }}
+          >
+            <span className="relative flex items-center gap-4 w-full rounded-2xl bg-[#080d0b] px-4 sm:px-5 py-4
+              group-hover:bg-[#0a120f] transition-colors">
+              <span className="relative flex items-center justify-center w-12 h-12 rounded-xl bg-amber-500/12 border border-amber-400/30 flex-shrink-0">
+                <BookOpen className="w-[18px] h-[18px] text-amber-300" strokeWidth={2} />
+                <span
+                  className="absolute inset-0 rounded-xl"
+                  style={{ boxShadow: '0 0 18px -4px rgba(251,191,36,0.4)' }}
+                />
+              </span>
+              <span className="flex-1 min-w-0">
+                <span className="font-hud block text-[10px] font-bold tracking-[0.24em] text-amber-300/90 uppercase mb-0.5">
+                  Game Wiki
+                </span>
+                <span className="block text-base font-bold text-white tracking-tight truncate">
+                  Full mechanics reference
+                </span>
+                <span className="block text-[11px] text-gray-500 truncate">
+                  Weapons, enemies, characters, systems — every confirmed number
+                </span>
+              </span>
+              <span className="font-hud flex items-center gap-1 text-amber-300 group-hover:translate-x-0.5 transition-transform">
+                <span className="text-[10px] font-bold tracking-[0.24em] uppercase">Browse</span>
                 <ArrowUpRight className="w-4 h-4" strokeWidth={2.5} />
               </span>
             </span>

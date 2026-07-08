@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import {
-  ArrowLeft, GraduationCap, Play, ChevronDown, CloudSun, Sun, Moon,
+  ArrowLeft, GraduationCap, Play, ChevronDown, CloudSun, Sun, Moon, BookOpen, ArrowUpRight,
   Trees, Flame, Snowflake, Mountain, Droplet, Shield, Leaf, Landmark, type LucideIcon,
 } from 'lucide-react';
 import CharacterSelect from './CharacterSelect';
 import { MAP_CONFIGS, type MapType } from '../utils/MapSystem';
 import type { ClassId } from '../utils/CharacterModels';
+import { WIKI_BASE } from '../utils/TutorialSystem';
 
 interface TutorialMenuProps {
   onStartTutorial: (map: MapType, timeOfDay: 'day' | 'night' | 'auto') => void;
@@ -82,6 +83,16 @@ const TutorialMenu = ({ onStartTutorial, onBack, selectedCharacter, onSelectChar
             <p className="mt-3 text-sm text-gray-400">
               Pick a battlefield to learn the core mechanics. All weapons and abilities are unlocked, and you can't be hurt.
             </p>
+            <a
+              href={WIKI_BASE}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="group mt-3 inline-flex items-center gap-1.5 text-xs font-semibold text-amber-300/90 transition-colors hover:text-amber-200"
+            >
+              <BookOpen className="w-3.5 h-3.5 flex-shrink-0" strokeWidth={2.2} />
+              Prefer reading first? Browse the full Game Wiki
+              <ArrowUpRight className="w-3.5 h-3.5 flex-shrink-0 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" strokeWidth={2.2} />
+            </a>
           </div>
 
           <div className="w-full space-y-4 menu-stagger">

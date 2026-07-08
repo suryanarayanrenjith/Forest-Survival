@@ -4871,9 +4871,13 @@ const ForestSurvivalGame = () => {
         : wave === 2 ? 2
         : 3 + (Math.random() < 0.4 ? 1 : 0);
       if (isTutorialMode) {
-        // Tutorial — no wave progression. A light practice group is seeded
-        // here and topped up endlessly by continuousSpawn().
-        spawnEnemyBatch(5);
+        // Tutorial — no wave progression. A small, deliberate starter group;
+        // the guided tutorial spawns the rest ON DEMAND per step (see the
+        // step-sync block below) instead of flooding the arena while the
+        // player is still learning to move and look around. Once the player
+        // skips/finishes the guided steps, continuousSpawn() takes over with
+        // a gentle free-roam trickle.
+        spawnEnemyBatch(2);
         return;
       }
       // Solo / multiplayer — a finite, fully clearable wave. The opening
@@ -4963,23 +4967,48 @@ const ForestSurvivalGame = () => {
     };
     const spawnSettings = getSpawnSettings();
 
+    // Early guided steps (movement/camera/trigger practice) need zero enemies
+    // and stay calmer without them; from `kill_enemy` onward the player is
+    // actively fighting, so ambient enemies must keep flowing (gently) or
+    // later steps — headshots, and especially a 3x COMBO, which needs several
+    // kills in quick succession — would have nothing left to practise on.
+    const TUTORIAL_QUIET_STEPS = new Set(['welcome', 'movement_basic', 'camera_control', 'shooting_basic']);
+
     const continuousSpawn = () => {
       // Guests never spawn — their enemies are mirrored from the host.
       if (isMpGuest) return;
       const currentTime = Date.now();
-      // Tutorial keeps a brisker cadence than Easy so there's always a fresh
-      // target to practise on — learning is more fun when the arena stays lively.
-      const spawnInterval = isTutorialMode ? 2600 : spawnSettings.interval;
-      if (currentTime - lastSpawnTime <= spawnInterval) return;
-      if (enemies.length >= smartEnemyManager.getCurrentMaxEnemies() || !smartEnemyManager.canSpawnMore()) return;
 
       if (isTutorialMode) {
-        // Tutorial — endless lively stream so there's always something to fight,
-        // with the enemy mix governed by the Tutorial Enemy Director.
-        spawnEnemyBatch(2 + Math.floor(Math.random() * 2));
+        if (tutorial.isActive()) {
+          // Guided tutorial: PLANNED, not chaotic. Stay silent for the early
+          // non-combat steps; once combat practice starts, keep a steady but
+          // gentle supply flowing (on top of the exact per-step guarantees in
+          // the step-sync block below) rather than going fully quiet, which
+          // would strand kill/headshot/combo practice with nothing to fight.
+          const stepId = tutorial.getCurrentStep()?.id;
+          if (!stepId || TUTORIAL_QUIET_STEPS.has(stepId)) return;
+          const guidedInterval = 4200;
+          if (currentTime - lastSpawnTime <= guidedInterval) return;
+          if (enemies.length >= smartEnemyManager.getCurrentMaxEnemies() || !smartEnemyManager.canSpawnMore()) return;
+          spawnEnemyBatch(1);
+          lastSpawnTime = currentTime;
+          return;
+        }
+        // Guided tutorial skipped or finished — enemies resume "naturally",
+        // but at a deliberately gentle, well-paced trickle, slower and
+        // lighter than the old constant 2.6s/2-3 drip.
+        const freeRoamInterval = 5200;
+        if (currentTime - lastSpawnTime <= freeRoamInterval) return;
+        if (enemies.length >= smartEnemyManager.getCurrentMaxEnemies() || !smartEnemyManager.canSpawnMore()) return;
+        spawnEnemyBatch(1);
         lastSpawnTime = currentTime;
         return;
       }
+
+      const spawnInterval = spawnSettings.interval;
+      if (currentTime - lastSpawnTime <= spawnInterval) return;
+      if (enemies.length >= smartEnemyManager.getCurrentMaxEnemies() || !smartEnemyManager.canSpawnMore()) return;
 
       // Solo / multiplayer — only spawn what's left of this wave's budget.
       if (waveEnemiesRemaining > 0) {
@@ -6481,7 +6510,16 @@ const ForestSurvivalGame = () => {
       if (!touchControls.enabled && !isGameOver && !paused && !tutorialActiveRef.current
           && renderer.domElement && document.pointerLockElement !== renderer.domElement) {
         renderer.domElement.requestPointerLock();
-        return;
+        // Tutorial: a step transition just called exitPointerLock() moments
+        // ago (see the step-sync block), and browsers rate-limit how soon a
+        // re-lock request after that can actually succeed. If a click lands
+        // in that window this branch would normally "eat" it — re-request
+        // the lock and return with nothing fired — which could stall the
+        // "shoot 10 times" practice step indefinitely. Falling through here
+        // instead means the click still counts as a shot even if the lock
+        // hasn't (yet) been re-granted. Classic/Multiplayer keep the
+        // original strict behaviour.
+        if (!isTutorialMode) return;
       }
 
       // Right mouse button for aiming
@@ -9092,6 +9130,25 @@ const ForestSurvivalGame = () => {
           // Safety: exit pointer lock so cursor is visible for new tutorial popup
           if (document.pointerLockElement) {
             document.exitPointerLock();
+          }
+
+          // ── Planned tutorial spawns — guarantee the exact thing a step
+          // asks the player to do is actually right there, instead of hoping
+          // the ambient spawner or random loot RNG happens to provide one
+          // nearby. Complements the gentle ambient trickle from `kill_enemy`
+          // onward (see TUTORIAL_QUIET_STEPS / continuousSpawn above). ─────
+          const aliveEnemyCount = enemies.filter(e => !e.dead).length;
+          if (step.id === 'kill_enemy' && aliveEnemyCount === 0) {
+            spawnEnemyBatch(1);
+          } else if (step.id === 'headshots' && aliveEnemyCount === 0) {
+            spawnEnemyBatch(1);
+          } else if (step.id === 'combo_system' && aliveEnemyCount < 3) {
+            // A 3x combo needs several kills within ~2s of each other — a
+            // single stray enemy isn't enough, so top up to a small cluster.
+            spawnEnemyBatch(3 - aliveEnemyCount);
+          } else if (step.id === 'powerups') {
+            const spot = findPickupSpot(camera.position.x, camera.position.z, 3, 6);
+            powerUps.push(createPowerUp(spot.x, spot.z, randomLoot()));
           }
         }
       } else if (showTutorial) {
@@ -14081,10 +14138,15 @@ const ForestSurvivalGame = () => {
                 setTutorialStep({ ...nextStep });
                 setTutorialProgress(tut.getProgress());
               } else {
-                // Tutorial done — show completion card, unlock pointer.
+                // Tutorial done — show the completion card. `tutorialActiveRef`
+                // stays TRUE (blocked) here on purpose: it's what stops the
+                // underlying game's own mousedown handler from treating a
+                // click on this card's buttons as a "re-acquire pointer lock"
+                // click, which was silently grabbing the cursor the instant
+                // the player clicked Keep Playing / Main Menu. It's cleared
+                // explicitly by whichever button the player actually picks.
                 setShowTutorial(false);
                 setTutorialStep(null);
-                tutorialActiveRef.current = false;
                 setTutorialComplete(true);
               }
             }
@@ -14133,6 +14195,11 @@ const ForestSurvivalGame = () => {
                 <button
                   onClick={() => {
                     setTutorialComplete(false);
+                    // Only NOW does gameplay input unblock and the cursor
+                    // re-lock — the player has actually chosen to keep
+                    // playing, rather than it happening as a side effect of
+                    // clicking this card.
+                    tutorialActiveRef.current = false;
                     const canvas = mountRef.current?.querySelector('canvas');
                     if (canvas && !isTouch) (canvas as HTMLCanvasElement).requestPointerLock();
                   }}
