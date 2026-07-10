@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Volume2, VolumeX } from 'lucide-react';
 import { musicMute } from '../utils/musicMute';
+import { CORNER_PILL_SURFACE } from './cornerPillSurface';
 
 interface MusicMuteButtonProps {
   /** Optional class override. Defaults to bottom-right floating pill. */
@@ -20,9 +21,10 @@ const MusicMuteButton = ({ className }: MusicMuteButtonProps) => {
 
   useEffect(() => musicMute.subscribe(setMuted), []);
 
+  // Resting surface comes from CORNER_PILL_SURFACE so this pill always
+  // matches the GitHub star pill's collapsed background exactly.
   const baseClass =
-    'fixed bottom-4 right-4 z-[60] flex items-center justify-center w-11 h-11 rounded-full ' +
-    'border border-white/15 bg-black/55 backdrop-blur-md text-white/85 shadow-[0_8px_24px_-12px_rgba(0,0,0,0.6)] ' +
+    `fixed bottom-4 right-4 z-[60] flex items-center justify-center w-11 h-11 rounded-full ${CORNER_PILL_SURFACE} ` +
     'transition-all duration-200 hover:-translate-y-0.5 hover:text-white hover:border-white/30 hover:bg-black/70 ' +
     'focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/70';
 

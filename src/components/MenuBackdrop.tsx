@@ -28,7 +28,9 @@ function ForestFallback() {
           <stop offset="68%" stopColor="#719064" />
           <stop offset="100%" stopColor="#b8c69b" />
         </linearGradient>
-        <radialGradient id="menu-forest-sun" cx="72%" cy="27%" r="44%">
+        {/* Sun glow sits upper-LEFT to match the WebGL scene's composition
+            (hot light frames the title; the action column stays calm). */}
+        <radialGradient id="menu-forest-sun" cx="28%" cy="27%" r="44%">
           <stop offset="0%" stopColor="#fff6c8" stopOpacity="0.92" />
           <stop offset="20%" stopColor="#dff0b4" stopOpacity="0.45" />
           <stop offset="70%" stopColor="#8db47d" stopOpacity="0.08" />

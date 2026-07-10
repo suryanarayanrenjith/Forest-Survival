@@ -74,34 +74,38 @@ type MainMenuForestSceneProps = {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const PALETTE = {
-  // The ONE haze color everything converges to. Bright sunlit sage.
-  haze: 0xc7d6ab,
-  skyZenith: 0x6fb0e3,
-  skyMid: 0xa9d3f2,
-  skyHorizon: 0xf3eecf,
-  hazeFloor: 0xcfdcb0,
+  // The ONE haze color everything converges to. Deep sunlit sage — luminous
+  // enough that the black-box guarantees hold, deep enough that white UI
+  // text keeps contrast against it (the old brighter sage washed the frame
+  // out and fought every light-on-glass menu card).
+  haze: 0xafc492,
+  skyZenith: 0x4a8ed2,
+  skyMid: 0x8ec1ea,
+  skyHorizon: 0xeee4bd,
+  hazeFloor: 0xb9cc9b,
   cloud: 0xffffff,
   sunCore: 0xfff6d8,
   sunHalo: 0xffe1a1,
   // Ground ramp — authored, never multiplied against a texture.
-  mossDeep: 0x557f3f,
-  mossLight: 0x7fa855,
-  sunPool: 0xd9c98a,
-  groundFloorMin: 0x4a6b38,
+  mossDeep: 0x466f33,
+  mossLight: 0x6f9a4a,
+  sunPool: 0xd6c17c,
+  groundFloorMin: 0x3c5a2e,
   sunGlint: 0xfff3c8,
-  soil: 0x77653f,
-  litter: 0x9a8a5c,
-  // Forest
-  foliage: [0x3d8a46, 0x55924d, 0x2f7a3e, 0x4c9a58],
-  foliageTip: 0xa8c86a,
-  trunk: 0x8a6448,
+  soil: 0x6d5c39,
+  litter: 0x8f7f52,
+  // Forest — richer, deeper greens so the tree wall reads as forest depth
+  // (and as a contrast bed for the menu cards) instead of pastel cones.
+  foliage: [0x2f7c3d, 0x468a44, 0x276d35, 0x3f8f4e],
+  foliageTip: 0x9fc261,
+  trunk: 0x7d5940,
   rimGlow: 0xffe2a4,
-  castShadow: 0x2e4a28,
-  ridgeNear: 0x8fb283,
-  ridgeFar: 0xa6c29a,
+  castShadow: 0x24401f,
+  ridgeNear: 0x7fa473,
+  ridgeFar: 0x93b285,
   // Atmosphere
-  mistBank: 0xdfe8c8,
-  groundMist: 0xd7e3bd,
+  mistBank: 0xcbdaae,
+  groundMist: 0xc3d5a2,
   shaft: 0xffe9b0,
   pollen: 0xffe9b6,
   mote: 0xfff0c9,
@@ -113,28 +117,31 @@ const PALETTE = {
   sunLight: 0xffe9b0,
   rimLight: 0xd6ffc0,
   // Final grade
-  gradeMist: 0xcdd8a8,
+  gradeMist: 0xb5c48f,
   gradeSun: 0xffe5b1,
 } as const;
 
 const SCENE_TUNING = {
-  fogDensity: 0.0095,
-  exposure: 1.3,
+  fogDensity: 0.0085,
+  exposure: 1.2,
   // Bloom is tuned TIGHT: with a bright daylight sky, a low threshold makes
   // the whole frame blossom into glare (and washes the UI). Only genuinely
   // hot pixels — the sun disc, its halo, dew glints — may bloom.
-  bloomRadius: 0.5,
-  bloomThreshold: 0.88,
-  vignette: 0.2,
+  bloomRadius: 0.55,
+  bloomThreshold: 0.85,
+  vignette: 0.3,
   grain: 0.006,
-  contrast: 1.07,
-  saturation: 1.07,
-  chromatic: 0.0009,
+  // Filmic punch: the deeper palette needs real contrast/saturation to read
+  // as cinema instead of fog — and the extra contrast is exactly what makes
+  // the light-on-glass UI text pop against the backdrop.
+  contrast: 1.15,
+  saturation: 1.13,
+  chromatic: 0.0012,
   // Screen-space bottom haze: mix amount + the guaranteed max() floor.
   // The mix is a safety tint, not a look — keep it low so the authored
   // forest-floor detail stays readable right down to the frame edge.
-  bottomMistMix: 0.16,
-  bottomMistFloor: 0.33,
+  bottomMistMix: 0.11,
+  bottomMistFloor: 0.3,
 } as const;
 
 // ── Settings → cinematic budget ──────────────────────────────────────────────
@@ -146,11 +153,11 @@ const TIER_INDEX: Record<GraphicsQuality, number> = {
 const TIER_FEATURES = {
   /** Crepuscular-ray march samples in the grade pass (post tiers only). */
   raySamples: [0, 0, 12, 18, 24],
-  bloomStrength: [0, 0, 0.28, 0.34, 0.42],
+  bloomStrength: [0, 0, 0.32, 0.4, 0.48],
   /** Visible 3D volumetric light blades. */
-  shaftCount: [2, 3, 5, 6, 8],
+  shaftCount: [3, 4, 6, 7, 8],
   /** Foliage rim/backlight glow strength. */
-  rimStrength: [0.35, 0.45, 0.6, 0.78, 0.92],
+  rimStrength: [0.4, 0.5, 0.72, 0.9, 1.05],
   /** Large bokeh dust motes drifting through the light. */
   motesEnabled: [false, false, true, true, true],
   /** Extra cumulus layer + silver lining in the sky shader. */
@@ -162,14 +169,14 @@ const TIER_FEATURES = {
 // floor to go dark again. Strengths are capped so shadow × ground can never
 // fall below the ground shader's luminance floor.
 const GROUND_SHADOW_STRENGTH: Record<ShadowQuality, number> = {
-  off: 0, low: 0.3, medium: 0.5, high: 0.68, ultra: 0.85,
+  off: 0, low: 0.35, medium: 0.6, high: 0.8, ultra: 0.95,
 };
 const CAST_SHADOW_CFG: Record<ShadowQuality, { len: number; opacity: number }> = {
   off: { len: 0, opacity: 0 },
-  low: { len: 2.4, opacity: 0.16 },
-  medium: { len: 3.1, opacity: 0.2 },
-  high: { len: 3.9, opacity: 0.24 },
-  ultra: { len: 4.6, opacity: 0.27 },
+  low: { len: 2.8, opacity: 0.22 },
+  medium: { len: 3.6, opacity: 0.28 },
+  high: { len: 4.4, opacity: 0.34 },
+  ultra: { len: 5.2, opacity: 0.4 },
 };
 
 // ── Per-menu camera rigs ─────────────────────────────────────────────────────
@@ -524,10 +531,14 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
     // ── SKY DOME — covers EVERY direction, below-horizon included ──────────
     // Below y=0 the dome renders bright ground-haze, so even a pixel missed
     // by all geometry shows luminous sage. Rendered first, no depth.
-    // The sun sits low (≈12° elevation) at the upper-right of frame — golden
+    // The sun sits low (≈12° elevation) at the upper-LEFT of frame — golden
     // hour light grazing the canopy, with the disc peeking through the
     // tree-line so the screen-space rays have silhouettes to break against.
-    const sunDirection = new THREE.Vector3(0.22, 0.21, -0.95).normalize();
+    // Screen-left is deliberate UI composition: every hot cinematic element
+    // (halo, bloom, god rays, streak) lands on the TITLE side of the frame,
+    // leaving the right action column against calm, deep forest where the
+    // glassy menu cards keep maximum contrast.
+    const sunDirection = new THREE.Vector3(-0.26, 0.22, -0.94).normalize();
     const skyGeometry = new THREE.SphereGeometry(170, 48, 32);
     const skyMaterial = new THREE.ShaderMaterial({
       side: THREE.BackSide,
@@ -615,16 +626,21 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
     skyMesh.frustumCulled = false;
     scene.add(skyMesh);
 
-    // ── LIGHT RIG — flat, bright, shadowless, ALLOCATED ONCE ────────────────
+    // ── LIGHT RIG — bright, shadowless, ALLOCATED ONCE ──────────────────────
     // (Never add/remove lights at runtime — the rig is fixed for the scene's
     // whole life; quality tiers modulate shaders, not lights.)
-    scene.add(new THREE.AmbientLight(PALETTE.ambient, 0.72));
-    scene.add(new THREE.HemisphereLight(PALETTE.hemiSky, PALETTE.hemiGround, 0.9));
-    const sunLight = new THREE.DirectionalLight(PALETTE.sunLight, 2.7);
-    sunLight.position.set(40, 55, -30);
+    // Key-to-fill ratio is deliberately steep: a strong directional key with
+    // restrained ambient/hemi fill is what models the pine tiers into round,
+    // lit-vs-shaded forms — the old near-flat rig is why the trees read as
+    // untextured cones. Fill floors are still high enough that no facet can
+    // approach black.
+    scene.add(new THREE.AmbientLight(PALETTE.ambient, 0.58));
+    scene.add(new THREE.HemisphereLight(PALETTE.hemiSky, PALETTE.hemiGround, 0.78));
+    const sunLight = new THREE.DirectionalLight(PALETTE.sunLight, 3.3);
+    sunLight.position.set(-45, 52, -28);
     scene.add(sunLight);
-    const rimLight = new THREE.DirectionalLight(PALETTE.rimLight, 0.9);
-    rimLight.position.set(-12, 20, -60);
+    const rimLight = new THREE.DirectionalLight(PALETTE.rimLight, 1.0);
+    rimLight.position.set(14, 22, -60);
     scene.add(rimLight);
 
     // ── GROUND — authored gradient shader, luminance-clamped ───────────────
@@ -706,10 +722,11 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
           color += uMossLight * smoothstep(0.55, 0.85, drift) * 0.2;
           color += uSunGlint * smoothstep(0.66, 0.94, drift) * 0.1;
 
-          // Warm sun pool in the clearing (sun sits screen-right).
-          float poolDistance = length(vWorldPos.xz - vec2(10.0, 2.0));
+          // Warm sun pool in the clearing (sun sits screen-LEFT, under the
+          // title — the hot floor stays away from the action column).
+          float poolDistance = length(vWorldPos.xz - vec2(-9.0, 0.0));
           float pool = 1.0 - smoothstep(8.0, 30.0, poolDistance);
-          color = mix(color, uSunPool, pool * 0.28);
+          color = mix(color, uSunPool, pool * 0.33);
 
           // ── ANALYTIC GOLDEN-HOUR SHADOWS ────────────────────────────────
           // Sun-aligned coordinates: sc.x runs ALONG the light, sc.y across
@@ -723,7 +740,7 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
             float dapple = smoothstep(0.6, 0.3, fbm(vec2(sc.x * 0.05, sc.y * 0.16) + uTime * 0.006));
             float stripes = smoothstep(0.55, 0.95, noise(vec2(sc.y * 0.45 + fbm(sc * 0.08) * 2.0, sc.x * 0.02)));
             float shade = clamp(dapple * 0.6 + stripes * 0.55, 0.0, 1.0);
-            color *= 1.0 - shade * uShadow * 0.42;
+            color *= 1.0 - shade * uShadow * 0.56;
           }
 
           // Dew specular — tiny wet-grass glints answering the sun, denser
@@ -871,16 +888,27 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
         geometry.setAttribute('aBend', new THREE.BufferAttribute(bends, 1));
       };
 
-      // Trunk — vertex color white (material map+color carry the look), no bend.
+      // Trunk — near-white vertex color (material map+color carry the look)
+      // with a gentle base-darkening so trunks ground into the floor. No bend.
       const trunkGeometry = new THREE.CylinderGeometry(0.28, 0.55, shape.trunkHeight, 7);
       const white = new THREE.Color(0xffffff);
-      paintAttributes(trunkGeometry, () => white, () => 0, shape.trunkHeight / 2, shape.trunkHeight);
+      const trunkShade = new THREE.Color();
+      paintAttributes(
+        trunkGeometry,
+        (localY) => trunkShade.copy(white).multiplyScalar(0.82 + localY * 0.18),
+        () => 0,
+        shape.trunkHeight / 2,
+        shape.trunkHeight,
+      );
       trunkGeometry.translate(0, shape.trunkHeight / 2, 0);
       parts.push(trunkGeometry);
 
-      // Foliage — overlapping tapered tiers, classic spruce silhouette. Tips
-      // lighten toward a sun-kissed green; bend weight grows with height so
-      // the crown sways more than the skirt.
+      // Foliage — overlapping tapered tiers, classic spruce silhouette. Each
+      // tier is SHADED from a dim skirt up to a sun-kissed tip: baked
+      // canopy self-occlusion that models the cones into round boughs (the
+      // single biggest anti-"plastic cone" cue). Bounded ×0.72 — vertex
+      // shading can deepen the underside, never black it out. Bend weight
+      // grows with height so the crown sways more than the skirt.
       const tipColor = new THREE.Color(PALETTE.foliageTip);
       shape.tiers.forEach((tier, tierIndex) => {
         const tierGeometry = new THREE.ConeGeometry(tier.radius, tier.height, 12);
@@ -888,7 +916,10 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
         const base = new THREE.Color(0xffffff);
         paintAttributes(
           tierGeometry,
-          (localY) => base.copy(white).lerp(tipColor, localY * 0.28 + tierF * 0.16),
+          (localY) => base
+            .copy(white)
+            .multiplyScalar(0.72 + localY * 0.28)
+            .lerp(tipColor, localY * 0.3 + tierF * 0.16),
           (localY) => (0.25 + tierF * 0.65) * (0.5 + localY * 0.5),
           tier.height / 2,
           tier.height,
@@ -1040,9 +1071,9 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
     const contactGeometry = new THREE.CircleGeometry(1, 12);
     contactGeometry.rotateX(-Math.PI / 2);
     const contactMaterial = new THREE.MeshBasicMaterial({
-      color: 0x3f5a30,
+      color: 0x35502a,
       transparent: true,
-      opacity: 0.26,
+      opacity: 0.34,
       depthWrite: false,
       fog: true,
       polygonOffset: true,
@@ -1302,7 +1333,10 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
         uniforms: {
           uTime: { value: 0 },
           uColor: { value: new THREE.Color(PALETTE.shaft) },
-          uOpacity: { value: 0.05 + Math.random() * 0.04 },
+          // Strong enough to READ as volumetric light against the deeper
+          // forest (the old 0.05 base was invisible after tone mapping);
+          // still additive-faint so it can never white out the frame.
+          uOpacity: { value: 0.09 + Math.random() * 0.05 },
           uSeed: { value: Math.random() * 40 },
         },
         vertexShader: /* glsl */ `
@@ -1333,8 +1367,10 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
         side: THREE.DoubleSide,
       });
       const shaft = new THREE.Mesh(new THREE.PlaneGeometry(5 + Math.random() * 4, 55 + Math.random() * 25), shaftMaterial) as ShaftMesh;
-      shaft.position.set(-12 + shaftIndex * 7.5 + Math.random() * 4, 22 + Math.random() * 8, -28 - Math.random() * 26);
-      shaft.rotation.set(-0.12, -0.14 + (Math.random() - 0.5) * 0.26, 0.3 + Math.random() * 0.12);
+      // Blades hang from screen-left through centre (under the sun), leaning
+      // with the light — the right action column stays free of hot streaks.
+      shaft.position.set(-34 + shaftIndex * 5.5 + Math.random() * 3, 22 + Math.random() * 8, -26 - Math.random() * 26);
+      shaft.rotation.set(-0.12, 0.14 + (Math.random() - 0.5) * 0.26, -0.3 - Math.random() * 0.12);
       shaft.baseOpacity = shaftMaterial.uniforms.uOpacity.value as number;
       shaft.phase = Math.random() * Math.PI * 2;
       shaft.speed = 0.08 + Math.random() * 0.15;
@@ -1427,7 +1463,7 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
     };
 
     const fernMaterial = new THREE.MeshLambertMaterial({
-      color: 0x86b060,
+      color: 0x76a253,
       map: fernTexture,
       transparent: true,
       alphaTest: 0.2,
@@ -1454,8 +1490,8 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
     }, 5, 55);
     {
       const bladeTint = new THREE.Color();
-      const bladeLow = new THREE.Color(0x5d8f43);
-      const bladeHigh = new THREE.Color(0x9cc36a);
+      const bladeLow = new THREE.Color(0x4f7f38);
+      const bladeHigh = new THREE.Color(0x8fb75c);
       for (let i = 0; i < BLADE_MAX; i++) {
         bladeInstanced.setColorAt(i, bladeTint.copy(bladeLow).lerp(bladeHigh, Math.random()));
       }
@@ -1464,7 +1500,7 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
     scene.add(bladeInstanced);
 
     const rockGeometry = new THREE.DodecahedronGeometry(1, 0);
-    const rockMaterial = new THREE.MeshLambertMaterial({ color: 0x97a289 });
+    const rockMaterial = new THREE.MeshLambertMaterial({ color: 0x8a9579 });
     const rockInstanced = new THREE.InstancedMesh(rockGeometry, rockMaterial, ROCK_MAX);
     const rockPlaced = scatterOnFloor(rockInstanced, ROCK_MAX, (dummy, x, z) => {
       const rockScale = 0.18 + Math.random() * 0.5;
@@ -1604,11 +1640,11 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
         uContrast: { value: SCENE_TUNING.contrast },
         uSaturation: { value: SCENE_TUNING.saturation },
         uChromatic: { value: SCENE_TUNING.chromatic },
-        uSunUV: { value: new THREE.Vector2(0.66, 0.7) },
+        uSunUV: { value: new THREE.Vector2(0.35, 0.68) },
         uSunColor: { value: new THREE.Color(PALETTE.gradeSun) },
-        uSunIntensity: { value: 0.32 },
+        uSunIntensity: { value: 0.28 },
         uRaySamples: { value: TIER_FEATURES.raySamples[3] },
-        uStreak: { value: 0.15 },
+        uStreak: { value: 0.18 },
         uMistTone: { value: new THREE.Color(PALETTE.gradeMist) },
         uMistMix: { value: SCENE_TUNING.bottomMistMix },
         uMistFloor: { value: SCENE_TUNING.bottomMistFloor },
@@ -1665,9 +1701,9 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
           }
 
           // Faint anamorphic streak through the sun — the lens answering the
-          // light. Tightly windowed AND radially gated: a wide streak here
-          // is a white band straight across the menu cards (the sun sits
-          // screen-right, exactly where the UI lives).
+          // light. Tightly windowed AND radially gated: the sun sits
+          // screen-LEFT above the title block, so a wide streak would smear
+          // straight across the game title.
           float streakY = exp(-abs(uv.y - uSunUV.y) * 52.0);
           float streakX = exp(-abs(uv.x - uSunUV.x) * 10.0);
           color += uSunColor * streakY * streakX * uSunIntensity * uStreak * radialGate;
@@ -1745,12 +1781,14 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
       const postTier = Math.max(tierIndex, 2);
       bloomPass.strength = TIER_FEATURES.bloomStrength[postTier];
       finalPass.uniforms.uRaySamples.value = TIER_FEATURES.raySamples[postTier];
-      finalPass.uniforms.uStreak.value = tierIndex >= 3 ? 0.18 : 0.12;
+      finalPass.uniforms.uStreak.value = tierIndex >= 3 ? 0.22 : 0.15;
 
       // View distance → atmospheric depth. Far views clear the air out to
       // the ridgelines; short views wrap the clearing in luminous mist.
-      // Everything still converges on the ONE haze color.
-      const fogDensity = THREE.MathUtils.clamp(1.45 / Math.max(resolved.viewDistance, 1), 0.005, 0.016);
+      // Everything still converges on the ONE haze color. Slightly thinner
+      // than the old build so near/mid trees hold their rich greens instead
+      // of washing out into haze two rows deep.
+      const fogDensity = THREE.MathUtils.clamp(1.25 / Math.max(resolved.viewDistance, 1), 0.0045, 0.0145);
       (scene.fog as THREE.FogExp2).density = fogDensity;
       groundMaterial.uniforms.uFogDensity.value = fogDensity;
       const mistScale = THREE.MathUtils.clamp(fogDensity / SCENE_TUNING.fogDensity, 0.85, 1.25);
@@ -1769,7 +1807,7 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
       const shadowQuality = settings.graphics.shadows;
       groundMaterial.uniforms.uShadow.value = GROUND_SHADOW_STRENGTH[shadowQuality] ?? 0.5;
       castMaterial.opacity = (CAST_SHADOW_CFG[shadowQuality] ?? CAST_SHADOW_CFG.medium).opacity;
-      contactMaterial.opacity = shadowQuality === 'off' ? 0.2 : 0.26;
+      contactMaterial.opacity = shadowQuality === 'off' ? 0.24 : 0.34;
       for (const layer of forestLayers) layer.applyShadows(shadowQuality);
 
       // Terrain detail → forest + floor-prop density.
@@ -1895,7 +1933,7 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
         sunScreenPosition.x * 0.5 + 0.5,
         sunScreenPosition.y * 0.5 + 0.5,
       );
-      finalPass.uniforms.uSunIntensity.value = 0.22 * sunGate;
+      finalPass.uniforms.uSunIntensity.value = 0.28 * sunGate;
 
       windTimeUniform.value = elapsedTime * 0.9;
       skyMaterial.uniforms.uTime.value = elapsedTime;
@@ -1914,7 +1952,7 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
         // light brightens exactly when the shaft does.
         const pool = poolMeshes[shaftIndex];
         pool.material.uniforms.uTime.value = elapsedTime;
-        pool.material.uniforms.uOpacity.value = 0.16 * (0.35 + pulse * 0.75);
+        pool.material.uniforms.uOpacity.value = 0.22 * (0.35 + pulse * 0.75);
       }
 
       const pollenAttribute = pollenGeometry.getAttribute('position') as THREE.BufferAttribute;

@@ -13474,15 +13474,22 @@ const ForestSurvivalGame = () => {
                 same place, so no band can form.
               • top canopy wash — a whisper of shade over the top 30% so the
                 GitHub star and title stay legible against bright sky.
+              • right column scrim — an eased side ramp under the action stack
+                (mode tiles, Settings · Credits · Sign In) so the glassy cards
+                and their labels always sit on calm, deepened forest. Capped
+                well below the anchor and fully clear by mid-screen, it can
+                only overlap the other ramps in the corners — cubic-eased like
+                everything else, so no edge or band can form there either.
             MenuShell now contributes per-variant COLOUR only (glow + tint) —
             it must never add black to the bottom again. */}
         <div
           className="fixed inset-0 z-[1] pointer-events-none"
           style={{
             background: [
-              'radial-gradient(125% 115% at 50% 44%, rgba(0,0,0,0) 58%, rgba(6,16,10,0.24) 100%)',
-              'linear-gradient(to top, rgba(4,11,7,0.34) 0%, rgba(4,11,7,0.26) 6%, rgba(5,12,8,0.17) 13%, rgba(5,12,8,0.09) 21%, rgba(6,13,9,0.035) 30%, rgba(0,0,0,0) 41%)',
-              'linear-gradient(to bottom, rgba(9,18,12,0.24) 0%, rgba(8,16,11,0.06) 15%, rgba(0,0,0,0) 32%)',
+              'radial-gradient(125% 115% at 50% 44%, rgba(0,0,0,0) 55%, rgba(6,16,10,0.3) 100%)',
+              'linear-gradient(to top, rgba(4,11,7,0.46) 0%, rgba(4,11,7,0.36) 6%, rgba(5,12,8,0.25) 13%, rgba(5,12,8,0.14) 21%, rgba(6,13,9,0.06) 30%, rgba(0,0,0,0) 43%)',
+              'linear-gradient(to bottom, rgba(9,18,12,0.3) 0%, rgba(8,16,11,0.1) 14%, rgba(0,0,0,0) 32%)',
+              'linear-gradient(to left, rgba(5,12,8,0.28) 0%, rgba(5,12,8,0.16) 18%, rgba(6,13,9,0.06) 36%, rgba(0,0,0,0) 52%)',
             ].join(', '),
           }}
         />

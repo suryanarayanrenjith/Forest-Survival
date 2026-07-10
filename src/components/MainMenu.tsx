@@ -17,6 +17,7 @@ import { usePlayerData } from '../hooks/usePlayerData';
 import { useDeviceInfo } from '../hooks/useDeviceInfo';
 import SettingsMenu from './SettingsMenu';
 import CreditsMenu from './CreditsMenu';
+import { CORNER_PILL_SURFACE } from './cornerPillSurface';
 import AuthMenu from './AuthMenu';
 import ProfileMenu from './ProfileMenu';
 import UserAvatar from './UserAvatar';
@@ -235,9 +236,11 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode, onSkillTre
           rel="noopener noreferrer"
           aria-label="Star Forest Survival on GitHub"
           className={
+            // Collapsed surface = CORNER_PILL_SURFACE, shared with the music
+            // mute pill so the two corner buttons always match at rest.
             isTouch
-              ? 'fixed top-5 right-5 z-40 flex h-11 w-11 items-center justify-center overflow-hidden rounded-full border border-white/15 bg-black/55 backdrop-blur-md text-white/85 shadow-[0_8px_24px_-12px_rgba(0,0,0,0.6)] focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/70'
-              : 'group fixed top-5 right-5 z-40 flex h-11 max-w-[44px] items-center gap-2 overflow-hidden rounded-full border border-white/15 bg-black/55 px-[13px] backdrop-blur-md text-white/85 shadow-[0_8px_24px_-12px_rgba(0,0,0,0.6)] transition-all duration-300 ease-out hover:max-w-[260px] hover:-translate-y-0.5 hover:border-amber-400/45 hover:bg-amber-500/[0.14] hover:text-amber-200 hover:shadow-[0_10px_32px_-10px_rgba(251,191,36,0.55)] focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/70'
+              ? `fixed top-5 right-5 z-40 flex h-11 w-11 items-center justify-center overflow-hidden rounded-full ${CORNER_PILL_SURFACE} focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/70`
+              : `group fixed top-5 right-5 z-40 flex h-11 max-w-[44px] items-center gap-2 overflow-hidden rounded-full ${CORNER_PILL_SURFACE} px-[13px] transition-all duration-300 ease-out hover:max-w-[260px] hover:-translate-y-0.5 hover:border-amber-400/45 hover:bg-amber-500/[0.14] hover:text-amber-200 hover:shadow-[0_10px_32px_-10px_rgba(251,191,36,0.55)] focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/70`
           }
         >
           <GithubMark className="h-[18px] w-[18px] flex-shrink-0" />
