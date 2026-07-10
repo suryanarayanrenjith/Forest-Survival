@@ -197,7 +197,7 @@ const ClassicMenu = ({ onStartGame, onBack, selectedCharacter, onSelectCharacter
 
       {/* Fixed Start button */}
       <div className="fixed bottom-0 left-0 right-0 z-50 pointer-events-none">
-        <div className="bg-gradient-to-t from-black via-black/80 to-transparent pt-10 pb-6 px-4 flex justify-center pointer-events-auto">
+        <div className="bg-gradient-to-t from-[#06130b] via-[#06130b]/85 to-transparent pt-10 pb-6 px-4 flex justify-center pointer-events-auto">
           <button
             onClick={() => {
               if (isRandomMode) {

@@ -10,52 +10,57 @@ type ThemeConfig = {
   accent: string;
   /** Center glow blob behind the menu card */
   centerGlow: string;
-  /** Top-down gradient overlay */
+  /** Top-down warm sky-light wash (light only — never darkens) */
   topGlow: string;
-  /** Vignette outer color */
-  vignette: string;
+  /** Per-variant colour rising from the bottom to tint the App-level
+   *  readability anchor with the menu's identity hue (screen-blended,
+   *  so it only ADDS light — it must never contribute black). */
+  bottomTint: string;
   /** Edge corner accent color */
   edgeAccent: string;
 };
 
 // Per-variant overlays. Since MainMenuForestScene is now hoisted to App
-// level and renders the same scene across all menus (to eliminate the
-// re-mount lag the user reported), each menu's distinct visual identity
-// comes from THIS overlay layer. Each variant uses a clearly different
-// hue + gradient pattern so the menus feel like separate spaces:
+// level and renders the same SUNLIT forest across all menus (to eliminate
+// the re-mount lag the user reported), each menu's distinct visual identity
+// comes from THIS overlay layer — a color grade over the daylight scene.
 //
-//   • main        — emerald (default brand)
-//   • classic     — gold/amber (solo combat warmth)
-//   • tutorial    — cyan/teal (educational, calm)
-//   • multiplayer — purple/violet (social, energetic)
+// Hues are aligned with each menu's OWN accent system (the colors already
+// used by its cards/buttons and by the MainMenu mode tiles), so the grade
+// and the UI read as one design instead of clashing:
+//
+//   • main        — emerald (brand; open, lightest grade — showcase the vista)
+//   • classic     — emerald, deeper vignette (solo mission-prep focus)
+//   • tutorial    — amber/gold (matches the amber tutorial UI + start CTA)
+//   • multiplayer — sky blue (matches the sky accent on the MP mode tile)
 const THEMES: Record<MenuShellVariant, ThemeConfig> = {
   main: {
     accent: '#34d399',
-    centerGlow: 'rgba(52, 211, 153, 0.20)',
-    topGlow: 'rgba(52, 211, 153, 0.10)',
-    vignette: 'rgba(0, 30, 18, 0.55)',
-    edgeAccent: 'rgba(52, 211, 153, 0.16)',
+    centerGlow: 'rgba(52, 211, 153, 0.10)',
+    topGlow: 'rgba(255, 240, 190, 0.12)',
+    bottomTint: 'rgba(52, 211, 153, 0.09)',
+    edgeAccent: 'rgba(52, 211, 153, 0.12)',
   },
   classic: {
-    accent: '#f59e0b',
-    centerGlow: 'rgba(245, 158, 11, 0.22)',
-    topGlow: 'rgba(245, 158, 11, 0.10)',
-    vignette: 'rgba(48, 22, 0, 0.58)',
-    edgeAccent: 'rgba(252, 211, 77, 0.18)',
+    accent: '#34d399',
+    centerGlow: 'rgba(52, 211, 153, 0.13)',
+    topGlow: 'rgba(255, 233, 170, 0.10)',
+    bottomTint: 'rgba(110, 231, 183, 0.10)',
+    edgeAccent: 'rgba(110, 231, 183, 0.14)',
   },
   tutorial: {
-    accent: '#22d3ee',
-    centerGlow: 'rgba(34, 211, 238, 0.20)',
-    topGlow: 'rgba(34, 211, 238, 0.10)',
-    vignette: 'rgba(0, 30, 38, 0.58)',
-    edgeAccent: 'rgba(34, 211, 238, 0.16)',
+    accent: '#f59e0b',
+    centerGlow: 'rgba(245, 158, 11, 0.11)',
+    topGlow: 'rgba(255, 214, 130, 0.13)',
+    bottomTint: 'rgba(251, 191, 36, 0.10)',
+    edgeAccent: 'rgba(252, 211, 77, 0.15)',
   },
   multiplayer: {
-    accent: '#a78bfa',
-    centerGlow: 'rgba(167, 139, 250, 0.22)',
-    topGlow: 'rgba(167, 139, 250, 0.10)',
-    vignette: 'rgba(28, 8, 48, 0.58)',
-    edgeAccent: 'rgba(216, 180, 254, 0.18)',
+    accent: '#38bdf8',
+    centerGlow: 'rgba(56, 189, 248, 0.11)',
+    topGlow: 'rgba(190, 227, 255, 0.10)',
+    bottomTint: 'rgba(56, 189, 248, 0.10)',
+    edgeAccent: 'rgba(125, 211, 252, 0.15)',
   },
 };
 
@@ -83,19 +88,26 @@ export default function MenuShell({ variant = 'main' }: MenuShellProps) {
         }}
       />
 
-      {/* Top-down haze — subtle vertical color wash */}
+      {/* Top-down warm sky-light wash — the canopy daylight spilling in from
+          the top, fading to clear air by ~34%. LIGHT ONLY: MenuShell no
+          longer darkens the bottom at all. All bottom darkening now lives in
+          the single App-level readability anchor, so these overlays can never
+          re-stack into the "black bar" the menu used to show at the horizon. */}
       <div
         className="absolute inset-0"
         style={{
-          background: `linear-gradient(180deg, ${theme.topGlow} 0%, rgba(0,0,0,0.08) 30%, rgba(0,0,0,0.4) 100%)`,
+          background: `linear-gradient(180deg, ${theme.topGlow} 0%, rgba(0,0,0,0) 34%)`,
         }}
       />
 
-      {/* Vignette — soft outer darkening tinted with the variant color */}
+      {/* Per-variant bottom tint — screen-blended so it only ADDS the menu's
+          identity hue (emerald / amber / sky) into the App anchor's shade,
+          giving each menu a coloured "canopy floor" instead of neutral black.
+          Screen blend guarantees it can never contribute darkness. */}
       <div
-        className="absolute inset-0"
+        className="absolute inset-0 mix-blend-screen"
         style={{
-          background: `radial-gradient(ellipse at center, transparent 38%, ${theme.vignette} 100%)`,
+          background: `linear-gradient(to top, ${theme.bottomTint} 0%, rgba(0,0,0,0) 34%)`,
         }}
       />
 
@@ -107,9 +119,10 @@ export default function MenuShell({ variant = 'main' }: MenuShellProps) {
         }}
       />
 
-      {/* Subtle scanlines for cinematic film feel */}
+      {/* Subtle scanlines for cinematic film feel — dialed down from the
+          night build; the bright daylight scene makes them read stronger. */}
       <div
-        className="absolute inset-0 opacity-[0.22]"
+        className="absolute inset-0 opacity-[0.14]"
         style={{
           backgroundImage:
             'repeating-linear-gradient(to bottom, rgba(255,255,255,0.04) 0px, rgba(255,255,255,0.04) 1px, transparent 1px, transparent 4px)',

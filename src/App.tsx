@@ -13452,27 +13452,49 @@ const ForestSurvivalGame = () => {
         {/* Persistent — same component instance across every menu render */}
         <MenuBackdrop variant={menuVariant} />
 
-        {/* STATIC menu chrome — readability gradients + per-variant tint live
-            HERE, outside the animated screen wrapper, so the dark overlay
-            stays rock-solid while screens slide. These sit at z-[1], BELOW
-            the menu content (.menu-screen is z-10) — they darken the 3D
-            backdrop only, never the UI. The old setup let these (and the
-            multiplayer blur sheet) paint OVER every menu, washing out the
-            whole UI and blurring the entire lobby. Gradients also softened
-            so the footer buttons (Settings / Credits / Login) stay crisp. */}
-        <div className="fixed inset-0 z-[1] pointer-events-none bg-gradient-to-b from-black/40 via-black/20 to-black/55" />
+        {/* STATIC menu readability grade — the SINGLE source of bottom
+            darkening in the whole menu stack, rendered here outside the
+            animated screen wrapper so it stays rock-solid while screens
+            slide. Sits at z-[1], BELOW the menu content (.menu-screen is
+            z-10): it grades the 3D backdrop only, never the UI.
+
+            THIS IS THE "BLACK BOX" FIX. The old build stacked four separate
+            darkening ramps (an App gradient + an App vignette + the MenuShell
+            haze + a MenuShell vignette), each with a DIFFERENT start stop, so
+            they multiplied into a near-black lower half with a hard "black
+            bar" edge right at the horizon. Everything is consolidated into
+            the ONE layer below:
+              • bottom anchor — a many-stop, cubic-eased ramp (a hard edge is
+                mathematically impossible) capped at a gentle ~0.55 forest
+                tint, easing fully to transparent by mid-screen. Gives cards/
+                footer their contrast without crushing the sunlit vista.
+              • edge vignette — centered ABOVE middle (50% 42%) so it darkens
+                the top corners and sides but barely grazes the bottom-centre,
+                where the anchor already lives. The two never double up in the
+                same place, so no band can form.
+              • top canopy wash — a whisper of shade over the top 30% so the
+                GitHub star and title stay legible against bright sky.
+            MenuShell now contributes per-variant COLOUR only (glow + tint) —
+            it must never add black to the bottom again. */}
         <div
           className="fixed inset-0 z-[1] pointer-events-none"
-          style={{ background: 'radial-gradient(ellipse at center, transparent 46%, rgba(0,0,0,0.42) 100%)' }}
+          style={{
+            background: [
+              'radial-gradient(125% 115% at 50% 44%, rgba(0,0,0,0) 58%, rgba(6,16,10,0.24) 100%)',
+              'linear-gradient(to top, rgba(4,11,7,0.34) 0%, rgba(4,11,7,0.26) 6%, rgba(5,12,8,0.17) 13%, rgba(5,12,8,0.09) 21%, rgba(6,13,9,0.035) 30%, rgba(0,0,0,0) 41%)',
+              'linear-gradient(to bottom, rgba(9,18,12,0.24) 0%, rgba(8,16,11,0.06) 15%, rgba(0,0,0,0) 32%)',
+            ].join(', '),
+          }}
         />
         {menuVariant === 'multiplayer' && (
           // Plain dark tint — NO backdrop-filter. The old blur(14px) sheet
           // both blurred the live canvas every frame AND (because the lobby
           // renders inside a transformed stacking context) painted on top of
-          // the entire lobby UI, blurring it into unreadability.
+          // the entire lobby UI, blurring it into unreadability. Cool navy
+          // tint matches the lobby's sky-blue identity over the day scene.
           <div
             className="fixed inset-0 z-[1] pointer-events-none animate-fadeIn"
-            style={{ background: 'rgba(5,8,10,0.42)' }}
+            style={{ background: 'rgba(5,11,18,0.3)' }}
           />
         )}
         <div key={menuVariant} className="animate-fadeIn">

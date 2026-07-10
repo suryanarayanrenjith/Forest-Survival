@@ -276,11 +276,11 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode, onSkillTre
                   Forest<br />Survival
                 </h1>
 
-                {/* Aurora horizon rule with a datum chip */}
+                {/* Sunlit horizon rule with a datum chip */}
                 <div className="mt-3.5 flex items-center justify-center lg:justify-start gap-3">
                   <span className="aurora-rule h-px w-14 sm:w-24 bg-emerald-400/25 lg:hidden" />
                   <span className="font-hud text-[9px] sm:text-[10px] tracking-[0.4em] text-emerald-200/70 uppercase whitespace-nowrap">
-                    Nightfall · The Clearing
+                    Sunlit · The Clearing
                   </span>
                   <span className="aurora-rule h-px w-14 sm:w-24 bg-emerald-400/25" />
                 </div>
