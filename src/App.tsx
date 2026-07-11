@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { GraduationCap, Play, Home, MousePointerClick, ShieldAlert } from 'lucide-react';
 import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
-import { GunModel, type WeaponType as GunWeaponType } from './utils/GunModel';
+import { GunModel, MELEE_CAPABLE_WEAPONS, type WeaponType as GunWeaponType } from './utils/GunModel';
 import { MuzzleFlash, MuzzleSmoke, BulletTracer, ImpactEffect, RobotHitSparks, ExplosionEffect, FireNovaEffect, NukeEffect, AbilityCastEffect, ImpactBurst, setMuzzleLightPool, setExplosionLightPool, clearParticleGeometryPools, clearTracerGeometryPool, clearFlashSpritePool, clearSmokeSpritePool, clearExplosionRigPool, clearCastRigPool, clearBurstPairPool, getSoftSparkTexture } from './utils/Effects';
 import { HackBeam, buildHackVisuals, updateHackVisuals, disposeHackVisuals } from './utils/HackVisuals';
 import { soundManager } from './utils/SoundManager';
@@ -36,6 +36,7 @@ import { AchievementSystem, type Achievement } from './utils/AchievementSystem';
 import { EnhancedPowerUpSystem } from './utils/EnhancedPowerUps';
 import { DayCycleSystem, type AtmosphericSettings } from './utils/DayCycleSystem';
 import HUD, { type AbilityHudItem } from './components/HUD';
+import DebugConsole, { type DebugInfo } from './components/DebugConsole';
 import MainMenu from './components/MainMenu';
 import ClassicMenu from './components/ClassicMenu';
 import TutorialMenu from './components/TutorialMenu';
@@ -193,9 +194,9 @@ const MENU_MUSIC_URL = '/audio/Beyond_The_Overgrowth.mp3';
 // identity changes but values don't).
 const SYNCED_SCALAR_KEYS = [
   'masterVolume', 'sfxVolume', 'musicVolume', 'ambienceVolume', 'sensitivity', 'fov',
-  'showFPS', 'fpsCap', 'screenShake', 'haptics', 'hitMarkers', 'killFeed',
+  'showFPS', 'showConsole', 'fpsCap', 'screenShake', 'haptics', 'hitMarkers', 'killFeed',
   'impactFeedback', 'ragdollPhysics', 'autoReload', 'cameraBob',
-  'showCrosshair', 'crosshairStyle', 'crosshairColor',
+  'showCrosshair', 'crosshairStyle', 'crosshairColor', 'enemyArrowColor',
 ] as const satisfies readonly (keyof UserSettings)[];
 
 // SPARSE serialization for MAX DB savings: only keys that DIFFER from the
@@ -359,6 +360,15 @@ const ForestSurvivalGame = () => {
   // settings subscription, so changing it applies instantly without restart.
   const fpsCapRef = useRef<number>(gameSettingsManager.getSetting('fpsCap'));
   const [currentFPS, setCurrentFPS] = useState(0);
+  // ── Debug console (F3-style overlay) ── the game loop writes a snapshot
+  // into the ref at ~4Hz (only while the Settings toggle is on) then bumps the
+  // tick so the overlay re-renders without any per-frame React work.
+  const debugInfoRef = useRef<DebugInfo | null>(null);
+  const [debugTick, setDebugTick] = useState(0);
+  // ── Enemy GPS hunt markers ── two pre-allocated DOM markers (arrow + live
+  // distance pill) driven imperatively by the game loop when only 1–2 enemies
+  // remain in the wave: style.transform writes only, zero React per frame.
+  const enemyArrowRefs = useRef<(HTMLDivElement | null)[]>([null, null]);
   // Live stamina + exhaustion flags pushed from the per-frame game loop
   // so the HUD can draw the bottom-left pie meter at the correct fill.
   const [staminaRatio, setStaminaRatio] = useState(1);
@@ -366,6 +376,9 @@ const ForestSurvivalGame = () => {
   // Reload feedback: holds the in-progress reload's total duration (ms) so the
   // crosshair indicator can time its CSS sweep, or null when not reloading.
   const [reloadDurationUI, setReloadDurationUI] = useState<number | null>(null);
+  // Active-reload feedback — true from the moment a perfect reload is hit
+  // until the (snapped) reload completes; flips the ring emerald + "Perfect!".
+  const [reloadPerfectUI, setReloadPerfectUI] = useState(false);
 
   // ─── Photo Mode (in-game photoshoot → Convex storage) ────────────────────
   const generatePhotoUploadUrl = useMutation(api.photos.generateUploadUrl);
@@ -3151,7 +3164,10 @@ const ForestSurvivalGame = () => {
     let lastKillTime = 0;
     const startTime = Date.now(); // Track game start time
     let currentWeapon = 'pistol';
-    let canShoot = true;
+    // Fire-rate gate — timestamp of the next allowed trigger pull. Replaces the
+    // old `canShoot` flag + per-shot setTimeout pair: exact rate gating with
+    // zero timer churn (the minigun alone used to spawn 20 timers/sec).
+    let nextShotAt = 0;
     let isReloading = false;
     // Tutorial mode hands the player every weapon so they can try them all.
     const unlockedWeapons = isTutorialMode ? Object.keys(WEAPONS) : ['pistol'];
@@ -3291,6 +3307,55 @@ const ForestSurvivalGame = () => {
     interface HeadGib { mesh: THREE.Object3D; vel: THREE.Vector3; spin: THREE.Vector3; life: number; restY: number; }
     const headGibs: HeadGib[] = [];
     const MAX_HEAD_GIBS = 10;
+
+    // ── Torn-wire bundles (decapitation) ────────────────────────────────
+    // A robot's head doesn't pop off clean — a fistful of severed cables tears
+    // out WITH it (dangling from the flying gib, whipping around as it tumbles)
+    // and a matching stub is left sparking up out of the neck. One shared geo
+    // per part + three shared cable materials (same standard-material program
+    // the shell casings already compile, so no new shader variant); each
+    // bundle is a handful of tilted, length-varied cylinders with a scorched
+    // glowing connector at the torn end. Gib bundles leave the scene with
+    // their gib; the neck stub is detached when the corpse's pooled mesh is
+    // recycled (see the death-recycle block).
+    const wireGeo = new THREE.CylinderGeometry(0.045, 0.03, 1, 5);
+    wireGeo.translate(0, -0.5, 0); // extends -Y from its root point
+    const wireTipGeo = new THREE.SphereGeometry(0.07, 6, 5);
+    const wireMats = [
+      new THREE.MeshStandardMaterial({ color: 0xb86428, metalness: 0.85, roughness: 0.35 }), // bare copper
+      new THREE.MeshStandardMaterial({ color: 0x15171c, metalness: 0.3, roughness: 0.8 }),   // black insulation
+      new THREE.MeshStandardMaterial({ color: 0xcfa22e, metalness: 0.6, roughness: 0.5 }),   // yellow loom
+    ];
+    const wireTipMat = new THREE.MeshStandardMaterial({
+      color: 0x2a0f06, emissive: 0xff6a22, emissiveIntensity: 2.2,
+    });
+    const buildWireBundle = (pointUp: boolean, scale: number): THREE.Group => {
+      const bundle = new THREE.Group();
+      const count = 4 + ((Math.random() * 3) | 0);
+      for (let i = 0; i < count; i++) {
+        const wire = new THREE.Mesh(wireGeo, wireMats[i % wireMats.length]);
+        wire.position.set((Math.random() - 0.5) * 0.3, 0, (Math.random() - 0.5) * 0.3);
+        wire.rotation.set(
+          (pointUp ? Math.PI : 0) + (Math.random() - 0.5) * 0.9,
+          Math.random() * Math.PI * 2,
+          (Math.random() - 0.5) * 0.9,
+        );
+        wire.scale.y = 0.45 + Math.random() * 0.55; // ragged, uneven tear
+        wire.castShadow = false;
+        wire.userData.cannotReceiveAO = true;
+        // Scorched connector glowing at the torn end (counter-scaled so the
+        // parent's length stretch doesn't egg the sphere).
+        const tip = new THREE.Mesh(wireTipGeo, wireTipMat);
+        tip.position.y = -1;
+        tip.scale.set(1, 1 / wire.scale.y, 1);
+        tip.castShadow = false;
+        tip.userData.cannotReceiveAO = true;
+        wire.add(tip);
+        bundle.add(wire);
+      }
+      bundle.scale.setScalar(scale);
+      return bundle;
+    };
 
     // Camera shake system
     let cameraShakeIntensity = 0;
@@ -3679,11 +3744,18 @@ const ForestSurvivalGame = () => {
     // pooled group is fully inert). Rockets are NOT pooled — they carry
     // per-instance exhaust parts and detonate rarely enough not to matter.
     const _bulletMeshPool: THREE.Group[] = [];
-    const retireBulletMesh = (b: { mesh: THREE.Object3D; isRocket?: boolean }) => {
+    // Sibling free-list for the Bullet RECORDS ({mesh, velocity, …}): every
+    // splice site retires through here, so the wrapper object + its velocity
+    // vector are recycled too and sustained fire allocates nothing per round.
+    // Records are only ever referenced by the `bullets` array, so a retired
+    // record can never be aliased by in-flight logic.
+    const _bulletRecordPool: Bullet[] = [];
+    const retireBulletMesh = (b: Bullet) => {
       scene.remove(b.mesh);
       if (!b.isRocket && _bulletMeshPool.length < 40) {
         _bulletMeshPool.push(b.mesh as THREE.Group);
       }
+      if (_bulletRecordPool.length < 64) _bulletRecordPool.push(b);
     };
 
     // ── REVENANT PHYSICAL GOLD SHIELD (its own look, NOT the player's riot
@@ -5083,6 +5155,8 @@ const ForestSurvivalGame = () => {
     const standingHeight = 5; // Normal standing camera height
     const crouchSpeedMultiplier = 0.5; // Move slower when crouching
     let currentCameraHeight = standingHeight; // For smooth transitions
+
+    // (Tactical slide removed by request — crouch is a plain toggle again.)
     // Current bush-wade movement multiplier (1 = clear ground). Recomputed each
     // frame in the movement block and reused by the footstep rustle below.
     let bushSlowMul = 1;
@@ -5836,6 +5910,49 @@ const ForestSurvivalGame = () => {
     // that fires when the trigger is pulled on an empty mag. Returns false when
     // a reload can't start (already reloading, paused/over, or mag already full).
     let reloadTimeoutId: number | null = null;
+    // ── ACTIVE RELOAD (perfect-timing window) ────────────────────────────
+    // Gears-style skill check: the crosshair reload ring carries a marked
+    // sweet-spot arc — tapping R again while the sweep is inside it snaps the
+    // rest of the reload to ~0.2s (the hands visibly fast-forward). One
+    // attempt per reload; missing the window just does nothing beyond a dull
+    // click (friendly — no jam penalty). Window fractions are mirrored into
+    // the ring UI so what you see is exactly what's judged.
+    const ACTIVE_RELOAD_START = 0.42;
+    const ACTIVE_RELOAD_END = 0.62;
+    const ACTIVE_RELOAD_SNAP_MS = 200;
+    let reloadStartedAt = 0;      // ms timestamp the running reload began
+    let reloadTotalMs = 0;        // full duration of the running reload
+    let reloadMaxTarget = 0;      // mag size the running reload will fill to
+    let reloadAttemptUsed = false;
+    // Shared completion for both the natural timeout and a perfect snap.
+    const completeReload = () => {
+      reloadTimeoutId = null;
+      ammo = reloadMaxTarget;
+      isReloading = false;
+      setReloadDurationUI(null);
+      updateGameState();
+    };
+    const attemptActiveReload = () => {
+      if (!isReloading || reloadAttemptUsed || paused || isGameOver) return;
+      const frac = (Date.now() - reloadStartedAt) / Math.max(1, reloadTotalMs);
+      // Ignore taps in the opening moments — an accidental double-tap of R
+      // shouldn't silently burn the attempt before the ring even reads.
+      if (frac < 0.12) return;
+      reloadAttemptUsed = true;
+      if (frac >= ACTIVE_RELOAD_START && frac <= ACTIVE_RELOAD_END) {
+        // PERFECT — fast-forward the hands and finish almost immediately.
+        if (reloadTimeoutId !== null) window.clearTimeout(reloadTimeoutId);
+        reloadTimeoutId = window.setTimeout(completeReload, ACTIVE_RELOAD_SNAP_MS);
+        gunModel.accelerateReload(ACTIVE_RELOAD_SNAP_MS / 1000);
+        soundManager.play('reload', 0.5, false, 1.5);
+        soundManager.play('powerUp', 0.3, false, 1.8);
+        setReloadPerfectUI(true);
+        tutorial.recordAction('active_reload', 1);
+      } else {
+        // Missed — a dull click, nothing else. The reload keeps its pace.
+        soundManager.play('empty', 0.3, false, 0.9);
+      }
+    };
     // Wave-perk Drum Magazine + Weapon Mastery magazine bonus boost the
     // effective magazine cap. Wrapped so every site (HUD, reload, refills)
     // reads the same source-of-truth size. The One-in-the-Chamber run
@@ -5874,14 +5991,14 @@ const ForestSurvivalGame = () => {
       // fresh magazine.
       soundManager.play(currentWeapon === 'subverter' ? 'hack_reload' : 'reload', 0.5);
       setReloadDurationUI(reloadMs); // drives the crosshair reload indicator
+      setReloadPerfectUI(false);
+      // Arm the active-reload window for this reload.
+      reloadStartedAt = Date.now();
+      reloadTotalMs = reloadMs;
+      reloadMaxTarget = maxAmmoNow;
+      reloadAttemptUsed = false;
       if (reloadTimeoutId !== null) window.clearTimeout(reloadTimeoutId);
-      reloadTimeoutId = window.setTimeout(() => {
-        reloadTimeoutId = null;
-        ammo = maxAmmoNow;
-        isReloading = false;
-        setReloadDurationUI(null);
-        updateGameState();
-      }, reloadMs);
+      reloadTimeoutId = window.setTimeout(completeReload, reloadMs);
       return true;
     };
 
@@ -5910,6 +6027,13 @@ const ForestSurvivalGame = () => {
       if (isMovementKey) {
         keys[e.code] = true;
       }
+
+      // Ignore OS key auto-repeat for every DISCRETE action below (movement
+      // state is already latched above; `held()` polling doesn't care). Without
+      // this, HOLDING crouch cancelled a fresh slide ~0.5s in via the repeat,
+      // holding R burned the active-reload attempt as an early miss, and
+      // holding C flickered the crouch toggle.
+      if (e.repeat) return;
 
       // Photo Mode owns the keyboard: movement keys (set above) reposition the
       // camera; Escape leaves the mode; everything else (shoot/reload/weapons)
@@ -5980,6 +6104,15 @@ const ForestSurvivalGame = () => {
         return;
       }
 
+      // MELEE QUICK-STRIKE — a fast gun-butt bash for point-blank pressure.
+      // Cooldown-gated inside doMeleeStrike; allowed mid-reload (it doesn't
+      // cancel the reload) but not mid-dash (the charge IS the melee there).
+      if (e.code === b.melee && !paused && !isGameOver && !isDashing
+          && !tutorialActiveRef.current) {
+        doMeleeStrike();
+        return;
+      }
+
       // USE HELD POWER — the bound power key activates whatever loot power is
       // currently held, then empties the slot. Powers come exclusively from
       // enemy loot now (one at a time), so there's no point-unlock gating.
@@ -6038,7 +6171,10 @@ const ForestSurvivalGame = () => {
       }
 
       if (e.code === b.reload) {
-        startReload();
+        // Mid-reload, R becomes the ACTIVE RELOAD check (perfect window on
+        // the ring finishes the reload early); otherwise it starts one.
+        if (isReloading) attemptActiveReload();
+        else startReload();
       }
 
       // Weapon inspect (CS:GO-style) — rebindable (default 'F'). Purely
@@ -6260,6 +6396,163 @@ const ForestSurvivalGame = () => {
     };
 
     // Enhanced shooting
+    // ── MELEE QUICK-STRIKE (default V, rebindable) ───────────────────────
+    // A gun-butt bash for close-range pressure: hits everything in a frontal
+    // arc for heavy flat damage, a hard shove and (host/solo) a brief stagger
+    // — the panic button every FPS needs when a robot is chewing on your face
+    // mid-reload. Deliberately NOT a shot: it never touches the accuracy
+    // metrics, works mid-reload without cancelling it, and its damage only
+    // scales with the Damage power-up / run modifiers so it stays a finisher,
+    // not a DPS strategy. Guests report hits to the host (same path as
+    // bullets); CC + shoves stay host-authoritative.
+    //
+    // Two-phase: the swing plays instantly, the HIT resolves on the strike
+    // frame of the per-weapon animation (~130ms in) so damage lands exactly
+    // when the weapon visually connects. Heavy ordnance (sniper / minigun /
+    // launcher) can't melee at all — MELEE_CAPABLE_WEAPONS is shared with
+    // GunModel so the gate and the animation table can never disagree.
+    const MELEE_RANGE = 5.2;
+    const MELEE_RANGE_SQ = MELEE_RANGE * MELEE_RANGE;
+    const MELEE_ARC_DOT = Math.cos((60 * Math.PI) / 180); // 120° frontal arc
+    const MELEE_COOLDOWN_MS = 900;
+    const MELEE_IMPACT_DELAY_MS = 130; // damage lands on the strike frame
+    const MELEE_BASE_DAMAGE = 60;
+    const MELEE_MAX_TARGETS = 3;
+    const MELEE_STUN_MS = 420;
+    let nextMeleeAt = 0;
+    let lastMeleeHintAt = 0; // throttles the "too heavy" hint
+    const _meleeFwd = new THREE.Vector3();
+    const _meleeImpact = new THREE.Vector3();
+
+    function doMeleeStrike() {
+      const nowMs = Date.now();
+      if (nowMs < nextMeleeAt || isGameOver || paused) return;
+      if (!MELEE_CAPABLE_WEAPONS.has(currentWeapon as GunWeaponType)) {
+        if (nowMs - lastMeleeHintAt > 2500) {
+          lastMeleeHintAt = nowMs;
+          showPowerMessage('Too heavy to melee — switch to a lighter weapon', 1500);
+          soundManager.play('empty', 0.3, false, 0.8);
+        }
+        return;
+      }
+      nextMeleeAt = nowMs + MELEE_COOLDOWN_MS;
+
+      // Swing NOW (viewmodel windup + whoosh); the hit lands on the strike
+      // frame below so contact matches what the player sees.
+      gunModel.triggerMelee();
+      soundManager.play('jump', 0.45, false, 1.3); // whoosh, pitched up to a swipe
+      tutorial.recordAction('melee', 1);
+      window.setTimeout(resolveMeleeHits, MELEE_IMPACT_DELAY_MS);
+    }
+
+    function resolveMeleeHits() {
+      if (isGameOver || paused) return;
+      const nowMs = Date.now();
+      fovPunch = Math.min(fovPunch + 1.4, 14);
+
+      // Aim re-read at impact time — the strike connects where the player is
+      // ACTUALLY looking when the swing lands, not where they were at windup.
+      camera.getWorldDirection(_meleeFwd);
+      _meleeFwd.y = 0;
+      if (_meleeFwd.lengthSq() < 1e-6) return;
+      _meleeFwd.normalize();
+
+      const impactFeedbackOn = gameSettingsManager.getSetting('impactFeedback');
+      const meleeDamage = MELEE_BASE_DAMAGE
+        * (damageBoostActive ? damageBoostMultiplier : 1)
+        * (runMods.playerDamageMult ?? 1);
+      let hitCount = 0;
+
+      for (let mi = 0; mi < enemies.length && hitCount < MELEE_MAX_TARGETS; mi++) {
+        const te = enemies[mi];
+        if (te.dead || te.engageable === false || te.detailReady === false) continue;
+        const tdx = te.mesh.position.x - camera.position.x;
+        const tdz = te.mesh.position.z - camera.position.z;
+        const d2 = tdx * tdx + tdz * tdz;
+        if (d2 > MELEE_RANGE_SQ || d2 < 1e-6) continue;
+        const inv = 1 / Math.sqrt(d2);
+        if (tdx * inv * _meleeFwd.x + tdz * inv * _meleeFwd.z < MELEE_ARC_DOT) continue;
+
+        // A shielded Revenant phases the bash off — it pings, no damage.
+        if (revShieldUp(te)) { pingRevShield(te, te.mesh.position); continue; }
+
+        hitCount++;
+        te.damageFlashTime = 0.4;
+        // Record the strike direction so a killing blow ragdolls the right way.
+        if (!te.hitImpulse) te.hitImpulse = new THREE.Vector3();
+        te.hitImpulse.set(_meleeFwd.x, 0, _meleeFwd.z);
+
+        const heavyChassis = te.type === 'tank' || te.type === 'boss' || te.isMiniBoss === true;
+        if (isMpGuest && mp) {
+          // Guests don't own enemy health / CC / position — report the hit and
+          // keep the local feedback below for snappiness.
+          if (te.netId !== undefined) mp.sendEnemyHit(te.netId, meleeDamage, false);
+        } else {
+          te.health -= meleeDamage;
+          if (te.type === 'revenant') te.revEvadeUntil = nowMs + 500;
+          // Hard shove + a brief stagger (bosses shrug the stagger off so the
+          // bash can never stun-lock the fight's anchor).
+          const shove = heavyChassis ? 0.35 : 1.1;
+          te.mesh.position.x += _meleeFwd.x * shove;
+          te.mesh.position.z += _meleeFwd.z * shove;
+          if (!heavyChassis) te.ccUntil = Math.max(te.ccUntil ?? 0, nowMs + MELEE_STUN_MS);
+        }
+
+        // Crunchy impact feedback at the point of contact.
+        _meleeImpact.set(
+          te.mesh.position.x - _meleeFwd.x * 0.5,
+          te.mesh.position.y + 1.1,
+          te.mesh.position.z - _meleeFwd.z * 0.5,
+        );
+        robotSparks.push(new RobotHitSparks(scene, _meleeImpact.clone(), _meleeFwd.clone(), 14));
+        stampEnemyDamage(te, meleeDamage, false, undefined, _meleeImpact);
+        if (impactFeedbackOn) {
+          impactBursts.push(new ImpactBurst(scene, _meleeImpact.clone(), 0xffe6b0, 1.15));
+        }
+        if (gameSettingsManager.getSetting('hitMarkers')) addHitMarker(false);
+
+        if (!isMpGuest && te.health <= 0) {
+          handleEnemyKilled(te, false);
+        }
+      }
+
+      if (hitCount > 0) {
+        soundManager.play('enemyHit', 0.9, false, 0.72); // low metal thud
+        haptic('hit');
+        if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
+        // Micro hit-stop so the bash lands with weight.
+        timeScale = 0.5;
+        setTimeout(() => { timeScale = 1.0; }, 70);
+      }
+
+      // Turrets take the bash too — bashing a sentinel at point blank works.
+      for (let s = 0; s < sentinels.length; s++) {
+        const sentinel = sentinels[s];
+        if (sentinel.destroyed) continue;
+        const sdx = sentinel.mesh.position.x - camera.position.x;
+        const sdz = sentinel.mesh.position.z - camera.position.z;
+        const sd2 = sdx * sdx + sdz * sdz;
+        if (sd2 > MELEE_RANGE_SQ || sd2 < 1e-6) continue;
+        const sinv = 1 / Math.sqrt(sd2);
+        if (sdx * sinv * _meleeFwd.x + sdz * sinv * _meleeFwd.z < MELEE_ARC_DOT) continue;
+        sentinel.hp -= meleeDamage;
+        createParticles(sentinel.mesh.position, 0xff6633, 8);
+        soundManager.play('enemyHit', 0.8, false, 0.8);
+        if (gameSettingsManager.getSetting('hitMarkers')) addHitMarker(false);
+        if (sentinel.hp <= 0) {
+          sentinel.destroyed = true;
+          spawnExplosionFX(sentinel.mesh.position.clone());
+          scene.remove(sentinel.mesh);
+          const sentinelReward = Math.round(150 * scoreDiffMult * runModifierScoreMult);
+          score += sentinelReward;
+          missionSystem.updateProgress('elimination', 1);
+          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry(`Sentinel Down · +${sentinelReward}`, 'kill');
+          triggerKillFlash();
+          updateGameState();
+        }
+      }
+    }
+
     // ── AIM SPREAD (single source of truth) ──────────────────────────────
     // Total per-axis deviation added to the shot direction for the player's
     // CURRENT stance. Used by BOTH shoot() (the fired bullet) and the dynamic
@@ -6293,26 +6586,39 @@ const ForestSurvivalGame = () => {
 
     // Scratch vectors for shoot() — the tracer endpoint, muzzle position and
     // smoke direction are consumed (copied) inside the effect constructors, so
-    // reusing these removes three heap allocations per trigger pull.
+    // reusing these removes three heap allocations per trigger pull. _shotDir
+    // is the per-pellet aim direction (copied into the pooled record's velocity)
+    // and _NEG_Z the rocket's rest axis — both hoisted out of the pellet loop.
     const _shotTracerEnd = new THREE.Vector3();
     const _shotMuzzlePos = new THREE.Vector3();
     const _shotSmokeDir = new THREE.Vector3();
+    const _shotDir = new THREE.Vector3();
+    const _NEG_Z = new THREE.Vector3(0, 0, -1);
+    // Muzzle-flash light cutoff — timestamp-driven (checked in the render
+    // loop) instead of a setTimeout per shot; autofire used to spawn 20/s.
+    let gunLightOffAt = 0;
 
     const shoot = () => {
       // Empty magazine — dry-fire click + auto-reload so pulling the trigger on
       // an empty mag actually does something instead of a dead click. The
       // !isReloading guard means only the first pull clicks; subsequent pulls
-      // of a held auto-fire burst are swallowed while the reload runs.
+      // of a held auto-fire burst are swallowed while the reload runs. The
+      // nextShotAt gate ALSO applies here: the autofire poll runs at ~60Hz now,
+      // so without it a held trigger on an empty mag (auto-reload off) would
+      // machine-gun the dry-fire click.
       if (ammo <= 0 && !isReloading && !isGameOver && !paused && !tutorialActiveRef.current) {
+        const nowEmpty = performance.now();
+        if (nowEmpty < nextShotAt) return;
+        nextShotAt = nowEmpty + 280; // believable dry-fire cadence for a held trigger
         soundManager.play('empty', 0.5);
         // Auto-reload on empty is a player setting (default on). When off, the
         // empty pull just dry-fires and the player reloads manually.
         if (gameSettingsManager.getSetting('autoReload')) startReload();
         return;
       }
-      if (ammo > 0 && !isGameOver && !paused && canShoot && !isReloading && !tutorialActiveRef.current) {
+      const nowShot = performance.now();
+      if (ammo > 0 && !isGameOver && !paused && nowShot >= nextShotAt && !isReloading && !tutorialActiveRef.current) {
         const weapon = WEAPONS[currentWeapon];
-        canShoot = false;
         gunModel.cancelInspect(); // firing snaps the gun back from an inspect
         // Overcharge × Rapid-Fire (killstreak airdrop) × Wave perks compound on
         // top of the weapon's base fire rate — earn them all, fire blisteringly fast.
@@ -6320,7 +6626,7 @@ const ForestSurvivalGame = () => {
         if (overchargeActive) fireRateMult *= overchargeFireRateMult;
         if (rapidFireActive) fireRateMult *= rapidFireMultiplier;
         const fireDelay = weapon.fireRate / fireRateMult;
-        setTimeout(() => { canShoot = true; }, fireDelay);
+        nextShotAt = nowShot + fireDelay;
 
         // ── SUBVERTER: not a gun — deploy a hacking chip and bail out of the
         // projectile path entirely. Only consumes a chip on a successful hack.
@@ -6361,14 +6667,17 @@ const ForestSurvivalGame = () => {
 
         const bulletsToFire = currentWeapon === 'shotgun' ? 5 : 1;
 
-        // Gun flash
+        // Gun flash — timestamp cutoff, cleared in the render loop (no timer).
         gunLight.intensity = 5;
-        setTimeout(() => { gunLight.intensity = 0; }, 50);
+        gunLightOffAt = nowShot + 50;
 
         const isLauncher = currentWeapon === 'launcher';
 
         for (let i = 0; i < bulletsToFire; i++) {
-          const direction = new THREE.Vector3();
+          // Per-pellet aim direction in a hoisted scratch — its final value is
+          // COPIED into the (pooled) record's velocity below, so the pellet
+          // loop allocates nothing on the recycled path.
+          const direction = _shotDir;
           camera.getWorldDirection(direction);
 
           // Total aim deviation for the current stance (base weapon spread +
@@ -6385,7 +6694,7 @@ const ForestSurvivalGame = () => {
             // Launcher fires a real rocket projectile, oriented along its flight path
             bullet = createRocketProjectile();
             bullet.position.copy(camera.position);
-            bullet.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, -1), direction);
+            bullet.quaternion.setFromUnitVectors(_NEG_Z, direction);
           } else {
             // Shared geometry + cached material — no per-shot allocation.
             bullet = buildBullet(weapon.bulletColor);
@@ -6404,19 +6713,37 @@ const ForestSurvivalGame = () => {
             * (runMods.playerDamageMult ?? 1);
           if (mpMods.burningBullets) bulletDamage += 6;
 
-          bullets.push({
-            mesh: bullet,
-            velocity: direction.multiplyScalar(weapon.bulletSpeed),
-            life: isLauncher ? 240 : 100,
-            damage: bulletDamage,
-            isRocket: isLauncher,
-          });
+          // Reuse a retired record (mesh pool's sibling) when one is free.
+          let rec = _bulletRecordPool.pop();
+          if (rec) {
+            rec.mesh = bullet;
+            rec.velocity.copy(direction).multiplyScalar(weapon.bulletSpeed);
+            rec.life = isLauncher ? 240 : 100;
+            rec.damage = bulletDamage;
+            rec.isRocket = isLauncher;
+            rec.pierceLeft = weapon.pierce ?? 0;
+            rec.pierceRetain = weapon.pierceRetain ?? 0.55;
+            rec.hitEnemies?.clear(); // recycled record — forget its past victims
+          } else {
+            rec = {
+              mesh: bullet,
+              velocity: direction.clone().multiplyScalar(weapon.bulletSpeed),
+              life: isLauncher ? 240 : 100,
+              damage: bulletDamage,
+              isRocket: isLauncher,
+              pierceLeft: weapon.pierce ?? 0,
+              pierceRetain: weapon.pierceRetain ?? 0.55,
+            };
+          }
+          bullets.push(rec);
 
           // Bullet tracer — rockets skip it (they trail their own exhaust glow).
           // BulletTracer copies both endpoints into its pooled geometry in the
           // constructor, so passing scratch/live vectors is allocation-free.
+          // (The tracer reach scales with bullet speed — same as it always has:
+          // the endpoint extends along the scaled velocity, not the unit aim.)
           if (!isLauncher) {
-            _shotTracerEnd.copy(camera.position).addScaledVector(direction, 50);
+            _shotTracerEnd.copy(camera.position).addScaledVector(rec.velocity, 50);
             const tracer = new BulletTracer(scene, camera.position, _shotTracerEnd, weapon.bulletColor);
             bulletTracers.push(tracer);
           }
@@ -6535,14 +6862,20 @@ const ForestSurvivalGame = () => {
         mouseDown = true;
         shoot();
 
-        // Start auto-fire for weapons that support it
+        // Start auto-fire for weapons that support it. The interval is a fast
+        // ~60Hz poll — the real cadence is the timestamp gate inside shoot()
+        // (nextShotAt). The old interval ticked at the weapon's BASE fire rate,
+        // which silently discarded Overcharge / Rapid-Fire / wave-perk
+        // fire-rate buffs for held autofire (the gate opened early but the
+        // interval never asked). Polling + gating also stops the burst
+        // naturally when a mid-hold weapon switch lands on a non-auto gun.
         const weapon = WEAPONS[currentWeapon];
         if (weapon.autoFire && !autoFireInterval) {
           autoFireInterval = window.setInterval(() => {
-            if (mouseDown && !paused && !isGameOver) {
+            if (mouseDown && !paused && !isGameOver && WEAPONS[currentWeapon].autoFire) {
               shoot();
             }
-          }, weapon.fireRate);
+          }, 16);
         }
       }
     };
@@ -6618,7 +6951,10 @@ const ForestSurvivalGame = () => {
         photoFov = Math.max(PHOTO_FOV_MIN, Math.min(PHOTO_FOV_MAX, photoFov + (e.deltaY > 0 ? 4 : -4)));
         return;
       }
-      if (!paused && !isGameOver) {
+      // Blocked mid-reload for parity with the digit keys — a wheel flick used
+      // to abandon the reload animation while its completion timer kept running
+      // and then filled the NEW weapon to the OLD weapon's mag size.
+      if (!paused && !isGameOver && !isReloading) {
         e.preventDefault();
 
         const weaponKeys = Object.keys(WEAPONS);
@@ -6635,9 +6971,11 @@ const ForestSurvivalGame = () => {
           currentWeapon = unlockedKeys[prevIndex];
         }
 
-        // Update weapon
-        const weapon = WEAPONS[currentWeapon];
-        ammo = weapon.maxAmmo;
+        // Update weapon — same source-of-truth mag size + mastery snapshot as
+        // the digit-key path (the wheel used to skip both, so perk/mastery
+        // magazine bonuses silently vanished on a scroll-switch).
+        refreshMasteryBonus();
+        ammo = effectiveMaxAmmo(currentWeapon);
         gunModel.switchWeapon(currentWeapon as GunWeaponType);
         setGunFillForWeapon(currentWeapon);
         tutorial.recordAction('switch_weapon', 1);
@@ -6710,6 +7048,93 @@ const ForestSurvivalGame = () => {
       return Math.sqrt(dx * dx + dz * dz) < distance;
     };
 
+    // ── ENEMY GPS HUNT MARKERS ───────────────────────────────────────────
+    // When the wave is down to its last 1–2 robots, guide the player to them
+    // like a AAA objective marker: an on-screen enemy gets a pulsing chevron
+    // hovering above it (pointing down at the target), an off-screen one gets
+    // an arrow clamped to the viewport edge and rotated toward it — both with
+    // a live distance pill. Host/solo additionally require the wave spawner to
+    // be DONE (waveEnemiesRemaining counts unspawned enemies) so markers never
+    // fire during a fresh wave's opening trickle; MP guests mirror enemies
+    // without that counter, so the alive count alone gates them. Everything is
+    // style-writes on two pre-mounted DOM nodes — zero React, zero allocation.
+    const _arrowVec = new THREE.Vector3();
+    const _arrowTargets: (Enemy | null)[] = [null, null];
+    const updateEnemyArrows = () => {
+      const roots = enemyArrowRefs.current;
+      let show = !paused && !isGameOver && !photoModeRef.current;
+      let alive = 0;
+      _arrowTargets[0] = null;
+      _arrowTargets[1] = null;
+      if (show) {
+        for (let i = 0; i < enemies.length; i++) {
+          const e = enemies[i];
+          if (e.dead) continue;
+          if (alive < 2) _arrowTargets[alive] = e;
+          alive++;
+          if (alive > 2) break;
+        }
+        const spawnerDone = isMpGuest || waveEnemiesRemaining <= 0;
+        show = alive > 0 && alive <= 2 && spawnerDone;
+      }
+      const w = window.innerWidth;
+      const hgt = window.innerHeight;
+      const cx = w * 0.5, cy = hgt * 0.5;
+      const EDGE = 64; // clamp margin from the viewport edges
+      const pulse = 1 + 0.1 * Math.sin(performance.now() * 0.006); // heartbeat
+      for (let i = 0; i < roots.length; i++) {
+        const el = roots[i];
+        if (!el) continue;
+        const target = show ? _arrowTargets[i] : null;
+        if (!target) {
+          if (el.style.display !== 'none') el.style.display = 'none';
+          continue;
+        }
+        _arrowVec.set(target.mesh.position.x, target.mesh.position.y + 1.6, target.mesh.position.z);
+        const dist = _arrowVec.distanceTo(camera.position);
+        _arrowVec.project(camera);
+        // A point behind the camera projects mirrored — flip it so the arrow
+        // sweeps around the screen edge correctly when the enemy is behind you.
+        const behind = _arrowVec.z > 1;
+        let nx = _arrowVec.x, ny = _arrowVec.y;
+        if (behind) { nx = -nx; ny = -ny; }
+        const onScreen = !behind && nx > -0.9 && nx < 0.9 && ny > -0.82 && ny < 0.82;
+        const svg = el.firstElementChild as SVGElement | null;
+        const span = el.lastElementChild as HTMLElement | null;
+        el.style.display = 'flex';
+        if (onScreen) {
+          // Hover just above the enemy, chevron pointing down at it.
+          const px = (nx * 0.5 + 0.5) * w;
+          const py = (-ny * 0.5 + 0.5) * hgt;
+          el.style.transform = `translate(${(px - 17).toFixed(1)}px, ${(py - 64).toFixed(1)}px)`;
+          if (svg) svg.style.transform = `rotate(180deg) scale(${pulse.toFixed(3)})`;
+        } else {
+          // Edge-clamped arrow rotated to point at the target (GPS mode).
+          const px = (nx * 0.5 + 0.5) * w;
+          const py = (-ny * 0.5 + 0.5) * hgt;
+          let dx = px - cx, dy = py - cy;
+          const len = Math.hypot(dx, dy) || 1;
+          dx /= len; dy /= len;
+          // Degenerate case: enemy dead-centre BEHIND the camera projects to a
+          // zero direction — point the arrow at the bottom edge ("turn around").
+          if (Math.abs(dx) < 1e-4 && Math.abs(dy) < 1e-4) { dx = 0; dy = 1; }
+          const t = Math.min(
+            (cx - EDGE) / Math.max(1e-6, Math.abs(dx)),
+            (cy - EDGE) / Math.max(1e-6, Math.abs(dy)),
+          );
+          const ex = cx + dx * t;
+          const ey = cy + dy * t;
+          const ang = Math.atan2(dy, dx) * (180 / Math.PI) + 90; // chevron art points up
+          el.style.transform = `translate(${(ex - 17).toFixed(1)}px, ${(ey - 17).toFixed(1)}px)`;
+          if (svg) svg.style.transform = `rotate(${ang.toFixed(1)}deg) scale(${pulse.toFixed(3)})`;
+        }
+        if (span) {
+          const dTxt = `${Math.round(dist)}m`;
+          if (span.textContent !== dTxt) span.textContent = dTxt;
+        }
+      }
+    };
+
     // Game loop
     let animationId: number;
     // FPS-cap bookkeeping: timestamp of the last RENDERED frame. When a cap is
@@ -6735,10 +7160,16 @@ const ForestSurvivalGame = () => {
     // step sound each stride. One stride length means running (faster ground
     // speed) naturally produces a quicker step cadence than walking.
     let footstepAccum = 0;
+    // Latest measured FPS + smoothed CPU frame time — shared by the FPS pill
+    // and the debug-console feed (which reads them loop-side, no React).
+    let fpsValue = 0;
+    let debugFrameMs = 16.7;
+    let debugFeedLastMs = 0;
     const updateFPS = () => {
       const now = performance.now();
       fpsFrameCount++;
       if (now - fpsLastTime >= 1000) {
+        fpsValue = fpsFrameCount;
         setCurrentFPS(fpsFrameCount);
         fpsFrameCount = 0;
         fpsLastTime = now;
@@ -6844,8 +7275,25 @@ const ForestSurvivalGame = () => {
       gib.quaternion.copy(_gibQuat);
       gib.scale.copy(_gibScale);
       gib.traverse((o) => { o.castShadow = false; o.userData.cannotReceiveAO = true; });
+      // Severed cable bundle torn out WITH the head — dangles from the neck
+      // underside and whips around as the gib tumbles.
+      const gibWires = buildWireBundle(false, 1);
+      gibWires.position.y = -0.35;
+      gib.add(gibWires);
       scene.add(gib);
       head.visible = false; // the body is now headless
+
+      // Matching stub left in the BODY: a shorter tuft of torn cables sparking
+      // up out of the neck. Lives on the pooled mesh (same local space as the
+      // head), so it's remembered on the enemy and detached when the corpse's
+      // slot is recycled.
+      if (head.parent) {
+        const stub = buildWireBundle(true, 0.8);
+        stub.position.copy(head.position);
+        stub.position.y -= 0.3;
+        head.parent.add(stub);
+        enemy.neckWires = stub;
+      }
 
       // Launch direction: the shot impulse if we have one, else away from player.
       const dir = (enemy.hitImpulse && enemy.hitImpulse.lengthSq() > 1e-4)
@@ -9677,6 +10125,10 @@ const ForestSurvivalGame = () => {
       gunModel.updateStrafe(delta, strafeInput, aimingActive);
       // Lowered "folded" carry pose while sprinting (not while shooting)
       gunModel.updateSprint(delta, isRunning && isMoving && !isCrouching && !mouseDown);
+      // Muzzle-flash light cutoff (timestamp-driven — see shoot()).
+      if (gunLight.intensity > 0 && performance.now() >= gunLightOffAt) {
+        gunLight.intensity = 0;
+      }
       // Airborne weapon inertia + landing dip
       gunModel.updateJump(delta, isJumping, velocityY);
       // Decay one-shot flourishes (dash, abilities)
@@ -10639,11 +11091,18 @@ const ForestSurvivalGame = () => {
         const nearbyIds = _enemyQueryScratch;
         nearbyIds.length = 0;
         for (let q = 0; q < nearbyEnemyIds.length; q++) nearbyIds.push(nearbyEnemyIds[q]);
+        // End of this frame's travel — a piercing round that punches through a
+        // body is restored to this point so it keeps flying next frame.
+        const segEndX = bullet.mesh.position.x;
+        const segEndY = bullet.mesh.position.y;
+        const segEndZ = bullet.mesh.position.z;
         let bulletConsumed = false;
         for (let n = 0; n < nearbyIds.length && !bulletConsumed; n++) {
           const j = nearbyIds[n];
           const enemy = enemies[j];
           if (!enemy || enemy.dead) continue;
+          // A piercing round never re-hits a body it already punched through.
+          if (bullet.hitEnemies !== undefined && bullet.hitEnemies.has(enemy)) continue;
           // Can't snipe an enemy that isn't actually rendered on screen (fogged
           // out in the distance) — it must be engageable first. `=== false`
           // so an enemy not yet evaluated this frame defaults to hittable.
@@ -10805,8 +11264,22 @@ const ForestSurvivalGame = () => {
                 showPowerMessage('BOSS ENRAGED', 2400);
               }
             }
-            retireBulletMesh(bullet);
-            bullets.splice(i, 1);
+            // ── OVER-PENETRATION ── a piercing round (sniper) punches THROUGH
+            // this body instead of stopping in it: it sheds energy (damage ×
+            // pierceRetain), remembers the victim so it can never re-hit it,
+            // and resumes its flight after the impact effects play at the
+            // contact point. Everything else consumes the round here as before.
+            const pierced = (bullet.pierceLeft ?? 0) > 0;
+            if (pierced) {
+              bullet.pierceLeft = (bullet.pierceLeft ?? 1) - 1;
+              bullet.damage *= bullet.pierceRetain ?? 0.55;
+              if (!bullet.hitEnemies) bullet.hitEnemies = new Set();
+              bullet.hitEnemies.add(enemy);
+            } else {
+              retireBulletMesh(bullet);
+              bullets.splice(i, 1);
+              bulletConsumed = true;
+            }
 
             // 🤖 Record hit for AI systems (recordHit, NOT recordShot — the
             // trigger-pull already counted the shot fired in shoot()).
@@ -10913,7 +11386,14 @@ const ForestSurvivalGame = () => {
                 if (!isMpGuest && e.health <= 0) handleEnemyKilled(e, false);
               }
             }
-            break;
+            if (pierced) {
+              // Resume flight: the impact effects played at the contact point;
+              // now restore the round to the end of this frame's travel so it
+              // carries on toward whatever stands behind this enemy. The loop
+              // continues — the same segment may clip a second body this frame.
+              bullet.mesh.position.set(segEndX, segEndY, segEndZ);
+            }
+            // A consumed round set bulletConsumed above, which ends the loop.
           }
         }
 
@@ -11082,8 +11562,13 @@ const ForestSurvivalGame = () => {
             }
             // Restore the head we hid on decapitation so the pooled mesh is
             // whole again for the next enemy that reuses this slot (idempotent
-            // for enemies that were never decapitated).
+            // for enemies that were never decapitated). The torn neck-wire stub
+            // rides the pooled mesh too — detach it (shared geo/mats, no dispose).
             if (enemy.head && !enemy.head.visible) enemy.head.visible = true;
+            if (enemy.neckWires) {
+              enemy.neckWires.removeFromParent();
+              enemy.neckWires = undefined;
+            }
             // Safety net: strip any hack chip/indicator before the pooled mesh
             // is recycled, so the next enemy in this slot never inherits one.
             if (enemy.hackVisuals) { disposeHackVisuals(enemy.hackVisuals); enemy.hackVisuals = undefined; }
@@ -12357,6 +12842,60 @@ const ForestSurvivalGame = () => {
         });
       }
 
+      // ── ENEMY GPS HUNT MARKERS ── reposition the last-enemy arrows (pure
+      // DOM style writes; hides itself whenever >2 enemies are alive).
+      updateEnemyArrows();
+
+      // ── DEBUG CONSOLE FEED (detailed FPS overlay) ───────────────────────
+      // Only while the Settings → Display toggle is on. ~4Hz: builds one small
+      // snapshot into a ref then bumps a React tick, so the overlay re-renders
+      // 4×/sec while the loop itself never touches React state per frame. The
+      // renderer counters are the PREVIOUS frame's (info resets each render) —
+      // exact numbers, one frame stale, which is what every engine HUD shows.
+      debugFrameMs += (rawDelta * 1000 - debugFrameMs) * 0.08;
+      {
+        const nowDbg = performance.now();
+        if (nowDbg - debugFeedLastMs >= 250 && gameSettingsManager.getSetting('showConsole')) {
+          debugFeedLastMs = nowDbg;
+          let aliveCount = 0;
+          for (let di = 0; di < enemies.length; di++) if (!enemies[di].dead) aliveCount++;
+          // 8-wind compass from the base yaw. Yaw 0 looks along −Z (North);
+          // positive yaw turns toward −X (West), so the winds run N→NW→W→…
+          const yawDeg = ((THREE.MathUtils.radToDeg(euler.y) % 360) + 360) % 360;
+          const wind = (['N', 'NW', 'W', 'SW', 'S', 'SE', 'E', 'NE'] as const)[Math.round(yawDeg / 45) % 8];
+          const gRaw = gameSettingsManager.getGraphics();
+          const mem = (performance as Performance & {
+            memory?: { usedJSHeapSize: number; jsHeapSizeLimit: number };
+          }).memory;
+          debugInfoRef.current = {
+            fps: fpsValue,
+            frameMs: debugFrameMs,
+            fpsCap: fpsCapRef.current,
+            timeScale: timeScale * healthTimeScale,
+            webgl2: renderer.capabilities.isWebGL2,
+            drawCalls: renderer.info.render.calls,
+            triangles: renderer.info.render.triangles,
+            mode: isTutorialMode ? 'Tutorial'
+              : isMultiplayer ? (isMpGuest ? 'MP · Guest' : 'MP · Host')
+              : 'Solo',
+            map: mapConfig.name,
+            wave: isTutorialMode ? 0 : wave,
+            enemiesAlive: aliveCount,
+            x: camera.position.x,
+            y: camera.position.y,
+            z: camera.position.z,
+            facing: `${wind} (${yawDeg.toFixed(0)}°)`,
+            preset: gRaw.preset === 'custom' ? `Custom (${gRaw.baseTier})` : gRaw.preset,
+            canvasW: renderer.domElement.width,
+            canvasH: renderer.domElement.height,
+            dpr: window.devicePixelRatio || 1,
+            heapUsedMB: mem ? mem.usedJSHeapSize / 1048576 : null,
+            heapLimitMB: mem ? mem.jsHeapSizeLimit / 1048576 : null,
+          };
+          setDebugTick((t) => t + 1);
+        }
+      }
+
       // === RENDERING — three.js EffectComposer (or direct render on Low) ===
       composePostFX(rawDelta);
     };
@@ -13134,6 +13673,11 @@ const ForestSurvivalGame = () => {
       // Cleanup shared rocket projectile geometry + materials.
       rocketSharedGeos.forEach((g) => g.dispose());
       rocketSharedMats.forEach((m) => m.dispose());
+      // Decap torn-wire shared resources.
+      wireGeo.dispose();
+      wireTipGeo.dispose();
+      wireMats.forEach((m) => m.dispose());
+      wireTipMat.dispose();
 
       if (environmentRenderTarget) {
         scene.environment = null;
@@ -13710,6 +14254,49 @@ const ForestSurvivalGame = () => {
         />
       )}
 
+      {/* Debug console — detailed FPS/renderer/memory/hardware readout. Global
+          to every mode (solo / tutorial / multiplayer); sits in the free left
+          band (below the compact HUD on touch) and is fed by the loop at ~4Hz. */}
+      {userSettings.showConsole && gameStarted && !photoMode && !gameState.isGameOver && (
+        <DebugConsole info={debugInfoRef.current} tick={debugTick} isTouch={isTouch} />
+      )}
+
+      {/* Enemy GPS hunt markers — when a wave is down to its last 1–2 robots,
+          these arrows guide the player to them: a chevron hovering over an
+          on-screen enemy, or an edge-clamped arrow rotated toward an off-screen
+          one, each with a live distance pill. The game loop positions them
+          imperatively (updateEnemyArrows); React only mounts the shells and
+          recolours them when the Settings → Gameplay swatch changes. */}
+      {gameStarted && !photoMode && (
+        <div className="pointer-events-none absolute inset-0 z-30 overflow-hidden select-none">
+          {[0, 1].map((idx) => (
+            <div
+              key={idx}
+              ref={(el) => { enemyArrowRefs.current[idx] = el; }}
+              className="absolute left-0 top-0 flex-col items-center"
+              style={{ display: 'none', color: userSettings.enemyArrowColor, willChange: 'transform' }}
+            >
+              <svg
+                width="34" height="34" viewBox="0 0 34 34"
+                style={{ filter: 'drop-shadow(0 0 7px currentColor)', margin: '0 auto' }}
+              >
+                <path
+                  d="M17 3 L27 25 L17 19.5 L7 25 Z"
+                  fill="currentColor"
+                  stroke="rgba(0,0,0,0.55)"
+                  strokeWidth="1.5"
+                  strokeLinejoin="round"
+                />
+              </svg>
+              <span
+                className="mt-0.5 rounded-full border border-white/15 bg-black/70 px-1.5 font-mono text-[10px] font-bold tabular-nums text-white"
+                style={{ textShadow: '0 1px 2px rgba(0,0,0,0.8)' }}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* FPS Counter — top-center. The combo pill drops below it (see HUD
           fpsVisible) so the two never overlap. */}
       {userSettings.showFPS && gameStarted && !photoMode && (
@@ -13829,28 +14416,52 @@ const ForestSurvivalGame = () => {
           </div>
         )}
 
-        {/* Reload indicator — a small amber ring under the crosshair whose
-            sweep fills over the exact reload duration, so the player always
-            knows when the weapon is ready to fire again. */}
+        {/* Reload indicator — an amber ring under the crosshair whose sweep
+            fills over the exact reload duration. The emerald arc is the ACTIVE
+            RELOAD sweet spot (42–62% — mirrors ACTIVE_RELOAD_START/END in the
+            game loop): tap R while the sweep is inside it to snap the reload
+            done early. A hit flips the whole ring emerald + "Perfect!". */}
         {reloadDurationUI !== null && !gameState.isGameOver && !isPaused && (
           <div
             className="absolute left-1/2 top-1/2 select-none"
             style={{ transform: 'translate(-50%, 26px)' }}
           >
-            <div className="flex items-center gap-1.5 rounded-full border border-amber-400/30 bg-black/75 px-2.5 py-1">
-              <div className="relative w-3.5 h-3.5">
-                <div
-                  key={reloadDurationUI}
-                  className="absolute inset-0 rounded-full"
-                  style={{
-                    background: 'conic-gradient(#fbbf24 var(--reload-deg, 0deg), rgba(251,191,36,0.18) 0deg)',
-                    animation: `reloadSweep ${reloadDurationUI}ms linear forwards`,
-                  }}
-                />
-                <div className="absolute inset-[3px] rounded-full bg-black/85" />
+            <div className={`flex items-center gap-1.5 rounded-full border bg-black/75 px-2.5 py-1 ${
+              reloadPerfectUI ? 'border-emerald-400/60' : 'border-amber-400/30'}`}
+            >
+              <div className="relative w-5 h-5">
+                {reloadPerfectUI ? (
+                  <div
+                    className="absolute inset-0 rounded-full"
+                    style={{ background: '#34d399', boxShadow: '0 0 10px rgba(52,211,153,0.75)' }}
+                  />
+                ) : (
+                  <>
+                    {/* Sweet-spot arc (under the sweep — it vanishes as the
+                        sweep passes it, so what's left to hit stays obvious). */}
+                    <div
+                      className="absolute inset-0 rounded-full"
+                      style={{
+                        background:
+                          'conic-gradient(transparent 0deg 151.2deg, rgba(52,211,153,0.9) 151.2deg 223.2deg, transparent 223.2deg 360deg)',
+                      }}
+                    />
+                    <div
+                      key={reloadDurationUI}
+                      className="absolute inset-0 rounded-full"
+                      style={{
+                        background: 'conic-gradient(#fbbf24 var(--reload-deg, 0deg), rgba(251,191,36,0.14) 0deg)',
+                        animation: `reloadSweep ${reloadDurationUI}ms linear forwards`,
+                      }}
+                    />
+                  </>
+                )}
+                <div className="absolute inset-[4px] rounded-full bg-black/85" />
               </div>
-              <span className="text-[10px] font-semibold tracking-[0.15em] text-amber-300 uppercase">
-                Reloading
+              <span className={`text-[10px] font-semibold tracking-[0.15em] uppercase ${
+                reloadPerfectUI ? 'text-emerald-300' : 'text-amber-300'}`}
+              >
+                {reloadPerfectUI ? 'Perfect!' : 'Reloading'}
               </span>
             </div>
             <style>{`

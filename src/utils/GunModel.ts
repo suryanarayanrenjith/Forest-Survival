@@ -2,6 +2,14 @@ import * as THREE from 'three';
 
 export type WeaponType = 'pistol' | 'rifle' | 'shotgun' | 'smg' | 'sniper' | 'minigun' | 'launcher' | 'subverter';
 
+// Weapons light enough to swing as a melee bash. The heavy ordnance (sniper,
+// minigun, launcher) is deliberately EXCLUDED — you don't pistol-whip someone
+// with a 90cm anti-materiel rifle. App gates the strike on this set and
+// triggerMelee() no-ops for excluded weapons, so the two can never disagree.
+export const MELEE_CAPABLE_WEAPONS: ReadonlySet<WeaponType> = new Set([
+  'pistol', 'rifle', 'shotgun', 'smg', 'subverter',
+]);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // SHARED MATERIAL CACHE
 //
@@ -22,6 +30,131 @@ export type WeaponType = 'pistol' | 'rifle' | 'shotgun' | 'smg' | 'sniper' | 'mi
 // cache and break the next switch).
 // ─────────────────────────────────────────────────────────────────────────────
 const _gunMaterialCache = new Map<string, THREE.MeshStandardMaterial>();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PROCEDURAL SURFACE FINISHES
+//
+// Flat-colour PBR reads as plastic toy at viewmodel distance. These are tiny
+// canvas-baked detail maps — brushed machining streaks, micro-speckle, edge
+// scratches for METAL; injection-mould stipple for POLYMER — wired into every
+// cached gun material as albedo/roughness/bump maps. They're built ONCE at
+// module scope and shared by all weapons, so the material cache keeps its
+// shader-variant count tiny (one textured-standard variant, pre-compiled by
+// warmup stage 4 which cycles every weapon). Anisotropy comes free from
+// textureDefaults (imported first in main.tsx).
+// ─────────────────────────────────────────────────────────────────────────────
+interface FinishMaps { albedo: THREE.CanvasTexture; rough: THREE.CanvasTexture; bump: THREE.CanvasTexture }
+let _metalFinish: FinishMaps | null = null;
+let _polymerFinish: FinishMaps | null = null;
+
+function _bakeTex(size: number, repeat: number, srgb: boolean, paint: (ctx: CanvasRenderingContext2D, s: number) => void): THREE.CanvasTexture {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d')!;
+  paint(ctx, size);
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(repeat, repeat);
+  if (srgb) tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+/** Grey-noise fill helper: base value ± jitter, in optional horizontal streaks. */
+function _grain(ctx: CanvasRenderingContext2D, s: number, base: number, jitter: number, streaky: boolean) {
+  ctx.fillStyle = `rgb(${base},${base},${base})`;
+  ctx.fillRect(0, 0, s, s);
+  if (streaky) {
+    // Brushed machining — long horizontal micro-streaks of varying tone.
+    for (let i = 0; i < 900; i++) {
+      const v = Math.round(base + (Math.random() - 0.5) * 2 * jitter);
+      ctx.fillStyle = `rgba(${v},${v},${v},${0.25 + Math.random() * 0.5})`;
+      ctx.fillRect(Math.random() * s, Math.random() * s, 6 + Math.random() * 42, 1);
+    }
+  } else {
+    // Even micro-grain (cast/moulded surface).
+    for (let i = 0; i < 2600; i++) {
+      const v = Math.round(base + (Math.random() - 0.5) * 2 * jitter);
+      ctx.fillStyle = `rgb(${v},${v},${v})`;
+      ctx.fillRect(Math.random() * s, Math.random() * s, 1.4, 1.4);
+    }
+  }
+}
+
+function _getMetalFinish(): FinishMaps {
+  if (_metalFinish) return _metalFinish;
+  _metalFinish = {
+    // Albedo: near-white (multiplies the part colour) with brushed streaks and
+    // a few pale edge-wear scratches — subtle tonal life, hue untouched.
+    albedo: _bakeTex(256, 2, true, (ctx, s) => {
+      _grain(ctx, s, 246, 7, true);
+      for (let i = 0; i < 26; i++) {
+        const w = 255;
+        ctx.strokeStyle = `rgba(${w},${w},${w},${0.18 + Math.random() * 0.3})`;
+        ctx.lineWidth = 0.7 + Math.random();
+        const x = Math.random() * s, y = Math.random() * s;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + (Math.random() - 0.3) * 46, y + (Math.random() - 0.5) * 7);
+        ctx.stroke();
+      }
+    }),
+    // Roughness: brushed variation so highlights break up along the streaks;
+    // scratches read shinier (darker = smoother) like real worn gunmetal.
+    rough: _bakeTex(256, 2, false, (ctx, s) => {
+      _grain(ctx, s, 228, 26, true);
+      for (let i = 0; i < 26; i++) {
+        ctx.strokeStyle = `rgba(150,150,150,${0.3 + Math.random() * 0.35})`;
+        ctx.lineWidth = 0.7 + Math.random();
+        const x = Math.random() * s, y = Math.random() * s;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + (Math.random() - 0.3) * 46, y + (Math.random() - 0.5) * 7);
+        ctx.stroke();
+      }
+    }),
+    bump: _bakeTex(128, 2, false, (ctx, s) => _grain(ctx, s, 128, 10, true)),
+  };
+  return _metalFinish;
+}
+
+function _getPolymerFinish(): FinishMaps {
+  if (_polymerFinish) return _polymerFinish;
+  _polymerFinish = {
+    // Stippled injection-mould grain — the matte, grippy read of a real
+    // polymer frame/stock instead of dead flat plastic.
+    albedo: _bakeTex(256, 3, true, (ctx, s) => _grain(ctx, s, 245, 9, false)),
+    rough: _bakeTex(256, 3, false, (ctx, s) => _grain(ctx, s, 238, 16, false)),
+    bump: _bakeTex(128, 3, false, (ctx, s) => _grain(ctx, s, 128, 22, false)),
+  };
+  return _polymerFinish;
+}
+
+let _woodFinish: FinishMaps | null = null;
+function _getWoodFinish(): FinishMaps {
+  if (_woodFinish) return _woodFinish;
+  const grainLines = (ctx: CanvasRenderingContext2D, s: number, alpha: number) => {
+    // Long wavering grain lines — the signature read of oiled gun furniture.
+    for (let i = 0; i < 34; i++) {
+      const y = Math.random() * s;
+      const tone = 165 + Math.round(Math.random() * 50);
+      ctx.strokeStyle = `rgba(${tone},${tone},${tone},${alpha * (0.4 + Math.random() * 0.6)})`;
+      ctx.lineWidth = 0.8 + Math.random() * 1.6;
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      for (let x = 0; x <= s; x += 16) {
+        ctx.lineTo(x, y + Math.sin(x * 0.05 + i) * 3 + (Math.random() - 0.5) * 2);
+      }
+      ctx.stroke();
+    }
+  };
+  _woodFinish = {
+    albedo: _bakeTex(256, 1.5, true, (ctx, s) => { _grain(ctx, s, 242, 10, true); grainLines(ctx, s, 0.5); }),
+    rough: _bakeTex(256, 1.5, false, (ctx, s) => { _grain(ctx, s, 232, 18, true); grainLines(ctx, s, 0.6); }),
+    bump: _bakeTex(128, 1.5, false, (ctx, s) => { _grain(ctx, s, 128, 12, true); grainLines(ctx, s, 0.7); }),
+  };
+  return _woodFinish;
+}
+
 function _matKey(color: number, metalness: number, roughness: number, extra: Partial<THREE.MeshStandardMaterialParameters>): string {
   return [
     'std',
@@ -159,6 +292,11 @@ export class GunModel {
   // One-shot action flourishes (1 = just triggered, decays to 0)
   private abilityAnim = 0;
   private dashAnim = 0;
+  // One-shot melee strike — 1 on trigger, decays in updateActions (~0.36s).
+  // applyAnimations reads it as a three-phase WINDUP → STRIKE → RECOVER
+  // choreography with a per-weapon pose pair (see MELEE_POSES), so every
+  // light weapon has its own distinct, readable bash.
+  private meleeAnim = 0;
   // Engineer "wire the bomb" pose — while ON, the gun dips low and tucks across
   // the body as if the free hand is working at the barrel. Smoothed toward
   // `wiringTarget` in updateActions so the bend eases in and out.
@@ -209,14 +347,27 @@ export class GunModel {
     metalness: number,
     roughness: number,
     extra: Partial<THREE.MeshStandardMaterialParameters> = {},
+    finishOverride?: 'metal' | 'polymer' | 'wood',
   ): THREE.MeshStandardMaterial {
-    const key = _matKey(color, metalness, roughness, extra);
+    // Procedural finish — metal-family parts (receivers, slides, barrels) get
+    // the brushed/worn machining maps, softer parts the polymer stipple, and
+    // furniture can explicitly ask for wood grain. Derived from metalness when
+    // not overridden; the resolved name is folded into the cache key.
+    const finishName = finishOverride ?? (metalness >= 0.55 ? 'metal' : 'polymer');
+    const key = `${_matKey(color, metalness, roughness, extra)}:${finishName}`;
     const cached = _gunMaterialCache.get(key);
     if (cached) return cached;
+    const finish = finishName === 'metal' ? _getMetalFinish()
+      : finishName === 'wood' ? _getWoodFinish()
+      : _getPolymerFinish();
     const fresh = new THREE.MeshStandardMaterial({
       color,
       metalness,
       roughness,
+      map: finish.albedo,
+      roughnessMap: finish.rough,
+      bumpMap: finish.bump,
+      bumpScale: finishName === 'metal' ? 0.5 : finishName === 'wood' ? 1.1 : 0.9,
       // Lifted from 1.1 → 1.25: the viewmodel catches a touch more of the
       // sky/sun environment (IBL), so the metal reads crisper and more premium
       // and sunlight glints across it as the day cycle turns — without the
@@ -557,8 +708,10 @@ export class GunModel {
 
     const steel = this.mat(0x202227, 0.85, 0.3);
     const black = this.mat(0x0d0e11, 0.9, 0.22);
-    const wood = this.mat(0x4a2f18, 0.15, 0.7);
-    const woodDark = this.mat(0x35210f, 0.15, 0.75);
+    // Oiled walnut furniture — dedicated wood-grain finish maps, with a touch
+    // of clear-coat sheen (low roughness for the varnish glint on the grain).
+    const wood = this.mat(0x4a2f18, 0.15, 0.62, { envMapIntensity: 1.0 }, 'wood');
+    const woodDark = this.mat(0x35210f, 0.15, 0.68, { envMapIntensity: 1.0 }, 'wood');
 
     // Receiver
     this.p(new THREE.BoxGeometry(1.4, 1.5, 3), steel, 0, 0.1, 0.4);
@@ -598,7 +751,7 @@ export class GunModel {
     }
 
     // Loading port / shell carrier
-    this.magazine = this.p(new THREE.BoxGeometry(0.7, 0.4, 1.2), this.mat(0x6b3410, 0.3, 0.5), 0, -0.55, 0.6);
+    this.magazine = this.p(new THREE.BoxGeometry(0.7, 0.4, 1.2), this.mat(0x6b3410, 0.3, 0.5, {}, 'wood'), 0, -0.55, 0.6);
 
     // Trigger guard + trigger
     const guard = this.p(new THREE.TorusGeometry(0.52, 0.08, 8, 12, Math.PI), black, 0, -0.7, 0.3, false);
@@ -1671,6 +1824,9 @@ export class GunModel {
   updateActions(delta: number) {
     if (this.abilityAnim > 0) this.abilityAnim = Math.max(0, this.abilityAnim - delta * 3);
     if (this.dashAnim > 0) this.dashAnim = Math.max(0, this.dashAnim - delta * 3.6);
+    // Melee: ~0.36s total — long enough for the windup → strike → recover
+    // choreography to read, still snappy against the 900ms cooldown.
+    if (this.meleeAnim > 0) this.meleeAnim = Math.max(0, this.meleeAnim - delta * 2.8);
     if (this.equipAnim > 0) this.equipAnim = Math.max(0, this.equipAnim - delta * 3.05);
     // Ease the wiring bend toward its target (engineer demolition).
     this.wireAnim += (this.wiringTarget - this.wireAnim) * Math.min(1, delta * 8);
@@ -1835,6 +1991,38 @@ export class GunModel {
     this.dashAnim = 1;
   }
 
+  // Per-weapon melee choreography: `w` is the WINDUP pose (cocked back, ready
+  // to swing) and `s` the STRIKE pose (the hit frame) as additive offsets
+  // [x, y, z, rotX, rotY, rotZ]. Each light weapon swings like the object it
+  // is — the pistol whips down across the screen, the rifle drives its stock
+  // forward, the shotgun sweeps a horizontal buttstock smash, the SMG throws a
+  // straight muzzle jab, and the subverter slams its deck down edge-first.
+  private static readonly MELEE_POSES: Partial<Record<WeaponType, { w: number[]; s: number[] }>> = {
+    pistol:    { w: [ 0.10,  0.11,  0.07,  0.50,  0.16, -0.38], s: [-0.10, -0.02, -0.40, -0.60, -0.26,  0.48] },
+    rifle:     { w: [ 0.08,  0.05,  0.17,  0.22,  0.58,  0.26], s: [-0.06,  0.02, -0.54, -0.32, -0.58,  0.36] },
+    shotgun:   { w: [ 0.17,  0.05,  0.11,  0.10,  0.68, -0.16], s: [-0.30, -0.04, -0.46, -0.16, -0.80,  0.32] },
+    smg:       { w: [ 0.02, -0.04,  0.15,  0.13,  0.00, -0.10], s: [ 0.00,  0.03, -0.60, -0.20, -0.10,  0.13] },
+    subverter: { w: [ 0.00,  0.22,  0.09,  0.58,  0.00, -0.13], s: [ 0.00, -0.15, -0.44, -0.66,  0.00,  0.20] },
+  };
+
+  /** One-shot melee strike. No-op for heavy weapons (no pose defined). */
+  triggerMelee() {
+    if (!MELEE_CAPABLE_WEAPONS.has(this.currentWeaponType)) return;
+    this.meleeAnim = 1;
+  }
+
+  /**
+   * Active-reload success: fast-forward the remaining hand animation so it
+   * completes in `remainingSec` (instead of the original full window). The
+   * playhead position is preserved — only the playback rate changes — so the
+   * mag-slam / shell-thumb choreography still finishes cleanly, just snappier.
+   */
+  accelerateReload(remainingSec: number) {
+    if (!this.isReloading) return;
+    const left = Math.max(0.001, 1 - this.reloadAnimation);
+    this.reloadDuration = Math.max(0.05, remainingSec) / left;
+  }
+
   /** Apply all animation offsets — call AFTER all update methods. */
   applyAnimations() {
     const aim = this.aimProgress;
@@ -1864,6 +2052,32 @@ export class GunModel {
     const land = Math.sin(this.landAnim * Math.PI);
     // Subverter deploy "jab" — thrusts the deck forward as a chip launches.
     const deployJab = Math.sin(this.subDeploy * Math.PI);
+    // ── MELEE: three-phase per-weapon strike ──────────────────────────────
+    // Progress runs 0→1 as meleeAnim decays. The weapon first COCKS into its
+    // windup pose (0–26%), SNAPS to the strike pose (26–52%, with a small
+    // overshoot so the hit lands with a crack), then RECOVERS back to rest.
+    // Pose pairs live in MELEE_POSES; weapons without one (heavy ordnance)
+    // never have meleeAnim > 0 (triggerMelee gates on the same table's set).
+    let mX = 0, mY = 0, mZ = 0, mRX = 0, mRY = 0, mRZ = 0;
+    if (this.meleeAnim > 0) {
+      const pose = GunModel.MELEE_POSES[this.currentWeaponType];
+      if (pose) {
+        const p = 1 - this.meleeAnim;
+        const strike = this.ss((p - 0.26) / 0.24);
+        const recover = this.ss((p - 0.58) / 0.42);
+        const windupBlend = this.ss(p / 0.26) * (1 - strike);
+        // Overshoot: the strike briefly exceeds its pose by 12% at full snap,
+        // selling the impact, then the recover envelope pulls it home.
+        const strikeBlend = strike * (1 + 0.12 * Math.sin(strike * Math.PI)) * (1 - recover);
+        const w = pose.w, s = pose.s;
+        mX = w[0] * windupBlend + s[0] * strikeBlend;
+        mY = w[1] * windupBlend + s[1] * strikeBlend;
+        mZ = w[2] * windupBlend + s[2] * strikeBlend;
+        mRX = w[3] * windupBlend + s[3] * strikeBlend;
+        mRY = w[4] * windupBlend + s[4] * strikeBlend;
+        mRZ = w[5] * windupBlend + s[5] * strikeBlend;
+      }
+    }
 
     // Strafe lean — cant the weapon toward the movement direction. Suppressed
     // during the sprint pose (which already cants the gun across the body), and
@@ -1912,26 +2126,27 @@ export class GunModel {
 
     this.group.position.x =
       baseX + this.walkOffset.x * swayMul + SP_X * sprint + runX - reload * 0.07
-      + leanShift + inspX + equip * 0.12 + wire * 0.05;
+      + leanShift + inspX + equip * 0.12 + wire * 0.05 + mX;
     this.group.position.y =
       baseY + this.walkOffset.y * swayMul + SP_Y * sprint + runY
       + this.jumpOffset.y - land * 0.12 + abil * 0.07 - dash * 0.05 - reload * 0.16
-      - equip * 0.5 + equipSettle * 0.05 + inspY - wire * 0.28;
+      - equip * 0.5 + equipSettle * 0.05 + inspY - wire * 0.28 + mY;
     this.group.position.z =
       baseZ + this.recoilOffset.z + SP_Z * sprint + dash * 0.16 + reload * 0.12
-      + equip * 0.10 + inspZ + wire * 0.06 - deployJab * 0.16;
+      + equip * 0.10 + inspZ + wire * 0.06 - deployJab * 0.16 + mZ;
 
     this.group.rotation.x =
       (this.swayOffset.rotX + this.walkOffset.rotX) * swayMul
       + this.recoilOffset.rotX + SP_RX * sprint + runRotX
       + this.jumpOffset.rotX - land * 0.18 - reload * 0.42 + equip * 0.55 + inspPitch
-      + wire * 0.62 - deployJab * 0.14;
+      + wire * 0.62 - deployJab * 0.14 + mRX;
     this.group.rotation.y =
       this.swayOffset.rotY * swayMul + SP_RY * sprint + leanYaw + inspYaw + equip * 0.26
-      + this.recoilOffset.rotY;
+      + this.recoilOffset.rotY + mRY;
     this.group.rotation.z =
       this.walkOffset.rotZ * swayMul + this.reloadRotZ + SP_RZ * sprint
-      + runRotZ + abil * 0.22 + leanRoll + inspRoll + equip * 0.42 + wire * 0.28;
+      + runRotZ + abil * 0.22 + leanRoll + inspRoll + equip * 0.42 + wire * 0.28
+      + mRZ;
   }
 
   /**

@@ -201,6 +201,7 @@ const TouchControls = ({
           <HoldButton label="Jump" icon={ChevronsUp} onDown={onJumpDown} onUp={onJumpUp} />
           <ActionButton label={dash?.name ?? 'Ability'} icon={abilityIcon} onTap={() => tapKey('KeyQ')} ready={dashReady} cooldown={dash?.cooldown ?? 1} accent="emerald" />
           <ActionButton label="Crouch" icon={ChevronsDown} onTap={() => tapKey('KeyC')} />
+          <ActionButton label="Melee" icon={Swords} onTap={() => tapKey('KeyV')} />
           <HoldButton label="Aim" icon={Crosshair} onDown={onAimDown} onUp={onAimUp} />
           <PowerButton
             label={powerHeld || powerActive ? (power?.name ?? 'Power') : 'Power'}

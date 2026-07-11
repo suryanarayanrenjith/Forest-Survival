@@ -18,6 +18,13 @@ export interface Weapon {
   autoFire?: boolean; // Whether weapon fires automatically when mouse held
   weight: number; // Weight affects movement speed
   canAim?: boolean; // Whether weapon supports right-click aiming
+  /** Over-penetration: how many ADDITIONAL enemies a round can punch through
+   *  after its first hit (0/undefined = stops in the first body). Each pass
+   *  retains `pierceRetain` of the remaining damage. Solid terrain always
+   *  stops the round regardless. */
+  pierce?: number;
+  /** Damage fraction KEPT per body punched through (e.g. 0.55 → 55%). */
+  pierceRetain?: number;
 }
 
 export const WEAPONS: Record<string, Weapon> = {
@@ -90,7 +97,13 @@ export const WEAPONS: Record<string, Weapon> = {
     unlockScore: 700,
     autoFire: false,
     weight: 2.0, // Heavy weapon - slower movement
-    canAim: true // Sniper can aim
+    canAim: true, // Sniper can aim
+    // A high-velocity anti-materiel round OVER-PENETRATES: it can punch
+    // through up to two robots and still wound whatever stands behind them,
+    // losing ~45% of its remaining energy per body. Lining up a lane of
+    // enemies is now the sniper's signature skill play.
+    pierce: 2,
+    pierceRetain: 0.55
   },
   minigun: {
     name: 'Minigun',
@@ -336,6 +349,11 @@ export interface Enemy {
   // plating. This is the next-emit timestamp (ms) so the venting is rate-limited
   // per enemy rather than spawned every frame. Reset on (re)spawn.
   nextDamageFxAt?: number;
+  // ── Decapitation neck stub ───────────────────────────────────────────────
+  // Torn-cable bundle left sparking in the neck after the head is popped off
+  // (the flying head gib carries its own matching wires). Attached to the
+  // pooled mesh, so it MUST be detached when the corpse is recycled.
+  neckWires?: THREE.Group;
 }
 
 export interface Bullet {
@@ -347,6 +365,13 @@ export interface Bullet {
   damage: number;
   /** Rocket-launcher projectile — explodes with area damage + a crater. */
   isRocket?: boolean;
+  /** Remaining over-penetrations (see Weapon.pierce). Decrements per body. */
+  pierceLeft?: number;
+  /** Damage fraction kept per punched-through body (weapon.pierceRetain). */
+  pierceRetain?: number;
+  /** Enemies this round has already passed through — never re-hit by the same
+   *  bullet. Reused (cleared) with the pooled record, never reallocated. */
+  hitEnemies?: Set<Enemy>;
 }
 
 export type PowerUpType = 'ammo' | 'speed' | 'damage' | 'shield' | 'infinite_ammo' | 'overcharge' | 'phantom'

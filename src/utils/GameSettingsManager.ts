@@ -271,7 +271,7 @@ export function parseGraphics(raw: unknown, legacyQuality?: unknown): GraphicsSe
 // (pause) are intentionally NOT rebindable and stay fixed.
 export type GameAction =
   | 'moveForward' | 'moveBackward' | 'moveLeft' | 'moveRight'
-  | 'jump' | 'sprint' | 'crouch' | 'dash' | 'reload' | 'usePower' | 'toggleMap' | 'inspect';
+  | 'jump' | 'sprint' | 'crouch' | 'dash' | 'melee' | 'reload' | 'usePower' | 'toggleMap' | 'inspect';
 
 export type KeyBindings = Record<GameAction, string>;
 
@@ -284,6 +284,7 @@ export const defaultKeyBindings: KeyBindings = {
   sprint: 'ShiftLeft',
   crouch: 'KeyC',
   dash: 'KeyQ',
+  melee: 'KeyV',
   reload: 'KeyR',
   usePower: 'KeyE',
   toggleMap: 'KeyM',
@@ -294,7 +295,7 @@ export const defaultKeyBindings: KeyBindings = {
 // fixed systems (pause, weapon switching, the arrow-key movement fallback).
 export const RESERVED_KEY_CODES: ReadonlySet<string> = new Set([
   'Escape', 'Tab',
-  'Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7',
+  'Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7', 'Digit8',
   'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
 ]);
 
@@ -315,6 +316,9 @@ export interface UserSettings {
   sensitivity: number;
   fov: number;
   showFPS: boolean;
+  /** F3-style debug console overlay: renderer/draw-call stats, memory, hardware
+   *  and world info. Shown in every game mode (solo / tutorial / multiplayer). */
+  showConsole: boolean;
   /** Frame-rate cap (0 = unlimited / V-Sync). Independent of the graphics preset. */
   fpsCap: FpsCap;
   screenShake: boolean;
@@ -341,6 +345,9 @@ export interface UserSettings {
   showCrosshair: boolean;
   crosshairStyle: 'dot' | 'cross' | 'circle' | 'dynamic';
   crosshairColor: string;
+  /** Colour of the enemy GPS hunt markers (the arrows that point at the last
+   *  1–2 enemies of a wave). Same swatch palette as the crosshair. */
+  enemyArrowColor: string;
   /** AAA-style graphics section: a named preset OR a hand-tuned custom mix.
    *  Supersedes the old flat `graphicsQuality` field (auto-migrated on load). */
   graphics: GraphicsSettings;
@@ -355,6 +362,7 @@ export const defaultUserSettings: UserSettings = {
   sensitivity: 50,
   fov: 75,
   showFPS: false,
+  showConsole: false,
   fpsCap: 0, // unlimited / V-Sync — matches the prior (uncapped) behaviour
   screenShake: true,
   haptics: true,
@@ -367,6 +375,7 @@ export const defaultUserSettings: UserSettings = {
   showCrosshair: true,
   crosshairStyle: 'cross',
   crosshairColor: '#22c55e',
+  enemyArrowColor: '#ef4444',
   graphics: graphicsSettingsFromPreset('high'), // Default to the high tier
   keyBindings: { ...defaultKeyBindings },
 };
@@ -397,6 +406,7 @@ function mergeSettings(raw: unknown): UserSettings {
     sensitivity: num('sensitivity', d.sensitivity),
     fov: num('fov', d.fov),
     showFPS: bool('showFPS', d.showFPS),
+    showConsole: bool('showConsole', d.showConsole),
     fpsCap: (FPS_CAP_OPTIONS as number[]).includes(p.fpsCap as number) ? (p.fpsCap as FpsCap) : d.fpsCap,
     screenShake: bool('screenShake', d.screenShake),
     haptics: bool('haptics', d.haptics),
@@ -409,6 +419,7 @@ function mergeSettings(raw: unknown): UserSettings {
     showCrosshair: bool('showCrosshair', d.showCrosshair),
     crosshairStyle: str('crosshairStyle', d.crosshairStyle, ['dot', 'cross', 'circle', 'dynamic'] as const),
     crosshairColor: str('crosshairColor', d.crosshairColor),
+    enemyArrowColor: str('enemyArrowColor', d.enemyArrowColor),
     graphics: parseGraphics(p.graphics, p.graphicsQuality),
     keyBindings: normalizeKeyBindings(p.keyBindings as Partial<KeyBindings> | undefined),
   };

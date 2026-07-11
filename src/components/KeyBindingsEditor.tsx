@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ArrowUp, ArrowDown, ArrowLeft, ArrowRight, ChevronsUp, ChevronsDown,
-  Wind, Zap, RotateCcw, Sparkles, Radar, Keyboard, Info, Eye, type LucideIcon,
+  Wind, Zap, RotateCcw, Sparkles, Radar, Keyboard, Info, Eye, Swords, type LucideIcon,
 } from 'lucide-react';
 import {
   gameSettingsManager, defaultKeyBindings, normalizeKeyBindings,
@@ -17,7 +17,8 @@ const ACTION_META: { action: GameAction; label: string; icon: LucideIcon }[] = [
   { action: 'jump', label: 'Jump', icon: ChevronsUp },
   { action: 'sprint', label: 'Sprint', icon: Wind },
   { action: 'crouch', label: 'Crouch', icon: ChevronsDown },
-  { action: 'dash', label: 'Dash', icon: Zap },
+  { action: 'dash', label: 'Power-Ups', icon: Zap },
+  { action: 'melee', label: 'Melee Strike', icon: Swords },
   { action: 'reload', label: 'Reload', icon: RotateCcw },
   { action: 'usePower', label: 'Use Power-Up', icon: Sparkles },
   { action: 'toggleMap', label: 'Tactical Map', icon: Radar },
@@ -33,7 +34,7 @@ const FIXED_CONTROLS: { keyLabel: string; action: string }[] = [
   { keyLabel: 'Mouse', action: 'Look / Aim' },
   { keyLabel: 'LMB', action: 'Shoot' },
   { keyLabel: 'RMB', action: 'Aim Down Sights' },
-  { keyLabel: '1 – 7', action: 'Switch Weapon' },
+  { keyLabel: '1 – 8', action: 'Switch Weapon' },
   { keyLabel: 'Esc', action: 'Pause' },
 ];
 

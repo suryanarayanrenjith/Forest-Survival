@@ -3,7 +3,7 @@ import {
   Settings, X, Gamepad2, Volume2, SlidersHorizontal, Monitor,
   ChevronsUp, ChevronsDown, ChevronsRight, Wind, Zap,
   Crosshair, Target, RotateCcw, Grid3x3, Pause, Music, MousePointer2,
-  Eye, Activity, Skull, Check, Headphones, Sparkles, Hand, Radar, Bone, Flame,
+  Eye, Activity, Skull, Check, Headphones, Sparkles, Hand, Radar, Bone, Flame, Terminal, Navigation,
   Maximize, Moon, Aperture, Wand2, Trees, Users, Gauge, Cpu, type LucideIcon,
 } from 'lucide-react';
 import { soundManager } from '../utils/SoundManager';
@@ -25,16 +25,19 @@ interface SettingsMenuProps {
 // persisted blob clean and avoids the old "stale key written back" hazard.
 type SimpleSettings = Pick<UserSettings,
   | 'masterVolume' | 'sfxVolume' | 'musicVolume' | 'ambienceVolume' | 'sensitivity' | 'fov'
-  | 'showFPS' | 'fpsCap' | 'screenShake' | 'haptics' | 'hitMarkers' | 'killFeed'
+  | 'showFPS' | 'showConsole' | 'fpsCap' | 'screenShake' | 'haptics' | 'hitMarkers' | 'killFeed'
   | 'impactFeedback' | 'ragdollPhysics' | 'autoReload' | 'cameraBob'
-  | 'showCrosshair' | 'crosshairStyle' | 'crosshairColor'>;
+  | 'showCrosshair' | 'crosshairStyle' | 'crosshairColor' | 'enemyArrowColor'>;
 
 const SIMPLE_KEYS: (keyof SimpleSettings)[] = [
   'masterVolume', 'sfxVolume', 'musicVolume', 'ambienceVolume', 'sensitivity', 'fov',
-  'showFPS', 'fpsCap', 'screenShake', 'haptics', 'hitMarkers', 'killFeed',
+  'showFPS', 'showConsole', 'fpsCap', 'screenShake', 'haptics', 'hitMarkers', 'killFeed',
   'impactFeedback', 'ragdollPhysics', 'autoReload', 'cameraBob',
-  'showCrosshair', 'crosshairStyle', 'crosshairColor',
+  'showCrosshair', 'crosshairStyle', 'crosshairColor', 'enemyArrowColor',
 ];
+
+/** Shared swatch palette for the crosshair + enemy-marker colour pickers. */
+const COLOR_SWATCHES = ['#22c55e', '#ef4444', '#3b82f6', '#f59e0b', '#8b5cf6', '#ffffff'];
 
 const FPS_CAP_LABEL = (c: FpsCap) => (c === 0 ? 'Unlimited' : String(c));
 
@@ -284,6 +287,57 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
                   })}
                 </div>
               </div>
+
+              {/* Crosshair colour (relocated from Display so all aiming
+                  personalisation lives together in Gameplay). */}
+              <div className={`rounded-xl border border-white/[0.07] bg-white/[0.02] p-4 transition-opacity ${settings.showCrosshair ? '' : 'opacity-50'}`}>
+                <div className="flex items-center justify-between gap-2 mb-3">
+                  <div className="flex items-center gap-2">
+                    <Crosshair className="w-4 h-4 text-gray-400" strokeWidth={2.25} />
+                    <span className="font-hud text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-300">Crosshair Color</span>
+                  </div>
+                  {!settings.showCrosshair && (
+                    <span className="font-hud text-[9px] font-semibold uppercase tracking-wider text-gray-500">Crosshair hidden</span>
+                  )}
+                </div>
+                <div className="flex gap-2.5">
+                  {COLOR_SWATCHES.map((color) => (
+                    <button
+                      key={color}
+                      disabled={!settings.showCrosshair}
+                      onClick={() => updateSetting('crosshairColor', color)}
+                      className={`w-9 h-9 rounded-lg transition-transform enabled:hover:scale-110 disabled:cursor-not-allowed ${
+                        settings.crosshairColor === color ? 'ring-2 ring-white ring-offset-2 ring-offset-[#080d0b]' : ''
+                      }`}
+                      style={{ backgroundColor: color }}
+                      aria-label={`Crosshair color ${color}`}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              {/* Enemy GPS marker colour — the hunt arrows that point at the
+                  last 1–2 enemies of a wave. */}
+              <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-4">
+                <div className="flex items-center gap-2 mb-1">
+                  <Navigation className="w-4 h-4 text-gray-400" strokeWidth={2.25} />
+                  <span className="font-hud text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-300">Enemy Marker Color</span>
+                </div>
+                <p className="mb-3 text-[10px] text-gray-600">GPS arrows guide you to the last 1–2 enemies of a wave.</p>
+                <div className="flex gap-2.5">
+                  {COLOR_SWATCHES.map((color) => (
+                    <button
+                      key={color}
+                      onClick={() => updateSetting('enemyArrowColor', color)}
+                      className={`w-9 h-9 rounded-lg transition-transform hover:scale-110 ${
+                        settings.enemyArrowColor === color ? 'ring-2 ring-white ring-offset-2 ring-offset-[#080d0b]' : ''
+                      }`}
+                      style={{ backgroundColor: color }}
+                      aria-label={`Enemy marker color ${color}`}
+                    />
+                  ))}
+                </div>
+              </div>
             </div>
           )}
 
@@ -464,31 +518,9 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
               </div>
 
               <Slider label="Field of View" icon={Eye} value={settings.fov} min={60} max={120} suffix="°" onChange={(v) => updateSetting('fov', v)} />
-              <Toggle label="Show FPS Counter" desc="Display frames per second" icon={Activity} value={settings.showFPS} onChange={(v) => updateSetting('showFPS', v)} />
-              <div className={`rounded-xl border border-white/[0.07] bg-white/[0.02] p-4 transition-opacity ${settings.showCrosshair ? '' : 'opacity-50'}`}>
-                <div className="flex items-center justify-between gap-2 mb-3">
-                  <div className="flex items-center gap-2">
-                    <Crosshair className="w-4 h-4 text-gray-400" strokeWidth={2.25} />
-                    <span className="font-hud text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-300">Crosshair Color</span>
-                  </div>
-                  {!settings.showCrosshair && (
-                    <span className="font-hud text-[9px] font-semibold uppercase tracking-wider text-gray-500">Crosshair hidden</span>
-                  )}
-                </div>
-                <div className="flex gap-2.5">
-                  {['#22c55e', '#ef4444', '#3b82f6', '#f59e0b', '#8b5cf6', '#ffffff'].map((color) => (
-                    <button
-                      key={color}
-                      disabled={!settings.showCrosshair}
-                      onClick={() => updateSetting('crosshairColor', color)}
-                      className={`w-9 h-9 rounded-lg transition-transform enabled:hover:scale-110 disabled:cursor-not-allowed ${
-                        settings.crosshairColor === color ? 'ring-2 ring-white ring-offset-2 ring-offset-[#080d0b]' : ''
-                      }`}
-                      style={{ backgroundColor: color }}
-                      aria-label={`Crosshair color ${color}`}
-                    />
-                  ))}
-                </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <Toggle label="Show FPS Counter" desc="FPS counter only" icon={Activity} value={settings.showFPS} onChange={(v) => updateSetting('showFPS', v)} />
+                <Toggle label="Show Console / Info" desc="FPS with in-depth detail — renderer, memory & hardware" icon={Terminal} value={settings.showConsole} onChange={(v) => updateSetting('showConsole', v)} />
               </div>
             </div>
           )}

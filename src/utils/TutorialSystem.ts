@@ -124,7 +124,7 @@ export class TutorialSystem {
         'Use WASD keys to move around',
         'W / A / S / D to move in any direction',
         'Hold SHIFT to sprint — in training your stamina is unlimited',
-        'Press SPACE to jump and CTRL to crouch',
+        'Press SPACE to jump and C to crouch',
         'Move in any direction to continue'
       ],
       icon: '🎮',
@@ -168,10 +168,12 @@ export class TutorialSystem {
       instructions: touch ? [
         'Tap and hold the FIRE button to shoot',
         'Aim at enemies with your crosshair (aim assist helps you track)',
+        'Tap Melee for a weapon bash when a robot gets too close (light weapons only)',
         'Fire 10 shots to continue'
       ] : [
         'Left-click to shoot your weapon',
         'Aim at enemies with your crosshair',
+        'Press V for a melee bash when a robot gets too close (light weapons only — not the sniper, minigun or launcher)',
         'Fire 10 shots to continue'
       ],
       icon: '🔫',
@@ -211,11 +213,13 @@ export class TutorialSystem {
       description: 'Keep your weapon ready',
       instructions: touch ? [
         'Tap the Reload button when ammo is low',
+        'Tap Reload AGAIN as the ring\'s sweep crosses the green arc — a Perfect reload finishes instantly',
         'Watch your ammo count in the HUD',
         'Reload before you run out in combat!',
         'Reload your weapon to continue'
       ] : [
         'Press R to reload when ammo is low',
+        'Press R AGAIN as the ring\'s sweep crosses the green arc — a Perfect reload finishes instantly',
         'Watch your ammo count in the HUD',
         'Reload before you run out in combat!',
         'Reload your weapon to continue'
