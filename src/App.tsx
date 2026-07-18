@@ -19,6 +19,8 @@ import { ObstacleAvoidance } from './utils/ObstacleAvoidance';
 import { BulletDodging } from './utils/BulletDodging';
 import { WeatherSystem } from './utils/WeatherSystem';
 import { BiomeSystem } from './utils/BiomeSystem';
+import { MapAmbience } from './utils/MapAmbience';
+import { BulletDecalSystem } from './utils/BulletDecals';
 import { createAtmosphericHazeMaterial, createSkyDomeMaterial, updateShaderTime } from './utils/Shaders';
 import { getMapConfig, getRandomMap, DEFAULT_MAP, type MapConfig, type MapType } from './utils/MapSystem';
 import { applyGroundTerrainShader, createTerrainSeed, createTerrainUniforms, resolveTerrainProfile, terrainQualityFor, terrainSegments } from './utils/TerrainSystem';
@@ -2262,6 +2264,25 @@ const ForestSurvivalGame = () => {
       maxPerEnemy: Math.max(3, Math.round(12 * dmgDensity)),
       maxTotal: Math.max(24, Math.round(180 * dmgDensity)),
     });
+
+    // ── ENVIRONMENT BULLET DECALS (all graphics tiers) ─────────────────────
+    // Every round that strikes the world (tree / rock / wall / pillar / ground)
+    // stamps a surface-tinted, weapon-shaped bullet hole at the contact point.
+    // Runs on ALL presets (one program, pooled quads); caps + lifetime scale
+    // with particle density so weak GPUs keep only a handful of short-lived
+    // marks. Marks fade after their lifetime AND are reclaimed the moment they
+    // fall outside `decalCullDist` of the player — see BulletDecalSystem. Warmed
+    // in warmUpShaders, disposed on teardown.
+    const bulletDecals = new BulletDecalSystem(scene, {
+      maxTotal: Math.max(12, Math.round(120 * dmgDensity)),
+      lifetime: 8 + 18 * dmgDensity,     // ~12.5 s (ultra-low) → 26 s (high/ultra)
+      fadeDuration: 1.8,
+    });
+    bulletDecals.configure(selectedMap);
+    // Beyond this radius a mark is out of the player's practical view, so it's
+    // freed immediately to keep the live set tight. Tracks the preset's draw
+    // distance but stays bounded so even Ultra never hoards distant marks.
+    const decalCullDist = Math.min(Math.max(graphicsPreset.viewDistance * 0.5, 55), 120);
     // Bumped on EVERY add/remove so spatial-grid rebuilds can't be fooled by
     // an add+remove in the same frame leaving the array length unchanged.
     let terrainVersion = 0;
@@ -3011,6 +3032,22 @@ const ForestSurvivalGame = () => {
       ambientParticles.frustumCulled = false;
       ambientParticles.userData.cannotReceiveAO = true;
       scene.add(ambientParticles);
+    }
+
+    // ── SIGNATURE PER-MAP AMBIENCE (HIGH / ULTRA only) ─────────────────────
+    // A living, GPU-animated particle layer unique to each map — drifting
+    // fireflies in the deep forest, embers rising off the wasteland, luminous
+    // spores welling up in the swamp, spectral wisps through the Twilight Vale,
+    // and so on (see MapAmbience). One draw call, all motion in the vertex
+    // shader (no per-frame CPU loop), added to the scene BEFORE the warmup
+    // compile so its program links during loading. Gated to terrainDetail 1.0
+    // (High/Ultra) so Medium and below never build it — those tiers keep the
+    // lighter shared dust motes above and pay nothing for this.
+    let mapAmbience: MapAmbience | null = null;
+    if (graphicsPreset.terrainDetail >= 1.0 && graphicsPreset.postProcessing) {
+      mapAmbience = new MapAmbience(
+        scene, selectedMap, graphicsPreset.particleDensity, graphicsPreset.pixelRatio,
+      );
     }
 
     // === RUN MODIFIER (single-run mutator) ===
@@ -7236,6 +7273,14 @@ const ForestSurvivalGame = () => {
     // sweeps the segment [_bulletPrev → current] so fast bullets can't tunnel
     // past enemies between frames (see the bullet update loop).
     const _bulletPrev = new THREE.Vector3();
+    // Reused outward-normal for stamping environment bullet decals (never
+    // retained by the decal system, which copies it in).
+    const _decalNormal = new THREE.Vector3();
+    // Ground level for bullet-hole decals — near the player the terrain sits on
+    // the flat y=0 envelope, so a descending round that crosses this plane
+    // stamps a ground mark. Only descending shots trip it, so horizontal combat
+    // is unaffected (bullets still fly to their target / expire in the air).
+    const GROUND_DECAL_Y = 0.02;
     // Ambient-particle tint endpoints — warm pollen/dust in daylight, soft
     // green-cyan firefly glow after dark. Crossfaded by the day cycle each
     // frame so the floating ambience tracks the clock automatically.
@@ -9678,8 +9723,29 @@ const ForestSurvivalGame = () => {
         }
       }
 
-      // Drive the grass wind sway
-      biomeSystem.updateGrass(clock.getElapsedTime());
+      // Drive the shared wind — grass, foliage sway + the High/Ultra prop wind
+      // pass all ride one clock. The live weather front modulates the gust: a
+      // calm clear sky breathes gently (~1), a rolling storm thrashes the
+      // vegetation (rainAmount pushes the gust up to ~2.6). Wetting fronts that
+      // aren't precipitation (gloom) still stir a light breeze via skyDarken.
+      const windElapsed = clock.getElapsedTime();
+      const windGust = 1 + weatherMods.rainAmount * 1.6 + weatherMods.skyDarken * 0.5;
+      biomeSystem.updateWind(windElapsed, windGust);
+
+      // Advance the signature per-map ambience field (fireflies / embers /
+      // spores / wisps). Camera-local, so re-centre it on the player; night
+      // lifts its glow. No-op below High/Ultra (never constructed there).
+      if (mapAmbience) {
+        mapAmbience.update(
+          windElapsed, camera.position,
+          THREE.MathUtils.clamp(atmosphericSettings.starIntensity, 0, 1),
+        );
+      }
+
+      // Age / fade / cull the environment bullet marks. Cheap per-frame pass
+      // (≤ cap live meshes): fades expired marks out, and reclaims any that fell
+      // outside the cull radius so leaving a firefight frees its marks.
+      bulletDecals.update(rawDelta, camera.position, decalCullDist);
 
       // ─── PHOTO MODE ─────────────────────────────────────────────────────
       // The world is frozen (enemies, shooting, timers all skipped) but the
@@ -11074,6 +11140,15 @@ const ForestSurvivalGame = () => {
         // result arrays never alias.
         let tTerrain = 1.1; // > 1 ⇒ no terrain hit this frame
         let terrainHitX = 0, terrainHitY = 0, terrainHitZ = 0;
+        // The prop the round struck — carried to the post-loop branch so the
+        // bullet decal is tinted + oriented to the correct surface.
+        let terrainHitObj: TerrainObject | null = null;
+        // Ground-plane crossing is tracked SEPARATELY from tTerrain: it must
+        // NOT gate enemy hits (a descending round grazing an enemy's feet at
+        // range should still tag the enemy, exactly as before), it only drives
+        // a ground bullet-mark once the round has hit nothing else.
+        let tGround = 1.1;
+        let groundHitX = 0, groundHitZ = 0;
         if (!bullet.isRocket) {
           const segTX = bullet.mesh.position.x - _bulletPrev.x;
           const segTZ = bullet.mesh.position.z - _bulletPrev.z;
@@ -11105,7 +11180,22 @@ const ForestSurvivalGame = () => {
             if (tt < tTerrain) {
               tTerrain = tt;
               terrainHitX = cxT; terrainHitY = cyT; terrainHitZ = czT;
+              terrainHitObj = obj;
             }
+          }
+          // ── GROUND-PLANE CROSSING (bullet holes in the dirt) ──────────────
+          // A DESCENDING round that dips through the ground plane leaves a mark
+          // in the floor. Gated to downward shots so ordinary horizontal combat
+          // is untouched — a flat/rising round never "hits the ground", it flies
+          // on to its target or expires in the air. Recorded separately from the
+          // prop sweep so it never blocks an enemy; consumed only in the
+          // post-loop branch if the round hit nothing else this frame.
+          const prevY = _bulletPrev.y;
+          const endY = bullet.mesh.position.y;
+          if (prevY > GROUND_DECAL_Y && endY <= GROUND_DECAL_Y && prevY > endY) {
+            tGround = (prevY - GROUND_DECAL_Y) / (prevY - endY);
+            groundHitX = _bulletPrev.x + (bullet.mesh.position.x - _bulletPrev.x) * tGround;
+            groundHitZ = _bulletPrev.z + (bullet.mesh.position.z - _bulletPrev.z) * tGround;
           }
         }
 
@@ -11423,16 +11513,42 @@ const ForestSurvivalGame = () => {
           }
         }
 
-        // Bullet reached solid cover (tree / rock / wall) without hitting an
-        // enemy first — it's stopped dead by the prop instead of flying through
-        // it. Spark off the surface + (optionally) a small impact flash, then
-        // consume the round. Rockets keep tTerrain > 1 (they handle terrain via
-        // their own contact-detonation above), so they never enter this branch.
-        if (!bulletConsumed && tTerrain <= 1) {
-          _tempVec3.set(terrainHitX, terrainHitY, terrainHitZ);
+        // Bullet reached solid cover (tree / rock / wall) or dipped into the
+        // ground without hitting an enemy first — it's stopped there instead of
+        // flying on. Spark off the surface + (optionally) a small impact flash,
+        // stamp a bullet mark, then consume the round. Whichever contact is
+        // NEARER along the segment wins (prop cover vs the ground plane).
+        // Rockets keep both t-values > 1 (they detonate via their own contact
+        // handling above), so they never enter this branch.
+        if (!bulletConsumed && (tTerrain <= 1 || tGround <= 1)) {
+          const hitGround = tGround < tTerrain;
+          if (hitGround) {
+            _tempVec3.set(groundHitX, GROUND_DECAL_Y, groundHitZ);
+          } else {
+            _tempVec3.set(terrainHitX, terrainHitY, terrainHitZ);
+          }
           createParticles(_tempVec3, 0x9a8a72, 5);
           if (impactFeedbackOn) {
             impactBursts.push(new ImpactBurst(scene, _tempVec3.clone(), 0xcbb890, 0.6));
+          }
+          // ── HYPER-REAL BULLET MARK ──
+          // Punch a surface-tinted, weapon-shaped bullet hole at the exact
+          // contact point. The ground gets an upward-facing mark; a prop gets
+          // one facing radially outward (back toward the shooter) with a slight
+          // upward tilt so it reads correctly on vertical trunks/walls. Marks
+          // are pooled + capped + auto-disposed (lifetime + distance cull).
+          if (hitGround) {
+            _decalNormal.set(0, 1, 0);
+            bulletDecals.addDecal(_tempVec3, _decalNormal, currentWeapon, 'ground');
+          } else if (terrainHitObj) {
+            _decalNormal.set(terrainHitX - terrainHitObj.x, 0, terrainHitZ - terrainHitObj.z);
+            if (_decalNormal.lengthSq() < 1e-6) _decalNormal.copy(bullet.velocity).multiplyScalar(-1);
+            _decalNormal.y = 0.18; // slight upward tilt so the crater lip catches light on trunks
+            // 'tree'/'cactus' = the map's TALL structural cover (bark, concrete
+            // wall, stone pillar…); everything else collidable = rock/debris.
+            const decalSurface = (terrainHitObj.type === 'tree' || terrainHitObj.type === 'cactus')
+              ? 'cover' : 'rock';
+            bulletDecals.addDecal(_tempVec3, _decalNormal, currentWeapon, decalSurface);
           }
           soundManager.play('hit', 0.3);
           retireBulletMesh(bullet);
@@ -13142,6 +13258,11 @@ const ForestSurvivalGame = () => {
         // shared material alive for the run so the program stays cached. (The
         // enemy venting smoke reuses MuzzleSmoke's already-warmed program above.)
         warm.push(battleDamage.prewarm(wp.clone()));
+        // Environment bullet-hole decal (shared MeshBasic + polygon-offset alpha
+        // program). Warmed so the first shot into a tree/wall/ground never stalls
+        // linking it; the throwaway quad is removed via `warm`, the base material
+        // persists on the system so the program stays cached for the run.
+        warm.push(bulletDecals.prewarm(wp.clone()));
         // Human-wound blood decal (lit MeshStandard + polygon-offset program).
         // Only used on remote avatars, so only warm it in multiplayer; the shared
         // material persists for the run so the first wounded teammate never stalls.
@@ -13593,6 +13714,10 @@ const ForestSurvivalGame = () => {
       // shared geometries/materials the batches reference).
       terrainInstancer.dispose();
 
+      // Cleanup the signature per-map ambience field (High/Ultra only; null
+      // elsewhere). Its single geometry + shader material are freed here.
+      mapAmbience?.dispose();
+
       // Cleanup BiomeSystem (releases shared geometry/material pools)
       biomeSystem.dispose();
 
@@ -13618,6 +13743,10 @@ const ForestSurvivalGame = () => {
 
       // Free the battle-damage decal system (shared geos + material + atlas).
       battleDamage.dispose();
+
+      // Free the environment bullet-decal system (pooled quads + per-decal
+      // materials + shared atlas).
+      bulletDecals.dispose();
 
       // Free the recycled impact/spark particle + tracer geometries and flash
       // sprites so the pooled buffers don't carry across a remount into a fresh

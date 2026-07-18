@@ -88,6 +88,98 @@ const PROP_DETAIL_FRAG_BODY = /* glsl */ `
   }
 `;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// DYNAMIC AMBIENCE SHADER PASS (High/Ultra only)
+//
+// Two OPTIONAL per-material effects layered on top of the prop-detail pass,
+// composed into the SAME single onBeforeCompile so pooling / instancing is
+// untouched (materials stay plain MeshStandardMaterials → TerrainInstancer
+// still batches them):
+//
+//   • WIND SWAY  — vertex-domain displacement that bends foliage in a living
+//     breeze: forest canopies roll, frozen pines shiver, swamp moss dangles,
+//     twilight branches claw at the sky. The phase is derived from each
+//     instance's world XZ origin, so every tree sways to its own rhythm while
+//     stacked parts (canopy layers, snow caps) share one coherent motion. A
+//     shared `uWindStrength` uniform is driven by the live weather front each
+//     frame — a rolling storm visibly thrashes the vegetation. Displacement is
+//     colour-pass only (the depth/shadow program is untouched); amplitudes are
+//     small enough that static shadows never read as wrong.
+//
+//   • GLOW PULSE — fragment-domain emissive breathing for every light-emitting
+//     prop: magma veins throb, embers flicker, swamp fungi and toxin pools
+//     bloom, twilight wisps and runes breathe. The phase field is keyed to
+//     world position, so large emitters (lava pools) get slow travelling waves
+//     of light instead of a uniform blink.
+//
+// Both effects bake their tuning constants into the generated GLSL (no
+// per-material uniforms) and share exactly TWO uniform holders — the wind
+// clock and the gust strength — so the per-frame cost is two float writes.
+// Gated OFF below High (detailLevel < 1.0): low tiers compile the exact same
+// programs as before this pass existed.
+//
+// NOTE: materials with different baked constants generate DIFFERENT programs
+// from the same onBeforeCompile source, so each dynamic material sets an
+// explicit customProgramCacheKey — without it three.js would hash the shared
+// closure source and collide two configs onto one program.
+// ─────────────────────────────────────────────────────────────────────────────
+interface WindConfig {
+  /** Lateral sway amplitude at full mask, in prop-local units (≈ metres). */
+  amp: number;
+  /** Local-Y band the sway mask ramps across (0 at y0 → full at y1). */
+  y0: number;
+  y1: number;
+  /** Base oscillation speed (rad/s of the primary gust sine). */
+  speed: number;
+  /** Optional vertical bob amplitude (floating wisps / orbs). */
+  bob?: number;
+}
+interface PulseConfig {
+  /** Breathing speed (rad/s). */
+  speed: number;
+  /** Swing depth: emissive scales across [1-depth .. 1+depth]. */
+  depth: number;
+}
+interface DynamicFx {
+  wind?: WindConfig;
+  pulse?: PulseConfig;
+}
+
+/** GLSL float literal. */
+const gf = (n: number) => n.toFixed(4);
+
+function windVertBody(w: WindConfig): string {
+  return /* glsl */ `
+  {
+    #ifdef USE_INSTANCING
+      vec3 dynWO = ( modelMatrix * instanceMatrix * vec4( 0.0, 0.0, 0.0, 1.0 ) ).xyz;
+    #else
+      vec3 dynWO = modelMatrix[3].xyz;
+    #endif
+    // Phase from the instance's world XZ only (never Y) — parts stacked on one
+    // trunk share a phase, so a whole tree sways as a single connected body.
+    float dynPh = dynWO.x * 0.37 + dynWO.z * 0.29;
+    float dynMask = smoothstep( ${gf(w.y0)}, ${gf(w.y1)}, transformed.y ) * uWindStrength;
+    float dynG = sin( uWindTime * ${gf(w.speed)} + dynPh )
+               + 0.55 * sin( uWindTime * ${gf(w.speed * 1.86)} + dynPh * 1.7 );
+    transformed.x += dynG * ${gf(w.amp)} * dynMask;
+    transformed.z += cos( uWindTime * ${gf(w.speed * 0.77)} + dynPh * 1.3 ) * ${gf(w.amp * 0.62)} * dynMask;
+    ${w.bob ? `transformed.y += sin( uWindTime * ${gf(w.speed * 1.31)} + dynPh * 2.1 ) * ${gf(w.bob)} * uWindStrength;` : ''}
+  }
+`;
+}
+
+function pulseFragBody(p: PulseConfig): string {
+  return /* glsl */ `
+  {
+    float dynPPh = vPropWP.x * 0.9 + vPropWP.z * 0.8 + vPropWP.y * 0.5;
+    float dynPw = 0.5 + 0.5 * sin( uWindTime * ${gf(p.speed)} + dynPPh );
+    dynPw *= dynPw;
+    totalEmissiveRadiance *= ${gf(1 - p.depth)} + ${gf(p.depth * 2)} * dynPw;
+  }
+`;
+}
+
 interface BiomeConfig {
   groundColor: number;
   groundEmissive: number;
@@ -152,41 +244,106 @@ export class BiomeSystem {
     uPropDetailFreq: { value: 1.0 },
   };
 
-  /** Reuse a MeshStandardMaterial with the given options, or create + cache it. */
-  private mat(opts: StdMatOpts): THREE.MeshStandardMaterial {
-    const key = hashStdMatOpts(opts);
+  // Live gust multiplier for the dynamic wind pass (1 = calm baseline). One
+  // shared holder referenced by every swaying material AND the grass — driven
+  // per-frame from the weather front via updateWind(). The wind CLOCK is the
+  // existing grassTime holder, so foliage and grass move to one shared breeze.
+  private windStrength = { value: 1.0 };
+  // True on High/Ultra (terrainDetail 1.0) — gates the wind-sway + glow-pulse
+  // shader work entirely so Medium and below compile the exact pre-pass
+  // programs and pay zero extra vertex/fragment cost.
+  private dynamicFxOn = false;
+
+  /** Reuse a MeshStandardMaterial with the given options, or create + cache it.
+   *  `dyn` optionally layers the High/Ultra-only wind-sway / glow-pulse pass —
+   *  ignored on lower tiers so the pooled material stays byte-identical. */
+  private mat(opts: StdMatOpts, dyn?: DynamicFx): THREE.MeshStandardMaterial {
+    const fx = this.dynamicFxOn ? dyn : undefined;
+    const fxKey = fx
+      ? `|w:${fx.wind ? [fx.wind.amp, fx.wind.y0, fx.wind.y1, fx.wind.speed, fx.wind.bob ?? 0].join(',') : '-'}` +
+        `|p:${fx.pulse ? [fx.pulse.speed, fx.pulse.depth].join(',') : '-'}`
+      : '';
+    const key = hashStdMatOpts(opts) + fxKey;
     const cached = this.matPool.get(key);
     if (cached) return cached as THREE.MeshStandardMaterial;
     const fresh = new THREE.MeshStandardMaterial(opts);
     // Enrich SOLID surfaces (rock/bark/snow/log/foliage mass) with subtle
     // procedural weathering. Skip glows / transparent / strongly-emissive mats
     // (lava veins, crystals, embers, ice, water) where grain would read wrong.
-    if (
+    const wantDetail =
       this.propDetailUniforms.uPropDetailStr.value > 0 &&
       !opts.transparent &&
       (opts.opacity ?? 1) >= 0.99 &&
-      (opts.emissiveIntensity ?? 0) <= 0.3
-    ) {
-      this.applyPropDetail(fresh);
+      (opts.emissiveIntensity ?? 0) <= 0.3;
+    if (wantDetail || fx?.wind || fx?.pulse) {
+      this.applyDynamicShader(fresh, wantDetail, fx?.wind, fx?.pulse);
     }
     this.matPool.set(key, fresh);
     return fresh;
   }
 
-  /** Inject the shared world-space albedo-weathering pass into a material. */
-  private applyPropDetail(mat: THREE.MeshStandardMaterial): void {
+  /** Compose the weathering / wind-sway / glow-pulse passes into ONE
+   *  onBeforeCompile (a material can only hold one, and props can need any
+   *  combination — e.g. twilight bark takes weathering AND branch sway). */
+  private applyDynamicShader(
+    mat: THREE.MeshStandardMaterial,
+    detail: boolean,
+    wind?: WindConfig,
+    pulse?: PulseConfig,
+  ): void {
+    // The pulse phase field reads the world-position varying the detail pass
+    // introduced, so emit that plumbing for either consumer.
+    const needWP = detail || !!pulse;
     mat.onBeforeCompile = (shader) => {
-      shader.uniforms.uPropDetailStr = this.propDetailUniforms.uPropDetailStr;
-      shader.uniforms.uPropDetailFreq = this.propDetailUniforms.uPropDetailFreq;
-      shader.vertexShader = PROP_DETAIL_VERT_HEAD + shader.vertexShader.replace(
+      if (detail) {
+        shader.uniforms.uPropDetailStr = this.propDetailUniforms.uPropDetailStr;
+        shader.uniforms.uPropDetailFreq = this.propDetailUniforms.uPropDetailFreq;
+      }
+      if (wind || pulse) shader.uniforms.uWindTime = this.grassTime;
+      if (wind) shader.uniforms.uWindStrength = this.windStrength;
+
+      let vertHead = '';
+      if (needWP) vertHead += PROP_DETAIL_VERT_HEAD;
+      if (wind || pulse) vertHead += 'uniform float uWindTime;\n';
+      if (wind) vertHead += 'uniform float uWindStrength;\n';
+      // ORDER MATTERS: vPropWP is captured BEFORE the wind displacement so the
+      // weathering noise + pulse field stay pinned to the surface instead of
+      // swimming as the geometry sways.
+      let vertBody = '';
+      if (needWP) vertBody += PROP_DETAIL_VERT_BODY;
+      if (wind) vertBody += windVertBody(wind);
+      shader.vertexShader = vertHead + shader.vertexShader.replace(
         '#include <begin_vertex>',
-        `#include <begin_vertex>\n${PROP_DETAIL_VERT_BODY}`,
+        `#include <begin_vertex>\n${vertBody}`,
       );
-      shader.fragmentShader = PROP_DETAIL_FRAG_HEAD + shader.fragmentShader.replace(
-        '#include <color_fragment>',
-        `#include <color_fragment>\n${PROP_DETAIL_FRAG_BODY}`,
-      );
+
+      let fragHead = '';
+      if (detail) fragHead += PROP_DETAIL_FRAG_HEAD;
+      else if (pulse) fragHead += 'varying vec3 vPropWP;\n';
+      if (pulse) fragHead += 'uniform float uWindTime;\n';
+      let frag = shader.fragmentShader;
+      if (detail) {
+        frag = frag.replace(
+          '#include <color_fragment>',
+          `#include <color_fragment>\n${PROP_DETAIL_FRAG_BODY}`,
+        );
+      }
+      if (pulse) {
+        frag = frag.replace(
+          '#include <emissivemap_fragment>',
+          `#include <emissivemap_fragment>\n${pulseFragBody(pulse)}`,
+        );
+      }
+      shader.fragmentShader = fragHead + frag;
     };
+    // Distinct baked constants ⇒ distinct generated GLSL from one shared
+    // closure source — key the program cache on the actual config (NOT the
+    // material colour) so same-config materials still share one program.
+    const progKey =
+      `biomeDyn|d${detail ? 1 : 0}` +
+      `|w${wind ? [wind.amp, wind.y0, wind.y1, wind.speed, wind.bob ?? 0].join(',') : '-'}` +
+      `|p${pulse ? [pulse.speed, pulse.depth].join(',') : '-'}`;
+    mat.customProgramCacheKey = () => progKey;
   }
 
   /**
@@ -270,6 +427,9 @@ export class BiomeSystem {
     this.propDetailUniforms.uPropDetailStr.value =
       detailLevel >= 1.0 ? 1.0 : detailLevel >= 0.82 ? 0.75 : 0.0;
     this.richProps = detailLevel >= 0.82;
+    // Wind sway + emissive glow pulses are a High/Ultra-only luxury — below
+    // that the props stay static and the shader programs stay unchanged.
+    this.dynamicFxOn = detailLevel >= 1.0;
   }
 
   /** Release every pooled resource. Called when the game scene tears down. */
@@ -283,9 +443,13 @@ export class BiomeSystem {
     if (this.grassGeo) { this.grassGeo.dispose(); this.grassGeo = null; }
   }
 
-  /** Advance the grass wind animation — call once per frame. */
-  updateGrass(time: number) {
+  /** Advance the shared wind clock + gust strength — call once per frame.
+   *  `strength` (1 = calm baseline) is driven from the live weather front so a
+   *  rolling storm visibly thrashes foliage and grass; below High the gust is
+   *  pinned to 1 so lower tiers keep the original steady grass sway. */
+  updateWind(time: number, strength = 1) {
     this.grassTime.value = time;
+    this.windStrength.value = this.dynamicFxOn ? strength : 1;
   }
 
   /** Lazily-built tapered grass blade (6 verts, 2 triangles). */
@@ -319,7 +483,8 @@ export class BiomeSystem {
     });
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.uTime = this.grassTime;
-      shader.vertexShader = 'uniform float uTime;\nvarying float vBladeH;\n' + shader.vertexShader;
+      shader.uniforms.uWindStrength = this.windStrength;
+      shader.vertexShader = 'uniform float uTime;\nuniform float uWindStrength;\nvarying float vBladeH;\n' + shader.vertexShader;
       shader.vertexShader = shader.vertexShader.replace(
         '#include <begin_vertex>',
         `#include <begin_vertex>
@@ -327,7 +492,10 @@ export class BiomeSystem {
          vBladeH = clamp(transformed.y / 0.62, 0.0, 1.0);
          float gWindH = transformed.y;
          float gWindP = uTime * 1.5 + instanceMatrix[3].x * 0.18 + instanceMatrix[3].z * 0.18;
-         float gWindS = gWindH * gWindH * 0.55;
+         // Softened gust coupling — storm fronts visibly flatten the lawn
+         // without folding blades in half (uWindStrength is pinned to 1 below
+         // the High tier, preserving the original steady sway there).
+         float gWindS = gWindH * gWindH * 0.55 * (0.6 + 0.4 * uWindStrength);
          transformed.x += sin(gWindP) * gWindS;
          transformed.z += cos(gWindP * 0.8) * gWindS * 0.6;`,
       );
@@ -669,10 +837,13 @@ export class BiomeSystem {
       const color = canopyPalette[i];
       const coneRadius = 4.2 - i * 0.85;
       const coneHeight = 4.4 - i * 0.7;
+      // Wind: the whole crown rolls in the breeze — the signature deep-forest
+      // "trees moving in the wind" motion. Same config on every layer + the
+      // per-tree XZ phase keeps the stacked cones swaying as one canopy.
       const coneMat = this.mat({
         color, flatShading: true, roughness: 0.62 - t * 0.08, metalness: 0.04,
         emissive: color, emissiveIntensity: 0.12 + t * 0.10,
-      });
+      }, { wind: { amp: 0.15, y0: -0.5, y1: 0.5, speed: 0.9 } });
       const cone = new THREE.Mesh(this.unitCone(coneRadius, 7, `forestCanopy${i}`), coneMat);
       cone.scale.set(1, coneHeight, 1);
       cone.position.y = height / 2 + 0.3 + i * 2.7;
@@ -705,7 +876,10 @@ export class BiomeSystem {
     const colors = [0x1a6a1a, 0x156515, 0x2a7a2a];
     for (let i = 0; i < 3; i++) {
       const color = colors[Math.floor(Math.random() * colors.length)];
-      const bushMat = this.mat({ color, flatShading: true, roughness: 0.6, metalness: 0.04, emissive: color, emissiveIntensity: 0.14 });
+      const bushMat = this.mat(
+        { color, flatShading: true, roughness: 0.6, metalness: 0.04, emissive: color, emissiveIntensity: 0.14 },
+        { wind: { amp: 0.06, y0: -0.1, y1: 1.0, speed: 1.3 } },
+      );
       const partSize = bushSize * (1 - i * 0.15);
       const part = new THREE.Mesh(this.unitSphere(4, 3, 'bushSphere'), bushMat);
       part.scale.setScalar(partSize);
@@ -802,8 +976,12 @@ export class BiomeSystem {
     trunk.scale.set(1, height, 1);
     trunk.castShadow = true; trunk.receiveShadow = true;
     group.add(trunk);
-    // Glowing magma veins running up the charred bark
-    const crackMat = this.mat({ color: 0x000000, emissive: 0xff5512, emissiveIntensity: 2.2, flatShading: true });
+    // Glowing magma veins running up the charred bark — throbbing like a
+    // living heat source (glow-pulse pass, High/Ultra).
+    const crackMat = this.mat(
+      { color: 0x000000, emissive: 0xff5512, emissiveIntensity: 2.2, flatShading: true },
+      { pulse: { speed: 1.6, depth: 0.45 } },
+    );
     const crackBox = this.unitBox('crackBox');
     for (let i = 0; i < 4; i++) {
       const a = (i / 4) * Math.PI * 2 + Math.random();
@@ -824,8 +1002,11 @@ export class BiomeSystem {
       branch.castShadow = true;
       group.add(branch);
     }
-    // Smouldering ember bed at the base
-    const emberMat = this.mat({ color: 0x000000, emissive: 0xff3a00, emissiveIntensity: 1.6, transparent: true, opacity: 0.55 });
+    // Smouldering ember bed at the base — fast flicker, like coals in a draft.
+    const emberMat = this.mat(
+      { color: 0x000000, emissive: 0xff3a00, emissiveIntensity: 1.6, transparent: true, opacity: 0.55 },
+      { pulse: { speed: 2.6, depth: 0.5 } },
+    );
     const ember = new THREE.Mesh(this.unitSphere(5, 3, 'emberSph'), emberMat);
     ember.position.y = -height / 2 + 0.25; ember.scale.set(0.85, 0.85 * 0.3, 0.85);
     group.add(ember);
@@ -849,7 +1030,10 @@ export class BiomeSystem {
     shard2.rotation.set(Math.random(), Math.random() * Math.PI, Math.random());
     shard2.castShadow = true;
     group.add(shard2);
-    const glowMat = this.mat({ color: 0x000000, emissive: 0xff4a14, emissiveIntensity: 1.4, transparent: true, opacity: 0.5 });
+    const glowMat = this.mat(
+      { color: 0x000000, emissive: 0xff4a14, emissiveIntensity: 1.4, transparent: true, opacity: 0.5 },
+      { pulse: { speed: 1.8, depth: 0.45 } },
+    );
     const glow = new THREE.Mesh(this.circle(0.9, 8), glowMat);
     glow.scale.setScalar(size);
     glow.rotation.x = -Math.PI / 2; glow.position.y = -size * 0.55;
@@ -860,8 +1044,11 @@ export class BiomeSystem {
 
   private createEmberPatch(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
-    const emberRed = this.mat({ color: 0xff4400, emissive: 0xff3300, emissiveIntensity: 0.8, flatShading: true });
-    const emberOrange = this.mat({ color: 0xff6600, emissive: 0xff3300, emissiveIntensity: 0.8, flatShading: true });
+    // Scattered coals flicker independently (world-pos phase → each ember in
+    // the patch breathes on its own beat).
+    const emberFlicker: DynamicFx = { pulse: { speed: 3.2, depth: 0.55 } };
+    const emberRed = this.mat({ color: 0xff4400, emissive: 0xff3300, emissiveIntensity: 0.8, flatShading: true }, emberFlicker);
+    const emberOrange = this.mat({ color: 0xff6600, emissive: 0xff3300, emissiveIntensity: 0.8, flatShading: true }, emberFlicker);
     const sph = this.unitSphere(3, 2, 'emberPatchSph');
     for (let i = 0; i < 4 + Math.floor(Math.random() * 3); i++) {
       const s = 0.15 + Math.random() * 0.2;
@@ -882,7 +1069,10 @@ export class BiomeSystem {
     boulder.scale.setScalar(size);
     boulder.castShadow = true; boulder.receiveShadow = true;
     group.add(boulder);
-    const veinMat = this.mat({ color: 0xff2200, emissive: 0xff4400, emissiveIntensity: 0.8, flatShading: true });
+    const veinMat = this.mat(
+      { color: 0xff2200, emissive: 0xff4400, emissiveIntensity: 0.8, flatShading: true },
+      { pulse: { speed: 1.4, depth: 0.45 } },
+    );
     const veinBox = this.unitBox('veinBox');
     for (let i = 0; i < 3; i++) {
       const vein = new THREE.Mesh(veinBox, veinMat);
@@ -897,7 +1087,12 @@ export class BiomeSystem {
 
   private createLavaPool(x: number, z: number): TerrainObject {
     const radius = 2 + Math.random() * 2.5;
-    const poolMat = this.mat({ color: 0xff4400, emissive: 0xff2200, emissiveIntensity: 0.8, roughness: 0.2, metalness: 0.3, transparent: true, opacity: 0.9 });
+    // Slow travelling waves of heat roll across the pool (the world-position
+    // pulse phase turns a big emitter into moving light, not a uniform blink).
+    const poolMat = this.mat(
+      { color: 0xff4400, emissive: 0xff2200, emissiveIntensity: 0.8, roughness: 0.2, metalness: 0.3, transparent: true, opacity: 0.9 },
+      { pulse: { speed: 1.0, depth: 0.35 } },
+    );
     const pool = new THREE.Mesh(this.circle(1, 12), poolMat);
     pool.scale.setScalar(radius);
     pool.rotation.x = -Math.PI / 2; pool.position.set(x, 0.05, z); pool.receiveShadow = true;
@@ -910,7 +1105,10 @@ export class BiomeSystem {
     const ring = new THREE.Mesh(this.torus(0.8, 0.3, 4, 6), ringMat);
     ring.rotation.x = -Math.PI / 2; ring.position.y = 0.3; ring.castShadow = true;
     group.add(ring);
-    const ventMat = this.mat({ color: 0xff6600, emissive: 0xff4400, emissiveIntensity: 1.0 });
+    const ventMat = this.mat(
+      { color: 0xff6600, emissive: 0xff4400, emissiveIntensity: 1.0 },
+      { pulse: { speed: 2.8, depth: 0.5 } },
+    );
     const vent = new THREE.Mesh(this.circle(0.6, 6), ventMat);
     vent.rotation.x = -Math.PI / 2; vent.position.y = 0.15;
     group.add(vent);
@@ -931,11 +1129,21 @@ export class BiomeSystem {
     trunk.castShadow = true; trunk.receiveShadow = true;
     group.add(trunk);
     const needles = [0x1f4a40, 0x2a5e4e, 0x39705c];
-    const snowMat = this.mat({ color: 0xeef4fb, flatShading: true, emissive: 0xb9d4ea, emissiveIntensity: 0.22, roughness: 0.35, metalness: 0.15 });
+    // Stiff, cold-shortened shiver — frozen boughs barely move, but they DO
+    // move. Needles and their snow caps share one config + XZ phase so the
+    // snow rides its bough instead of sliding against it.
+    const pineWind: DynamicFx = { wind: { amp: 0.07, y0: -0.5, y1: 0.5, speed: 0.75 } };
+    const snowMat = this.mat(
+      { color: 0xeef4fb, flatShading: true, emissive: 0xb9d4ea, emissiveIntensity: 0.22, roughness: 0.35, metalness: 0.15 },
+      pineWind,
+    );
     for (let i = 0; i < 3; i++) {
       const size = 3 - i * 0.6;
       const color = needles[i];
-      const needleMat = this.mat({ color, flatShading: true, emissive: color, emissiveIntensity: 0.20, roughness: 0.55, metalness: 0.06 });
+      const needleMat = this.mat(
+        { color, flatShading: true, emissive: color, emissiveIntensity: 0.20, roughness: 0.55, metalness: 0.06 },
+        pineWind,
+      );
       const foliage = new THREE.Mesh(this.unitCone(size * 0.72, 6, `frozenPineCone${i}`), needleMat);
       foliage.scale.set(1, 4 - i * 1.0, 1);
       foliage.position.y = height / 2 + i * 2.5;
@@ -962,7 +1170,10 @@ export class BiomeSystem {
     ice.castShadow = true; ice.receiveShadow = true;
     ice.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
     group.add(ice);
-    const coreMat = this.mat({ color: 0xdff1fb, emissive: 0x8fc8e6, emissiveIntensity: 0.5, flatShading: true });
+    const coreMat = this.mat(
+      { color: 0xdff1fb, emissive: 0x8fc8e6, emissiveIntensity: 0.5, flatShading: true },
+      { pulse: { speed: 0.8, depth: 0.3 } },
+    );
     const core = new THREE.Mesh(this.unitOcta(0), coreMat);
     core.scale.setScalar(size * 0.45);
     core.rotation.set(Math.random(), Math.random(), Math.random());
@@ -1002,7 +1213,11 @@ export class BiomeSystem {
 
   private createFrozenPond(x: number, z: number): TerrainObject {
     const radius = 2.5 + Math.random() * 2;
-    const pondMat = this.mat({ color: 0x88bbcc, roughness: 0.02, metalness: 0.8, emissive: 0x4488aa, emissiveIntensity: 0.15, transparent: true, opacity: 0.85 });
+    // Faint light shimmer travelling across the ice sheet.
+    const pondMat = this.mat(
+      { color: 0x88bbcc, roughness: 0.02, metalness: 0.8, emissive: 0x4488aa, emissiveIntensity: 0.15, transparent: true, opacity: 0.85 },
+      { pulse: { speed: 0.6, depth: 0.2 } },
+    );
     const pond = new THREE.Mesh(this.circle(1, 12), pondMat);
     pond.scale.setScalar(radius);
     pond.rotation.x = -Math.PI / 2; pond.position.set(x, 0.08, z); pond.receiveShadow = true;
@@ -1088,7 +1303,11 @@ export class BiomeSystem {
 
   private createDeadShrub(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
-    const branchMat = this.mat({ color: 0x6a5030, flatShading: true, roughness: 0.95 });
+    // Dry twigs rattle fast in the canyon wind.
+    const branchMat = this.mat(
+      { color: 0x6a5030, flatShading: true, roughness: 0.95 },
+      { wind: { amp: 0.05, y0: -0.5, y1: 0.5, speed: 1.7 } },
+    );
     for (let i = 0; i < 4 + Math.floor(Math.random() * 3); i++) {
       const h = 0.5 + Math.random() * 1.0;
       const branch = new THREE.Mesh(this.unitCyl(0.03, 0.06, 3, 'deadShrubBranch'), branchMat);
@@ -1175,7 +1394,10 @@ export class BiomeSystem {
     const fColors = [0x24401f, 0x1a3417, 0x315028];
     for (let i = 0; i < 3; i++) {
       const color = fColors[i % fColors.length];
-      const foliageMat = this.mat({ color, flatShading: true, emissive: color, emissiveIntensity: 0.12 });
+      const foliageMat = this.mat(
+        { color, flatShading: true, emissive: color, emissiveIntensity: 0.12 },
+        { wind: { amp: 0.1, y0: -1.0, y1: 1.0, speed: 0.7 } },
+      );
       const size = 2.1 - i * 0.45;
       const foliage = new THREE.Mesh(this.unitSphere(5, 3, 'gnarledFoliage'), foliageMat);
       foliage.scale.set(size, size * 0.5, size);
@@ -1183,7 +1405,10 @@ export class BiomeSystem {
       foliage.castShadow = true;
       group.add(foliage);
     }
-    const fungusMat = this.mat({ color: 0x000000, emissive: 0x6affc0, emissiveIntensity: 1.8, flatShading: true });
+    const fungusMat = this.mat(
+      { color: 0x000000, emissive: 0x6affc0, emissiveIntensity: 1.8, flatShading: true },
+      { pulse: { speed: 1.1, depth: 0.5 } },
+    );
     for (let i = 0; i < 3; i++) {
       const a = Math.random() * Math.PI * 2;
       const fungus = new THREE.Mesh(this.unitCyl(0.32, 0.1, 6, 'fungus'), fungusMat);
@@ -1234,8 +1459,9 @@ export class BiomeSystem {
   private createPoisonMushrooms(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
     const stemMat = this.mat({ color: 0x8a8a7a, flatShading: true });
-    const capPurple = this.mat({ color: 0x8a44aa, emissive: 0x8a44aa, emissiveIntensity: 0.4, flatShading: true });
-    const capGreen = this.mat({ color: 0x44aa66, emissive: 0x44aa66, emissiveIntensity: 0.4, flatShading: true });
+    const capGlow: DynamicFx = { pulse: { speed: 1.0, depth: 0.45 } };
+    const capPurple = this.mat({ color: 0x8a44aa, emissive: 0x8a44aa, emissiveIntensity: 0.4, flatShading: true }, capGlow);
+    const capGreen = this.mat({ color: 0x44aa66, emissive: 0x44aa66, emissiveIntensity: 0.4, flatShading: true }, capGlow);
     for (let i = 0; i < 3 + Math.floor(Math.random() * 4); i++) {
       const h = 0.3 + Math.random() * 0.6;
       const stem = new THREE.Mesh(this.unitCyl(0.06, 0.08, 4, 'poisonStem'), stemMat);
@@ -1274,7 +1500,7 @@ export class BiomeSystem {
     const filmMat = this.mat({
       color: 0x123f22, emissive: 0x2fae52, emissiveIntensity: 0.18,
       roughness: 0.3, metalness: 0.1, transparent: true, opacity: 0.38,
-    });
+    }, { pulse: { speed: 0.7, depth: 0.4 } });
     const film = new THREE.Mesh(this.circle(1, 24), filmMat);
     film.scale.setScalar(radius);
     film.rotation.x = -Math.PI / 2; film.position.y = 0.04; film.receiveShadow = true;
@@ -1284,7 +1510,7 @@ export class BiomeSystem {
     const coreMat = this.mat({
       color: 0x0e3019, emissive: 0x3fd167, emissiveIntensity: 0.32,
       roughness: 0.25, metalness: 0.1, transparent: true, opacity: 0.42,
-    });
+    }, { pulse: { speed: 0.9, depth: 0.5 } });
     const core = new THREE.Mesh(this.circle(1, 24), coreMat);
     core.scale.setScalar(radius * 0.45);
     core.rotation.x = -Math.PI / 2; core.position.y = 0.05;
@@ -1293,7 +1519,7 @@ export class BiomeSystem {
     const bubbleMat = this.mat({
       color: 0x0a2413, emissive: 0x54d67c, emissiveIntensity: 0.7,
       transparent: true, opacity: 0.7, flatShading: true,
-    });
+    }, { pulse: { speed: 1.5, depth: 0.55 } });
     const bubbleGeo = this.unitSphere(5, 4, 'toxinBubble');
     const bubbleCount = 3 + Math.floor(Math.random() * 3);
     for (let i = 0; i < bubbleCount; i++) {
@@ -1681,10 +1907,13 @@ export class BiomeSystem {
     // Twisted bare trunk — dark and weathered, slight emissive tint so
     // the silhouette catches the rim of the dusk sun without blending
     // into the dark fog.
+    // Bare gnarled branches claw at the dusk sky in a slow, haunted sway
+    // (shared with the trunk material — the base stays planted via the mask,
+    // the crown and fingers drift). The whole silhouette breathes together.
     const trunkMat = this.mat({
       color: trunkColor, flatShading: true, roughness: 0.94, metalness: 0.05,
       emissive: 0x3a1858, emissiveIntensity: 0.18,
-    });
+    }, { wind: { amp: 0.12, y0: -0.35, y1: 0.5, speed: 0.6 } });
     // REBUILT (user-reported broken trees): the old tree had TWO stacked
     // placement bugs — the centred trunk mesh sat on a ground-level group, so
     // HALF the trunk was buried (visible tree = a short pole), while the
@@ -1757,10 +1986,12 @@ export class BiomeSystem {
     // PointLight) to avoid the PointLight scene-recompile cost on
     // chunk streaming.
     const wispColor = [0x9466ff, 0x4ec3ff, 0xd066ff][Math.floor(Math.random() * 3)];
+    // The lantern-wisp floats and breathes — gentle vertical bob + a soft
+    // brightness pulse sell it as a living will-o'-the-wisp.
     const wispMat = this.mat({
       color: 0x000000, emissive: wispColor, emissiveIntensity: 2.2, flatShading: true,
       transparent: true, opacity: 0.92,
-    });
+    }, { wind: { amp: 0.05, y0: -1.0, y1: 1.0, speed: 1.0, bob: 0.22 }, pulse: { speed: 1.3, depth: 0.5 } });
     const wisp = new THREE.Mesh(this.unitSphere(6, 4, 'twilightWisp'), wispMat);
     wisp.scale.setScalar(0.18 + Math.random() * 0.08);
     wisp.position.y = height * (0.7 + Math.random() * 0.2);
@@ -1813,7 +2044,7 @@ export class BiomeSystem {
       const wispMat = this.mat({
         color: 0x000000, emissive: c, emissiveIntensity: 1.8, flatShading: true,
         transparent: true, opacity: 0.88,
-      });
+      }, { wind: { amp: 0.04, y0: -1.0, y1: 1.0, speed: 1.2, bob: 0.14 }, pulse: { speed: 1.6, depth: 0.5 } });
       const wispSize = 0.12 + Math.random() * 0.1;
       const wisp = new THREE.Mesh(this.unitSphere(6, 4, 'twilightBushWisp'), wispMat);
       wisp.scale.setScalar(wispSize);
@@ -1853,7 +2084,7 @@ export class BiomeSystem {
     const runeColor = [0x9466ff, 0x4ec3ff, 0xd066ff][Math.floor(Math.random() * 3)];
     const runeMat = this.mat({
       color: 0x000000, emissive: runeColor, emissiveIntensity: 2.4, flatShading: true,
-    });
+    }, { pulse: { speed: 0.9, depth: 0.55 } });
     const rune = new THREE.Mesh(this.unitBox('twilightRune'), runeMat);
     rune.scale.set(0.06, height * 0.55, 0.04);
     rune.position.set(0, height * 0.5, depth * 0.5 + 0.01);
@@ -1889,7 +2120,7 @@ export class BiomeSystem {
     const orbMat = this.mat({
       color: 0x000000, emissive: orbColor, emissiveIntensity: 2.8, flatShading: true,
       transparent: true, opacity: 0.92,
-    });
+    }, { wind: { amp: 0.0, y0: -1.0, y1: 1.0, speed: 0.9, bob: 0.09 }, pulse: { speed: 1.1, depth: 0.5 } });
     const orb = new THREE.Mesh(this.unitSphere(10, 8, 'twilightShrineOrb'), orbMat);
     orb.scale.setScalar(0.35);
     orb.position.y = 0.78;
@@ -1918,7 +2149,7 @@ export class BiomeSystem {
     const fungusColor = [0x9466ff, 0x4ec3ff, 0x66ffcf][Math.floor(Math.random() * 3)];
     const fungusMat = this.mat({
       color: 0x000000, emissive: fungusColor, emissiveIntensity: 1.9, flatShading: true,
-    });
+    }, { pulse: { speed: 1.2, depth: 0.5 } });
     const patchCount = 3 + Math.floor(Math.random() * 3);
     for (let i = 0; i < patchCount; i++) {
       const t = i / patchCount;
