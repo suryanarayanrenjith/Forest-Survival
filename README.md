@@ -1,6 +1,6 @@
 <div align="center">
 
-https://github.com/user-attachments/assets/f185bb8c-cc38-41b0-853c-b66d350bc388
+<img src="public/og-image.jpg" alt="Forest Survival — 3D first-person wave-survival shooter emblem" width="800" />
 
 **A 3D first-person wave-survival shooter built entirely through AI-assisted development.**
 
@@ -12,6 +12,12 @@ https://github.com/user-attachments/assets/f185bb8c-cc38-41b0-853c-b66d350bc388
 ---
 
 Survive endless, escalating enemy waves across **eight distinct biome maps**. Fight through **5 enemy types** with **8 unlockable weapons**, choose from **8 character classes**, and push your score as high as you can. Features roguelike wave perks, daily challenges, mutators, persistent account progression, and P2P multiplayer — built with React, Three.js, Rapier physics, and Convex entirely through conversational AI coding.
+
+---
+
+## Official Trailer
+
+https://github.com/user-attachments/assets/5e1322a1-d2c6-4cd4-b0f1-dd6922f0e5dd
 
 ---
 
