@@ -18,6 +18,7 @@ import { LeaderboardList } from './LeaderboardMenu';
 import { AchievementSystem } from '../utils/AchievementSystem';
 import { computeRank, legacySoloRankXp } from '../utils/rankSystem';
 import { AVATARS } from '../utils/avatars';
+import { extractConvexError } from '../utils/convexErrors';
 
 interface ProfileMenuProps {
   onClose: () => void;
@@ -1574,13 +1575,7 @@ function formatPhotoDate(ms: number): string {
 }
 
 function extractErrorMessage(error: unknown): string {
-  if (error && typeof error === 'object' && 'data' in error) {
-    const data = (error as { data?: unknown }).data;
-    if (typeof data === 'string') return data;
-  }
-  if (error instanceof Error) return error.message;
-  if (typeof error === 'string') return error;
-  return 'Unable to update the account right now.';
+  return extractConvexError(error, 'Unable to update the account right now.');
 }
 
 export default ProfileMenu;

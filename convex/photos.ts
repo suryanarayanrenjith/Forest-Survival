@@ -100,12 +100,17 @@ export const generateUploadUrl = mutation({
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new ConvexError("Sign in to save photos.");
 
-    const { ok } = await rateLimiter.limit(ctx, "photoUpload", { key: userId });
-    if (!ok) throw new ConvexError("Too many uploads — please wait a moment.");
-
+    // Cap check FIRST: a player who is already full gets the accurate "delete
+    // one to free a slot" message instead of burning a rate-limit token and
+    // being told to wait — which was both the wrong advice and a way to lock
+    // yourself out of uploading right after freeing a slot.
     if ((await countPhotos(ctx, userId)) >= MAX_PHOTOS) {
       throw new ConvexError(`Photo limit reached (${MAX_PHOTOS}). Delete one to free a slot.`);
     }
+
+    const { ok } = await rateLimiter.limit(ctx, "photoUpload", { key: userId });
+    if (!ok) throw new ConvexError("Too many uploads — please wait a moment.");
+
     return await ctx.storage.generateUploadUrl();
   },
 });

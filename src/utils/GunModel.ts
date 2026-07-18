@@ -171,6 +171,49 @@ function _matKey(color: number, metalness: number, roughness: number, extra: Par
   ].join(':');
 }
 
+/** One intrusion chip on the Subverter deck (see subChips below). */
+interface SubChip {
+  group: THREE.Group;
+  core: THREE.MeshStandardMaterial;
+  glow: THREE.Mesh;
+  glowMat: THREE.MeshBasicMaterial;
+  baseY: number;
+  baseZ: number;
+  offset: number;
+  target: number;
+  flash: number;
+}
+
+/**
+ * A fully-built weapon model plus every per-weapon ref the animation system
+ * drives. Rigs are built ONCE per weapon and cached for the whole session —
+ * a weapon switch is then a pure detach/attach of the cached root instead of
+ * the old dispose-and-rebuild of ~150 meshes/geometries, which made every
+ * switch pay a build + GPU re-upload + GC cost (and, on a cold shader cache,
+ * a first-render program link stall).
+ */
+interface WeaponRig {
+  root: THREE.Group;
+  magazine: THREE.Mesh | null;
+  slide: THREE.Mesh | null;
+  bolt: THREE.Mesh | null;
+  spinningPart: THREE.Group | null;
+  triggerHandGroup: THREE.Group | null;
+  supportHandGroup: THREE.Group | null;
+  slideRest: number;
+  boltRest: number;
+  magRestY: number;
+  aimPosition: { x: number; y: number; z: number };
+  subScreenMat: THREE.MeshStandardMaterial | null;
+  subEmitterMat: THREE.MeshStandardMaterial | null;
+  subCodeMats: THREE.MeshStandardMaterial[];
+  subAntennaTip: THREE.Mesh | null;
+  subChips: SubChip[];
+  subScreenTex: THREE.CanvasTexture | null;
+  subScreenCtx: CanvasRenderingContext2D | null;
+  subLoaded: number;
+}
+
 /**
  * First-person weapon viewmodel. Every weapon is built from primitive
  * geometry with PBR materials so it reads as a detailed, premium low-poly
@@ -219,17 +262,7 @@ export class GunModel {
   // 0 = fully seated, 1 = gone; `target` is what it eases toward; `flash` is a
   // transient core flare on eject/seat. `subLoaded` mirrors the live ammo so
   // updateSubverterAmmo only triggers a transition when the count actually moves.
-  private subChips: {
-    group: THREE.Group;
-    core: THREE.MeshStandardMaterial;
-    glow: THREE.Mesh;
-    glowMat: THREE.MeshBasicMaterial;
-    baseY: number;
-    baseZ: number;
-    offset: number;
-    target: number;
-    flash: number;
-  }[] = [];
+  private subChips: SubChip[] = [];
   private subLoaded = 0;
   private subReloadGlow = 0; // 0..1 reload "scanning" wash over the deck
   private subEmitterCharge = 0; // 0..1 emitter spin-up while a chip seats into it
@@ -316,6 +349,14 @@ export class GunModel {
   // aiming down sights so the ADS pose reads as "leaning into the strafe".
   private strafeLean = 0;
   private aimedStrafe = 0; // how much of the lean is "aiming" (for amplitude)
+
+  // ── Session-long weapon rig cache ──
+  // Each weapon's built model + animated-part refs, keyed by type. Built the
+  // first time a weapon is equipped (in practice during the loader's warmup
+  // cycle, which switches through every weapon) and reused forever after —
+  // see WeaponRig above for why. Disposed only via disposeAllRigs().
+  private rigs = new Map<WeaponType, WeaponRig>();
+  private activeRig: WeaponRig | null = null;
 
   constructor(type: WeaponType) {
     this.group = new THREE.Group();
@@ -405,45 +446,37 @@ export class GunModel {
   }
 
   private createGunModel(type: WeaponType) {
-    // Dispose the previous weapon's GPU resources before clearing. Skip
-    // any material tagged `userData.cached` — those live in the shared
-    // material pool and disposing them would corrupt the cache and break
-    // every subsequent weapon switch.
-    //
-    // Geometries are still per-weapon (each part has a unique shape /
-    // dimensions) so they're disposed normally.
-    this.group.traverse((obj) => {
-      if (obj instanceof THREE.Mesh) {
-        obj.geometry?.dispose();
-        const mat = obj.material;
-        if (Array.isArray(mat)) {
-          mat.forEach((m) => { if (m && !m.userData.cached) m.dispose(); });
-        } else if (mat && !mat.userData.cached) {
-          mat.dispose();
-        }
-      }
-    });
-    this.group.clear();
+    // Stow whatever is currently equipped (parts snapped back to rest, root
+    // detached). Nothing is disposed — every built rig is cached for the
+    // session, so switching BACK to a weapon is a pure attach.
+    this.stowActiveRig();
 
-    // Reset tracked part references — they belong to the old (disposed) model
+    const cached = this.rigs.get(type);
+    if (cached) {
+      this.attachRig(cached);
+      return;
+    }
+
+    // ── First equip of this weapon: build its rig once ──
+    // The create* methods add parts via `this.group`, so point that at the
+    // rig's own root for the duration of the (synchronous) build. The outer
+    // group — the camera-parented handle App animates — is restored right
+    // after, before anything can render the half-built state.
+    const outer = this.group;
+    const root = new THREE.Group();
+    this.group = root;
+
+    // Reset every per-build field the create methods write into.
     this.magazine = null;
     this.slide = null;
     this.bolt = null;
     this.ejectedMag = null;
     this.spinningPart = null;
-    // Subverter animated-part refs (the old materials were just disposed above
-    // if they weren't cached) — cleared so updateActions never touches stale GPU
-    // resources after a switch away from the hacking deck.
     this.subScreenMat = null;
     this.subEmitterMat = null;
     this.subCodeMats = [];
     this.subAntennaTip = null;
     this.subDeploy = 0;
-    // Dispose the per-build canvas screen texture (the material referencing it
-    // is freed by the traverse dispose loop above, but disposing a material
-    // never frees its texture, so do it explicitly). Chip materials are also
-    // freed by that loop — here we only drop the references.
-    this.subScreenTex?.dispose();
     this.subScreenTex = null;
     this.subScreenCtx = null;
     this.subChips = [];
@@ -451,7 +484,6 @@ export class GunModel {
     this.subReloadGlow = 0;
     this.subEmitterCharge = 0;
     this.subReloadGrace = 0;
-    // Hand-group refs belong to the model we just cleared.
     this.triggerHandGroup = null;
     this.supportHandGroup = null;
     this.slideRest = -1.5;
@@ -478,14 +510,146 @@ export class GunModel {
     // Attach the first-person arms last, so they sit on top of the weapon.
     this.addArms();
 
+    this.group = outer;
+
+    const rig: WeaponRig = {
+      root,
+      magazine: this.magazine,
+      slide: this.slide,
+      bolt: this.bolt,
+      spinningPart: this.spinningPart,
+      triggerHandGroup: this.triggerHandGroup,
+      supportHandGroup: this.supportHandGroup,
+      slideRest: this.slideRest,
+      boltRest: this.boltRest,
+      magRestY: this.magRestY,
+      aimPosition: this.aimPosition,
+      subScreenMat: this.subScreenMat,
+      subEmitterMat: this.subEmitterMat,
+      subCodeMats: this.subCodeMats,
+      subAntennaTip: this.subAntennaTip,
+      subChips: this.subChips,
+      subScreenTex: this.subScreenTex,
+      subScreenCtx: this.subScreenCtx,
+      subLoaded: this.subLoaded,
+    };
+    this.rigs.set(type, rig);
+    this.attachRig(rig);
+  }
+
+  /**
+   * Snap the active rig's animated parts back to rest and detach its root.
+   * The rig stays cached (and its live Subverter chip count is written back)
+   * so re-equipping it later is instant and picks up where it left off.
+   */
+  private stowActiveRig() {
+    const rig = this.activeRig;
+    if (!rig) return;
+    // A reload can't normally span a switch (App gates switching on
+    // !isReloading) — this is a belt-and-braces reset so a stowed rig can
+    // never come back mid-reload-pose.
+    if (this.isReloading) this.finishReload();
+    if (rig.magazine) {
+      rig.magazine.position.y = rig.magRestY;
+      rig.magazine.rotation.x = 0;
+      rig.magazine.rotation.z = 0;
+      rig.magazine.visible = true;
+    }
+    if (rig.slide) rig.slide.position.z = rig.slideRest;
+    if (rig.bolt) rig.bolt.position.z = rig.boltRest;
+    if (rig.triggerHandGroup) {
+      rig.triggerHandGroup.position.set(0, 0, 0);
+      rig.triggerHandGroup.rotation.set(0, 0, 0);
+    }
+    if (rig.supportHandGroup) {
+      rig.supportHandGroup.position.set(0, 0, 0);
+      rig.supportHandGroup.rotation.set(0, 0, 0);
+    }
+    for (const chip of rig.subChips) chip.flash = 0;
+    rig.subLoaded = this.subLoaded;
+    this.group.remove(rig.root);
+    this.activeRig = null;
+  }
+
+  /** Attach a cached rig and restore every per-weapon ref the animators drive. */
+  private attachRig(rig: WeaponRig) {
+    this.activeRig = rig;
+    this.group.add(rig.root);
+    this.magazine = rig.magazine;
+    this.slide = rig.slide;
+    this.bolt = rig.bolt;
+    this.spinningPart = rig.spinningPart;
+    this.triggerHandGroup = rig.triggerHandGroup;
+    this.supportHandGroup = rig.supportHandGroup;
+    this.slideRest = rig.slideRest;
+    this.boltRest = rig.boltRest;
+    this.magRestY = rig.magRestY;
+    this.aimPosition = rig.aimPosition;
+    this.subScreenMat = rig.subScreenMat;
+    this.subEmitterMat = rig.subEmitterMat;
+    this.subCodeMats = rig.subCodeMats;
+    this.subAntennaTip = rig.subAntennaTip;
+    this.subChips = rig.subChips;
+    this.subScreenTex = rig.subScreenTex;
+    this.subScreenCtx = rig.subScreenCtx;
+    this.subLoaded = rig.subLoaded;
+    // One-shot surges never carry across a swap.
+    this.subDeploy = 0;
+    this.subReloadGlow = 0;
+    this.subEmitterCharge = 0;
+    this.subReloadGrace = 0;
+    // Arm wrappers rest at the origin (see addArms).
+    this.triggerHandRest = { x: 0, y: 0, z: 0, rx: 0, ry: 0 };
+    this.supportHandRest = { x: 0, y: 0, z: 0, rx: 0, ry: 0 };
+
     this.group.position.set(this.basePosition.x, this.basePosition.y, this.basePosition.z);
     this.group.scale.setScalar(this.baseScale);
 
-    // Re-sync the freshly-built model to the current cloak state so switching
+    // Re-sync the attached model to the current cloak state so switching
     // weapons mid-Phantom never leaves a stale-transparent (or wrongly-solid)
     // weapon — the previous per-material approach leaked across the shared
     // material cache and got stuck on. See applyPhantomToCurrent().
     this.applyPhantomToCurrent();
+  }
+
+  /**
+   * Free every cached rig's GPU resources (scene teardown only). Cached pool
+   * materials (`userData.cached`) are shared across rigs + sessions and are
+   * skipped — same rule the old per-switch dispose followed.
+   */
+  disposeAllRigs() {
+    this.stowActiveRig();
+    for (const rig of this.rigs.values()) {
+      rig.root.traverse((obj) => {
+        if (obj instanceof THREE.Mesh) {
+          obj.geometry?.dispose();
+          const mat = obj.material;
+          if (Array.isArray(mat)) {
+            mat.forEach((m) => { if (m && !m.userData.cached) m.dispose(); });
+          } else if (mat && !mat.userData.cached) {
+            mat.dispose();
+          }
+        }
+      });
+      // Disposing a material never frees its texture — the Subverter's canvas
+      // screen texture is per-rig, so free it explicitly.
+      rig.subScreenTex?.dispose();
+    }
+    this.rigs.clear();
+    this.group.clear();
+    this.magazine = null;
+    this.slide = null;
+    this.bolt = null;
+    this.spinningPart = null;
+    this.triggerHandGroup = null;
+    this.supportHandGroup = null;
+    this.subScreenMat = null;
+    this.subEmitterMat = null;
+    this.subCodeMats = [];
+    this.subAntennaTip = null;
+    this.subChips = [];
+    this.subScreenTex = null;
+    this.subScreenCtx = null;
   }
 
   /**

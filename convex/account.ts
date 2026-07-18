@@ -10,6 +10,7 @@ import {
 } from "@convex-dev/auth/server";
 import { ConvexError } from "convex/values";
 import { checkPassword, MAX_PASSWORD_LENGTH } from "./authValidation";
+import { authFailureMessage } from "./authErrors";
 
 function validatePasswordRequirements(password: string) {
   const error = checkPassword(password);
@@ -24,6 +25,7 @@ export const changePassword = action({
     newPassword: v.string(),
     dob: v.string(),
   },
+  returns: v.object({ userId: v.string(), username: v.string() }),
   handler: async (
     ctx,
     { currentPassword, newPassword, dob },
@@ -58,6 +60,10 @@ export const changePassword = action({
       throw new ConvexError("Choose a new password that is different from the current one.");
     }
 
+    // A blanket `catch → "Current password is incorrect."` used to swallow the
+    // attempt-limit sentinel too, so a locked-out player kept retrying a
+    // CORRECT password for an hour while being told it was wrong. Map each
+    // failure to its own message instead (see convex/authErrors.ts).
     try {
       await retrieveAccount(ctx, {
         provider: "password",
@@ -66,8 +72,10 @@ export const changePassword = action({
           secret: currentPassword,
         },
       });
-    } catch {
-      throw new ConvexError("Current password is incorrect.");
+    } catch (verifyError) {
+      const friendly = authFailureMessage(verifyError, "Current password is incorrect.");
+      if (friendly !== null) throw new ConvexError(friendly);
+      throw verifyError;
     }
 
     await modifyAccountCredentials(ctx, {
@@ -253,8 +261,10 @@ export const deleteAccount = action({
         provider: "password",
         account: { id: authRecord.username.toLowerCase(), secret: password },
       });
-    } catch {
-      throw new ConvexError("Password is incorrect.");
+    } catch (verifyError) {
+      const friendly = authFailureMessage(verifyError, "Password is incorrect.");
+      if (friendly !== null) throw new ConvexError(friendly);
+      throw verifyError;
     }
 
     await ctx.runMutation(internal.account.purgeUser, { userId });

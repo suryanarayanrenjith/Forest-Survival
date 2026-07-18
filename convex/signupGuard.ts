@@ -1,6 +1,7 @@
 import { internalMutation, query } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
+import type { Doc } from "./_generated/dataModel";
 import { rateLimiter } from "./rateLimiter";
 
 declare const process: { env: Record<string, string | undefined> };
@@ -26,7 +27,16 @@ function maxSignups(): number {
   return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_MAX_SIGNUPS;
 }
 
-async function getOrCreateMeta(ctx: MutationCtx) {
+/**
+ * The global signup counter row, created on first use.
+ *
+ * Returns a NON-NULL doc: `ctx.db.get` is typed nullable, and the old code
+ * threaded that `null` all the way into the cap check (`if (meta && …)`), so a
+ * missing row would have silently DISABLED the hard account cap instead of
+ * failing closed. A just-inserted row always exists, so throwing here is
+ * unreachable in practice and simply makes the guarantee explicit downstream.
+ */
+async function getOrCreateMeta(ctx: MutationCtx): Promise<Doc<"appMeta">> {
   const existing = await ctx.db
     .query("appMeta")
     .withIndex("by_key", (q) => q.eq("key", "signups"))
@@ -38,7 +48,9 @@ async function getOrCreateMeta(ctx: MutationCtx) {
     totalUsers: 0,
     maxUsers: maxSignups(),
   });
-  return await ctx.db.get(id);
+  const created = await ctx.db.get(id);
+  if (!created) throw new Error("Failed to initialise the signup counter.");
+  return created;
 }
 
 /**
@@ -92,8 +104,9 @@ export const reserveSignup = internalMutation({
     const keys = normalized;
     if (keys.length === 0) keys.push(`user:${username}`);
 
-    // 1. Hard global cap (free-plan safety).
-    if (meta && meta.totalUsers >= meta.maxUsers) {
+    // 1. Hard global cap (free-plan safety). `meta` is guaranteed non-null now,
+    //    so the cap can no longer be skipped by a missing counter row.
+    if (meta.totalUsers >= meta.maxUsers) {
       return { ok: false, reason: "Registration is full right now. Please try again later." };
     }
 
@@ -130,9 +143,7 @@ export const reserveSignup = internalMutation({
     // 4. Commit the reservation: bump the global counter once and record the
     //    account under every device signal.
     const now = Date.now();
-    if (meta) {
-      await ctx.db.patch(meta._id, { totalUsers: meta.totalUsers + 1 });
-    }
+    await ctx.db.patch(meta._id, { totalUsers: meta.totalUsers + 1 });
     for (let i = 0; i < keys.length; i += 1) {
       const device = devices[i];
       if (device) {

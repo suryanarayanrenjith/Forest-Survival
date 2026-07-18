@@ -1,10 +1,26 @@
 import { query, internalQuery, mutation } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import { getAuthUserId } from "@convex-dev/auth/server";
-import { checkDisplayName, normalizeDisplayName } from "./authValidation";
+import {
+  MAX_USERNAME_LENGTH,
+  checkDisplayName,
+  normalizeDisplayName,
+  normalizeUsername,
+} from "./authValidation";
 
 export const currentUser = query({
   args: {},
+  returns: v.union(
+    v.object({
+      userId: v.id("users"),
+      name: v.string(),
+      username: v.string(),
+      image: v.union(v.string(), v.null()),
+      createdAt: v.union(v.number(), v.null()),
+      lastLoginAt: v.union(v.number(), v.null()),
+    }),
+    v.null(),
+  ),
   handler: async (ctx) => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) {
@@ -70,9 +86,13 @@ export const usernameExists = query({
   args: {
     username: v.string(),
   },
+  returns: v.boolean(),
   handler: async (ctx, { username }) => {
-    const normalizedUsername = username.trim().toLowerCase();
-    if (!normalizedUsername) {
+    const normalizedUsername = normalizeUsername(username);
+    // No account id can exceed MAX_USERNAME_LENGTH (checkUsername enforces it at
+    // sign-up), so anything longer is a miss by definition — bound it before it
+    // reaches the index rather than passing an unbounded key to the engine.
+    if (!normalizedUsername || normalizedUsername.length > MAX_USERNAME_LENGTH) {
       return false;
     }
 

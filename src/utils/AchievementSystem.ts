@@ -14,21 +14,13 @@ export interface Achievement {
  * Stable, ordered list of achievement IDs. The index of each ID is its bit
  * position in the persisted `achievements` bitmask in Convex. APPEND-ONLY —
  * never reorder or remove entries, or existing players' unlocks will shift.
+ *
+ * Defined in `convex/achievementRegistry.ts` and re-exported here so the server
+ * (which validates the mask + the cosmetic titles derived from it) and the
+ * client share ONE list that cannot drift.
  */
-export const ACHIEVEMENT_ORDER = [
-  'first_blood', 'slayer', 'massacre', 'legend',
-  'hot_streak', 'unstoppable',
-  'survivor', 'veteran', 'invincible',
-  'sharpshooter', 'deadeye',
-  'close_call', 'resourceful', 'arsenal', 'speed_demon', 'no_damage',
-  'team_player', 'champion',
-  // ── APPENDED (indices 18+) — never reorder the entries above ──
-  'goliath', 'boss_slayer',
-  'frenzy', 'berserker',
-  'centurion', 'high_roller',
-  'blitz', 'flawless_master',
-  'annihilator', 'immortal',
-] as const;
+import { ACHIEVEMENT_ORDER } from '../../convex/achievementRegistry';
+export { ACHIEVEMENT_ORDER };
 
 export class AchievementSystem {
   private achievements: Map<string, Achievement> = new Map();

@@ -6,9 +6,12 @@
  * mutations directly from the console) and bound the blast radius of the rest.
  * Caps are set FAR above legitimate play so real runs are never affected.
  *
- * Keep ACHIEVEMENT_COUNT in sync with src/utils/AchievementSystem.ts
- * (ACHIEVEMENT_ORDER) and AVATAR_COUNT with src/utils/avatars.ts (AVATARS).
+ * Achievement sizing is DERIVED from `convex/achievementRegistry.ts` (the shared
+ * source of truth), so only AVATAR_COUNT still has to track a client list
+ * (src/utils/avatars.ts — AVATARS).
  */
+
+import { ACHIEVEMENT_ORDER, achievementBitIndex } from "./achievementRegistry";
 
 export function clamp(n: number, min: number, max: number): number {
   if (!Number.isFinite(n)) return min;
@@ -144,17 +147,29 @@ export const MAX_MP_KILLS = 300;
 export const MAX_MP_DEATHS = 100;
 
 // ── Registry sizes (range validation) ───────────────────────────────────────
-export const ACHIEVEMENT_COUNT = 28;
+// DERIVED from the shared achievement registry, so appending an achievement can
+// never leave the server mask stale (a stale mask would silently drop the new
+// achievement's bit in mergeAchievements).
+export const ACHIEVEMENT_COUNT = ACHIEVEMENT_ORDER.length;
 export const ACHIEVEMENT_MASK = (1 << ACHIEVEMENT_COUNT) - 1;
 export const AVATAR_COUNT = 12;
 
-// Bit positions within ACHIEVEMENT_ORDER (src/utils/AchievementSystem.ts) for
-// the two multiplayer achievements. These are awarded server-side from the
-// player's career totals because the client achievement system runs only in
-// solo play. KEEP IN SYNC with the order of those two IDs.
+// Bit positions for the two multiplayer achievements. These are awarded
+// server-side from the player's career totals because the client achievement
+// system runs only in solo play. Looked up by ID (not hardcoded) so reordering
+// or appending entries can't silently point them at the wrong achievement —
+// and an id that ever goes missing fails the DEPLOY (module load) instead of
+// silently minting a bogus negative-shift bitmask.
+function requiredAchievementBit(id: string): number {
+  const index = achievementBitIndex(id);
+  if (index < 0) {
+    throw new Error(`ACHIEVEMENT_BIT references unknown achievement id "${id}"`);
+  }
+  return 1 << index;
+}
 export const ACHIEVEMENT_BIT = {
-  teamPlayer: 1 << 16, // 'team_player' — play 10 multiplayer matches
-  champion: 1 << 17, // 'champion' — win 5 multiplayer matches
+  teamPlayer: requiredAchievementBit('team_player'), // play 10 multiplayer matches
+  champion: requiredAchievementBit('champion'), // win 5 multiplayer matches
 } as const;
 
 /**

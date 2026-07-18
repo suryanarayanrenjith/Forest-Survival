@@ -3,7 +3,8 @@ import { useConvexAuth } from '@convex-dev/auth/react';
 import { CheckCircle, Sparkles, Calendar } from 'lucide-react';
 import { useState } from 'react';
 import { api } from '../../convex/_generated/api';
-import { DAILY_CHALLENGES, type DailyChallengeId } from '../utils/DailyChallengeRegistry';
+import { getDailyChallenge } from '../utils/DailyChallengeRegistry';
+import { extractConvexError } from '../utils/convexErrors';
 
 /**
  * Compact card shown on the Main Menu for signed-in players. Surfaces
@@ -17,11 +18,14 @@ const DailyChallengeCard = () => {
   const claim = useMutation(api.daily.claim);
   const [claiming, setClaiming] = useState(false);
   const [claimedAt, setClaimedAt] = useState(0);
+  const [claimError, setClaimError] = useState<string | null>(null);
 
   if (!isAuthenticated || daily === undefined) return null;
   if (daily === null) return null;
 
-  const challenge = DAILY_CHALLENGES[daily.challengeId as DailyChallengeId];
+  // Safe lookup: a row minted before a registry change (or a prototype-key id)
+  // resolves to null and hides the card rather than crashing the menu.
+  const challenge = getDailyChallenge(daily.challengeId);
   if (!challenge) return null;
 
   const progress = Math.min(daily.progress, challenge.goal);
@@ -32,11 +36,15 @@ const DailyChallengeCard = () => {
   const onClaim = async () => {
     if (claiming || claimed || !complete) return;
     setClaiming(true);
+    setClaimError(null);
     try {
       await claim({});
       setClaimedAt(Date.now());
-    } catch {
-      // Network blip — re-arm the button so the user can retry.
+    } catch (err) {
+      // The claim can legitimately be refused (not eligible yet, throttled).
+      // Silently re-arming the button left the player pressing it with no idea
+      // why nothing happened — show the server's reason instead.
+      setClaimError(extractConvexError(err, 'Could not claim right now. Please try again.'));
     } finally {
       setClaiming(false);
     }
@@ -106,6 +114,12 @@ const DailyChallengeCard = () => {
           <>In Progress…</>
         )}
       </button>
+
+      {claimError && (
+        <p role="alert" className="mt-2 text-[11px] leading-snug text-rose-300">
+          {claimError}
+        </p>
+      )}
     </div>
   );
 };

@@ -4,7 +4,9 @@ import { v } from "convex/values";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { ConvexError } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
-import { SKILL_REGISTRY } from "./skillRegistry";
+import { getSkillDef } from "./skillRegistry";
+import { isTitleEarned } from "./achievementRegistry";
+import { MAX_USERNAME_LENGTH } from "./authValidation";
 import { computeRank } from "./rankSystem";
 import { rateLimiter } from "./rateLimiter";
 import {
@@ -273,7 +275,10 @@ export const unlockSkill = mutation({
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new ConvexError("Sign in to spend skill points.");
 
-    const def = SKILL_REGISTRY[skillId];
+    // Prototype-safe lookup — see getSkillDef. Indexing the record directly let
+    // ids like "constructor" resolve to an inherited value and crash the
+    // handler on `def.requires` (an opaque "Server Error" for the player).
+    const def = getSkillDef(skillId);
     if (!def) throw new ConvexError("Unknown skill.");
 
     const stats = await getOrCreateStats(ctx, userId);
@@ -311,8 +316,12 @@ export const mergeAchievements = mutation({
     const stats = await getOrCreateStats(ctx, userId);
 
     // Drop any bits outside the known achievement set so a crafted mask can't
-    // light up phantom achievements (which would inflate rank XP).
-    const safeMask = Math.max(0, Math.floor(mask)) & ACHIEVEMENT_MASK;
+    // light up phantom achievements (which would inflate rank XP). The finite
+    // guard is explicit rather than relying on `NaN & x === 0` falling out of
+    // the coercion by accident.
+    const safeMask = Number.isFinite(mask)
+      ? (Math.max(0, Math.floor(mask)) & ACHIEVEMENT_MASK)
+      : 0;
 
     // Throttle (no-op on limit) — achievements unlock a few at a time per run.
     const { ok } = await rateLimiter.limit(ctx, "achievementSync", { key: userId });
@@ -385,11 +394,25 @@ const MAX_SETTINGS_BYTES = 4000;
  */
 export const setSettings = mutation({
   args: { settings: v.string() },
-  returns: v.null(),
+  // Reports whether the blob was actually stored. It used to return null on
+  // every path, so a rejected (oversized / malformed) blob was indistinguishable
+  // from a successful save and the client believed settings had synced.
+  returns: v.object({ saved: v.boolean() }),
   handler: async (ctx, { settings }) => {
     const userId = await getAuthUserId(ctx);
-    if (userId === null) return null; // preference only — never hard-fail
-    if (settings.length > MAX_SETTINGS_BYTES) return null; // guard runaway blobs
+    if (userId === null) return { saved: false }; // preference only — never hard-fail
+    if (settings.length > MAX_SETTINGS_BYTES) return { saved: false }; // runaway blob
+    // The column is read back and JSON.parsed by the client on every load, so
+    // storing an unparseable or non-object payload would poison that read for
+    // the account on every device. Validate the shape before it is persisted.
+    try {
+      const parsed: unknown = JSON.parse(settings);
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return { saved: false };
+      }
+    } catch {
+      return { saved: false };
+    }
     const stats = await getOrCreateStats(ctx, userId);
     await ctx.db.patch(stats._id, {
       settings,
@@ -397,7 +420,7 @@ export const setSettings = mutation({
       graphicsQuality: undefined,
       updatedAt: Date.now(),
     });
-    return null;
+    return { saved: true };
   },
 });
 
@@ -412,24 +435,35 @@ const MASTERY_MAX_XP_PER_WEAPON = 4000;
 const MASTERY_MAX_XP_DELTA = 200; // single mutation can grant at most 200 XP
 
 // === COSMETIC TITLES ===
-// The actual list of available titles is derived client-side from the
-// player's achievement bitmask (kept lean — no per-row server query). The
-// server just persists whichever title the player has equipped.
-const MAX_TITLE_LENGTH = 40;
+// The equipped title is rendered into OTHER players' kill feeds, so it is
+// untrusted display text on someone else's screen and must be validated
+// server-side. This previously accepted any string up to 40 chars, which let a
+// crafted client publish arbitrary text to every other player in a match.
+//
+// Now the title must (a) exist in the shared registry and (b) be granted by an
+// achievement the player has actually unlocked in their persisted bitmask —
+// both checked against convex/achievementRegistry.ts, the same source of truth
+// the client renders its picker from.
 export const equipTitle = mutation({
   args: { title: v.union(v.string(), v.null()) },
-  returns: v.null(),
+  returns: v.object({ equippedTitle: v.union(v.string(), v.null()) }),
   handler: async (ctx, { title }) => {
     const userId = await getAuthUserId(ctx);
-    if (userId === null) return null;
-    if (title !== null && title.length > MAX_TITLE_LENGTH) return null;
+    if (userId === null) throw new ConvexError("Sign in to equip a title.");
+
     const stats = await getOrCreateStats(ctx, userId);
-    if ((stats.equippedTitle ?? null) === title) return null;
+
+    // null clears the title — always allowed.
+    if (title !== null && !isTitleEarned(title, stats.achievements)) {
+      throw new ConvexError("You haven't unlocked that title.");
+    }
+
+    if ((stats.equippedTitle ?? null) === title) return { equippedTitle: title };
     await ctx.db.patch(stats._id, {
       equippedTitle: title ?? undefined,
       updatedAt: Date.now(),
     });
-    return null;
+    return { equippedTitle: title };
   },
 });
 
@@ -486,7 +520,10 @@ export const getPublicProfile = query({
   ),
   handler: async (ctx, { username }) => {
     const normalized = username.trim().toLowerCase();
-    if (!normalized) return null;
+    // Bound the key before it reaches the index — no real username can exceed
+    // MAX_USERNAME_LENGTH, so a longer one is a miss by definition and there is
+    // no reason to hand a megabyte-long string to the query engine.
+    if (!normalized || normalized.length > MAX_USERNAME_LENGTH) return null;
 
     const user = await ctx.db
       .query("users")

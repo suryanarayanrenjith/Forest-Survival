@@ -9,9 +9,12 @@
  */
 
 import type * as account from "../account.js";
+import type * as achievementRegistry from "../achievementRegistry.js";
 import type * as auth from "../auth.js";
+import type * as authErrors from "../authErrors.js";
 import type * as authValidation from "../authValidation.js";
 import type * as daily from "../daily.js";
+import type * as dailyChallengeRegistry from "../dailyChallengeRegistry.js";
 import type * as gameLimits from "../gameLimits.js";
 import type * as http from "../http.js";
 import type * as leaderboard from "../leaderboard.js";
@@ -31,9 +34,12 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   account: typeof account;
+  achievementRegistry: typeof achievementRegistry;
   auth: typeof auth;
+  authErrors: typeof authErrors;
   authValidation: typeof authValidation;
   daily: typeof daily;
+  dailyChallengeRegistry: typeof dailyChallengeRegistry;
   gameLimits: typeof gameLimits;
   http: typeof http;
   leaderboard: typeof leaderboard;

@@ -4,6 +4,7 @@ import { useAuthActions } from '@convex-dev/auth/react';
 import { useQuery } from 'convex/react';
 import { api } from '../../convex/_generated/api';
 import { getDeviceFingerprints } from '../utils/deviceFingerprint';
+import { extractConvexError } from '../utils/convexErrors';
 import {
   checkDisplayName,
   checkDob,
@@ -488,19 +489,14 @@ const SubmitButton = ({ busy, disabled, children }: { busy: boolean; disabled?: 
   </button>
 );
 
+/**
+ * The server now maps every credential failure to a ConvexError with a real
+ * message (see convex/authErrors.ts), so the raw-sentinel matching that used to
+ * live here is gone. This only has to unwrap the payload and refuse to print a
+ * redacted `[CONVEX …] Server Error` envelope at the player.
+ */
 function extractErrorMessage(error: unknown): string {
-  if (error && typeof error === 'object' && 'data' in error) {
-    const data = (error as { data?: unknown }).data;
-    if (typeof data === 'string') return data;
-  }
-  if (error instanceof Error) {
-    if (/InvalidAccountId|InvalidSecret|Invalid credentials/i.test(error.message)) {
-      return 'Incorrect username or password.';
-    }
-    return error.message;
-  }
-  if (typeof error === 'string') return error;
-  return 'Authentication failed. Please try again.';
+  return extractConvexError(error, 'Authentication failed. Please try again.');
 }
 
 export default AuthMenu;

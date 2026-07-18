@@ -15,6 +15,7 @@ import {
   normalizeUsername,
 } from "./authValidation";
 import { getOrCreateStats } from "./playerStats";
+import { authFailureMessage } from "./authErrors";
 
 // Device signals come from an untrusted browser. Keep the registration path
 // bounded before it reaches the transactional anti-abuse records.
@@ -158,15 +159,33 @@ export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
               fingerprints,
               username: normalizedUsername,
             });
-            throw creationError;
+            // `usernameExists` above is a best-effort pre-check — two sign-ups
+            // for the same name can still race past it, and `createAccount`
+            // then throws a PLAIN Error ("Account x already exists") that
+            // production redacts to "Server Error". Re-raise it as the same
+            // friendly message the pre-check would have produced.
+            const friendly = authFailureMessage(creationError);
+            if (friendly !== null) throw new ConvexError(friendly);
+            throw creationError; // genuinely unexpected — keep it redacted + logged
           }
         }
 
         if (flow === "signIn") {
-          const existing = await retrieveAccount(ctx, {
-            provider: "password",
-            account: { id: normalizedUsername, secret: password },
-          });
+          // `retrieveAccount` reports a bad username, a bad password, and a
+          // tripped attempt-limit by throwing a plain Error with a bare
+          // sentinel message, which production redacts to "Server Error". Map
+          // them to real messages (see convex/authErrors.ts).
+          let existing;
+          try {
+            existing = await retrieveAccount(ctx, {
+              provider: "password",
+              account: { id: normalizedUsername, secret: password },
+            });
+          } catch (signInError) {
+            const friendly = authFailureMessage(signInError);
+            if (friendly !== null) throw new ConvexError(friendly);
+            throw signInError;
+          }
 
           return { userId: existing.user._id };
         }

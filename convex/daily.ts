@@ -13,40 +13,23 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { MAX_TOTAL_SKILL_POINTS } from "./gameLimits";
 import { rateLimiter } from "./rateLimiter";
 
+// The challenge catalogue + the day-rotation now live in the SHARED registry
+// (convex/dailyChallengeRegistry.ts) — one list, one picker, imported by both
+// this server module and the client, so the two can never disagree about which
+// challenge a day rolls or what its goal is. `getDailyChallenge` is the
+// prototype-safe lookup (an id like "constructor" resolves to null, never to
+// an inherited truthy value).
+import { challengeIdForDay, getDailyChallenge } from "./dailyChallengeRegistry";
+
 /** Today's UTC day string in the same format the client uses. */
 function utcDayString(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-/** Deterministic UTC-day-seeded daily-challenge picker. Mirrors
- *  src/utils/DailyChallengeRegistry.ts::getTodayChallengeId so server +
- *  client agree on which challenge today is. */
-const DAILY_CHALLENGE_IDS = [
-  "kill_100",
-  "reach_wave_10",
-  "headshot_25",
-  "flawless_3_waves",
-  "survive_pistol_only",
-];
-
-function todayChallengeId(utcDay: string): string {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < utcDay.length; i++) {
-    h ^= utcDay.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  const idx = (h >>> 0) % DAILY_CHALLENGE_IDS.length;
-  return DAILY_CHALLENGE_IDS[idx];
+/** Per-challenge completion goal, or null for an unknown/malformed id. */
+function goalFor(challengeId: string): number | null {
+  return getDailyChallenge(challengeId)?.goal ?? null;
 }
-
-/** Per-challenge completion goals — shared by `claim` and `getActivity`. */
-const CHALLENGE_GOALS: Record<string, number> = {
-  kill_100: 100,
-  reach_wave_10: 10,
-  headshot_25: 25,
-  flawless_3_waves: 3,
-  survive_pistol_only: 30,
-};
 
 /**
  * Activity calendar source for the Profile (GitHub-style heatmap). Every day the
@@ -75,7 +58,7 @@ export const getActivity = query({
     const days = rows
       .filter((r) => r.utcDay >= cutoff)
       .map((r) => {
-        const goal = CHALLENGE_GOALS[r.challengeId];
+        const goal = goalFor(r.challengeId);
         const frac = goal ? Math.min(1, r.progress / goal) : r.progress > 0 ? 0.5 : 0;
         // Any active day is at least level 1; completion (claimed or goal met) is 4.
         const level = r.claimed || frac >= 1 ? 4 : frac >= 0.6 ? 3 : frac >= 0.3 ? 2 : 1;
@@ -89,6 +72,15 @@ export const getActivity = query({
 /** Read the caller's daily row for today. Returns null when not signed in. */
 export const getDaily = query({
   args: {},
+  returns: v.union(
+    v.object({
+      utcDay: v.string(),
+      challengeId: v.string(),
+      progress: v.number(),
+      claimed: v.boolean(),
+    }),
+    v.null(),
+  ),
   handler: async (ctx: QueryCtx) => {
     const userId = await getAuthUserId(ctx);
     if (!userId) return null;
@@ -101,7 +93,7 @@ export const getDaily = query({
       .unique();
     return {
       utcDay,
-      challengeId: existing?.challengeId ?? todayChallengeId(utcDay),
+      challengeId: existing?.challengeId ?? challengeIdForDay(utcDay),
       progress: existing?.progress ?? 0,
       claimed: existing?.claimed ?? false,
     };
@@ -125,13 +117,19 @@ export const recordProgress = mutation({
       throw new ConvexError("Invalid progress");
     }
     const utcDay = utcDayString();
-    const expectedId = todayChallengeId(utcDay);
+    const expectedId = challengeIdForDay(utcDay);
     if (challengeId !== expectedId) {
       // Wrong day's challenge — ignore silently rather than throw so a
       // straggling client write doesn't surface as an error in the UI.
       return { progress: 0, throttled: false };
     }
-    const goal = CHALLENGE_GOALS[expectedId];
+    const goal = goalFor(expectedId);
+    if (goal === null) {
+      // Registry drift (a rolled id with no goal) — report it as a normal,
+      // readable failure instead of letting `Math.min(undefined, …)` produce a
+      // NaN that fails schema validation as an opaque "Server Error".
+      throw new ConvexError("Today's challenge is unavailable. Please try again later.");
+    }
     // The browser is not authoritative, but it must never be able to store
     // arbitrary-sized values or exceed a challenge's actual completion goal.
     const boundedProgress = Math.min(goal, Math.floor(progress));
@@ -144,6 +142,20 @@ export const recordProgress = mutation({
       .unique();
     const { ok } = await rateLimiter.limit(ctx, "dailyProgress", { key: userId });
     if (!ok) return { progress: existing?.progress ?? 0, throttled: true };
+
+    // Self-heal a stale row: if the row was created under a DIFFERENT
+    // challenge id for the same day (only possible when a deploy changes the
+    // rotation mid-day), its progress belongs to another metric entirely —
+    // rebind the row to today's real challenge and start its progress from
+    // this write instead of max()ing incompatible numbers together.
+    if (existing && existing.challengeId !== expectedId) {
+      await ctx.db.patch(existing._id, {
+        challengeId: expectedId,
+        progress: boundedProgress,
+        updatedAt: Date.now(),
+      });
+      return { progress: boundedProgress, throttled: false };
+    }
 
     const nextProgress = Math.max(existing?.progress ?? 0, boundedProgress);
     if (existing) {
@@ -171,9 +183,18 @@ export const recordProgress = mutation({
 /** Grant the +1 skill-point reward for completing today's challenge. */
 export const claim = mutation({
   args: {},
+  returns: v.object({ granted: v.number() }),
   handler: async (ctx: MutationCtx) => {
     const userId = await getAuthUserId(ctx);
     if (!userId) throw new ConvexError("Not authenticated");
+
+    // Claiming grants a skill point. It is idempotent (the `claimed` flag is the
+    // real guard) but was the only unthrottled write in this file, so a script
+    // could still hammer it; the reward path deserves the same ceiling as the
+    // progress path.
+    const { ok } = await rateLimiter.limit(ctx, "dailyClaim", { key: userId });
+    if (!ok) throw new ConvexError("Please wait a moment before claiming again.");
+
     const utcDay = utcDayString();
     const row = await ctx.db
       .query("dailyProgress")
@@ -184,10 +205,10 @@ export const claim = mutation({
     if (!row) throw new ConvexError("No daily progress yet");
     if (row.claimed) return { granted: 0 };
 
-    // Goal for the rolled challenge — must agree with the client-side registry
-    // (see CHALLENGE_GOALS above).
-    const goal = CHALLENGE_GOALS[row.challengeId];
-    if (goal === undefined || row.progress < goal) {
+    // Goal for the rolled challenge — resolved through the SHARED registry
+    // (convex/dailyChallengeRegistry.ts), the same source the client uses.
+    const goal = goalFor(row.challengeId);
+    if (goal === null || row.progress < goal) {
       throw new ConvexError("Not eligible to claim");
     }
 

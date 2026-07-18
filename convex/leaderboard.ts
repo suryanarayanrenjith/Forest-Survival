@@ -49,7 +49,11 @@ export const getLeaderboard = query({
     viewerOptedOut: v.boolean(),
   }),
   handler: async (ctx, { limit }) => {
-    const topN = Math.min(Math.max(limit ?? 50, 1), 100);
+    // A non-finite `limit` used to propagate NaN through the clamp into
+    // `rows.slice(0, NaN)`, which silently returns an EMPTY board rather than
+    // erroring. Fall back to the default for anything that isn't a real number.
+    const requested = Number.isFinite(limit) ? Math.floor(limit as number) : 50;
+    const topN = Math.min(Math.max(requested, 1), 100);
     const viewerId = await getAuthUserId(ctx);
 
     const allStats = await ctx.db.query("playerStats").collect();

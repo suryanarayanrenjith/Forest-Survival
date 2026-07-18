@@ -28,6 +28,10 @@ export const rateLimiter = new RateLimiter(components.rateLimiter, {
   // preventing a scripted client from hammering the progress mutation.
   dailyProgress: { kind: "token bucket", rate: 60, period: MINUTE, capacity: 30 },
 
+  // Claiming the daily reward is a once-per-day action; this only exists to stop
+  // a scripted client from hammering the skill-point grant path.
+  dailyClaim: { kind: "token bucket", rate: 10, period: HOUR, capacity: 5 },
+
   // Photo Mode upload throttle (keyed by userId). The hard 5-photo cap already
   // bounds total storage; this stops a delete→reupload loop from hammering the
   // storage API while still allowing a normal photoshoot session.

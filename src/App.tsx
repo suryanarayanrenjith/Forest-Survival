@@ -79,9 +79,10 @@ import { spawnBarrels, type ExplosiveBarrel } from './utils/HazardSystem';
 import { spawnRangedSentinels, updateSentinelGlow, type RangedSentinel } from './utils/RangedSentinelSystem';
 import { CHARACTER_PASSIVES } from './utils/CharacterPassiveRegistry';
 import { getCharacterAbility } from './utils/CharacterAbilityRegistry';
-import { DAILY_CHALLENGES, getTodayChallengeId } from './utils/DailyChallengeRegistry';
+import { DAILY_CHALLENGES, DAILY_CHANNEL_MODE, getTodayChallengeId, type DailyEventChannel } from './utils/DailyChallengeRegistry';
 import { bonusForLevel, levelFromXp, xpPerKill, xpProgressAtLevel, MAX_MASTERY_LEVEL, type MasteryBonus } from './utils/WeaponMasterySystem';
 import { TITLE_FOR_ACHIEVEMENT } from './utils/CosmeticTitles';
+import { isTitleEarned } from '../convex/achievementRegistry';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import ShaderProcessingScreen, { type WarmupErrorInfo } from './components/ShaderProcessingScreen';
 import MenuBackdrop, { type MenuBackdropVariant } from './components/MenuBackdrop';
@@ -92,7 +93,7 @@ import { musicMute } from './utils/musicMute';
 import { useMutation, useQuery } from 'convex/react';
 import { useConvexAuth } from '@convex-dev/auth/react';
 import { api } from '../convex/_generated/api';
-import { usePlayerData } from './hooks/usePlayerData';
+import { usePlayerData, setPlayerStatsPaused } from './hooks/usePlayerData';
 import { useDeviceInfo } from './hooks/useDeviceInfo';
 import { touchControls } from './utils/touchControls';
 import { haptic } from './utils/haptics';
@@ -252,12 +253,6 @@ const ForestSurvivalGame = () => {
   // client-side. The mutation idempotently `max()`s on the server side so a
   // duplicate write can't double-count.
   const recordDailyProgressMutation = useMutation(api.daily.recordProgress);
-  // A run snapshots the server's current daily total before it begins adding
-  // local events. Without this baseline, two shorter runs each reporting (for
-  // example) 50 kills would both `max()` to 50 instead of reaching 100.
-  const dailyProgressData = useQuery(api.daily.getDaily, isAuthenticated ? {} : 'skip');
-  const dailyProgressRef = useRef(dailyProgressData);
-  useEffect(() => { dailyProgressRef.current = dailyProgressData; }, [dailyProgressData]);
   // Weapon Mastery — XP grants are sent per weapon as bounded deltas. The
   // server reconciles + caps at MAX_XP_PER_WEAPON.
   const addWeaponMasteryXpMutation = useMutation(api.playerStats.addWeaponMasteryXp);
@@ -274,13 +269,45 @@ const ForestSurvivalGame = () => {
   const playerStatsRef = useRef(playerStats);
   const mergeAchievementsRef = useRef(mergeAchievementsMutation);
   useEffect(() => { isAuthenticatedRef.current = isAuthenticated; }, [isAuthenticated]);
-  useEffect(() => { playerStatsRef.current = playerStats; }, [playerStats]);
+  // `undefined` means loading OR paused-for-a-match (see setPlayerStatsPaused)
+  // — never clobber the run-start snapshot the game loop reads with it. `null`
+  // (signed out) is meaningful and does propagate.
+  useEffect(() => {
+    if (playerStats !== undefined) playerStatsRef.current = playerStats;
+  }, [playerStats]);
   useEffect(() => { mergeAchievementsRef.current = mergeAchievementsMutation; }, [mergeAchievementsMutation]);
 
   const [gameMode, setGameMode] = useState<'none' | 'classic' | 'multiplayer' | 'tutorial'>('none');
   const [showClassicMenu, setShowClassicMenu] = useState(false);
   const [showTutorialMenu, setShowTutorialMenu] = useState(false);
   const [gameStarted, setGameStarted] = useState(false);
+
+  // A run snapshots the server's current daily total before it begins adding
+  // local events. Without this baseline, two shorter runs each reporting (for
+  // example) 50 kills would both `max()` to 50 instead of reaching 100.
+  //
+  // UNSUBSCRIBED while a game is live: the run's own 3-second progress flushes
+  // patch this very row, so staying subscribed echoed every flush back as a
+  // full App-tree re-render mid-combat — one of the "random stutter" sources.
+  // The ref keeps the pre-run snapshot (the only thing the game loop reads),
+  // and leaving the game resubscribes for a fresh baseline. The undefined
+  // guard stops the skip's transient `undefined` from wiping that snapshot.
+  const dailyProgressData = useQuery(api.daily.getDaily, isAuthenticated && !gameStarted ? {} : 'skip');
+  const dailyProgressRef = useRef(dailyProgressData);
+  useEffect(() => {
+    if (dailyProgressData !== undefined) dailyProgressRef.current = dailyProgressData;
+  }, [dailyProgressData]);
+
+  // Same reasoning for the shared playerStats subscription: the run's own
+  // mastery-XP / achievement flushes patch that row every few seconds, and each
+  // patch pushed a fresh result → provider re-render → full App-tree
+  // reconciliation mid-combat. Nothing consumes LIVE stats during a match (the
+  // game loop reads playerStatsRef, snapshotted at run start; menus are
+  // unmounted), so pause the subscription for the duration of the run.
+  useEffect(() => {
+    setPlayerStatsPaused(gameStarted);
+    return () => setPlayerStatsPaused(false);
+  }, [gameStarted]);
   const [showShaderProcessing, setShowShaderProcessing] = useState(false);
   // Surfaces warmup / WebGL errors via the loader's error UI. When set,
   // the loader shows a "Warmup Failed" card with Retry / Continue Anyway
@@ -618,23 +645,21 @@ const ForestSurvivalGame = () => {
   }, []);
 
 
-  // Sync user settings from localStorage
+  // Sync user settings from the manager. The subscription covers EVERY change
+  // path — updateSetting/updateSettings/resetToDefaults/importSettings all
+  // notify, and cross-tab localStorage edits are folded in via the manager's
+  // own `storage` listener which notifies too. (This used to also poll
+  // getSettings() every second "just in case"; getSettings returns a fresh
+  // object each call, so that poll re-rendered the ENTIRE App tree at 1Hz —
+  // including mid-combat, where each reconciliation is a frame-budget spike.
+  // The poll added no coverage, only the stutter.)
   useEffect(() => {
     const unsubscribe = gameSettingsManager.subscribe((settings) => {
       setUserSettings(settings);
       keyBindingsRef.current = settings.keyBindings;
       fpsCapRef.current = settings.fpsCap;
     });
-
-    // Also refresh settings periodically in case localStorage was changed from settings menu
-    const interval = setInterval(() => {
-      setUserSettings(gameSettingsManager.getSettings());
-    }, 1000);
-
-    return () => {
-      unsubscribe();
-      clearInterval(interval);
-    };
+    return unsubscribe;
   }, []);
 
   // Restore saved settings from the account on sign-in (applies to the game).
@@ -1254,16 +1279,31 @@ const ForestSurvivalGame = () => {
         // rather than a single bit, so if one sync is rate-limited the next
         // successful one backfills every achievement earned so far.
         const mask = achievementSystem.getUnlockedMask();
-        if (mask) {
-          void mergeAchievementsRef.current({ mask }).catch(() => {});
-        }
         // Cosmetic Title — auto-equip the first available title the player
         // hasn't equipped yet. Future iterations let the player pick via
         // Profile; this MVP cut just surfaces SOMETHING in the kill feed.
         const earnedTitle = TITLE_FOR_ACHIEVEMENT[achievement.id];
-        if (earnedTitle && !equippedTitleRef.current) {
-          equippedTitleRef.current = earnedTitle;
-          void equipTitleRef.current({ title: earnedTitle }).catch(() => { /* best-effort */ });
+        if (mask) {
+          void mergeAchievementsRef.current({ mask })
+            .then((result) => {
+              // equipTitle validates the title against the PERSISTED bitmask,
+              // so it must run only after the granting achievement has landed.
+              // Firing both in the same tick raced — and a rate-limited merge
+              // returns the pre-merge mask, meaning the bit genuinely isn't
+              // stored yet. Gate on what the server actually came back with;
+              // the next unlock's merge backfills and retries this.
+              if (!earnedTitle || equippedTitleRef.current) return;
+              if (!isTitleEarned(earnedTitle, result.achievements)) return;
+              equippedTitleRef.current = earnedTitle;
+              // Roll the local ref back if the server refuses, so the kill feed
+              // never shows a title that isn't actually persisted (and the next
+              // unlock gets a clean shot at equipping one).
+              return equipTitleRef.current({ title: earnedTitle }).catch((err) => {
+                if (equippedTitleRef.current === earnedTitle) equippedTitleRef.current = null;
+                throw err;
+              });
+            })
+            .catch(() => { /* best-effort */ });
         }
       });
     }
@@ -3105,7 +3145,25 @@ const ForestSurvivalGame = () => {
     const dailyEnabled = !isTutorialMode && !isMultiplayer && isAuthenticated;
     const dailyChallengeId = dailyEnabled ? getTodayChallengeId() : null;
     const dailyChannel = dailyChallengeId ? DAILY_CHALLENGES[dailyChallengeId].event : null;
-    const dailyCounts = { kill: 0, wave: 0, headshot: 0, flawless_wave: 0, pistol_kill: 0 };
+    // One counter per event channel (see convex/dailyChallengeRegistry.ts).
+    // All are per-RUN accumulators; the flush folds them into the server's
+    // day total per the channel's mode ('add' sums across runs, 'max' keeps
+    // the single-run best — how "reach wave N in one run" stays honest).
+    const dailyCounts: Record<DailyEventChannel, number> = {
+      kill: 0, headshot: 0, wave: 0, flawless_wave: 0,
+      boss_kill: 0, rapid_kill: 0, melee_hit: 0, powerup: 0,
+      score: 0, survive_min: 0, ability_use: 0, perfect_reload: 0, hack: 0,
+      pistol_kill: 0, rifle_kill: 0, shotgun_kill: 0, smg_kill: 0,
+      sniper_kill: 0, minigun_kill: 0, launcher_kill: 0, subverter_kill: 0,
+    };
+    // Rolling 4s kill-timestamp window for the triple-kill (rapid_kill)
+    // channel; cleared whenever a burst is counted so one spree can't
+    // double-count overlapping windows.
+    const dailyRapidTimes: number[] = [];
+    // Seconds survived this run (whole minutes fold into survive_min) and the
+    // last score value already credited to the score channel.
+    let dailySurviveSec = 0;
+    let dailyLastScore = 0;
     let dailyFlushAccum = 0;
     let dailyBaseProgress: number | null = null;
     let dailyLastSentValue = 0;
@@ -3123,7 +3181,16 @@ const ForestSurvivalGame = () => {
         dailyLastSentValue = dailyBaseProgress;
       }
 
-      const value = Math.min(challenge.goal, dailyBaseProgress + dailyCounts[dailyChannel]);
+      // 'add' channels sum this run's count onto the server's day total;
+      // 'max' channels (reach-wave) report the single-run best instead —
+      // summing them would credit "reach wave 10" for two wave-5 runs.
+      const runCount = dailyCounts[dailyChannel];
+      const value = Math.min(
+        challenge.goal,
+        DAILY_CHANNEL_MODE[dailyChannel] === 'max'
+          ? Math.max(dailyBaseProgress, runCount)
+          : dailyBaseProgress + runCount,
+      );
       if (value <= dailyLastSentValue) return;
       dailyFlushInFlight = true;
       // A rejected/throttled write stays eligible for the next 3-second flush
@@ -5726,6 +5793,10 @@ const ForestSurvivalGame = () => {
           abilityCooldownMax = cd;
           abilityActiveUntil = nowMs + 200;
           tutorial.recordAction('use_ability', 1);
+          // Daily ability channel — the Engineer's "use" is the completed
+          // wire→detonate cycle, counted here at the detonation (the wire
+          // half-step alone doesn't tick it).
+          if (dailyEnabled) dailyCounts.ability_use += 1;
           return;
         }
         // Wiring needs the left hand, but the riot shield is braced on that
@@ -5921,6 +5992,7 @@ const ForestSurvivalGame = () => {
       abilityCooldownMax = cd;
       abilityActiveUntil = nowMs + Math.max(activeMs, 200);
       tutorial.recordAction('use_ability', 1); // advances the ability tutorial step
+      if (dailyEnabled) dailyCounts.ability_use += 1; // daily ability channel
       if (activeAbility.id !== 'dash') {
         gunModel.triggerAbility(); // braced weapon flourish
         // Firestorm + Triage play their own SFX; the rest get a generic cast cue.
@@ -6011,6 +6083,7 @@ const ForestSurvivalGame = () => {
         soundManager.play('powerUp', 0.3, false, 1.8);
         setReloadPerfectUI(true);
         tutorial.recordAction('active_reload', 1);
+        if (dailyEnabled) dailyCounts.perfect_reload += 1; // daily channel
       } else {
         // Missed — a dull click, nothing else. The reload keeps its pace.
         soundManager.play('empty', 0.3, false, 0.9);
@@ -6455,6 +6528,7 @@ const ForestSurvivalGame = () => {
       haptic('fire');
       showPowerMessage('⚡ ENEMY HACKED — turning on its own', 1500);
       tutorial.recordAction('shoot', 1);
+      if (dailyEnabled) dailyCounts.hack += 1; // daily Subverter channel
       return true;
     };
 
@@ -6586,6 +6660,9 @@ const ForestSurvivalGame = () => {
         // Micro hit-stop so the bash lands with weight.
         timeScale = 0.5;
         setTimeout(() => { timeScale = 1.0; }, 70);
+        // Daily melee channel — one tick per SWING that connected (not per
+        // enemy hit), so a crowd bash counts once.
+        if (dailyEnabled) dailyCounts.melee_hit += 1;
       }
 
       // Turrets take the bash too — bashing a sentinel at point blank works.
@@ -7495,11 +7572,15 @@ const ForestSurvivalGame = () => {
         const miniBossMult = enemy.isMiniBoss ? 3 : 1;
         score += Math.round(enemy.scoreValue * scoreDiffMult * runModifierScoreMult * miniBossMult);
         enemiesKilled++;
-        // Daily Challenge channels — tick cumulative counts.
+        // Daily Challenge channels — tick cumulative counts. Weapon
+        // attribution follows the equipped weapon, the same rule mastery XP
+        // uses below (pistol_kill, rifle_kill, … are all `<weapon>_kill`).
         if (dailyEnabled) {
           dailyCounts.kill += 1;
           if (isCritical) dailyCounts.headshot += 1;
-          if (currentWeapon === 'pistol') dailyCounts.pistol_kill += 1;
+          if (enemy.type === 'boss') dailyCounts.boss_kill += 1;
+          const weaponChannel = `${currentWeapon}_kill` as DailyEventChannel;
+          if (weaponChannel in dailyCounts) dailyCounts[weaponChannel] += 1;
         }
         // Weapon Mastery — grant XP on the equipped weapon. Bigger payouts
         // for bigger fights (bosses are a real grind reward). SKIPPED entirely
@@ -7677,6 +7758,19 @@ const ForestSurvivalGame = () => {
         }
         if (recentKillTimes.length >= 5) achievementSystem.updateProgress('speed_demon', 1);
         if (recentKillTimes.length >= 10) achievementSystem.updateProgress('blitz', 1);
+        // Daily rapid_kill channel — a triple-kill is 3 kills inside a rolling
+        // 4s window; the window clears once counted so a long spree yields one
+        // burst per 3 kills, not one per kill after the first two.
+        if (dailyEnabled) {
+          dailyRapidTimes.push(currentTime);
+          while (dailyRapidTimes.length > 0 && currentTime - dailyRapidTimes[0] > 4000) {
+            dailyRapidTimes.shift();
+          }
+          if (dailyRapidTimes.length >= 3) {
+            dailyCounts.rapid_kill += 1;
+            dailyRapidTimes.length = 0;
+          }
+        }
         if (isMultiplayer && multiplayerManager) multiplayerManager.incrementKills();
       } else if (mp && enemy.netId !== undefined) {
         // Killing blow came from a guest — hand them the credit.
@@ -7726,9 +7820,11 @@ const ForestSurvivalGame = () => {
           if (dailyEnabled) dailyCounts.flawless_wave += 1;
         }
         if (dailyEnabled) {
-          // Daily Long-Watch tracks the highest wave reached this RUN, so we
-          // keep MAX across all kills/runs today (server-side max reconciliation).
-          dailyCounts.wave = Math.max(dailyCounts.wave, wave);
+          // Daily reach-wave channel — the wave the player is about to ENTER
+          // (wave+1: clearing wave 9 means you've reached wave 10). Kept as a
+          // per-run MAX; the flush folds it with max() (mode 'max'), never
+          // addition, so two short runs can't fake one deep run.
+          dailyCounts.wave = Math.max(dailyCounts.wave, wave + 1);
         }
         tookDamageThisWave = false;
         wave++;
@@ -9373,6 +9469,18 @@ const ForestSurvivalGame = () => {
       // Daily Challenge — flush cumulative progress to convex every ~3 s.
       // Throttled so a hot streak doesn't spam mutations.
       if (dailyEnabled) {
+        // Continuous channels. Survive time only accrues while actually in
+        // the fight (alive + unpaused); score credits the delta since the
+        // last frame so it accumulates across the day like every other
+        // additive channel.
+        if (!paused && !isGameOver && health > 0) {
+          dailySurviveSec += rawDelta;
+          dailyCounts.survive_min = Math.floor(dailySurviveSec / 60);
+        }
+        if (score > dailyLastScore) {
+          dailyCounts.score += score - dailyLastScore;
+          dailyLastScore = score;
+        }
         dailyFlushAccum += rawDelta;
         if (dailyFlushAccum >= 3) {
           dailyFlushAccum = 0;
@@ -10917,6 +11025,7 @@ const ForestSurvivalGame = () => {
               tutorial.recordAction('collect_powerup', 1); // advances the loot tutorial step
               powerUpsThisRun += 1;
               achievementSystem.setProgress('resourceful', powerUpsThisRun);
+              if (dailyEnabled) dailyCounts.powerup += 1;
               updateGameState();
             }
           }
@@ -13077,10 +13186,27 @@ const ForestSurvivalGame = () => {
           (err) => { if (!settled) { settled = true; window.clearTimeout(timer); reject(err); } },
         );
       });
-    // Absolute backstop for the whole warmup chain. Even if some future
-    // await stalls in a way the per-step guards miss, the loader still
-    // proceeds within this window.
-    const WARMUP_OVERALL_CAP_MS = 12000;
+    // ── PROGRESS-AWARE WATCHDOG ────────────────────────────────────────
+    // The old backstop was a single hard 12s cap on the WHOLE warmup. On a
+    // cold shader cache (fresh driver / browser update) the compile stages
+    // legitimately need longer than that, and when the cap fired the loader
+    // handed gameplay a scene whose programs were never even created — every
+    // first use then compiled mid-fight (the random combat stutters) and the
+    // first switch to each weapon linked its programs synchronously (the
+    // multi-second weapon-switch stall). A slow-but-PROGRESSING warmup must
+    // be allowed to finish; only a genuinely wedged one should be abandoned.
+    //
+    // So the backstop is now heartbeat-based: every completed stage refreshes
+    // `lastProgressAt`, and the watchdog only fires when no stage has finished
+    // for WARMUP_STALL_CAP_MS (every individual compile await already has its
+    // own 4-6s timeout, so a healthy pipeline always beats this) or when the
+    // generous absolute ceiling passes. When it does fire, `aborted` makes the
+    // remaining stages no-op so the abandoned background chain can never
+    // mutate live gameplay (cycle the held weapon, spawn warm effects in the
+    // player's face) — it just falls through to its teardown.
+    const WARMUP_STALL_CAP_MS = 12000;
+    const WARMUP_HARD_CAP_MS = 45000;
+    const warmupHeartbeat = { lastProgressAt: 0, aborted: false };
 
     // Set true inside a stage that fails AND is marked critical. The
     // warmup completion handler reads this to decide whether to pause
@@ -13099,8 +13225,9 @@ const ForestSurvivalGame = () => {
       critical: boolean,
       fn: () => T | Promise<T>,
     ): Promise<T | null> => {
-      // Honour an in-flight Continue-Anyway: skip remaining stages.
-      if (continueAnywayRef.current) return null;
+      // Honour an in-flight Continue-Anyway or a fired watchdog: skip
+      // remaining stages (the chain still falls through to its teardown).
+      if (continueAnywayRef.current || warmupHeartbeat.aborted) return null;
       try {
         return await fn();
       } catch (err) {
@@ -13116,6 +13243,10 @@ const ForestSurvivalGame = () => {
           });
         }
         return null;
+      } finally {
+        // A finished stage (even a failed one) is pipeline progress — feed the
+        // watchdog so a slow-but-moving warmup is never abandoned mid-way.
+        warmupHeartbeat.lastProgressAt = performance.now();
       }
     };
 
@@ -13327,14 +13458,13 @@ const ForestSurvivalGame = () => {
       // its few unique programs (the program cache skips everything already
       // built), and it must use the real `scene` so the light-count defines in
       // the compiled programs match what the live render uses.
-      const originalWeapon = currentWeapon;
       const allWeapons: GunWeaponType[]
         = ['pistol', 'rifle', 'shotgun', 'smg', 'sniper', 'minigun', 'launcher', 'subverter'];
       const rGun = renderer as THREE.WebGLRenderer & {
         compileAsync?: (scene: THREE.Scene, camera: THREE.Camera) => Promise<unknown>;
       };
       for (const w of allWeapons) {
-        if (continueAnywayRef.current) break;
+        if (continueAnywayRef.current || warmupHeartbeat.aborted) break;
         await stage(`Weapon: ${w}`, false, async () => {
           gunModel.switchWeapon(w);
           if (typeof rGun.compileAsync === 'function') {
@@ -13345,7 +13475,12 @@ const ForestSurvivalGame = () => {
         });
         await yieldFrame();
       }
-      try { gunModel.switchWeapon(originalWeapon as GunWeaponType); } catch { /* ignore — restore is best-effort */ }
+      // Restore the LIVE weapon (not a snapshot from before the cycle): if the
+      // watchdog let gameplay start while this chain finished in the background,
+      // the player may have already switched — restoring a stale snapshot would
+      // desync the viewmodel from the weapon actually firing. With the rig
+      // cache this attach is free.
+      try { gunModel.switchWeapon(currentWeapon as GunWeaponType); } catch { /* ignore — restore is best-effort */ }
       await yieldFrame();
 
       // ── STAGE 5: async shader pre-compile ──────────────────────────
@@ -13531,7 +13666,30 @@ const ForestSurvivalGame = () => {
       // main thread back to the React loader between heavy steps.
       void (async () => {
         try {
-          await withTimeout(warmUpShaders(), WARMUP_OVERALL_CAP_MS, 'Warmup (overall)');
+          // Progress-aware watchdog (see WARMUP_STALL_CAP_MS above): only a
+          // warmup that has genuinely stopped making stage progress — or blown
+          // through the generous absolute ceiling — is abandoned. A rejection
+          // still propagates to the catch below so real failures surface.
+          warmupHeartbeat.lastProgressAt = performance.now();
+          const warmupPromise = warmUpShaders();
+          await new Promise<void>((resolve, reject) => {
+            const startedAt = performance.now();
+            const poll = window.setInterval(() => {
+              const now = performance.now();
+              const stalled = now - warmupHeartbeat.lastProgressAt > WARMUP_STALL_CAP_MS;
+              const overCap = now - startedAt > WARMUP_HARD_CAP_MS;
+              if (stalled || overCap) {
+                warmupHeartbeat.aborted = true;
+                console.warn(`[Warmup] watchdog fired (${stalled ? 'stalled' : 'hard cap'}) — starting with what has compiled so far.`);
+                window.clearInterval(poll);
+                resolve();
+              }
+            }, 500);
+            warmupPromise.then(
+              () => { window.clearInterval(poll); resolve(); },
+              (err) => { window.clearInterval(poll); reject(err); },
+            );
+          });
 
           // Critical-stage failure → block on the loader's error UI
           // until the user explicitly continues or reloads.
@@ -13717,6 +13875,10 @@ const ForestSurvivalGame = () => {
       // Cleanup the signature per-map ambience field (High/Ultra only; null
       // elsewhere). Its single geometry + shader material are freed here.
       mapAmbience?.dispose();
+
+      // Free every cached weapon rig (the session-long build-once cache that
+      // makes weapon switches attach/detach instead of rebuild).
+      gunModel.disposeAllRigs();
 
       // Cleanup BiomeSystem (releases shared geometry/material pools)
       biomeSystem.dispose();
