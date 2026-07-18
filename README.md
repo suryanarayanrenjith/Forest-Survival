@@ -1,8 +1,6 @@
 <div align="center">
 
-<a href="public/media/forest-survival-trailer.mp4"><img src="public/og-image.jpg" alt="Forest Survival — 3D first-person wave-survival shooter. Click to watch the official trailer." width="800" /></a>
-
-<a href="public/media/forest-survival-trailer.mp4"><strong>▶ Watch the official trailer</strong></a>
+https://github.com/user-attachments/assets/f185bb8c-cc38-41b0-853c-b66d350bc388
 
 **A 3D first-person wave-survival shooter built entirely through AI-assisted development.**
 
