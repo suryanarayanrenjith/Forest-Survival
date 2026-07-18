@@ -11,6 +11,9 @@
     "jsx": "react-jsx",
     "skipLibCheck": true,
     "allowSyntheticDefaultImports": true,
+    /* Explicit — newer TypeScript versions no longer reliably auto-include
+     * @types packages, and auth.config.ts / signupGuard.ts read process.env. */
+    "types": ["node"],
 
     /* These compiler options are required by Convex */
     "target": "ESNext",

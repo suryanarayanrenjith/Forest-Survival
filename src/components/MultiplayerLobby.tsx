@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   Users, ArrowLeft, Server, LogIn, Copy, SlidersHorizontal, Clock,
   ChevronDown, ChevronRight, Crown, Play, X, Loader2, Wifi, Check, UserRound,
@@ -343,6 +343,35 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
   const [copied, setCopied] = useState(false);
   const lobbyCreatedRef = useRef(false);
   const autoJoinAttemptedRef = useRef(false);
+  const autoJoinTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingManagerRef = useRef<MultiplayerManager | null>(null);
+  const connectionAttemptRef = useRef(0);
+  const isMountedRef = useRef(true);
+  const autoJoinHandlerRef = useRef<(id: string) => void>(() => {});
+
+  const cancelPendingConnection = useCallback(() => {
+    connectionAttemptRef.current += 1;
+    if (autoJoinTimeoutRef.current) {
+      clearTimeout(autoJoinTimeoutRef.current);
+      autoJoinTimeoutRef.current = null;
+    }
+    const pendingManager = pendingManagerRef.current;
+    pendingManagerRef.current = null;
+    pendingManager?.disconnect();
+    if (isMountedRef.current) setIsConnecting(false);
+  }, []);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      connectionAttemptRef.current += 1;
+      if (autoJoinTimeoutRef.current) clearTimeout(autoJoinTimeoutRef.current);
+      autoJoinTimeoutRef.current = null;
+      pendingManagerRef.current?.disconnect();
+      pendingManagerRef.current = null;
+    };
+  }, []);
 
   // Reuse a manager from a previous match (Play Again) — skip menu/URL paths.
   useEffect(() => {
@@ -364,7 +393,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
       setJoinLobbyId(existingManager.getLobbyId());
       setView('join');
     }
-  }, [existingManager]);
+  }, [existingManager, manager]);
 
   // Check URL params for session persistence. Waits for the signed-in
   // identity to load (multiplayer always plays as the account username).
@@ -375,53 +404,91 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
 
     const { lobby, role } = getURLParams();
 
-    if (lobby && role) {
+    if (!lobby || !role) return;
+
+    if (role === 'host') {
       autoJoinAttemptedRef.current = true;
-
-      if (role === 'host') {
-        setView('host');
-      } else if (role === 'guest') {
-        setJoinLobbyId(lobby);
-        setView('join');
-        setTimeout(() => {
-          handleAutoJoin(lobby);
-        }, 100);
-      }
+      setView('host');
+      return;
     }
-  }, [currentUser]);
+    if (role !== 'guest') return;
 
-  const handleAutoJoin = async (lobbyIdToJoin: string) => {
-    if (!lobbyIdToJoin || !username) return;
+    setJoinLobbyId(lobby);
+    setView('join');
+    const timeout = setTimeout(() => {
+      autoJoinAttemptedRef.current = true;
+      if (autoJoinTimeoutRef.current === timeout) {
+        autoJoinTimeoutRef.current = null;
+      }
+      void autoJoinHandlerRef.current(lobby);
+    }, 100);
+    autoJoinTimeoutRef.current = timeout;
+    return () => {
+      clearTimeout(timeout);
+      if (autoJoinTimeoutRef.current === timeout) {
+        autoJoinTimeoutRef.current = null;
+      }
+    };
+  }, [currentUser, existingManager]);
+
+  const handleAutoJoin = useCallback(async (lobbyIdToJoin: string) => {
+    const normalizedLobbyId = lobbyIdToJoin.trim();
+    if (!normalizedLobbyId || !username) return;
 
     setIsConnecting(true);
     setError('');
 
     const newManager = new MultiplayerManager(username);
     newManager.setProfileMeta(localProfileMeta);
+    const attempt = ++connectionAttemptRef.current;
+    pendingManagerRef.current?.disconnect();
+    pendingManagerRef.current = newManager;
+    const isCurrentAttempt = () =>
+      isMountedRef.current
+      && connectionAttemptRef.current === attempt
+      && pendingManagerRef.current === newManager;
     let rejected = false;
-    newManager.onMessage('player_rejected', (raw) => {
+    let joinSucceeded = false;
+    const unsubscribeRejected = newManager.onMessage('player_rejected', (raw) => {
+      if (!isMountedRef.current) return;
+      if (!joinSucceeded && !isCurrentAttempt()) return;
       rejected = true;
       const data = raw as PlayerRejectedMsg;
       setError(data.reason || 'You are already in this game in another window.');
       newManager.disconnect();
+      pendingManagerRef.current = null;
       setManager(null);
       setView('menu');
       setIsConnecting(false);
       clearMultiplayerURL();
     });
     try {
-      await newManager.joinLobby(lobbyIdToJoin);
-      if (rejected) { newManager.disconnect(); return; }
+      await newManager.joinLobby(normalizedLobbyId);
+      if (rejected || !isCurrentAttempt()) { newManager.disconnect(); return; }
+      joinSucceeded = true;
       setManager(newManager);
     } catch (err) {
+      if (!isCurrentAttempt()) return;
       console.error('[MultiplayerLobby] Failed to rejoin lobby:', err);
       newManager.disconnect();
       setError('Session expired. The lobby may have closed. Please join again manually.');
       clearMultiplayerURL();
     } finally {
-      setIsConnecting(false);
+      // The host's duplicate-name rejection arrives asynchronously AFTER
+      // joinLobby resolves — on a same-machine loopback it can beat the
+      // [manager] effect attaching its persistent handler. Keep this handler
+      // on a successful join so that rejection is never dropped.
+      if (!joinSucceeded) unsubscribeRejected();
+      if (isCurrentAttempt()) {
+        pendingManagerRef.current = null;
+        setIsConnecting(false);
+      }
     }
-  };
+  }, [localProfileMeta, username]);
+
+  useEffect(() => {
+    autoJoinHandlerRef.current = handleAutoJoin;
+  }, [handleAutoJoin]);
 
   // Update connected players list
   useEffect(() => {
@@ -479,39 +546,64 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
     };
   }, [manager, onStartGame]);
 
-  // Create lobby when switching to host view
-  useEffect(() => {
-    if (view === 'host' && !manager && !lobbyCreatedRef.current && !isConnecting) {
-      lobbyCreatedRef.current = true;
-      handleCreateLobby();
+  const handleCreateLobby = useCallback(async () => {
+    if (!username) {
+      setError('Please sign in before creating a lobby.');
+      lobbyCreatedRef.current = false;
+      setView('menu');
+      return;
     }
-  }, [view]);
-
-  const handleCreateLobby = async () => {
     setIsConnecting(true);
     setError('');
 
+    const newManager = new MultiplayerManager(username);
+    newManager.setProfileMeta(localProfileMeta);
+    const attempt = ++connectionAttemptRef.current;
+    pendingManagerRef.current?.disconnect();
+    pendingManagerRef.current = newManager;
+    const isCurrentAttempt = () =>
+      isMountedRef.current
+      && connectionAttemptRef.current === attempt
+      && pendingManagerRef.current === newManager;
+
     try {
-      const newManager = new MultiplayerManager(username);
-      newManager.setProfileMeta(localProfileMeta);
       const id = await newManager.createLobby();
+      if (!isCurrentAttempt()) { newManager.disconnect(); return; }
       setLobbyId(id);
       setManager(newManager);
       updateURL({ lobby: id, role: 'host' });
     } catch (err) {
+      if (!isCurrentAttempt()) return;
       console.error('Failed to create lobby:', err);
+      newManager.disconnect();
       setError('Failed to create lobby. Please check your connection and try again.');
       lobbyCreatedRef.current = false;
       setView('menu');
       clearMultiplayerURL();
     } finally {
-      setIsConnecting(false);
+      if (isCurrentAttempt()) {
+        pendingManagerRef.current = null;
+        setIsConnecting(false);
+      }
     }
-  };
+  }, [localProfileMeta, username]);
 
-  const handleJoinLobby = async () => {
-    if (!joinLobbyId.trim()) {
+  // Create lobby when switching to host view.
+  useEffect(() => {
+    if (view === 'host' && !manager && !lobbyCreatedRef.current && !isConnecting) {
+      lobbyCreatedRef.current = true;
+      void handleCreateLobby();
+    }
+  }, [view, manager, isConnecting, handleCreateLobby]);
+
+  const handleJoinLobby = useCallback(async () => {
+    const normalizedLobbyId = joinLobbyId.trim();
+    if (!normalizedLobbyId) {
       setError('Please enter a lobby ID');
+      return;
+    }
+    if (!username) {
+      setError('Please sign in before joining a lobby.');
       return;
     }
 
@@ -520,17 +612,28 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
 
     const newManager = new MultiplayerManager(username);
     newManager.setProfileMeta(localProfileMeta);
+    const attempt = ++connectionAttemptRef.current;
+    pendingManagerRef.current?.disconnect();
+    pendingManagerRef.current = newManager;
+    const isCurrentAttempt = () =>
+      isMountedRef.current
+      && connectionAttemptRef.current === attempt
+      && pendingManagerRef.current === newManager;
     // Register the rejection handler BEFORE joining so a fast (same-machine)
     // rejection is never missed. The host rejects any join whose username is
     // already present — which is exactly how the SAME account is stopped from
     // joining its own hosted game from another window. Landing back on the
     // join form (not a dead "connecting" state) also lets the player retry.
     let rejected = false;
-    newManager.onMessage('player_rejected', (raw) => {
+    let joinSucceeded = false;
+    const unsubscribeRejected = newManager.onMessage('player_rejected', (raw) => {
+      if (!isMountedRef.current) return;
+      if (!joinSucceeded && !isCurrentAttempt()) return;
       rejected = true;
       const data = raw as PlayerRejectedMsg;
       setError(data.reason || 'You are already in this game in another window.');
       newManager.disconnect();
+      pendingManagerRef.current = null;
       setManager(null);
       setView('menu');
       setIsConnecting(false);
@@ -538,19 +641,29 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
     });
 
     try {
-      await newManager.joinLobby(joinLobbyId);
-      if (rejected) { newManager.disconnect(); return; }
+      await newManager.joinLobby(normalizedLobbyId);
+      if (rejected || !isCurrentAttempt()) { newManager.disconnect(); return; }
+      joinSucceeded = true;
       setManager(newManager);
-      updateURL({ lobby: joinLobbyId, role: 'guest' });
+      updateURL({ lobby: normalizedLobbyId, role: 'guest' });
     } catch (err) {
+      if (!isCurrentAttempt()) return;
       console.error('Failed to join lobby:', err);
       newManager.disconnect(); // release the peer so the next attempt is clean
       setError('Failed to join lobby. Please check the ID and try again.');
       clearMultiplayerURL();
     } finally {
-      setIsConnecting(false);
+      // The host's duplicate-name rejection arrives asynchronously AFTER
+      // joinLobby resolves — on a same-machine loopback it can beat the
+      // [manager] effect attaching its persistent handler. Keep this handler
+      // on a successful join so that rejection is never dropped.
+      if (!joinSucceeded) unsubscribeRejected();
+      if (isCurrentAttempt()) {
+        pendingManagerRef.current = null;
+        setIsConnecting(false);
+      }
     }
-  };
+  }, [joinLobbyId, localProfileMeta, username]);
 
   // Lobby-pick the local player's character class. Broadcasts the choice
   // so every other client greys it out and the in-game avatar matches.
@@ -599,6 +712,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
   };
 
   const handleBack = () => {
+    cancelPendingConnection();
     if (manager) {
       manager.disconnect();
       setManager(null);
@@ -609,6 +723,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
   };
 
   const handleChangeView = (newView: 'menu' | 'host' | 'join') => {
+    cancelPendingConnection();
     if (newView !== 'host') {
       lobbyCreatedRef.current = false;
     }

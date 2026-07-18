@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import {
   ChevronRight,
-  Crosshair,
+  Clapperboard,
   GraduationCap,
   LockKeyhole,
   LogIn,
@@ -264,35 +264,43 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode, onSkillTre
           <div className="m-auto w-full max-w-md lg:max-w-5xl">
             <div className="lg:grid lg:grid-cols-[1.05fr_minmax(0,27rem)] lg:gap-12 lg:items-center">
 
-              {/* ── Identity column ─────────────────────────────────── */}
-              <div className="title-reveal relative mb-6 lg:mb-0 text-center lg:text-left" style={{ '--title-tracking': '0.04em' } as CSSProperties}>
-                <div className="flex items-center justify-center lg:justify-start gap-3 mb-3">
-                  <span className="h-px w-9 sm:w-12 bg-gradient-to-r from-transparent to-emerald-400/60 lg:hidden" />
-                  <p className="font-hud flex items-center gap-1.5 text-[10px] sm:text-[11px] tracking-[0.42em] text-emerald-300/90 font-semibold uppercase">
-                    <Crosshair className="w-3 h-3" strokeWidth={2.2} />
-                    Wave-Based Survival
-                  </p>
-                  <span className="h-px w-9 sm:w-12 bg-gradient-to-l from-transparent to-emerald-400/60" />
-                </div>
-
-                <h1 className="font-display title-bio font-semibold uppercase leading-[0.85] tracking-[0.02em] text-[clamp(2.5rem,10vw,3.5rem)] lg:text-[clamp(3.25rem,5vw,5.5rem)]">
-                  Forest<br />Survival
-                </h1>
-
-                {/* Sunlit horizon rule with a datum chip */}
-                <div className="mt-3.5 flex items-center justify-center lg:justify-start gap-3">
-                  <span className="aurora-rule h-px w-14 sm:w-24 bg-emerald-400/25 lg:hidden" />
-                  <span className="font-hud text-[9px] sm:text-[10px] tracking-[0.4em] text-emerald-200/70 uppercase whitespace-nowrap">
-                    Sunlit · The Clearing
-                  </span>
-                  <span className="aurora-rule h-px w-14 sm:w-24 bg-emerald-400/25" />
-                </div>
+              {/* ── Trailer feature ─────────────────────────────────── */}
+              <div className="title-reveal relative mb-6 flex justify-center lg:mb-0">
+                {/* The trailer is the complete feature on this side of the
+                    menu. Its compact width and centered placement balance the
+                    taller action stack without competing with a second hero. */}
+                <section className="w-full max-w-[31rem] overflow-hidden rounded-2xl border border-emerald-400/20 bg-[#07100c]/80 text-left shadow-[0_20px_56px_rgba(0,0,0,0.3)] backdrop-blur-sm">
+                  <div className="flex items-center gap-2.5 border-b border-white/[0.07] px-3.5 py-2.5 sm:px-4">
+                    <span className="flex h-8 w-8 flex-none items-center justify-center rounded-lg border border-emerald-400/25 bg-emerald-500/[0.08]">
+                      <Clapperboard className="h-4 w-4 text-emerald-300" strokeWidth={2.15} />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="font-display block text-base font-semibold uppercase leading-none tracking-wide text-white">
+                        Forest Survival
+                      </span>
+                      <span className="font-hud mt-1 block text-[9px] font-bold uppercase tracking-[0.24em] text-emerald-300/80">
+                        Official Trailer
+                      </span>
+                    </span>
+                  </div>
+                  <video
+                    className="block aspect-video w-full bg-black object-cover"
+                    controls
+                    playsInline
+                    preload="metadata"
+                    poster="/og-image.jpg"
+                    aria-label="Forest Survival official trailer"
+                  >
+                    <source src="/media/forest-survival-trailer.mp4" type="video/mp4" />
+                    Your browser does not support the trailer video.
+                  </video>
+                </section>
               </div>
 
               {/* ── Actions column ──────────────────────────────────── */}
               <div className="menu-stagger flex w-full max-w-md mx-auto lg:mx-0 flex-col gap-2.5">
                 {accessCard && (
-                  <div className="hud-frame w-full rounded-2xl border border-amber-400/20 bg-amber-500/[0.05] px-5 py-3.5 text-left"
+                  <div className="hud-frame w-full rounded-2xl border border-amber-400/20 bg-white/[0.045] px-5 py-3.5 text-left shadow-[0_18px_50px_rgba(0,0,0,0.3)] backdrop-blur-md"
                     style={{ '--hud-bracket': 'rgba(245,158,11,0.5)' } as CSSProperties}>
                     <div className="flex items-start gap-3.5">
                       <div className="flex items-center justify-center w-10 h-10 rounded-xl border border-amber-400/25 bg-amber-500/12 flex-shrink-0">
@@ -348,21 +356,13 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode, onSkillTre
                           </>
                         )}
                       </div>
-                      <div className="hidden sm:flex flex-col items-stretch gap-1.5">
+                      <div className="hidden sm:flex">
                         <button
-                          onClick={isAuthenticated ? openProfile : () => openAuth('signIn')}
-                          className="font-hud inline-flex items-center justify-center rounded-lg border border-emerald-400/25 bg-emerald-500/[0.06] px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-emerald-200 transition-colors hover:bg-emerald-500/[0.12] hover:text-white"
+                          onClick={handleSignOut}
+                          className="font-hud inline-flex items-center justify-center rounded-lg border border-white/10 bg-white/[0.03] px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-white transition-colors hover:bg-white/[0.06]"
                         >
-                          Profile
+                          Sign Out
                         </button>
-                        {isAuthenticated && (
-                          <button
-                            onClick={handleSignOut}
-                            className="font-hud inline-flex items-center justify-center rounded-lg border border-white/10 bg-white/[0.03] px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-white transition-colors hover:bg-white/[0.06]"
-                          >
-                            Sign Out
-                          </button>
-                        )}
                       </div>
                     </div>
                   </div>

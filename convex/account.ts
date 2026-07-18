@@ -9,7 +9,7 @@ import {
   retrieveAccount,
 } from "@convex-dev/auth/server";
 import { ConvexError } from "convex/values";
-import { checkPassword } from "./authValidation";
+import { checkPassword, MAX_PASSWORD_LENGTH } from "./authValidation";
 
 function validatePasswordRequirements(password: string) {
   const error = checkPassword(password);
@@ -36,6 +36,12 @@ export const changePassword = action({
     const authRecord = await ctx.runQuery(internal.profile.getAuthRecord, {});
     if (authRecord === null) {
       throw new ConvexError("We could not find your account.");
+    }
+
+    // `retrieveAccount` verifies with Scrypt. Reject a deliberately huge
+    // current-password value before it can consume expensive KDF work.
+    if (currentPassword.length > MAX_PASSWORD_LENGTH) {
+      throw new ConvexError(`Password is too long (max ${MAX_PASSWORD_LENGTH} characters).`);
     }
 
     // Verify date of birth as a second factor (when one is on file — legacy
@@ -230,6 +236,9 @@ export const deleteAccount = action({
     }
     if (!password) {
       throw new ConvexError("Enter your password to confirm.");
+    }
+    if (password.length > MAX_PASSWORD_LENGTH) {
+      throw new ConvexError(`Password is too long (max ${MAX_PASSWORD_LENGTH} characters).`);
     }
 
     const authRecord = await ctx.runQuery(internal.profile.getAuthRecord, {});

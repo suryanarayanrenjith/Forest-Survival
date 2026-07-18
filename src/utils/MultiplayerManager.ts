@@ -149,33 +149,188 @@ const q3 = (n: number): number => Math.round(n * 1000) / 1000;
 const POSITION_UPDATE_INTERVAL = 50; // ~20 updates per second
 const HEARTBEAT_INTERVAL = 2000; // Send heartbeat every 2 seconds
 const CONNECTION_TIMEOUT = 10000; // Consider connection dead after 10 seconds without heartbeat
+const PEER_SETUP_TIMEOUT = 15_000; // Avoid leaving the lobby UI stuck on a stalled PeerJS handshake
+const MAX_REMOTE_PLAYERS = 7; // host + seven guests, matching the lobby UI
+const MAX_PEER_ID_LENGTH = 128;
+const MAX_PLAYER_NAME_LENGTH = 32;
+const MAX_WEAPON_ID_LENGTH = 32;
+const MAX_WORLD_COORDINATE = 10_000;
+const MAX_ENEMY_HEALTH = 100_000;
+// Alive enemies cap at 40 (ultra preset), but dying enemies stay in the sync
+// stream until their death animation finishes — a mass-death moment (TNT /
+// Shockwave wiping a wave) can transiently push a keyframe well past the alive
+// cap. Undersizing this drops the ENTIRE snapshot and desyncs guests exactly
+// when accuracy matters most.
+const MAX_NETWORK_ENEMIES = 128;
+// Sanity ceiling for a single reported hit. Boosted critical shots stack
+// damage powerup ×2, Overclock ×1.6, skill/perk/run multipliers and the
+// headshot multiplier on a 100–150 base — legitimately reaching several
+// thousand. This bound only exists to reject NaN/Infinity-scale garbage, not
+// to referee balance (P2P is not cheat-proof; the host owns enemy health).
+const MAX_REPORTED_HIT_DAMAGE = 10_000;
+const MAX_CHAT_LENGTH = 240;
+
+const NETWORK_MESSAGE_TYPES = new Set<NetworkMessage['type']>([
+  'player_update', 'player_joined', 'player_left', 'player_rejected',
+  'player_kicked', 'game_start', 'game_restart', 'return_to_lobby',
+  'game_over', 'enemy_killed', 'client_ready', 'enemy_hit',
+  'enemy_sync', 'enemy_kill_credit', 'player_damaged', 'player_shot',
+  'player_killed', 'chat_message', 'heartbeat',
+]);
+const MODEL_CLASSES = new Set<ModelClassId>([
+  'ranger', 'scout', 'heavy', 'operative', 'pyro', 'medic', 'engineer', 'phantom',
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isNetworkMessage(value: unknown): value is NetworkMessage {
+  return isRecord(value)
+    && typeof value.type === 'string'
+    && NETWORK_MESSAGE_TYPES.has(value.type as NetworkMessage['type']);
+}
+
+function boundedString(value: unknown, maxLength: number): string | null {
+  return typeof value === 'string' && value.length > 0 && value.length <= maxLength
+    ? value
+    : null;
+}
+
+function finiteBetween(value: unknown, min: number, max: number): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max
+    ? value
+    : null;
+}
+
+function readVector(value: unknown, min: number, max: number): { x: number; y: number; z: number } | null {
+  if (!isRecord(value)) return null;
+  const x = finiteBetween(value.x, min, max);
+  const y = finiteBetween(value.y, min, max);
+  const z = finiteBetween(value.z, min, max);
+  return x === null || y === null || z === null ? null : { x, y, z };
+}
 
 /**
  * Best-effort clamp of a peer-reported PlayerData snapshot. Multiplayer is P2P
  * (no authoritative server), so peers are untrusted — this rejects clearly
  * impossible values (negative/NaN, health above max, scores/kills above match
  * caps) so trivial packet tampering can't corrupt scoreboards. It does NOT make
- * P2P cheat-proof; that needs an authoritative server.
+ * P2P cheat-proof; that needs an authoritative server. It also validates the
+ * outer shape so malformed packets are dropped instead of reaching Three.js.
  */
-function sanitizeRemotePlayer(data: PlayerData): PlayerData {
-  const maxHealth = clamp(data.maxHealth ?? 100, 1, 1000);
+function sanitizeRemotePlayer(data: unknown, expectedId?: string): PlayerData | null {
+  if (!isRecord(data)) return null;
+  const id = boundedString(data.id, MAX_PEER_ID_LENGTH);
+  const name = boundedString(data.name, MAX_PLAYER_NAME_LENGTH);
+  const position = readVector(data.position, -MAX_WORLD_COORDINATE, MAX_WORLD_COORDINATE);
+  const rotation = readVector(data.rotation, -Math.PI * 8, Math.PI * 8);
+  if (!id || !name || !position || !rotation || (expectedId && id !== expectedId)) return null;
+
+  const maxHealth = clamp(finiteBetween(data.maxHealth, 1, 1000) ?? 100, 1, 1000);
+  const rawClass = data.modelClass;
+  const modelClass = typeof rawClass === 'string' && MODEL_CLASSES.has(rawClass as ModelClassId)
+    ? rawClass as ModelClassId
+    : undefined;
   return {
-    ...data,
+    id,
+    name,
+    position,
+    rotation,
     maxHealth,
-    health: clamp(data.health ?? 0, 0, maxHealth),
-    kills: clamp(data.kills ?? 0, 0, MAX_MP_KILLS),
-    deaths: clamp(data.deaths ?? 0, 0, MAX_MP_DEATHS),
-    score: clamp(data.score ?? 0, 0, MAX_MP_SCORE),
-    rankTier: data.rankTier === undefined ? undefined : clamp(data.rankTier, 0, 5),
-    level: data.level === undefined ? undefined : clamp(data.level, 1, 100000),
-    avatarIndex: data.avatarIndex === undefined ? undefined : clamp(data.avatarIndex, 0, AVATAR_COUNT - 1),
-    isMobile: data.isMobile === undefined ? undefined : !!data.isMobile,
+    health: clamp(finiteBetween(data.health, 0, maxHealth) ?? 0, 0, maxHealth),
+    kills: clamp(finiteBetween(data.kills, 0, MAX_MP_KILLS) ?? 0, 0, MAX_MP_KILLS),
+    deaths: clamp(finiteBetween(data.deaths, 0, MAX_MP_DEATHS) ?? 0, 0, MAX_MP_DEATHS),
+    score: clamp(finiteBetween(data.score, 0, MAX_MP_SCORE) ?? 0, 0, MAX_MP_SCORE),
+    currentWeapon: boundedString(data.currentWeapon, MAX_WEAPON_ID_LENGTH) ?? 'pistol',
+    isAlive: data.isAlive === true,
+    color: clamp(finiteBetween(data.color, 0, 0xffffff) ?? 0xffffff, 0, 0xffffff),
+    modelClass,
+    rankTier: finiteBetween(data.rankTier, 0, 5) === null ? undefined : clamp(data.rankTier as number, 0, 5),
+    level: finiteBetween(data.level, 1, 100000) === null ? undefined : clamp(data.level as number, 1, 100000),
+    avatarIndex: finiteBetween(data.avatarIndex, 0, AVATAR_COUNT - 1) === null ? undefined : clamp(data.avatarIndex as number, 0, AVATAR_COUNT - 1),
+    isMobile: typeof data.isMobile === 'boolean' ? data.isMobile : undefined,
+    crouch: data.crouch === 0 || data.crouch === 1 ? data.crouch : undefined,
+    t: finiteBetween(data.t, 0, Number.MAX_SAFE_INTEGER) ?? undefined,
+    seq: finiteBetween(data.seq, 0, Number.MAX_SAFE_INTEGER) ?? undefined,
+  };
+}
+
+function sanitizeGameState(value: unknown, expectedHostId: string): Partial<SerializedGameState> | null {
+  if (!isRecord(value)) return null;
+  const hostId = boundedString(value.hostId, MAX_PEER_ID_LENGTH);
+  if (!hostId || hostId !== expectedHostId || !Array.isArray(value.players)) return null;
+  if (value.players.length === 0 || value.players.length > MAX_REMOTE_PLAYERS + 1) return null;
+
+  const players: PlayerData[] = [];
+  const seenIds = new Set<string>();
+  for (const rawPlayer of value.players) {
+    const player = sanitizeRemotePlayer(rawPlayer);
+    if (!player || seenIds.has(player.id)) return null;
+    seenIds.add(player.id);
+    players.push(player);
+  }
+  if (!seenIds.has(hostId)) return null;
+
+  const state: Partial<SerializedGameState> = {
+    players,
+    hostId,
+    gameMode: value.gameMode === 'survival' ? 'survival' : 'coop',
+  };
+  // Optional fields: the host always sends the keys, with `undefined` when a
+  // setting is unset (e.g. a match with no time limit) — and PeerJS's
+  // BinaryPack serializes `undefined` to NULL on the wire. So null must mean
+  // "absent" here, never "invalid", or every no-time-limit match / late join /
+  // return-to-lobby would be silently rejected in its entirety.
+  if (value.timeLimit !== undefined && value.timeLimit !== null) {
+    const timeLimit = finiteBetween(value.timeLimit, 60, 1800);
+    if (timeLimit === null) return null;
+    state.timeLimit = Math.floor(timeLimit);
+  }
+  if (value.startTime !== undefined && value.startTime !== null) {
+    const startTime = finiteBetween(value.startTime, 0, Number.MAX_SAFE_INTEGER);
+    if (startTime === null) return null;
+    state.startTime = startTime;
+  }
+  if (value.map !== undefined && value.map !== null) {
+    const map = boundedString(value.map, 64);
+    if (!map) return null;
+    state.map = map;
+  }
+  if (value.difficulty !== undefined && value.difficulty !== null) {
+    if (value.difficulty !== 'easy' && value.difficulty !== 'medium'
+      && value.difficulty !== 'hard' && value.difficulty !== 'adaptive') return null;
+    state.difficulty = value.difficulty;
+  }
+  if (value.timeOfDay !== undefined && value.timeOfDay !== null) {
+    if (value.timeOfDay !== 'auto' && value.timeOfDay !== 'day' && value.timeOfDay !== 'night') return null;
+    state.timeOfDay = value.timeOfDay;
+  }
+  return state;
+}
+
+function sanitizeEnemyWire(value: unknown): EnemyWire | null {
+  if (!isRecord(value)) return null;
+  const id = finiteBetween(value.id, 0, 1_000_000_000);
+  const ty = finiteBetween(value.ty, 0, 255);
+  const x = finiteBetween(value.x, -MAX_WORLD_COORDINATE, MAX_WORLD_COORDINATE);
+  const y = finiteBetween(value.y, -MAX_WORLD_COORDINATE, MAX_WORLD_COORDINATE);
+  const z = finiteBetween(value.z, -MAX_WORLD_COORDINATE, MAX_WORLD_COORDINATE);
+  const ry = finiteBetween(value.ry, -Math.PI * 8, Math.PI * 8);
+  const hp = finiteBetween(value.hp, -MAX_ENEMY_HEALTH, MAX_ENEMY_HEALTH);
+  const mx = finiteBetween(value.mx, 1, MAX_ENEMY_HEALTH);
+  if (id === null || ty === null || x === null || y === null || z === null
+    || ry === null || hp === null || mx === null || (value.d !== 0 && value.d !== 1)) return null;
+  return {
+    id: Math.floor(id), ty: Math.floor(ty), x, y, z, ry, hp, mx,
+    d: value.d,
   };
 }
 
 export class MultiplayerManager {
   private peer: Peer | null = null;
   private connections: Map<string, DataConnection> = new Map();
+  private joinTimeouts: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private localPlayer: PlayerData;
   private remotePlayers: Map<string, PlayerData> = new Map();
   private isHost: boolean = false;
@@ -257,9 +412,37 @@ export class MultiplayerManager {
 
   async createLobby(): Promise<string> {
     return new Promise((resolve, reject) => {
-      this.peer = new Peer();
+      const peer = new Peer();
+      this.peer = peer;
+      let settled = false;
+      let setupTimeout: ReturnType<typeof setTimeout> | null = null;
+      const clearSetupTimeout = () => {
+        if (setupTimeout) clearTimeout(setupTimeout);
+        setupTimeout = null;
+      };
+      const fail = (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        clearSetupTimeout();
+        if (this.peer === peer) {
+          peer.destroy();
+          this.peer = null;
+        }
+        reject(error);
+      };
+      const succeed = (id: string) => {
+        if (settled) return;
+        settled = true;
+        clearSetupTimeout();
+        resolve(id);
+      };
 
-      this.peer.on('open', (id) => {
+      setupTimeout = setTimeout(() => {
+        fail(new Error('Timed out while creating the lobby.'));
+      }, PEER_SETUP_TIMEOUT);
+
+      peer.on('open', (id) => {
+        if (settled) return;
         this.localPlayer.id = id;
         this.localPlayer.lastHeartbeat = Date.now();
         this.isHost = true;
@@ -275,22 +458,24 @@ export class MultiplayerManager {
         this.startHeartbeat();
         this.startConnectionMonitoring();
 
-        resolve(id);
+        succeed(id);
       });
 
-      this.peer.on('connection', (conn) => {
+      peer.on('connection', (conn) => {
         this.handleNewConnection(conn);
       });
 
-      this.peer.on('error', (err: unknown) => {
+      peer.on('error', (err: unknown) => {
+        if (settled) return;
         const error = err as { type?: string; message?: string };
         // Suppress "Lost connection to server" errors as they're not critical
         if (error.type === 'network' || error.message?.includes('Lost connection')) {
-          // Silent ignore - PeerJS reconnects automatically
+          // Give PeerJS a bounded chance to reconnect; the setup timeout keeps
+          // the UI from getting stuck forever if it cannot.
           return;
         }
         console.error('Peer error:', err);
-        reject(err);
+        fail(err);
       });
     });
   }
@@ -358,17 +543,54 @@ export class MultiplayerManager {
   }
 
   async joinLobby(lobbyId: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.peer = new Peer();
+    const normalizedLobbyId = lobbyId.trim();
+    if (!boundedString(normalizedLobbyId, MAX_PEER_ID_LENGTH)) {
+      throw new Error('Invalid lobby ID.');
+    }
 
-      this.peer.on('open', (id) => {
+    return new Promise((resolve, reject) => {
+      const peer = new Peer();
+      this.peer = peer;
+      let settled = false;
+      let setupTimeout: ReturnType<typeof setTimeout> | null = null;
+      const clearSetupTimeout = () => {
+        if (setupTimeout) clearTimeout(setupTimeout);
+        setupTimeout = null;
+      };
+      const fail = (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        clearSetupTimeout();
+        if (this.peer === peer) {
+          peer.destroy();
+          this.peer = null;
+        }
+        reject(error);
+      };
+      const succeed = () => {
+        if (settled) return;
+        settled = true;
+        clearSetupTimeout();
+        resolve();
+      };
+
+      setupTimeout = setTimeout(() => {
+        fail(new Error('Timed out while joining the lobby.'));
+      }, PEER_SETUP_TIMEOUT);
+
+      peer.on('open', (id) => {
+        if (settled) return;
         this.localPlayer.id = id;
         this.localPlayer.lastHeartbeat = Date.now();
         this.isHost = false;
 
-        const conn = this.peer!.connect(lobbyId);
+        const conn = peer.connect(normalizedLobbyId);
 
         conn.on('open', () => {
+          if (settled) {
+            conn.close();
+            return;
+          }
           this.handleNewConnection(conn);
 
           // Send join request
@@ -381,36 +603,71 @@ export class MultiplayerManager {
           this.startHeartbeat();
           this.startConnectionMonitoring();
 
-          resolve();
+          succeed();
         });
 
         conn.on('error', (err) => {
+          if (settled) return;
           console.error('Connection error:', err);
-          reject(err);
+          fail(err);
         });
       });
 
-      this.peer.on('error', (err: unknown) => {
+      peer.on('error', (err: unknown) => {
+        if (settled) return;
         const error = err as { type?: string; message?: string };
         // Suppress "Lost connection to server" errors as they're not critical
         if (error.type === 'network' || error.message?.includes('Lost connection')) {
-          // Silent ignore - PeerJS reconnects automatically
+          // Give PeerJS a bounded chance to reconnect; the setup timeout keeps
+          // the UI from getting stuck forever if it cannot.
           return;
         }
         console.error('Peer error:', err);
-        reject(err);
+        fail(err);
       });
     });
   }
 
+  private isHostConnection(conn: DataConnection): boolean {
+    if (this.isHost) return false;
+    const hostId = this.gameState?.hostId || this.getLobbyId();
+    return hostId.length > 0 && conn.peer === hostId;
+  }
+
+  private isRegisteredGuest(conn: DataConnection): boolean {
+    return this.isHost && this.remotePlayers.has(conn.peer);
+  }
+
+  private clearJoinTimeout(peerId: string): void {
+    const timeout = this.joinTimeouts.get(peerId);
+    if (timeout) clearTimeout(timeout);
+    this.joinTimeouts.delete(peerId);
+  }
+
   private handleNewConnection(conn: DataConnection) {
+    // Do not let idle/unregistered PeerJS connections exceed the same eight
+    // player limit exposed by the lobby UI.
+    if (this.isHost && this.connections.size >= MAX_REMOTE_PLAYERS) {
+      try { conn.close(); } catch { /* connection already closed */ }
+      return;
+    }
     this.connections.set(conn.peer, conn);
 
+    if (this.isHost) {
+      const timeout = setTimeout(() => {
+        if (!this.remotePlayers.has(conn.peer)) {
+          try { conn.close(); } catch { /* connection already closed */ }
+        }
+      }, CONNECTION_TIMEOUT);
+      this.joinTimeouts.set(conn.peer, timeout);
+    }
+
     conn.on('data', (data: unknown) => {
-      this.handleMessage(data as NetworkMessage, conn);
+      this.handleMessage(data, conn);
     });
 
     conn.on('close', () => {
+      this.clearJoinTimeout(conn.peer);
       this.connections.delete(conn.peer);
       this.remotePlayers.delete(conn.peer);
       this.readyPeers.delete(conn.peer);
@@ -424,11 +681,20 @@ export class MultiplayerManager {
     });
   }
 
-  private handleMessage(message: NetworkMessage, conn: DataConnection) {
+  private handleMessage(rawMessage: unknown, conn: DataConnection) {
+    if (!isNetworkMessage(rawMessage)) return;
+    const message = rawMessage;
     switch (message.type) {
       case 'heartbeat': {
+        const playerId = boundedString(message.playerId, MAX_PEER_ID_LENGTH);
+        if (!playerId) return;
+        if (this.isHost) {
+          if (!this.isRegisteredGuest(conn) || playerId !== conn.peer) return;
+        } else if (!this.isHostConnection(conn)) {
+          return;
+        }
         // Update last heartbeat time for this player
-        const heartbeatPlayer = this.remotePlayers.get(message.playerId);
+        const heartbeatPlayer = this.remotePlayers.get(playerId);
         if (heartbeatPlayer) {
           heartbeatPlayer.lastHeartbeat = Date.now();
         }
@@ -436,21 +702,28 @@ export class MultiplayerManager {
         return;
       }
 
-      case 'player_joined':
-        // Clamp untrusted peer-reported fields before storing/relaying.
-        message.data = sanitizeRemotePlayer(message.data);
-
+      case 'player_joined': {
+        // A guest must only ever claim the PeerJS id of its own connection.
+        // Guests accept lobby snapshots only from their directly connected host.
+        const player = sanitizeRemotePlayer(message.data, this.isHost ? conn.peer : undefined);
+        if (!player || (!this.isHost && !this.isHostConnection(conn))) return;
+        const joinedMessage: NetworkMessage = { type: 'player_joined', data: player };
         if (this.isHost && this.gameState) {
+          if (!this.remotePlayers.has(player.id) && this.remotePlayers.size >= MAX_REMOTE_PLAYERS) {
+            this.sendMessage(conn, { type: 'player_rejected', reason: 'This lobby is full.' });
+            setTimeout(() => conn.close(), 100);
+            return;
+          }
           // Check for duplicate names (case- and whitespace-insensitive)
-          const incomingName = (message.data.name || '').trim().toLowerCase();
+          const incomingName = player.name.trim().toLowerCase();
           const existingPlayerWithName = Array.from(this.gameState.players.values())
             .find(p => (p.name || '').trim().toLowerCase() === incomingName);
 
-          if (existingPlayerWithName) {
+          if (existingPlayerWithName && existingPlayerWithName.id !== player.id) {
             // Reject the player
             this.sendMessage(conn, {
               type: 'player_rejected',
-              reason: `A player with the name "${message.data.name}" is already in this lobby. Please choose a different name.`
+              reason: `A player with the name "${player.name}" is already in this lobby. Please choose a different name.`
             });
             // Close the connection
             setTimeout(() => conn.close(), 100);
@@ -458,11 +731,12 @@ export class MultiplayerManager {
           }
 
           // Name is unique, accept player
-          message.data.lastHeartbeat = Date.now();
-          this.remotePlayers.set(message.data.id, message.data);
+          player.lastHeartbeat = Date.now();
+          this.clearJoinTimeout(player.id);
+          this.remotePlayers.set(player.id, player);
 
           // Add new player to game state
-          this.gameState.players.set(message.data.id, message.data);
+          this.gameState.players.set(player.id, player);
 
           // ONLY send game_start if game has actually started (startTime is set)
           // This prevents auto-starting when players join the lobby
@@ -484,55 +758,65 @@ export class MultiplayerManager {
           }
 
           // Notify other players
-          this.broadcastMessage(message, conn.peer);
+          this.broadcastMessage(joinedMessage, conn.peer);
         } else {
           // Not host, just add to remote players
-          this.remotePlayers.set(message.data.id, message.data);
+          this.remotePlayers.set(player.id, player);
         }
 
         // Forward to registered handlers for chat system
         {
           const playerJoinedHandlers = this.messageHandlers.get('player_joined');
           if (playerJoinedHandlers) {
-            playerJoinedHandlers.forEach(handler => handler(message));
+            playerJoinedHandlers.forEach(handler => handler(joinedMessage));
           }
         }
         break;
+      }
 
       case 'player_update': {
-        // Clamp untrusted peer-reported fields before storing/relaying.
-        message.data = sanitizeRemotePlayer(message.data);
+        // Host accepts a snapshot only from its owning peer; a guest accepts
+        // relayed snapshots only from the host. This closes identity spoofing
+        // where one guest could previously overwrite another player's state.
+        const player = sanitizeRemotePlayer(message.data, this.isHost ? conn.peer : undefined);
+        if (!player) return;
+        if (this.isHost) {
+          if (!this.isRegisteredGuest(conn)) return;
+        } else if (!this.isHostConnection(conn) || player.id === this.localPlayer.id) {
+          return;
+        }
+        const updateMessage: NetworkMessage = { type: 'player_update', data: player };
 
         // Host-authoritative anti-cheat — only during a live match, never in
         // the lobby. Movement-only so powerups can't trip it. A confirmed
         // violator is ejected and their packet dropped.
         if (this.isHost && this.gameState?.startTime) {
-          const verdict = this.inspectMovement(message.data);
+          const verdict = this.inspectMovement(player);
           if (verdict) {
-            this.kickPlayer(message.data.id, verdict);
+            this.kickPlayer(player.id, verdict);
             return;
           }
         }
 
         // Track alive-state transitions before replacing snapshots
-        const prevState = this.gameState?.players.get(message.data.id);
+        const prevState = this.gameState?.players.get(player.id);
         const wasAlive = prevState ? prevState.isAlive : true;
 
         // Update heartbeat time when we receive position updates
-        message.data.lastHeartbeat = Date.now();
-        this.remotePlayers.set(message.data.id, message.data);
+        player.lastHeartbeat = Date.now();
+        this.remotePlayers.set(player.id, player);
 
         // Keep authoritative game-state map in sync (important for game over/final stats)
         if (this.gameState) {
-          this.gameState.players.set(message.data.id, message.data);
+          this.gameState.players.set(player.id, player);
         }
 
         // Guests only send updates to host; host must relay them to other guests
         if (this.isHost) {
-          this.broadcastMessage(message, conn.peer);
+          this.broadcastMessage(updateMessage, conn.peer);
 
           // Re-evaluate multiplayer end conditions when a remote player dies.
-          if (wasAlive && !message.data.isAlive) {
+          if (wasAlive && !player.isAlive) {
             this.checkGameOver();
           }
         }
@@ -543,194 +827,262 @@ export class MultiplayerManager {
         {
           const playerUpdateHandlers = this.messageHandlers.get('player_update');
           if (playerUpdateHandlers) {
-            playerUpdateHandlers.forEach(handler => handler(message));
+            playerUpdateHandlers.forEach(handler => handler(updateMessage));
           }
         }
         break;
       }
 
-      case 'player_left':
-        this.remotePlayers.delete(message.playerId);
+      case 'player_left': {
+        const playerId = boundedString(message.playerId, MAX_PEER_ID_LENGTH);
+        if (!playerId || this.isHost || !this.isHostConnection(conn) || playerId === this.localPlayer.id) return;
+        const leftMessage: NetworkMessage = { type: 'player_left', playerId };
+        this.remotePlayers.delete(playerId);
         if (this.gameState) {
-          this.gameState.players.delete(message.playerId);
+          this.gameState.players.delete(playerId);
         }
 
         // Forward to registered handlers for chat system
         {
           const playerLeftHandlers = this.messageHandlers.get('player_left');
           if (playerLeftHandlers) {
-            playerLeftHandlers.forEach(handler => handler(message));
+            playerLeftHandlers.forEach(handler => handler(leftMessage));
           }
         }
         break;
+      }
 
       case 'player_rejected': {
+        const reason = boundedString(message.reason, MAX_CHAT_LENGTH);
+        if (!reason || this.isHost || !this.isHostConnection(conn)) return;
+        const rejectedMessage: NetworkMessage = { type: 'player_rejected', reason };
         // Forward to registered handlers so lobby can show error
         const playerRejectedHandlers = this.messageHandlers.get('player_rejected');
         if (playerRejectedHandlers) {
-          playerRejectedHandlers.forEach(handler => handler(message));
+          playerRejectedHandlers.forEach(handler => handler(rejectedMessage));
         }
         break;
       }
 
       case 'player_kicked': {
+        const targetId = boundedString(message.targetId, MAX_PEER_ID_LENGTH);
+        const reason = boundedString(message.reason, MAX_CHAT_LENGTH);
+        if (!targetId || !reason || this.isHost || !this.isHostConnection(conn)) return;
         // Only the targeted player acts on this (the host addressed it to them).
-        if (message.targetId !== this.localPlayer.id) break;
+        if (targetId !== this.localPlayer.id) break;
+        const kickedMessage: NetworkMessage = { type: 'player_kicked', targetId, reason };
         const kickedHandlers = this.messageHandlers.get('player_kicked');
         if (kickedHandlers) {
-          kickedHandlers.forEach(handler => handler(message));
+          kickedHandlers.forEach(handler => handler(kickedMessage));
         }
         break;
       }
 
-      case 'game_start':
-        if (message.gameState) {
-          // Reconstruct players Map from the wire-format array
-          const playersMap = new Map<string, PlayerData>();
-          if (Array.isArray(message.gameState.players)) {
-            message.gameState.players.forEach((player) => {
-              playersMap.set(player.id, player);
-            });
-          }
+      case 'game_start': {
+        if (this.isHost || !this.isHostConnection(conn)) return;
+        const gameState = sanitizeGameState(message.gameState, conn.peer);
+        if (!gameState) return;
+        const startMessage: NetworkMessage = { type: 'game_start', gameState };
+        const playersMap = new Map((gameState.players ?? []).map((player) => [player.id, player]));
+        this.gameState = { ...gameState, players: playersMap } as GameState;
 
-          this.gameState = {
-            ...message.gameState,
-            players: playersMap
-          } as GameState;
-
-          // Populate remote players from game state
-          playersMap.forEach((player, id) => {
-            if (id !== this.localPlayer.id) {
-              this.remotePlayers.set(id, player);
-            }
-          });
-        }
+        // Populate remote players from the host's validated game snapshot.
+        this.remotePlayers.clear();
+        playersMap.forEach((player, id) => {
+          if (id !== this.localPlayer.id) this.remotePlayers.set(id, player);
+        });
 
         // Forward to registered handlers so App.tsx can start the game
         {
           const gameStartHandlers = this.messageHandlers.get('game_start');
           if (gameStartHandlers && gameStartHandlers.size > 0) {
-            gameStartHandlers.forEach(handler => handler(message));
+            gameStartHandlers.forEach(handler => handler(startMessage));
           } else {
             console.warn('No game_start handler registered!');
           }
         }
         break;
+      }
 
       case 'game_restart': {
-        if (message.gameState) {
-          const playersMap = new Map<string, PlayerData>();
-          if (Array.isArray(message.gameState.players)) {
-            message.gameState.players.forEach((player) => {
-              playersMap.set(player.id, player);
-            });
-          }
+        if (this.isHost || !this.isHostConnection(conn)) return;
+        const gameState = sanitizeGameState(message.gameState, conn.peer);
+        if (!gameState) return;
+        const restartMessage: NetworkMessage = { type: 'game_restart', gameState };
+        const playersMap = new Map((gameState.players ?? []).map((player) => [player.id, player]));
 
-          // Reset local player stats from the fresh state
-          const freshLocal = playersMap.get(this.localPlayer.id);
-          if (freshLocal) {
-            this.localPlayer.health = freshLocal.health;
-            this.localPlayer.maxHealth = freshLocal.maxHealth;
-            this.localPlayer.isAlive = true;
-            this.localPlayer.kills = 0;
-            this.localPlayer.deaths = 0;
-            this.localPlayer.score = 0;
-          }
-
-          this.gameState = {
-            ...message.gameState,
-            players: playersMap
-          } as GameState;
-
-          // Update remote players
-          this.remotePlayers.clear();
-          playersMap.forEach((player, id) => {
-            if (id !== this.localPlayer.id) {
-              this.remotePlayers.set(id, player);
-            }
-          });
+        // Reset local player stats from the host's fresh state.
+        const freshLocal = playersMap.get(this.localPlayer.id);
+        if (freshLocal) {
+          this.localPlayer.health = freshLocal.health;
+          this.localPlayer.maxHealth = freshLocal.maxHealth;
+          this.localPlayer.isAlive = true;
+          this.localPlayer.kills = 0;
+          this.localPlayer.deaths = 0;
+          this.localPlayer.score = 0;
         }
+
+        this.gameState = { ...gameState, players: playersMap } as GameState;
+
+        // Update remote players
+        this.remotePlayers.clear();
+        playersMap.forEach((player, id) => {
+          if (id !== this.localPlayer.id) this.remotePlayers.set(id, player);
+        });
 
         const restartHandlers = this.messageHandlers.get('game_restart');
         if (restartHandlers) {
-          restartHandlers.forEach(handler => handler(message));
+          restartHandlers.forEach(handler => handler(restartMessage));
         }
         break;
       }
 
       case 'return_to_lobby': {
-        if (message.gameState) {
-          const playersMap = new Map<string, PlayerData>();
-          if (Array.isArray(message.gameState.players)) {
-            message.gameState.players.forEach((player) => {
-              playersMap.set(player.id, player);
-            });
-          }
+        if (this.isHost || !this.isHostConnection(conn)) return;
+        const gameState = sanitizeGameState(message.gameState, conn.peer);
+        if (!gameState) return;
+        const lobbyMessage: NetworkMessage = { type: 'return_to_lobby', gameState };
+        const playersMap = new Map((gameState.players ?? []).map((player) => [player.id, player]));
 
-          // Reset local player to fresh lobby state
-          this.localPlayer.health = this.localPlayer.maxHealth;
-          this.localPlayer.isAlive = true;
-          this.localPlayer.kills = 0;
-          this.localPlayer.deaths = 0;
-          this.localPlayer.score = 0;
+        // Reset local player to fresh lobby state
+        this.localPlayer.health = this.localPlayer.maxHealth;
+        this.localPlayer.isAlive = true;
+        this.localPlayer.kills = 0;
+        this.localPlayer.deaths = 0;
+        this.localPlayer.score = 0;
 
-          this.gameState = {
-            ...message.gameState,
-            players: playersMap,
-            startTime: undefined, // clear startTime so the lobby reads as not-in-game
-          } as GameState;
+        this.gameState = {
+          ...gameState,
+          players: playersMap,
+          startTime: undefined, // clear startTime so the lobby reads as not-in-game
+        } as GameState;
 
-          // Re-sync remote players from the server-authoritative snapshot
-          this.remotePlayers.clear();
-          playersMap.forEach((player, id) => {
-            if (id !== this.localPlayer.id) {
-              this.remotePlayers.set(id, player);
-            }
-          });
-        }
+        // Re-sync remote players from the server-authoritative snapshot
+        this.remotePlayers.clear();
+        playersMap.forEach((player, id) => {
+          if (id !== this.localPlayer.id) this.remotePlayers.set(id, player);
+        });
 
         const lobbyHandlers = this.messageHandlers.get('return_to_lobby');
         if (lobbyHandlers) {
-          lobbyHandlers.forEach(handler => handler(message));
+          lobbyHandlers.forEach(handler => handler(lobbyMessage));
         }
         break;
       }
 
       case 'game_over': {
+        if (this.isHost || !this.isHostConnection(conn)) return;
+        const winnerId = boundedString(message.winnerId, MAX_PEER_ID_LENGTH);
+        if (!winnerId || !Array.isArray(message.finalStats) || message.finalStats.length > MAX_REMOTE_PLAYERS + 1) return;
+        const finalStats = message.finalStats.map((player) => sanitizeRemotePlayer(player));
+        if (finalStats.some((player) => player === null)) return;
+        const safeStats = finalStats as PlayerData[];
+        if (!safeStats.some((player) => player.id === winnerId)) return;
+        const gameOverMessage: NetworkMessage = { type: 'game_over', winnerId, finalStats: safeStats };
         // Forward to registered handlers
-        const handlers = this.messageHandlers.get(message.type);
+        const handlers = this.messageHandlers.get('game_over');
         if (handlers) {
-          handlers.forEach(handler => handler(message));
+          handlers.forEach(handler => handler(gameOverMessage));
         }
         break;
       }
 
-      case 'enemy_killed':
-      case 'player_shot':
-      case 'player_killed':
-      case 'chat_message': {
-        // Guests send these to host; relay to all other guests for full lobby sync
+      case 'enemy_killed': {
+        const playerId = boundedString(message.playerId, MAX_PEER_ID_LENGTH);
+        if (!playerId) return;
         if (this.isHost) {
-          this.broadcastMessage(message, conn.peer);
+          if (!this.isRegisteredGuest(conn) || playerId !== conn.peer) return;
+        } else if (!this.isHostConnection(conn)) {
+          return;
         }
+        const killedMessage: NetworkMessage = { type: 'enemy_killed', playerId };
+        if (this.isHost) this.broadcastMessage(killedMessage, conn.peer);
+        this.messageHandlers.get('enemy_killed')?.forEach((handler) => handler(killedMessage));
+        break;
+      }
 
-        // Forward to registered handlers
-        const handlers = this.messageHandlers.get(message.type);
-        if (handlers) {
-          handlers.forEach(handler => handler(message));
+      case 'player_shot': {
+        const shooterId = boundedString(message.shooterId, MAX_PEER_ID_LENGTH);
+        const targetId = boundedString(message.targetId, MAX_PEER_ID_LENGTH);
+        const damage = finiteBetween(message.damage, 0, MAX_REPORTED_HIT_DAMAGE);
+        if (!shooterId || !targetId || damage === null) return;
+        if (this.isHost) {
+          if (!this.isRegisteredGuest(conn) || shooterId !== conn.peer) return;
+        } else if (!this.isHostConnection(conn)) {
+          return;
         }
+        const shotMessage: NetworkMessage = { type: 'player_shot', shooterId, targetId, damage };
+        if (this.isHost) this.broadcastMessage(shotMessage, conn.peer);
+        this.messageHandlers.get('player_shot')?.forEach((handler) => handler(shotMessage));
+        break;
+      }
+
+      case 'player_killed': {
+        const killerId = boundedString(message.killerId, MAX_PEER_ID_LENGTH);
+        const victimId = boundedString(message.victimId, MAX_PEER_ID_LENGTH);
+        const killerName = boundedString(message.killerName, MAX_PLAYER_NAME_LENGTH);
+        const victimName = boundedString(message.victimName, MAX_PLAYER_NAME_LENGTH);
+        const weapon = boundedString(message.weapon, MAX_WEAPON_ID_LENGTH);
+        const victimColor = finiteBetween(message.victimColor, 0, 0xffffff);
+        const timestamp = finiteBetween(message.timestamp, 0, Number.MAX_SAFE_INTEGER);
+        if (!killerId || !victimId || !killerName || !victimName || !weapon || victimColor === null || timestamp === null) return;
+        if (this.isHost) {
+          if (!this.isRegisteredGuest(conn) || killerId !== conn.peer) return;
+        } else if (!this.isHostConnection(conn)) {
+          return;
+        }
+        const killedMessage: NetworkMessage = {
+          type: 'player_killed', killerId, victimId, killerName, victimName,
+          weapon, victimColor: clamp(victimColor, 0, 0xffffff), timestamp,
+        };
+        if (this.isHost) this.broadcastMessage(killedMessage, conn.peer);
+        this.messageHandlers.get('player_killed')?.forEach((handler) => handler(killedMessage));
+        break;
+      }
+
+      case 'chat_message': {
+        const playerId = boundedString(message.playerId, MAX_PEER_ID_LENGTH);
+        const body = typeof message.message === 'string' ? message.message.trim() : '';
+        const text = boundedString(body, MAX_CHAT_LENGTH);
+        const messageType = message.messageType === 'chat' || message.messageType === 'emote'
+          ? message.messageType
+          : null;
+        if (!playerId || !text || !messageType) return;
+
+        let playerName = boundedString(message.playerName, MAX_PLAYER_NAME_LENGTH);
+        let playerColor = finiteBetween(message.playerColor, 0, 0xffffff);
+        if (this.isHost) {
+          if (!this.isRegisteredGuest(conn) || playerId !== conn.peer) return;
+          // Use the identity accepted at lobby join, never a chat packet's
+          // claimed display name or colour.
+          const player = this.remotePlayers.get(conn.peer);
+          if (!player) return;
+          playerName = player.name;
+          playerColor = player.color;
+        } else if (!this.isHostConnection(conn)) {
+          return;
+        }
+        if (!playerName || playerColor === null) return;
+        const chatMessage: NetworkMessage = {
+          type: 'chat_message', playerId, playerName,
+          playerColor: clamp(playerColor, 0, 0xffffff), message: text,
+          messageType, timestamp: Date.now(),
+        };
+        if (this.isHost) this.broadcastMessage(chatMessage, conn.peer);
+        this.messageHandlers.get('chat_message')?.forEach((handler) => handler(chatMessage));
         break;
       }
 
       // Guest → host readiness. Host records the peer so its enemy stream can
       // begin; still forwarded to handlers (App uses it to force a keyframe).
       case 'client_ready': {
-        if (this.isHost && message.playerId) {
-          this.readyPeers.add(message.playerId);
-        }
+        const playerId = boundedString(message.playerId, MAX_PEER_ID_LENGTH);
+        if (!playerId || !this.isHost || !this.isRegisteredGuest(conn) || playerId !== conn.peer) return;
+        this.readyPeers.add(playerId);
+        const readyMessage: NetworkMessage = { type: 'client_ready', playerId };
         const handlers = this.messageHandlers.get('client_ready');
         if (handlers) {
-          handlers.forEach(handler => handler(message));
+          handlers.forEach(handler => handler(readyMessage));
         }
         break;
       }
@@ -738,14 +1090,56 @@ export class MultiplayerManager {
       // Shared-enemy traffic. Star topology means host↔guest is a direct link,
       // so these are never relayed — they go straight to the registered
       // handlers (enemy_hit lands on the host; the rest land on guests).
-      case 'enemy_sync':
-      case 'enemy_hit':
-      case 'enemy_kill_credit':
+      case 'enemy_sync': {
+        if (this.isHost || !this.isHostConnection(conn) || !Array.isArray(message.enemies)
+          || message.enemies.length > MAX_NETWORK_ENEMIES || typeof message.full !== 'boolean') return;
+        const wave = finiteBetween(message.wave, 0, 1000);
+        // BinaryPack turns undefined into null on the wire — treat both as absent.
+        const t = message.t == null ? undefined : finiteBetween(message.t, 0, Number.MAX_SAFE_INTEGER);
+        const enemies = message.enemies.map((enemy) => sanitizeEnemyWire(enemy));
+        if (wave === null || t === null || enemies.some((enemy) => enemy === null)) return;
+        const syncMessage: NetworkMessage = {
+          type: 'enemy_sync', enemies: enemies as EnemyWire[], wave: Math.floor(wave), full: message.full, t,
+        };
+        this.messageHandlers.get('enemy_sync')?.forEach((handler) => handler(syncMessage));
+        break;
+      }
+
+      case 'enemy_hit': {
+        if (!this.isHost || !this.isRegisteredGuest(conn)) return;
+        const netId = finiteBetween(message.netId, 0, 1_000_000_000);
+        const damage = finiteBetween(message.damage, 0, MAX_REPORTED_HIT_DAMAGE);
+        if (netId === null || damage === null || typeof message.isCritical !== 'boolean'
+          || message.shooterId !== conn.peer) return;
+        const hitMessage: NetworkMessage = {
+          type: 'enemy_hit', netId: Math.floor(netId), damage, isCritical: message.isCritical, shooterId: conn.peer,
+        };
+        this.messageHandlers.get('enemy_hit')?.forEach((handler) => handler(hitMessage));
+        break;
+      }
+
+      case 'enemy_kill_credit': {
+        if (this.isHost || !this.isHostConnection(conn)) return;
+        const netId = finiteBetween(message.netId, 0, 1_000_000_000);
+        const scoreValue = finiteBetween(message.scoreValue, 0, 1000);
+        const killerId = boundedString(message.killerId, MAX_PEER_ID_LENGTH);
+        if (netId === null || scoreValue === null || !killerId || typeof message.isCritical !== 'boolean') return;
+        const creditMessage: NetworkMessage = {
+          type: 'enemy_kill_credit', netId: Math.floor(netId), killerId,
+          scoreValue, isCritical: message.isCritical,
+        };
+        this.messageHandlers.get('enemy_kill_credit')?.forEach((handler) => handler(creditMessage));
+        break;
+      }
+
       case 'player_damaged': {
-        const handlers = this.messageHandlers.get(message.type);
-        if (handlers) {
-          handlers.forEach(handler => handler(message));
-        }
+        if (this.isHost || !this.isHostConnection(conn)) return;
+        const targetId = boundedString(message.targetId, MAX_PEER_ID_LENGTH);
+        const enemyType = boundedString(message.enemyType, MAX_WEAPON_ID_LENGTH);
+        const damage = finiteBetween(message.damage, 0, 500);
+        if (!targetId || !enemyType || damage === null) return;
+        const damageMessage: NetworkMessage = { type: 'player_damaged', targetId, damage, enemyType };
+        this.messageHandlers.get('player_damaged')?.forEach((handler) => handler(damageMessage));
         break;
       }
     }
@@ -1385,6 +1779,8 @@ export class MultiplayerManager {
       clearTimeout(this.positionUpdateTimer);
       this.positionUpdateTimer = null;
     }
+    this.joinTimeouts.forEach((timeout) => clearTimeout(timeout));
+    this.joinTimeouts.clear();
 
     // Notify others we're leaving
     this.broadcastMessage({

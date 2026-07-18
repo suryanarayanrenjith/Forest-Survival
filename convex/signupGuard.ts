@@ -9,6 +9,17 @@ const DEFAULT_MAX_SIGNUPS = 100;
 // One account per device. Enforced across EVERY device signal we receive
 // (hardware fingerprint + persistent id), so clearing storage doesn't bypass it.
 const MAX_ACCOUNTS_PER_DEVICE = 1;
+const MAX_FINGERPRINTS = 4;
+const MAX_FINGERPRINT_LENGTH = 128;
+
+function normalizeFingerprints(fingerprints: string[]): string[] | null {
+  if (fingerprints.length > MAX_FINGERPRINTS) return null;
+  const keys = Array.from(new Set(fingerprints.map((fingerprint) => fingerprint.trim())));
+  if (keys.some((fingerprint) => fingerprint.length === 0 || fingerprint.length > MAX_FINGERPRINT_LENGTH)) {
+    return null;
+  }
+  return keys;
+}
 
 function maxSignups(): number {
   const raw = Number(process.env.MAX_SIGNUPS);
@@ -74,7 +85,11 @@ export const reserveSignup = internalMutation({
 
     // Always have at least one key to track against, even if the client sent
     // nothing usable (defensive — auth.ts already supplies a fallback).
-    const keys = fingerprints.filter((fp) => fp.length > 0);
+    const normalized = normalizeFingerprints(fingerprints);
+    if (normalized === null) {
+      return { ok: false, reason: "Invalid registration device data." };
+    }
+    const keys = normalized;
     if (keys.length === 0) keys.push(`user:${username}`);
 
     // 1. Hard global cap (free-plan safety).
@@ -160,7 +175,11 @@ export const rollbackSignup = internalMutation({
       await ctx.db.patch(meta._id, { totalUsers: meta.totalUsers - 1 });
     }
 
-    const keys = fingerprints.filter((fp) => fp.length > 0);
+    const normalized = normalizeFingerprints(fingerprints);
+    // This is a compensating cleanup path. The original reservation was
+    // bounded, but tolerate malformed data here without broadening the rows
+    // this internal mutation can touch.
+    const keys = normalized ?? [];
     if (keys.length === 0) keys.push(`user:${username}`);
 
     for (const fingerprint of keys) {

@@ -11,6 +11,7 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 import { ConvexError } from "convex/values";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { MAX_TOTAL_SKILL_POINTS } from "./gameLimits";
+import { rateLimiter } from "./rateLimiter";
 
 /** Today's UTC day string in the same format the client uses. */
 function utcDayString(): string {
@@ -116,6 +117,7 @@ export const recordProgress = mutation({
     challengeId: v.string(),
     progress: v.number(),
   },
+  returns: v.object({ progress: v.number(), throttled: v.boolean() }),
   handler: async (ctx: MutationCtx, { challengeId, progress }) => {
     const userId = await getAuthUserId(ctx);
     if (!userId) throw new ConvexError("Not authenticated");
@@ -127,17 +129,27 @@ export const recordProgress = mutation({
     if (challengeId !== expectedId) {
       // Wrong day's challenge — ignore silently rather than throw so a
       // straggling client write doesn't surface as an error in the UI.
-      return;
+      return { progress: 0, throttled: false };
     }
+    const goal = CHALLENGE_GOALS[expectedId];
+    // The browser is not authoritative, but it must never be able to store
+    // arbitrary-sized values or exceed a challenge's actual completion goal.
+    const boundedProgress = Math.min(goal, Math.floor(progress));
+
     const existing = await ctx.db
       .query("dailyProgress")
       .withIndex("by_user_day", (q) =>
         q.eq("userId", userId).eq("utcDay", utcDay),
       )
       .unique();
-    const nextProgress = Math.max(existing?.progress ?? 0, Math.floor(progress));
+    const { ok } = await rateLimiter.limit(ctx, "dailyProgress", { key: userId });
+    if (!ok) return { progress: existing?.progress ?? 0, throttled: true };
+
+    const nextProgress = Math.max(existing?.progress ?? 0, boundedProgress);
     if (existing) {
-      if (nextProgress === existing.progress) return;
+      if (nextProgress === existing.progress) {
+        return { progress: existing.progress, throttled: false };
+      }
       await ctx.db.patch(existing._id, {
         progress: nextProgress,
         updatedAt: Date.now(),
@@ -152,6 +164,7 @@ export const recordProgress = mutation({
         updatedAt: Date.now(),
       });
     }
+    return { progress: nextProgress, throttled: false };
   },
 });
 

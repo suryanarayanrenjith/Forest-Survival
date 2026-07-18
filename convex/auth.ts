@@ -16,6 +16,11 @@ import {
 } from "./authValidation";
 import { getOrCreateStats } from "./playerStats";
 
+// Device signals come from an untrusted browser. Keep the registration path
+// bounded before it reaches the transactional anti-abuse records.
+const MAX_FINGERPRINTS = 4;
+const MAX_FINGERPRINT_LENGTH = 128;
+
 function readStringParam(params: Record<string, unknown>, key: string): string {
   const value = params[key];
   return typeof value === "string" ? value : "";
@@ -34,19 +39,32 @@ function assertValid(error: string | null): void {
  * against ALL of them, so clearing storage no longer mints a fresh identity.
  */
 function getFingerprints(params: Record<string, unknown>, fallback: string): string[] {
-  const list = readStringParam(params, "fingerprints")
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
+  const valid = (value: string): string | null => {
+    const trimmed = value.trim();
+    return trimmed.length > 0 && trimmed.length <= MAX_FINGERPRINT_LENGTH
+      ? trimmed
+      : null;
+  };
 
-  const single = (
+  // A malicious comma-delimited value must not create an unbounded array or
+  // fan out into unbounded database queries. Ignore an oversized list and let
+  // the stable fallback below cover storage-disabled browsers.
+  const rawList = readStringParam(params, "fingerprints");
+  const list = rawList.length <= MAX_FINGERPRINTS * (MAX_FINGERPRINT_LENGTH + 1)
+    ? rawList
+      .split(",")
+      .map(valid)
+      .filter((value): value is string => value !== null)
+    : [];
+
+  const single = valid(
     readStringParam(params, "fingerprint") ||
     readStringParam(params, "deviceFingerprint") ||
-    readStringParam(params, "clientFingerprint")
-  ).trim();
+    readStringParam(params, "clientFingerprint"),
+  );
   if (single) list.push(single);
 
-  const deduped = Array.from(new Set(list));
+  const deduped = Array.from(new Set(list)).slice(0, MAX_FINGERPRINTS);
   return deduped.length > 0 ? deduped : [`user:${fallback}`];
 }
 

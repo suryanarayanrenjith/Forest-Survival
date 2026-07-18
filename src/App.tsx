@@ -250,6 +250,12 @@ const ForestSurvivalGame = () => {
   // client-side. The mutation idempotently `max()`s on the server side so a
   // duplicate write can't double-count.
   const recordDailyProgressMutation = useMutation(api.daily.recordProgress);
+  // A run snapshots the server's current daily total before it begins adding
+  // local events. Without this baseline, two shorter runs each reporting (for
+  // example) 50 kills would both `max()` to 50 instead of reaching 100.
+  const dailyProgressData = useQuery(api.daily.getDaily, isAuthenticated ? {} : 'skip');
+  const dailyProgressRef = useRef(dailyProgressData);
+  useEffect(() => { dailyProgressRef.current = dailyProgressData; }, [dailyProgressData]);
   // Weapon Mastery — XP grants are sent per weapon as bounded deltas. The
   // server reconciles + caps at MAX_XP_PER_WEAPON.
   const addWeaponMasteryXpMutation = useMutation(api.playerStats.addWeaponMasteryXp);
@@ -3064,17 +3070,37 @@ const ForestSurvivalGame = () => {
     const dailyChannel = dailyChallengeId ? DAILY_CHALLENGES[dailyChallengeId].event : null;
     const dailyCounts = { kill: 0, wave: 0, headshot: 0, flawless_wave: 0, pistol_kill: 0 };
     let dailyFlushAccum = 0;
+    let dailyBaseProgress: number | null = null;
     let dailyLastSentValue = 0;
+    let dailyFlushInFlight = false;
     const dailyFlush = () => {
-      if (!dailyChallengeId || !dailyChannel) return;
-      const value = dailyCounts[dailyChannel];
-      if (value === dailyLastSentValue) return;
-      dailyLastSentValue = value;
-      // Fire-and-forget; the mutation handles auth + reconciliation.
+      if (!dailyChallengeId || !dailyChannel || dailyFlushInFlight) return;
+      const challenge = DAILY_CHALLENGES[dailyChallengeId];
+
+      // Wait for the server snapshot rather than accidentally overwriting a
+      // previous run's total while the query is still loading.
+      if (dailyBaseProgress === null) {
+        const snapshot = dailyProgressRef.current;
+        if (!snapshot || snapshot.challengeId !== dailyChallengeId) return;
+        dailyBaseProgress = Math.min(challenge.goal, snapshot.progress);
+        dailyLastSentValue = dailyBaseProgress;
+      }
+
+      const value = Math.min(challenge.goal, dailyBaseProgress + dailyCounts[dailyChannel]);
+      if (value <= dailyLastSentValue) return;
+      dailyFlushInFlight = true;
+      // A rejected/throttled write stays eligible for the next 3-second flush
+      // instead of being marked as sent and silently losing progress.
       void recordDailyProgressMutation({
         challengeId: dailyChallengeId,
         progress: value,
-      }).catch(() => { /* best-effort — local play is unaffected */ });
+      }).then((result) => {
+        if (!result.throttled) {
+          dailyLastSentValue = Math.max(dailyLastSentValue, result.progress);
+        }
+      }).catch(() => { /* best-effort — local play is unaffected */ }).finally(() => {
+        dailyFlushInFlight = false;
+      });
     };
 
     // === CHARACTER IDENTITY (class → passive + ability + shadow) ===
@@ -13478,6 +13504,10 @@ const ForestSurvivalGame = () => {
         clearTimeout(reloadTimeoutId);
         reloadTimeoutId = null;
       }
+      // Persist the tail end of a short run instead of losing up to three
+      // seconds of challenge events when the player returns to the menu.
+      dailyFlush();
+      flushMasteryXp();
       setReloadDurationUI(null); // clear stale indicator for the next run
 
       // Cancel any pending power-message clear and wipe the pill so a stale

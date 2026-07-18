@@ -1,5 +1,5 @@
 import {
-  Sparkles, Heart, Code2, ExternalLink, X, ArrowLeft,
+  Sparkles, Heart, Code2, ExternalLink, X,
   Cpu, Wand2, Palette, Boxes, Zap, ArrowUpRight, Layers3,
   Database, ShieldCheck, Triangle, GitFork, Crosshair, BookOpen,
   Gamepad2, Network, Brush, Cog, Bone, HeartHandshake,
@@ -63,10 +63,15 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
         className="fixed inset-0 z-50"
         style={{ background: 'rgba(4,8,7,0.9)', backdropFilter: 'blur(16px)' }}
       />
-      {/* Scroll container has no backdrop-filter so it never triggers a repaint */}
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 overflow-y-auto menu-overlay-in">
+      {/* The panel owns the only scroll surface. Keeping the page-sized overlay
+          static avoids nested scroll containers fighting over wheel/touch input
+          and keeps every row on a stable compositing layer. */}
+      <div className="fixed inset-0 z-50 grid place-items-center p-4 sm:p-6 menu-overlay-in">
       <div
-        className="hud-frame relative w-full max-w-2xl rounded-2xl border border-emerald-400/15 bg-[#080d0b] overflow-hidden shadow-[0_40px_100px_rgba(0,0,0,0.6)]"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="credits-title"
+        className="hud-frame relative flex w-full max-w-3xl max-h-[calc(100dvh-2rem)] sm:max-h-[calc(100dvh-3rem)] flex-col overflow-hidden rounded-2xl border border-emerald-400/15 bg-[#080d0b] shadow-[0_40px_100px_rgba(0,0,0,0.6)] isolate"
         style={{ animation: 'crFade 0.4s cubic-bezier(0.16,1,0.3,1) forwards' }}
       >
         {/* Ambient drifting bloom — pure atmosphere behind the content */}
@@ -76,7 +81,7 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
         />
 
         {/* Header */}
-        <div className="relative flex items-center justify-between px-5 sm:px-6 py-4 border-b border-white/[0.07]">
+        <div className="relative flex flex-none items-center justify-between border-b border-white/[0.07] px-5 py-4 sm:px-6">
           <div className="flex items-center gap-3">
             <div className="relative flex items-center justify-center w-10 h-10 rounded-xl bg-emerald-500/12 border border-emerald-400/30">
               <Sparkles className="w-5 h-5 text-emerald-300" strokeWidth={2} fill="currentColor" />
@@ -86,7 +91,7 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
               <p className="font-hud text-[10px] tracking-[0.36em] text-emerald-300/90 font-semibold uppercase">
                 Credits
               </p>
-              <h2 className="font-display text-lg font-semibold uppercase tracking-wide text-white">Forest Survival</h2>
+              <h2 id="credits-title" className="font-display text-lg font-semibold uppercase tracking-wide text-white">Forest Survival</h2>
             </div>
           </div>
           <button
@@ -99,47 +104,54 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
           </button>
         </div>
 
-        <div className="relative p-5 sm:p-7 space-y-7 max-h-[78dvh] overflow-y-auto">
+        <div className="relative min-h-0 flex-1 space-y-7 overflow-y-auto overscroll-contain p-5 sm:p-7 [scrollbar-gutter:stable]">
           {/* ── Hero ─────────────────────────────────────────────────── */}
-          <div className="relative text-center pt-3 pb-1">
-            <p className="font-hud flex items-center justify-center gap-2 text-[10px] tracking-[0.42em] text-emerald-300/80 font-semibold uppercase mb-4">
-              <Crosshair className="w-3 h-3" strokeWidth={2.2} /> A solo project by
-            </p>
-            <h3 className="font-display title-bio text-6xl sm:text-7xl font-semibold uppercase tracking-[0.04em] leading-none">
-              Surya
-            </h3>
-            <p className="mx-auto mt-5 max-w-prose text-[14px] leading-relaxed text-gray-300/90">
-              A fully-featured 3D first-person wave-survival shooter — character abilities, procedural
-              terrain, snapshot-interpolated multiplayer netcode, in-game photo mode, and more.
-              Designed, engineered and vibe-coded from a blank file through conversational AI.
-            </p>
+          <div className="relative overflow-hidden rounded-2xl border border-emerald-400/15 bg-emerald-500/[0.035] p-5 sm:p-6">
+            <div className="relative flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0 text-left">
+                <p className="font-hud flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.36em] text-emerald-300/80">
+                  <Crosshair className="h-3 w-3" strokeWidth={2.2} /> A solo project by
+                </p>
+                <h3 className="font-display title-bio mt-2 text-5xl font-semibold uppercase leading-none tracking-[0.04em] sm:text-6xl">
+                  Surya
+                </h3>
+                <p className="mt-4 max-w-xl text-[13px] leading-relaxed text-gray-300/90">
+                  A fully-featured 3D wave-survival shooter with procedural terrain, character abilities,
+                  snapshot-interpolated multiplayer, photo mode, and more — built from a blank file through conversational AI.
+                </p>
+              </div>
 
-            {/* Stat tiles — true facts about the build, rendered as HUD data */}
-            <div className="mt-6 grid grid-cols-3 gap-2.5">
-              {STATS.map((stat) => (
-                <div key={stat.label} className="rounded-xl border border-white/[0.08] bg-white/[0.02] px-2 py-3">
-                  <p className="font-display text-2xl sm:text-3xl font-semibold text-emerald-300 leading-none">{stat.value}</p>
-                  <p className="font-hud mt-1.5 text-[9.5px] tracking-[0.2em] text-gray-500 uppercase">{stat.label}</p>
-                </div>
-              ))}
+              <div className="grid grid-cols-3 gap-2 sm:w-44 sm:grid-cols-1">
+                {STATS.map((stat) => (
+                  <div key={stat.label} className="rounded-xl border border-white/[0.08] bg-black/15 px-2.5 py-2.5 sm:px-3 sm:py-2">
+                    <p className="font-display text-xl font-semibold leading-none text-emerald-300 sm:text-2xl">{stat.value}</p>
+                    <p className="font-hud mt-1 text-[8.5px] uppercase tracking-[0.16em] text-gray-500">{stat.label}</p>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
 
           {/* ── Credit roll ───────────────────────────────────────────── */}
           <div>
             <SectionLabel>One Person, Every Role</SectionLabel>
-            <ul className="mt-3 divide-y divide-white/[0.05] rounded-xl border border-white/[0.07] bg-white/[0.015] overflow-hidden">
+            <ul className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
               {ROLES.map(({ role, icon: Icon }) => (
-                <li key={role} className="flex items-center gap-3 px-4 py-2.5">
-                  <Icon className="w-4 h-4 text-emerald-400/70 flex-shrink-0" strokeWidth={2} />
-                  <span className="font-hud flex-1 text-[12px] tracking-wide text-gray-400">{role}</span>
-                  <span className="font-display text-sm font-semibold uppercase tracking-wide text-white/90">Surya</span>
+                <li key={role} className="flex items-center gap-3 rounded-xl border border-white/[0.07] bg-white/[0.02] px-3.5 py-3 transition-colors hover:border-emerald-400/20 hover:bg-emerald-500/[0.035]">
+                  <span className="flex h-8 w-8 flex-none items-center justify-center rounded-lg border border-emerald-400/15 bg-emerald-500/[0.07]">
+                    <Icon className="h-4 w-4 text-emerald-400/80" strokeWidth={2} />
+                  </span>
+                  <span className="font-hud min-w-0 flex-1 text-[11px] tracking-wide text-gray-300">{role}</span>
+                  <span className="font-display text-xs font-semibold uppercase tracking-wide text-white/75">Surya</span>
                 </li>
               ))}
             </ul>
           </div>
 
           {/* ── Portfolio CTA ──────────────────────────────────────────── */}
+          <div>
+            <SectionLabel>Explore the Project</SectionLabel>
+            <div className="mt-3 space-y-2.5">
           <a
             href={portfolioUrl}
             target="_blank"
@@ -252,6 +264,8 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
               </span>
             </span>
           </a>
+            </div>
+          </div>
 
           {/* ── Special Thanks ─────────────────────────────────────────── */}
           <div>
@@ -297,7 +311,7 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
           </div>
 
           {/* ── Footer ─────────────────────────────────────────────────── */}
-          <div className="text-center pt-1">
+          <div className="border-t border-white/[0.06] pt-5 text-center">
             <p className="font-hud flex items-center justify-center gap-1.5 text-[11px] text-gray-500">
               Crafted with
               <Heart className="w-3.5 h-3.5 text-red-400" strokeWidth={2.25} fill="currentColor" />
@@ -305,16 +319,6 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
             </p>
           </div>
 
-          {/* Back button */}
-          <button
-            onClick={onClose}
-            className="font-hud group flex items-center justify-center gap-2 w-full rounded-xl px-4 py-3.5
-              border border-white/10 bg-white/[0.03] text-sm font-bold uppercase tracking-wide text-gray-300
-              transition-all duration-200 hover:text-white hover:bg-white/[0.06] hover:border-white/20 hover:-translate-y-0.5"
-          >
-            <ArrowLeft className="w-4 h-4 group-hover:-translate-x-0.5 transition-transform" strokeWidth={2.25} />
-            Back to Menu
-          </button>
         </div>
       </div>
 

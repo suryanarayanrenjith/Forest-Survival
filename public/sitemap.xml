@@ -1,14 +1,24 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
-        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
+        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"
+        xmlns:video="http://www.google.com/schemas/sitemap-video/1.1">
   <url>
     <loc>https://forestsurvival.live/</loc>
-    <lastmod>2026-06-26</lastmod>
+    <lastmod>2026-07-18</lastmod>
     <changefreq>weekly</changefreq>
     <priority>1.0</priority>
     <image:image>
       <image:loc>https://forestsurvival.live/og-image.jpg</image:loc>
       <image:title>Forest Survival — free online survival shooter</image:title>
     </image:image>
+    <video:video>
+      <video:thumbnail_loc>https://forestsurvival.live/og-image.jpg</video:thumbnail_loc>
+      <video:title>Forest Survival — Official Trailer</video:title>
+      <video:description>Official trailer for Forest Survival, a free 3D first-person wave-survival shooter playable in the browser.</video:description>
+      <video:content_loc>https://forestsurvival.live/media/forest-survival-trailer.mp4</video:content_loc>
+      <video:duration>57</video:duration>
+      <video:publication_date>2026-07-18T00:00:00+05:30</video:publication_date>
+      <video:family_friendly>yes</video:family_friendly>
+    </video:video>
   </url>
 </urlset>

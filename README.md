@@ -1,6 +1,13 @@
 <div align="center">
 
-<img src="public/og-image.jpg" alt="Forest Survival — 3D first-person wave-survival shooter" width="800" />
+<!-- GitHub strips <video> tags from READMEs but keeps the fallback content,
+     so viewers there get the clickable cover image linking to the trailer. -->
+<video controls preload="metadata" poster="public/og-image.jpg" width="800" aria-label="Forest Survival official trailer">
+  <source src="public/media/forest-survival-trailer.mp4" type="video/mp4" />
+  <a href="public/media/forest-survival-trailer.mp4"><img src="public/og-image.jpg" alt="Forest Survival — 3D first-person wave-survival shooter. Click to watch the official trailer." width="800" /></a>
+</video>
+
+<a href="public/media/forest-survival-trailer.mp4">▶ Watch the official trailer</a>
 
 **A 3D first-person wave-survival shooter built entirely through AI-assisted development.**
 
