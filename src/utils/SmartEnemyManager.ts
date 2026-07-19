@@ -277,6 +277,15 @@ class SmartEnemyManager {
   // Continuous day→night blend for the enemy "powered" glow (0 = full daylight,
   // 1 = full night). Seeded to -1 so the first setNightFactor() always applies.
   private nightFactor: number = -1;
+  // OVERDRIVE SURGE blend (0 = normal, 1 = fully overclocked). During a surge
+  // wave every enemy's energy set (eye bar / core / belt / vent / muzzle) is
+  // dragged toward burning RED and overdriven brighter — one shared-material
+  // write recolours the ENTIRE crowd for free. Seeded -1 so the first
+  // setSurgeFactor() always applies.
+  private surgeFactor: number = -1;
+  // Reused temp for the surge colour lerp (no per-call allocation).
+  private readonly _surgeTmpColor = new THREE.Color();
+  private static readonly SURGE_RED = new THREE.Color(0xff2012);
 
   // Frustum culling
   private frustum: THREE.Frustum = new THREE.Frustum();
@@ -306,6 +315,11 @@ class SmartEnemyManager {
     // Initialize shared resources
     this.createSharedGeometries();
     this.createSharedMaterials();
+    // Fresh materials → re-seed both blend factors so the first
+    // setNightFactor()/setSurgeFactor() of the new match always applies
+    // (a leftover value from a previous run would early-return past them).
+    this.nightFactor = -1;
+    this.surgeFactor = -1;
 
     // Pre-populate pool based on graphics preset
     const initialPoolSize = Math.ceil(this.baseMaxEnemies * 0.75);
@@ -325,11 +339,53 @@ class SmartEnemyManager {
     const clamped = t < 0 ? 0 : t > 1 ? 1 : t;
     if (Math.abs(this.nightFactor - clamped) < 0.001) return;
     this.nightFactor = clamped;
+    this.applyMaterialState();
+  }
 
-    this.sharedMaterials.forEach((material) => {
+  /**
+   * OVERDRIVE SURGE blend — 0 restores every archetype's signature energy
+   * colour; 1 drags all the emissive "energy" parts (eye bar, chest core,
+   * belt, vent stripe, rifle muzzle) to burning red and overdrives their
+   * intensity. The head plate takes a subtler shift so silhouettes keep their
+   * archetype identity. Cheap: touches only the ~36 shared materials, and a
+   * steady factor early-returns without touching a single one. The caller
+   * eases + pulses `t` per frame, so the crowd visibly THROBS while surged.
+   */
+  setSurgeFactor(t: number): void {
+    const clamped = t < 0 ? 0 : t > 1 ? 1 : t;
+    if (Math.abs(this.surgeFactor - clamped) < 0.003) return;
+    this.surgeFactor = clamped;
+    this.applyMaterialState();
+  }
+
+  /**
+   * Single writer for the shared enemy materials: composes the day/night
+   * emissive lerp with the surge red-shift so the two systems never clobber
+   * each other's writes.
+   */
+  private applyMaterialState(): void {
+    const nf = this.nightFactor < 0 ? 0 : this.nightFactor;
+    const sf = this.surgeFactor < 0 ? 0 : this.surgeFactor;
+    this.sharedMaterials.forEach((material, key) => {
       const dayI = (material.userData.dayEmissiveIntensity as number | undefined) ?? material.emissiveIntensity;
       const nightI = (material.userData.nightEmissiveIntensity as number | undefined) ?? material.emissiveIntensity;
-      material.emissiveIntensity = dayI + (nightI - dayI) * clamped;
+      let intensity = dayI + (nightI - dayI) * nf;
+      // Surge recolour: full red takeover on the glow set, a subtle warm
+      // shift on the bright head plate. Base colours were snapshotted at
+      // registration so the lerp is always anchored to the true identity hue.
+      const baseColor = material.userData.baseColorHex as number | undefined;
+      if (baseColor !== undefined) {
+        const isGlow = key.endsWith('_glow');
+        const isBright = key.endsWith('_bright');
+        if (isGlow || isBright) {
+          const blend = isGlow ? sf : sf * 0.35;
+          this._surgeTmpColor.setHex(baseColor).lerp(SmartEnemyManager.SURGE_RED, blend);
+          material.color.copy(this._surgeTmpColor);
+          material.emissive.copy(this._surgeTmpColor);
+          if (isGlow) intensity *= 1 + sf * 1.5;
+        }
+      }
+      material.emissiveIntensity = intensity;
     });
   }
 
@@ -401,6 +457,10 @@ class SmartEnemyManager {
       const created = material.emissiveIntensity;
       material.userData.dayEmissiveIntensity = created * dayFactor;
       material.userData.nightEmissiveIntensity = created * nightMultiplier;
+      // Identity-hue anchor for the OVERDRIVE SURGE red-shift (setSurgeFactor)
+      // — the lerp always starts from this snapshot, never from a half-shifted
+      // live colour, so repeated surges can't drift the palette.
+      material.userData.baseColorHex = material.color.getHex();
       // Seed at the day floor; the first setNightFactor() sets the real value.
       material.emissiveIntensity = created * dayFactor;
       this.sharedMaterials.set(key, material);

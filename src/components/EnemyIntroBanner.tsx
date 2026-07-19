@@ -1,15 +1,17 @@
 import { useEffect } from 'react';
-import { Skull, Wind, Shield, Crown, Crosshair, type LucideIcon } from 'lucide-react';
+import { Skull, Wind, Shield, Crown, Crosshair, Radio, Zap, Radiation, type LucideIcon } from 'lucide-react';
 
 /** Payload describing a newly-unlocked tutorial enemy. Mirrors the `EnemyIntro`
- *  interface in App.tsx so the Tutorial Enemy Director can hand it straight in. */
+ *  interface in App.tsx so the Tutorial Enemy Director can hand it straight in.
+ *  Also reused by the ARK-07 network-event announcements (uplink discovery,
+ *  OVERDRIVE SURGE, NULL WAVE) via the radio / zap / radiation icons. */
 export interface EnemyIntroData {
   id: number;
   name: string;
   blurb: string;
   tag: string;
   accent: string;
-  icon: 'skull' | 'wind' | 'shield' | 'crown' | 'crosshair';
+  icon: 'skull' | 'wind' | 'shield' | 'crown' | 'crosshair' | 'radio' | 'zap' | 'radiation';
 }
 
 interface EnemyIntroBannerProps {
@@ -24,6 +26,9 @@ const ICONS: Record<EnemyIntroData['icon'], LucideIcon> = {
   shield: Shield,
   crown: Crown,
   crosshair: Crosshair,
+  radio: Radio,
+  zap: Zap,
+  radiation: Radiation,
 };
 
 /**

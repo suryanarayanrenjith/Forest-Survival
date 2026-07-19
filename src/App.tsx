@@ -55,7 +55,7 @@ import AchievementNotification from './components/AchievementNotification';
 import KillFeed, { addKillFeedEntry } from './components/KillFeed';
 import HitMarkers, { addHitMarker, clearHitMarkers } from './components/HitMarkers';
 import DamageDirectionIndicator, { triggerDamageDirection, clearDamageDirections } from './components/DamageDirectionIndicator';
-import ScreenEffects, { triggerDamageFlash, triggerScreenShake, triggerKillFlash, triggerHeadshotFlash, triggerAbilityFlash } from './components/ScreenEffects';
+import ScreenEffects, { triggerDamageFlash, triggerScreenShake, triggerKillFlash, triggerHeadshotFlash, triggerAbilityFlash, setWaveEventOverlay, setInterferenceOverlay } from './components/ScreenEffects';
 import ComboDisplay from './components/ComboDisplay';
 import { WEAPONS, type Enemy, type Bullet, type PowerUp, type Particle, type TerrainObject, type Keys, type GameState } from './types/game';
 import { AdaptiveDifficultySystem } from './utils/AdaptiveDifficultySystem';
@@ -76,6 +76,7 @@ import { aggregatePerkBonuses, NEUTRAL_PERK_BONUSES, rollMysteryBox, isPerkPoolE
 import RunModifierPicker from './components/RunModifierPicker';
 import { generateStakeOptions, type RunModifier } from './utils/RunModifierSystem';
 import { spawnBarrels, type ExplosiveBarrel } from './utils/HazardSystem';
+import { UplinkNetwork, EmpShockwave } from './utils/UplinkStructure';
 import { spawnRangedSentinels, updateSentinelGlow, type RangedSentinel } from './utils/RangedSentinelSystem';
 import { CHARACTER_PASSIVES } from './utils/CharacterPassiveRegistry';
 import { getCharacterAbility } from './utils/CharacterAbilityRegistry';
@@ -181,7 +182,8 @@ interface EnemyIntro {
   blurb: string;
   tag: string;       // short threat descriptor, e.g. "FAST · FRAGILE"
   accent: string;    // hex accent colour matching the enemy's vibe
-  icon: 'skull' | 'wind' | 'shield' | 'crown' | 'crosshair';
+  // radio / zap / radiation are used by the ARK-07 network-event lore cards.
+  icon: 'skull' | 'wind' | 'shield' | 'crown' | 'crosshair' | 'radio' | 'zap' | 'radiation';
 }
 
 // Gameplay/UX preferences that used to sit behind the in-game EnhancedSettings
@@ -408,6 +410,11 @@ const ForestSurvivalGame = () => {
   // so the HUD can draw the bottom-left pie meter at the correct fill.
   const [staminaRatio, setStaminaRatio] = useState(1);
   const [staminaExhaustedUI, setStaminaExhaustedUI] = useState(false);
+  // ── ARK-07 network events (lore layer) ── HUD chip state. `waveEventUI`
+  // marks the CURRENT wave's modifier (OVERDRIVE SURGE / NULL WAVE). Relay-
+  // field exposure deliberately has NO HUD readout — it announces itself
+  // through the interference vision (post-FX blur + DOM overlay) instead.
+  const [waveEventUI, setWaveEventUI] = useState<'surge' | 'glitch' | null>(null);
   // Reload feedback: holds the in-progress reload's total duration (ms) so the
   // crosshair indicator can time its CSS sweep, or null when not reloading.
   const [reloadDurationUI, setReloadDurationUI] = useState<number | null>(null);
@@ -2115,6 +2122,47 @@ const ForestSurvivalGame = () => {
       ground.position.z = playerZ;
     };
 
+    // ── CPU replica of the GPU terrain displacement ─────────────────────────
+    // The vertex shader raises the VISUAL ground beyond the player-relative
+    // flat zone (envelope 0 inside uTFlatR → 1 past uTFlatR+uTFalloff), while
+    // gameplay stays on the y=0 plane. Anything standing out there at y=0
+    // therefore reads as BURIED — the exact "distant enemies' legs sink into
+    // the ground" report. The height field was deliberately built from
+    // band-limited trig so it evaluates identically in JS (see
+    // TerrainSystem.ts); this samples it with the same envelope so distant
+    // enemies / barrels / relay spires can ride the visual surface, easing
+    // back to y=0 as the player approaches (the envelope flattens with them).
+    const _tpFreq = terrainProfile.frequency;
+    const _tpSeed = terrainSeed;
+    const _tpWarp = terrainProfile.warpAmp;
+    const _tpRidge = terrainProfile.ridginess;
+    const _tpAmp = terrainProfile.amplitude;
+    const _tpFlatR = terrainProfile.flatRadius;
+    const _tpFalloffEnd = terrainProfile.flatRadius + terrainProfile.falloff;
+    const visualGroundY = (wx: number, wz: number): number => {
+      // Envelope first — most gameplay actors are inside the flat zone, so
+      // the trig field is usually skipped entirely.
+      const dx = wx - ground.position.x;
+      const dz = wz - ground.position.z;
+      const r = Math.sqrt(dx * dx + dz * dz);
+      if (r <= _tpFlatR) return 0;
+      let env = (r - _tpFlatR) / (_tpFalloffEnd - _tpFlatR);
+      if (env > 1) env = 1;
+      env = env * env * (3 - 2 * env); // smoothstep, matching the GLSL
+      // tHeight(worldXZ) — byte-for-byte the shader's field.
+      const f = _tpFreq, s = _tpSeed;
+      const wxx = wx + Math.sin(wz * f * 1.7 + s) * _tpWarp;
+      const wzz = wz + Math.cos(wx * f * 1.7 + s * 1.31) * _tpWarp;
+      let h = Math.sin(wxx * f + s) * Math.cos(wzz * f * 0.93 + s * 0.7);
+      h += Math.sin(wxx * f * 2.07 + 1.7 + s) * Math.cos(wzz * f * 1.96 - 0.8) * 0.5;
+      h += Math.sin(wxx * f * 4.13 - 2.1) * Math.cos(wzz * f * 3.88 + s) * 0.25;
+      h /= 1.75;
+      const ridgeBase = 1 - Math.abs(h);
+      const ridge = ridgeBase * ridgeBase * 2 - 1;
+      h = h + (ridge - h) * _tpRidge;
+      return h * _tpAmp * env;
+    };
+
     // === ADVANCED SKY DOME SYSTEM ===
     const skyGeometry = new THREE.SphereGeometry(500, 32, 32);
     const skyTopColor = new THREE.Color(renderAtmosphere.skyColor);
@@ -2578,6 +2626,11 @@ const ForestSurvivalGame = () => {
       const cullRadius = CHUNK_SIZE * 6;
       for (let i = terrainObjects.length - 1; i >= 0; i--) {
         const obj = terrainObjects[i];
+        // The ARK-07 relay spires are PERMANENT landmarks, not streamed props —
+        // culling one would delete the structure (and its collision) for good,
+        // since chunk regeneration only rebuilds procedural scatter. (Closure
+        // read of a later const — safe: this function only runs at runtime.)
+        if (uplinkColliders.has(obj)) continue;
         const dxC = obj.x - playerX;
         const dzC = obj.z - playerZ;
         if (dxC * dxC + dzC * dzC > cullRadius * cullRadius) {
@@ -2805,6 +2858,162 @@ const ForestSurvivalGame = () => {
         }
       }
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  ARK-07 NETWORK EVENTS — the conspiracy under the wave loop.
+    //  ─────────────────────────────────────────────────────────────────────
+    //  The robots were never wild. A derelict pre-collapse uplink spire —
+    //  ARK-07 — still answers a dead satellite running its last order: field-
+    //  test autonomous units against live targets, escalate until the target
+    //  stops responding. Every wave is a scheduled trial; the player is the
+    //  experiment. Three systems hang off it (solo + multiplayer, NEVER
+    //  tutorial):
+    //    • THE RELAY NETWORK — several physical spires scattered with real
+    //      spacing across the whole map. Each one's "dirty signal" field
+    //      overdrives robots inside it — and the charge LINGERS: a unit that
+    //      bathed in the bandwidth stays supercharged long after it walks
+    //      out. The player gets the inverse: interference-cooked vision,
+    //      jammed equipment, and a radiation dose. Kills inside a field pay
+    //      bonus score — the risk/reward hook.
+    //    • OVERDRIVE SURGE — a random wave-length broadcast: an EMP ring
+    //      races out from the nearest relay, every unit's optics burn RED and
+    //      the whole wave hits harder/moves faster. Intensity is difficulty-led.
+    //    • NULL WAVE — the rotting broadcast stack ships a wave of corrupted
+    //      firmware: the screen tears (post-FX + DOM fallback), enemies
+    //      stutter-blink, and the player's ballistics are compromised
+    //      (reduced bullet damage) — the "unfair" wave, most common on Hard.
+    //  All state below is HOST/SOLO-authoritative; guests mirror it from the
+    //  enemy_sync keyframes (wm/wi/us fields).
+    // ═══════════════════════════════════════════════════════════════════════
+    let netWaveEvent: 'none' | 'surge' | 'glitch' = 'none';
+    let netWaveEventIntensity = 0;   // difficulty-scaled 0..1.25 severity
+    let wavesSinceNetEvent = 99;     // spacing guard — no back-to-back events
+    let surgeVisual = 0;             // eased 0→1 driver for the red-shift/halos
+    let glitchVisual = 0;            // eased 0→1 driver for the corruption FX
+    let glitchBurst = 0;             // random spike envelope on top of glitchVisual
+    let nextGlitchBurstAt = 0;
+    let nextGlitchSkipCheckAt = 0;   // cadence gate for enemy stutter-blinks
+    let uplinkIntroFired = false;
+    let surgeIntroFired = false;
+    let glitchIntroFired = false;
+    const empShockwaves: EmpShockwave[] = [];
+    // Player radiation-exposure state (driven per frame, pushed to the UI
+    // throttled/quantised so React never reconciles at frame rate).
+    let radiationSmooth = 0;    // eased 0..1 exposure the overlays follow
+    let lastRadPushed = 0;      // last quantised value handed to the overlays
+    let nextRadPushAt = 0;      // ~4Hz overlay push gate
+    let radExposureS = 0;       // continuous seconds inside a field (grace timer)
+    let nextGeigerAt = 0;       // next geiger click timestamp
+    let nextRadTickAt = 0;      // next radiation damage tick timestamp
+    // Equipment jam latch — true while the player stands deep enough in a
+    // relay field that the interference fries their gear (powerups force-
+    // expire + the held power can't be triggered). Driven by the exposure
+    // loop; read by the powerup timer block and the use-power gate.
+    let playerSignalJammed = false;
+    let jamNoticeShownAt = 0;
+
+    // ── THE RELAY NETWORK ── built for every non-tutorial mode. Host/solo
+    // scatter several spires across the WHOLE map with real spacing between
+    // them; guests park the network unplaced until the first keyframe carries
+    // the host's spire list (identical world on every screen).
+    const uplinkNet: UplinkNetwork | null = !isTutorialMode ? new UplinkNetwork() : null;
+    let uplinkPlaced = false;
+    const uplinkColliders = new Set<TerrainObject>();
+    const addUplinkSpire = (x: number, z: number) => {
+      if (!uplinkNet) return;
+      uplinkNet.addSpire(scene, x, z);
+      // Clear scattered props out of the footprint, then register a solid
+      // collision cylinder around the mast base (height 99 = a true wall — you
+      // walk AROUND the station; the pad edge stays reachable for the lore
+      // moment + the hot-zone farming loop).
+      for (let i = terrainObjects.length - 1; i >= 0; i--) {
+        const obj = terrainObjects[i];
+        const dx = obj.x - x, dz = obj.z - z;
+        if (dx * dx + dz * dz < (obj.radius + 9) * (obj.radius + 9)) removeTerrainObjectAt(i);
+      }
+      const collider: TerrainObject = {
+        mesh: uplinkNet.spires[uplinkNet.spires.length - 1].group,
+        x, z, type: 'rock', collidable: true, radius: 4.2, height: 99,
+      };
+      // Registered MANUALLY (not via addTerrainObject): the group is already
+      // scene-added, and it must never be absorbed into the terrain
+      // instancer — its dish/beacons/holo animate every frame, which an
+      // instanced matrix snapshot would freeze.
+      terrainObjects.push(collider);
+      if (collider.radius > maxCollidableRadius) maxCollidableRadius = collider.radius;
+      collidableGrid.insert(collider, x, z);
+      terrainVersion++;
+      uplinkColliders.add(collider);
+      uplinkPlaced = true;
+    };
+    if (uplinkNet && !isMpGuest) {
+      // Scatter 3–4 relays (bigger maps get the 4th) between 80m and ~40% of
+      // the map's half-size out, on random bearings, each at least 130m from
+      // every other and 65m clear of spawn — so the fields tile the playfield
+      // as distinct hot zones the fight keeps drifting through, never one
+      // landmark parked next to spawn.
+      const spireCount = (mapConfig.groundSize ?? 640) >= 700 ? 4 : 3;
+      const maxReach = Math.max(180, (mapConfig.groundSize ?? 640) * 0.4);
+      const placed: Array<[number, number]> = [];
+      for (let sp = 0; sp < spireCount; sp++) {
+        let bestX = 0, bestZ = 0, ok = false;
+        for (let attempt = 0; attempt < 24 && !ok; attempt++) {
+          const ang = Math.random() * Math.PI * 2;
+          const dist = 80 + Math.random() * (maxReach - 80);
+          const px = camera.position.x + Math.cos(ang) * dist;
+          const pz = camera.position.z + Math.sin(ang) * dist;
+          if (Math.hypot(px - camera.position.x, pz - camera.position.z) < 65) continue;
+          if (placed.some(([ox, oz]) => Math.hypot(px - ox, pz - oz) < 130)) continue;
+          if (overlapsTerrain(px, pz, 9)) continue;
+          bestX = px; bestZ = pz; ok = true;
+        }
+        if (!ok) continue; // dense map roll — settle for fewer relays
+        placed.push([bestX, bestZ]);
+        addUplinkSpire(bestX, bestZ);
+      }
+    }
+    // 0 outside every field → 1 at the nearest mast. The single source of
+    // LIVE proximity truth (host + guests both compute it locally from the
+    // shared spire list — no extra sync needed).
+    const uplinkFieldFactor = (x: number, z: number): number =>
+      uplinkNet && uplinkPlaced ? uplinkNet.fieldFactorAt(x, z) : 0;
+    // ── Lingering irradiation charge ────────────────────────────────────────
+    // The empowerment an enemy CARRIES: the max of its live field exposure
+    // and the charge it soaked up earlier (peak factor, held for a long
+    // linger window, fading out only over the final third). Refreshing
+    // happens once per frame in the enemy loop; this is the read side.
+    const IRRADIATION_LINGER_MS = 45000;
+    const irradiationCharge = (e: Enemy, nowMs: number): number => {
+      const live = uplinkFieldFactor(e.mesh.position.x, e.mesh.position.z);
+      const until = e.irradiatedUntil ?? 0;
+      if (until <= nowMs) return live;
+      const tLeft = (until - nowMs) / IRRADIATION_LINGER_MS;
+      const fade = Math.min(1, tLeft / 0.33);
+      const lingering = (e.irradiatedPower ?? 0) * fade;
+      return Math.max(live, lingering);
+    };
+    // ── Combined enemy empowerment ── event multiplier × irradiation charge.
+    // Read at every damage-dealing site + the movement step so buffs apply
+    // live — and KEEP applying long after the unit leaves the field.
+    const enemyDamageMult = (e: Enemy): number => {
+      let m = 1;
+      if (netWaveEvent === 'surge') m *= 1 + 0.35 * netWaveEventIntensity;
+      else if (netWaveEvent === 'glitch') m *= 1 + 0.20 * netWaveEventIntensity;
+      m *= 1 + irradiationCharge(e, Date.now()) * 0.9;
+      return m;
+    };
+    const enemySpeedMult = (e: Enemy): number => {
+      let m = 1;
+      if (netWaveEvent === 'surge') m *= 1 + 0.18 * netWaveEventIntensity;
+      else if (netWaveEvent === 'glitch') m *= 1 + 0.10 * netWaveEventIntensity;
+      m *= 1 + irradiationCharge(e, Date.now()) * 0.45;
+      return Math.min(m, 1.75); // hard fairness ceiling
+    };
+    // NULL WAVE compromises the player's ballistics — applied ONLY at the
+    // authoritative health writes (local bullet application + the host's
+    // enemy_hit handler) so guest-reported hits are never double-reduced.
+    const playerBallisticsMult = (): number =>
+      netWaveEvent === 'glitch' ? 1 - 0.25 * Math.min(1, netWaveEventIntensity) : 1;
 
     // Gun Model - CRITICAL FIX
     const gunModel = new GunModel('pistol');
@@ -4041,6 +4250,9 @@ const ForestSurvivalGame = () => {
         const ch = enemyGroup.children[ci];
         if (ch.userData?.isFrostShell) {
           enemyGroup.remove(ch);
+        } else if (ch.userData?.isSurgeHalo || ch.userData?.isRadShell) {
+          // ARK-07 event wrappers share their geo/mat — detach only, never dispose.
+          enemyGroup.remove(ch);
         } else if (ch.userData?.isRevShield) {
           enemyGroup.remove(ch);
           disposeRevShield(ch);
@@ -4170,7 +4382,13 @@ const ForestSurvivalGame = () => {
       // normal enemy (50 base) is ≥40 HP → always needs ≥2 body shots. This is a
       // no-op in normal play (Easy is 0.9, the lowest, already above the floor),
       // so it only protects the tutorial / future low-multiplier cases.
-      const effectiveHealth = enemyHealth * Math.max(0.8, diffSettings.healthMult * healthMultiplier) * easyEliteHpMult * (runMods.enemyHealthMult ?? 1);
+      // ARK-07 events also harden the wave's plating at spawn time (guests
+      // create mirrors too, but their hp/mx are overwritten from the host's
+      // sync stream, so this only ever matters on the authority).
+      const netEventHpMult = netWaveEvent === 'surge' ? 1 + 0.25 * netWaveEventIntensity
+        : netWaveEvent === 'glitch' ? 1 + 0.15 * netWaveEventIntensity
+        : 1;
+      const effectiveHealth = enemyHealth * Math.max(0.8, diffSettings.healthMult * healthMultiplier) * easyEliteHpMult * (runMods.enemyHealthMult ?? 1) * netEventHpMult;
 
       const enemy: Enemy = {
         mesh: enemyGroup,
@@ -5120,6 +5338,96 @@ const ForestSurvivalGame = () => {
     // enemy loot). One spawn keeps powers a genuine reward, not a stream. It
     // counts against the per-wave power-up budget so the wave's total stays
     // within the ~3–4 cap.
+    // ═══ ARK-07 NETWORK EVENT LIFECYCLE ══════════════════════════════════
+    // Shared by the host/solo roll (spawnWave) AND the guest mirror
+    // (handleEnemySync applies the host's wm/wi keyframe state through the
+    // same functions), so every client sees identical announcements/FX.
+    const activateNetWaveEvent = (kind: 'surge' | 'glitch', intensity: number) => {
+      if (netWaveEvent === kind) return;
+      netWaveEvent = kind;
+      netWaveEventIntensity = intensity;
+      wavesSinceNetEvent = 0;
+      setWaveEventUI(kind);
+      setWaveEventOverlay(kind);
+      if (kind === 'surge') {
+        // The broadcast made visible: an EMP ring races out from the NEAREST
+        // relay across the whole map (screen-flash + shake fire when it
+        // crosses the player — see the per-frame driver).
+        const src = uplinkNet?.nearestSpire(camera.position.x, camera.position.z);
+        const ox = src ? src.x : camera.position.x;
+        const oz = src ? src.z : camera.position.z;
+        empShockwaves.push(new EmpShockwave(scene, new THREE.Vector3(ox, 0, oz)));
+        soundManager.play('hack_overclock', 0.9, false, 0.55);
+        soundManager.play('powerUp', 0.8, false, 0.5);
+        if (!surgeIntroFired) {
+          surgeIntroFired = true;
+          setEnemyIntro({
+            id: Date.now(),
+            name: 'Overdrive Surge',
+            tag: 'NETWORK EVENT · ALL UNITS OVERCLOCKED',
+            blurb: 'ARK-07 just dumped an overdrive broadcast — safeties off, optics burning red. Every unit this wave hits harder, moves faster and shrugs off more. Survive the trial.',
+            accent: '#ff4a30',
+            icon: 'zap',
+          });
+        } else {
+          showPowerMessage('⚠ OVERDRIVE SURGE — ALL UNITS OVERCLOCKED', 3000);
+        }
+        if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('ARK-07: Overdrive broadcast detected', 'wave');
+      } else {
+        triggerAbilityFlash('#57d6ff');
+        soundManager.play('hack_fail', 0.8, false, 0.7);
+        soundManager.play('hit', 0.4, false, 2.2);
+        if (!glitchIntroFired) {
+          glitchIntroFired = true;
+          setEnemyIntro({
+            id: Date.now(),
+            name: 'Null Wave',
+            tag: 'SIGNAL CORRUPTED · FIRMWARE UNSTABLE',
+            blurb: 'This wave shipped corrupted. The units are running impossible code — they stutter through space, your ballistics are compromised, and the feed itself is tearing. Nothing about this fight is fair.',
+            accent: '#57d6ff',
+            icon: 'radio',
+          });
+        } else {
+          showPowerMessage('▚ NULL WAVE — SIGNAL CORRUPTED', 3000);
+        }
+        if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('ARK-07: corrupted firmware in the field', 'wave');
+      }
+    };
+    const deactivateNetWaveEvent = () => {
+      if (netWaveEvent === 'none') return;
+      netWaveEvent = 'none';
+      netWaveEventIntensity = 0;
+      setWaveEventUI(null);
+      setWaveEventOverlay(null);
+      // Strip every live surge halo now — the eased surgeVisual fade-out
+      // handles the material red-shift, but the wrappers come off instantly
+      // (shared assets: detach only, never dispose here).
+      for (let i = 0; i < enemies.length; i++) {
+        const e = enemies[i];
+        if (e.surgeHalo) { e.surgeHalo.removeFromParent(); e.surgeHalo = undefined; }
+      }
+    };
+    // Host/solo per-wave roll (guests only ever mirror). Difficulty leads both
+    // the odds and the severity; NULL WAVEs are rare everywhere but genuinely
+    // common on Hard; a 2-wave cooldown keeps events feeling like EVENTS.
+    const rollNetWaveEvent = () => {
+      wavesSinceNetEvent++;
+      if (isTutorialMode || wave < 5 || wavesSinceNetEvent < 3) return;
+      const glitchStartWave = classicDifficulty === 'hard' ? 6 : 8;
+      const glitchChance = wave >= glitchStartWave
+        ? ({ hard: 0.16, medium: 0.08, easy: 0.05, adaptive: 0.10 } as const)[classicDifficulty] ?? 0.08
+        : 0;
+      const surgeChance = ({ hard: 0.20, medium: 0.15, easy: 0.11, adaptive: 0.16 } as const)[classicDifficulty] ?? 0.15;
+      const base = classicDifficulty === 'hard' ? 1.0
+        : classicDifficulty === 'easy' ? 0.55
+        : classicDifficulty === 'adaptive' ? 0.85
+        : 0.75;
+      const intensity = Math.min(1.25, base * (1 + Math.min(wave, 30) * 0.008));
+      const roll = Math.random();
+      if (roll < glitchChance) activateNetWaveEvent('glitch', intensity);
+      else if (roll < glitchChance + surgeChance) activateNetWaveEvent('surge', intensity);
+    };
+
     const spawnWavePowerUps = () => {
       const spot = findPickupSpot(camera.position.x, camera.position.z, 20, 35);
       powerUps.push(createPowerUp(spot.x, spot.z, randomLoot()));
@@ -5147,6 +5455,10 @@ const ForestSurvivalGame = () => {
         spawnEnemyBatch(2);
         return;
       }
+      // ── ARK-07 roll — decides whether THIS wave arrives overclocked
+      // (OVERDRIVE SURGE) or corrupted (NULL WAVE) before any of it spawns,
+      // so the spawn-time HP scale in createEnemy sees the live modifier.
+      rollNetWaveEvent();
       // Solo / multiplayer — a finite, fully clearable wave. The opening
       // burst spawns now; continuousSpawn() trickles in the rest.
       // Wave size: 7 + wave*3 (was 10 + wave*5) — smaller waves so the
@@ -6319,10 +6631,17 @@ const ForestSurvivalGame = () => {
       // enemy loot now (one at a time), so there's no point-unlock gating.
       if (e.code === b.usePower && !paused) {
         if (heldPower) {
+          // ARK-07 EQUIPMENT JAM — inside a relay's interference field the
+          // trigger electronics are fried: the held power stays in the slot
+          // (nothing is wasted) but cannot be engaged until the player steps
+          // clear of the field.
+          if (playerSignalJammed) {
+            showPowerMessage('⚠ SIGNAL JAMMED — step clear of the relay field to use equipment', 2000);
+            soundManager.play('hack_fail', 0.5, false, 1.1);
           // Hand check: the riot shield braces on the SAME left arm that holds
           // the engineer's remote detonator, so it can't be raised while a bomb
           // is wired/armed. Slot is kept so the player can use it after detonating.
-          if (heldPower === 'shield' && detonatorOccupiesHand()) {
+          } else if (heldPower === 'shield' && detonatorOccupiesHand()) {
             showPowerMessage('Hands full — detonate your bomb before raising the shield', 1800);
           // Anti-stack: a timed power can't start while another timed effect is
           // still running — the player keeps the held power and is told to wait.
@@ -7567,6 +7886,10 @@ const ForestSurvivalGame = () => {
       clearHackState(enemy);
       // Drop any frost shell / crowd-control so a thawing corpse can't carry it.
       clearEnemyCC(enemy);
+      // Strip the ARK-07 surge halo / irradiated shell BEFORE the corpse path:
+      // the pooled-mesh release disposes unknown add-on children, and these
+      // wrappers ride SHARED assets that must never be disposed per-enemy.
+      clearNetEventVisuals(enemy);
       // ── DECAPITATION ── pop the head off before the corpse flies (so the
       // gib launches from the head's pre-ragdoll position).
       if (canDecapitate(enemy, isCritical)) spawnHeadGib(enemy);
@@ -7635,7 +7958,15 @@ const ForestSurvivalGame = () => {
         // carrot for picking a punishing mutator like Glass Cannon). Mini
         // bosses earn 3× the kill payout for their staying power.
         const miniBossMult = enemy.isMiniBoss ? 3 : 1;
-        score += Math.round(enemy.scoreValue * scoreDiffMult * runModifierScoreMult * miniBossMult);
+        // ARK-07 HOT-ZONE BOUNTY — a kill scored inside the uplink's field
+        // pays up to +50% (scaling toward the mast). The deliberate carrot
+        // for fighting empowered, self-repairing units in the radiation.
+        const hotZoneF = uplinkFieldFactor(enemy.mesh.position.x, enemy.mesh.position.z);
+        const hotZoneMult = 1 + hotZoneF * 0.5;
+        score += Math.round(enemy.scoreValue * scoreDiffMult * runModifierScoreMult * miniBossMult * hotZoneMult);
+        if (hotZoneF > 0.15 && gameSettingsManager.getSetting('killFeed') && Math.random() < 0.3) {
+          addKillFeedEntry('Hot-zone bounty claimed', 'combo');
+        }
         enemiesKilled++;
         // Daily Challenge channels — tick cumulative counts. Weapon
         // attribution follows the equipped weapon, the same rule mastery XP
@@ -7890,6 +8221,10 @@ const ForestSurvivalGame = () => {
           dailyCounts.wave = Math.max(dailyCounts.wave, wave + 1);
         }
         tookDamageThisWave = false;
+        // The trial is over — ARK-07 stands down until the next roll. Clears
+        // the HUD chip/overlay immediately; the red-shift and post-FX ease
+        // out via the per-frame drivers so nothing pops.
+        deactivateNetWaveEvent();
         wave++;
         // Snapshot the kill streak BEFORE we reset it so the Streak Keeper
         // perk (applied a few lines down) can restore it.
@@ -8036,12 +8371,17 @@ const ForestSurvivalGame = () => {
     // the `player_damaged` event the host sends when a shared enemy strikes a
     // remote player. `enemyPos` enables the directional riot-shield check for
     // local hits; network damage passes null (non-directional block).
-    const takeEnemyDamage = (incoming: number, enemyLabel: string, enemyPos: THREE.Vector3 | null) => {
-      if (phantomActive || invincibleActive || isTutorialMode || playerEliminated) return;
+    // `isRadiation` marks a tick of ARK-07 field exposure: it bypasses the
+    // Phantom cloak (you can't hide from radiation) and the held riot shield
+    // (it isn't a frontal blow), and skips the melee-grade feedback stack
+    // (impact sparks / shake / combo decay) — the radiation vignette + geiger
+    // are its feedback. Death, spectate and MP bookkeeping stay identical.
+    const takeEnemyDamage = (incoming: number, enemyLabel: string, enemyPos: THREE.Vector3 | null, isRadiation = false) => {
+      if ((phantomActive && !isRadiation) || invincibleActive || isTutorialMode || playerEliminated) return;
 
       let damage = incoming * Math.max(0, 1 - skillBonus('damageReduction')) * perkBonuses.damageTakenMult;
 
-      if (shieldActive && damage > 0) {
+      if (shieldActive && damage > 0 && !isRadiation) {
         camera.getWorldDirection(_shieldFwd);
         _shieldFwd.y = 0;
         _shieldFwd.normalize();
@@ -8072,7 +8412,17 @@ const ForestSurvivalGame = () => {
 
       health -= damage;
 
-      if (damage > 0) {
+      if (damage > 0 && isRadiation) {
+        // Radiation ticks: quiet, continuous harm — the geiger crackle +
+        // green vignette (driven by the exposure loop) are the feedback, so
+        // no impact stack here. Still counts as real damage everywhere it
+        // matters (flawless-wave tracking, adaptive difficulty, MP health).
+        adaptiveDifficulty.recordDamage(damage, false);
+        adaptiveDifficulty.recordHealthStatus(health, 100);
+        tookDamageThisWave = true;
+        if (health > 0 && health < 10) achievementSystem.updateProgress('close_call', 1);
+        if (isMultiplayer && multiplayerManager) multiplayerManager.updatePlayerHealth(health);
+      } else if (damage > 0) {
         adaptiveDifficulty.recordDamage(damage, false);
         adaptiveDifficulty.recordHealthStatus(health, 100);
         missionSystem.updateProgress('survival', 1);
@@ -8184,12 +8534,29 @@ const ForestSurvivalGame = () => {
     // snapshot it receives is always a keyframe.
     const handleEnemySync = (raw: unknown) => {
       if (!isMpGuest) return;
-      const msg = raw as { enemies: EnemyWire[]; wave: number; full?: boolean; t?: number };
+      const msg = raw as { enemies: EnemyWire[]; wave: number; full?: boolean; t?: number; wm?: number; wi?: number; us?: number[] };
       const isKeyframe = msg.full !== false; // default true for safety
       // First snapshot from the host → we're in sync; drop the affordance.
       if (mpWaitingForHostRef.current) {
         mpWaitingForHostRef.current = false;
         setMpWaitingForHost(false);
+      }
+
+      // ── ARK-07 mirror (keyframes carry the host's authoritative state) ──
+      // Build the relay spires exactly where the host rolled them, then apply
+      // the wave-modifier transition through the SAME activate/deactivate path
+      // the host used, so banners, overlays, halos and the red-shift all match.
+      if (Array.isArray(msg.us) && msg.us.length >= 2 && !uplinkPlaced && uplinkNet) {
+        for (let sp = 0; sp + 1 < msg.us.length; sp += 2) {
+          addUplinkSpire(msg.us[sp], msg.us[sp + 1]);
+        }
+      }
+      if (typeof msg.wm === 'number') {
+        const kind = msg.wm === 1 ? 'surge' : msg.wm === 2 ? 'glitch' : 'none';
+        const intensity = Math.max(0, Math.min(2, (msg.wi ?? 75) / 100));
+        if (kind === 'none') deactivateNetWaveEvent();
+        else if (netWaveEvent !== kind) activateNetWaveEvent(kind, intensity);
+        else netWaveEventIntensity = intensity;
       }
 
       // Host advanced the wave → mirror the banner + a fresh power crate so
@@ -8298,7 +8665,9 @@ const ForestSurvivalGame = () => {
         const m = raw as { netId: number; damage: number; isCritical: boolean; shooterId: string };
         const e = enemyByNetId.get(m.netId);
         if (!e || e.dead) return;
-        e.health -= m.damage;
+        // NULL WAVE ballistics compromise — scaled here (the single
+        // authoritative write for guest fire) so it's never double-applied.
+        e.health -= m.damage * playerBallisticsMult();
         e.damageFlashTime = m.isCritical ? 0.5 : 0.3;
         if (e.health <= 0) handleEnemyKilled(e, m.isCritical, m.shooterId);
       }));
@@ -8760,6 +9129,28 @@ const ForestSurvivalGame = () => {
       color: 0x9fe4ff, transparent: true, opacity: 0.34, depthWrite: false,
       blending: THREE.AdditiveBlending, toneMapped: false,
     });
+
+    // ── ARK-07 event wrappers (shared geo+mat, frost-shell pattern) ─────────
+    // Surge halo: the red overclock ring hovering over every enemy during an
+    // OVERDRIVE SURGE. Rad shell: the irradiated glow worn inside the uplink
+    // field (reuses the frost shell GEOMETRY — zero extra buffers). Both are
+    // lightweight per-enemy wrappers around session assets: attach/detach
+    // only; disposal happens exactly once, at scene teardown.
+    const _surgeHaloGeo = new THREE.TorusGeometry(0.85, 0.05, 6, 28);
+    const _surgeHaloMat = new THREE.MeshBasicMaterial({
+      color: 0xff3524, transparent: true, opacity: 0.85, depthWrite: false,
+      blending: THREE.AdditiveBlending, toneMapped: false,
+    });
+    const _radShellMat = new THREE.MeshBasicMaterial({
+      color: 0x6bff6b, transparent: true, opacity: 0.16, depthWrite: false,
+      blending: THREE.AdditiveBlending, toneMapped: false,
+    });
+    // Strip an enemy's event wrappers (death / recycle / wave end). Shared
+    // assets → detach only, never dispose.
+    const clearNetEventVisuals = (enemy: Enemy) => {
+      if (enemy.surgeHalo) { enemy.surgeHalo.removeFromParent(); enemy.surgeHalo = undefined; }
+      if (enemy.radShell) { enemy.radShell.removeFromParent(); enemy.radShell = undefined; }
+    };
     const _teslaVec = new THREE.Vector3();
     const _teslaFrom = new THREE.Vector3();
 
@@ -9630,6 +10021,9 @@ const ForestSurvivalGame = () => {
         for (let s = 0; s < sentinels.length; s++) {
           const sentinel = sentinels[s];
           if (sentinel.destroyed) continue;
+          // Turret rides the VISUAL terrain surface — sentinels scatter far
+          // past the flat zone, where the displaced ground would bury them.
+          sentinel.mesh.position.y = visualGroundY(sentinel.mesh.position.x, sentinel.mesh.position.z);
           const dxS = camera.position.x - sentinel.mesh.position.x;
           const dzS = camera.position.z - sentinel.mesh.position.z;
           const distSq = dxS * dxS + dzS * dzS;
@@ -10189,6 +10583,22 @@ const ForestSurvivalGame = () => {
 
       // === UPDATE POWERUP EFFECT TIMERS ===
       const now = Date.now();
+      // ── ARK-07 EQUIPMENT JAM ── standing deep in a relay's interference
+      // field fries every ACTIVE timed boost: clamp their end-times to now so
+      // the ordinary expiry handling below (flags, kill-feed notices) retires
+      // them on this same frame. Invincibility is deliberately exempt — a
+      // grace window must never be jammed away mid-save. New activations are
+      // blocked separately at the use-power gate.
+      if (playerSignalJammed) {
+        speedBoostEndTime = Math.min(speedBoostEndTime, now);
+        damageBoostEndTime = Math.min(damageBoostEndTime, now);
+        infiniteAmmoEndTime = Math.min(infiniteAmmoEndTime, now);
+        shieldEndTime = Math.min(shieldEndTime, now);
+        overchargeEndTime = Math.min(overchargeEndTime, now);
+        phantomEndTime = Math.min(phantomEndTime, now);
+        teslaEndTime = Math.min(teslaEndTime, now);
+        rapidFireEndTime = Math.min(rapidFireEndTime, now);
+      }
       if (speedBoostActive && now >= speedBoostEndTime) {
         speedBoostActive = false;
         // No setPowerUpMessage('') here — the managed message timer owns the
@@ -11577,7 +11987,11 @@ const ForestSurvivalGame = () => {
               bulletConsumed = true;
               break;
             } else {
-              enemy.health -= damage;
+              // NULL WAVE compromises the player's ballistics — the corrupted
+              // units shrug off a slice of every round. Applied only at this
+              // authoritative write (guests' reported hits are scaled once,
+              // in the host's enemy_hit handler — never both).
+              enemy.health -= damage * playerBallisticsMult();
               // Landing an open-window shot tells the Revenant it's being shot
               // at → it blinks to evade (player-sourced evade only).
               if (enemy.type === 'revenant') enemy.revEvadeUntil = Date.now() + 500;
@@ -11873,7 +12287,8 @@ const ForestSurvivalGame = () => {
             enemy.mesh.scale.setScalar(baseScale * fade);
           } else if (enemy.deathVel) {
             // ── RAGDOLL (lightweight fallback — pre-WASM / WASM unavailable) ──
-            const restY = 0.22 * baseScale; // height the tumbling corpse rests at
+            // Rest height rides the visual terrain surface (0 near the player).
+            const restY = 0.22 * baseScale + visualGroundY(enemy.mesh.position.x, enemy.mesh.position.z);
 
             // Splay the limbs into a slack ragdoll pose on the first frame.
             if (enemy.deathStarted) {
@@ -11910,7 +12325,9 @@ const ForestSurvivalGame = () => {
             // ── SIMPLE (ragdoll off / MP mirror) — topple forward + shrink ──
             const p = 1.0 - enemy.deathTime; // 0 → 1 over the 1s death window
             enemy.mesh.rotation.x = p * (Math.PI / 2);
-            enemy.mesh.position.y = baseScale * (1.0 - p);
+            // Corpse settles onto the VISUAL terrain surface (0 near the
+            // player) so a distant kill doesn't pop below the displaced hills.
+            enemy.mesh.position.y = baseScale * (1.0 - p) + visualGroundY(enemy.mesh.position.x, enemy.mesh.position.z);
             enemy.mesh.scale.setScalar(Math.max(0.02, 1.0 - p * 0.8) * baseScale);
             if (enemy.leftArm) { enemy.leftArm.rotation.z = p * (Math.PI / 3); enemy.leftArm.rotation.x = p * (Math.PI / 4); }
             if (enemy.rightArm) { enemy.rightArm.rotation.z = -p * (Math.PI / 3); enemy.rightArm.rotation.x = p * (Math.PI / 4); }
@@ -11938,6 +12355,11 @@ const ForestSurvivalGame = () => {
             // is recycled, so the next enemy in this slot never inherits one.
             if (enemy.hackVisuals) { disposeHackVisuals(enemy.hackVisuals); enemy.hackVisuals = undefined; }
             enemy.hacked = false;
+            // Safety net #2: ARK-07 event wrappers ride shared assets — they
+            // must come off before the release path's generic child-disposal
+            // sweep. Catches every death route (incl. guest-mirrored deaths
+            // that never pass through handleEnemyKilled).
+            clearNetEventVisuals(enemy);
             // Revenant shield — detach + dispose its per-instance geo/mats so
             // the recycled slot never carries a stray gold shield.
             if (enemy.revShield) {
@@ -11966,9 +12388,71 @@ const ForestSurvivalGame = () => {
 
         if (enemy.dead) continue;
 
-        // Compute baseScale for ALL living enemies (needed for grounding)
+        // Compute baseScale for ALL living enemies (needed for grounding).
         const baseScale = enemy.type === 'fast' ? 0.7 : enemy.type === 'tank' ? 1.5 : enemy.type === 'boss' ? 2.0 : enemy.type === 'revenant' ? 0.85 : 1.0;
-        const groundY = 1.0 * baseScale;
+        // groundY rides the VISUAL terrain surface: beyond the player-relative
+        // flat zone the GPU displaces the ground upward, and an enemy pinned
+        // to the y=0 gameplay plane there reads as buried to the knees. The
+        // CPU height replica matches the shader byte-for-byte, and returns 0
+        // inside the flat zone — so close-range combat is untouched and a
+        // distant enemy simply STANDS ON the hills it walks over. Every Y
+        // write below (walk bob, idle, far-seek, recycle, guest mirror)
+        // inherits it automatically.
+        const groundY = 1.0 * baseScale + visualGroundY(enemy.mesh.position.x, enemy.mesh.position.z);
+
+        // ── ARK-07 EVENT VISUALS (host, solo AND guest mirrors) ───────────
+        // Surge halo: the red overclock ring every unit wears during an
+        // OVERDRIVE SURGE. Lazily attached so enemies that spawned before the
+        // guest learned the modifier (or mid-wave stragglers) still get one;
+        // detached the moment the wave clears. Bob + pulse only — spinning a
+        // rotationally-symmetric ring is invisible, so we don't pay for it.
+        if (netWaveEvent === 'surge') {
+          if (!enemy.surgeHalo) {
+            const halo = new THREE.Mesh(_surgeHaloGeo, _surgeHaloMat);
+            halo.rotation.x = Math.PI / 2;
+            halo.position.y = 3.35;
+            halo.userData.isSurgeHalo = true;
+            halo.userData.cannotReceiveAO = true;
+            enemy.mesh.add(halo);
+            enemy.surgeHalo = halo;
+          }
+          enemy.surgeHalo.position.y = 3.35 + Math.sin(frameNowMs * 0.006 + i * 1.3) * 0.12;
+          enemy.surgeHalo.scale.setScalar(1 + Math.sin(frameNowMs * 0.008 + i) * 0.1);
+        } else if (enemy.surgeHalo) {
+          enemy.surgeHalo.removeFromParent();
+          enemy.surgeHalo = undefined;
+        }
+        // Irradiation soak + lingering shell (host, solo AND guests — every
+        // client computes it locally from the shared spire list + synced
+        // positions). While a unit stands in a relay field it SOAKS charge:
+        // peak factor stored + the linger clock refreshed, so the buff — and
+        // the glowing shell that warns the player about it — persists long
+        // after the unit walks out, fading only in the final stretch.
+        if (uplinkPlaced) {
+          const fieldGlow = uplinkFieldFactor(enemy.mesh.position.x, enemy.mesh.position.z);
+          if (fieldGlow > 0.1) {
+            enemy.irradiatedPower = Math.max(enemy.irradiatedPower ?? 0, fieldGlow);
+            enemy.irradiatedUntil = frameNowMs + IRRADIATION_LINGER_MS;
+          }
+          const charge = irradiationCharge(enemy, frameNowMs);
+          // Hysteresis (attach >0.12, detach <0.06) stops rim flicker.
+          if (!enemy.radShell && charge > 0.12) {
+            const shell = new THREE.Mesh(_frostShellGeo, _radShellMat);
+            shell.position.y = 1.0;
+            shell.userData.isRadShell = true;
+            shell.userData.cannotReceiveAO = true;
+            enemy.mesh.add(shell);
+            enemy.radShell = shell;
+          } else if (enemy.radShell && charge < 0.06) {
+            enemy.radShell.removeFromParent();
+            enemy.radShell = undefined;
+          }
+          if (enemy.radShell) {
+            // Pulse harder the more charge the unit carries — the tell that
+            // THIS one is the supercharged problem.
+            enemy.radShell.scale.setScalar(1.02 + charge * 0.12 + Math.sin(frameNowMs * (0.004 + charge * 0.004) + i * 0.9) * (0.05 + charge * 0.06));
+          }
+        }
 
         // ── BATTLE-DAMAGE VENTING ─────────────────────────────────────────
         // A critically-wounded robot — or one fried by a Subverter intrusion
@@ -12153,9 +12637,12 @@ const ForestSurvivalGame = () => {
           // faster, so even players who try to out-snipe end up fighting
           // close-up within a few seconds.
           const sprintMul = diffSettings.chaseMult >= 1.2 ? 1.45 : 1.0;
+          // ARK-07 empowerment paces the far-seek too, so surged/irradiated
+          // units close the gap visibly faster.
+          const netMulFar = enemySpeedMult(enemy);
           _tempVec3.subVectors(focusPos, enemy.mesh.position).normalize();
-          enemy.mesh.position.x += _tempVec3.x * enemy.speed * sprintMul * delta * 60;
-          enemy.mesh.position.z += _tempVec3.z * enemy.speed * sprintMul * delta * 60;
+          enemy.mesh.position.x += _tempVec3.x * enemy.speed * sprintMul * netMulFar * delta * 60;
+          enemy.mesh.position.z += _tempVec3.z * enemy.speed * sprintMul * netMulFar * delta * 60;
           enemy.mesh.position.y = groundY;
           enemy.mesh.rotation.y = Math.atan2(_tempVec3.x, _tempVec3.z);
           continue;
@@ -12164,6 +12651,16 @@ const ForestSurvivalGame = () => {
         // Health regeneration
         if (diffSettings.regenRate > 0 && enemy.health < enemy.maxHealth) {
           enemy.health = Math.min(enemy.maxHealth, enemy.health + diffSettings.regenRate * delta * 10);
+        }
+        // ARK-07 self-repair — units carrying command-bandwidth charge patch
+        // themselves (up to ~3 HP/s at full charge). Because the charge
+        // LINGERS, a unit that bathed at a relay keeps repairing even after
+        // it leaves — the visible reason to burn the glowing ones down first.
+        if (enemy.health < enemy.maxHealth) {
+          const charge = irradiationCharge(enemy, frameNowMs);
+          if (charge > 0) {
+            enemy.health = Math.min(enemy.maxHealth, enemy.health + charge * 3 * delta);
+          }
         }
 
         // === PERCEPTION SYSTEM (throttled — sight/sound uses raycasts) ===
@@ -12390,7 +12887,7 @@ const ForestSurvivalGame = () => {
               : aiDecision.moveSpeed;
             // Adaptive mode scales the whole swarm's pace live with the player's
             // performance (1.0 elsewhere, so fixed difficulties are unchanged).
-            const step = enemy.speed * speedMul * delta * 60 * (isAdaptiveMode ? adaptiveSpeedMult : 1);
+            const step = enemy.speed * speedMul * delta * 60 * (isAdaptiveMode ? adaptiveSpeedMult : 1) * enemySpeedMult(enemy);
             const px = enemy.mesh.position.x;
             const pz = enemy.mesh.position.z;
 
@@ -12728,7 +13225,8 @@ const ForestSurvivalGame = () => {
                 enemyBullets.push({
                   mesh: bulletGroup,
                   velocity: dir.multiplyScalar(speed),
-                  damage: enemy.damage,
+                  // ARK-07 empowerment baked into the bolt at launch.
+                  damage: enemy.damage * enemyDamageMult(enemy),
                   life: 240,
                 });
                 soundManager.play('shoot_pistol', 0.55, false, 1.3);
@@ -12978,7 +13476,7 @@ const ForestSurvivalGame = () => {
                 bolt.position.copy(origin);
                 bolt.add(new THREE.Mesh(_enemyBulletGlowGeo, _revBoltGlowMat));
                 scene.add(bolt);
-                enemyBullets.push({ mesh: bolt, velocity: dir.multiplyScalar(0.62), damage: enemy.damage, life: 240 });
+                enemyBullets.push({ mesh: bolt, velocity: dir.multiplyScalar(0.62), damage: enemy.damage * enemyDamageMult(enemy), life: 240 });
                 soundManager.play('shoot_pistol', 0.5, false, 1.55);
                 enemy.rangedChargeMs = 0;
                 enemy.rangedNextShotAt = frameNowMs + 1600;
@@ -13029,7 +13527,11 @@ const ForestSurvivalGame = () => {
           );
 
           if (hitPlayer || overlapDamage) {
-            const raw = enemy.attackSystem.getDamage();
+            // ARK-07 empowerment (surge/glitch wave × uplink-field proximity)
+            // scales the strike at the moment it lands, so an enemy that
+            // walked into the hot zone mid-swing already hits harder. Also
+            // covers the host→remote sendPlayerDamage path below (same raw).
+            const raw = enemy.attackSystem.getDamage() * enemyDamageMult(enemy);
             enemy.lastAttackTime = frameNowMs; // Update for overlap cooldown
             if (enemy.hacked) {
               // ── HACKED: the strike lands on its victim enemy, not the player.
@@ -13123,6 +13625,171 @@ const ForestSurvivalGame = () => {
           enemy.mesh.position.z += (Math.random() - 0.5) * amt;
           enemy.mesh.rotation.z = (Math.random() - 0.5) * 0.14 * urgency;
         }
+
+        // ── NULL-WAVE CORRUPTION (host/solo authoritative) ──────────────
+        // Units running corrupted firmware exist WRONG: a light positional
+        // shiver every frame, and every few seconds one of them STUTTER-
+        // BLINKS — teleports a couple of metres sideways in a burst of
+        // static, exactly the "unfair" mobility the trial was never meant to
+        // ship with. Guests see the skips through the interpolated sync
+        // stream (a 2–3m snap reads as intended — it IS a glitch).
+        if (netWaveEvent === 'glitch' && !enemy.dead && !enemy.hacked) {
+          const shiver = 0.02 * netWaveEventIntensity;
+          enemy.mesh.position.x += (Math.random() - 0.5) * shiver;
+          enemy.mesh.position.z += (Math.random() - 0.5) * shiver;
+          if (frameNowMs >= nextGlitchSkipCheckAt
+              && enemy.type !== 'boss'
+              && frameNowMs >= (enemy.nextGlitchSkipAt ?? 0)
+              && frameNowMs >= (enemy.ccUntil ?? 0)
+              && enemy.engageable !== false
+              && distance < 45 && distance > 4
+              && Math.random() < 0.5) {
+            nextGlitchSkipCheckAt = frameNowMs + 600 + Math.random() * 900;
+            enemy.nextGlitchSkipAt = frameNowMs + 3800 + Math.random() * 3200;
+            // Sidestep perpendicular to the player bearing (random hand),
+            // terrain-checked so the skip can't bury it in a trunk.
+            const bearX = (focusPos.x - enemy.mesh.position.x) / Math.max(0.001, distance);
+            const bearZ = (focusPos.z - enemy.mesh.position.z) / Math.max(0.001, distance);
+            const hand = Math.random() < 0.5 ? 1 : -1;
+            const skip = 2.4 + Math.random() * 1.6 * netWaveEventIntensity;
+            const sx = enemy.mesh.position.x + (-bearZ * hand) * skip;
+            const sz = enemy.mesh.position.z + (bearX * hand) * skip;
+            if (!checkTerrainCollision(sx, sz)) {
+              // Static burst at BOTH ends of the skip so the eye connects them.
+              createParticles(enemy.mesh.position, 0x8ff5ff, 7);
+              enemy.mesh.position.x = sx;
+              enemy.mesh.position.z = sz;
+              _tempVec3.set(sx, enemy.mesh.position.y + 0.8, sz);
+              createParticles(_tempVec3, 0x8ff5ff, 7);
+              soundManager.play('hack_fail', 0.22, false, 1.6 + Math.random() * 0.5);
+            }
+          }
+        }
+      }
+
+      // ═══ ARK-07 PER-FRAME DRIVERS ═══════════════════════════════════════
+      // Eases the surge red-shift, advances the EMP broadcast front, shapes
+      // the NULL-WAVE corruption envelope, animates the spire and meters the
+      // player's radiation dose. All uniform writes / eased scalars — nothing
+      // here allocates or compiles.
+      {
+        const tSec = frameNowMs * 0.001;
+        // OVERDRIVE red-shift — ease toward the live target, throb while hot.
+        const surgeTarget = netWaveEvent === 'surge' ? 1 : 0;
+        surgeVisual += (surgeTarget - surgeVisual) * Math.min(1, delta * 2.2);
+        if (surgeTarget === 0 && surgeVisual < 0.005) surgeVisual = 0;
+        smartEnemyManager.setSurgeFactor(surgeVisual * (0.86 + 0.14 * Math.sin(tSec * 6.2)));
+        // The relay network lives: dish sweeps, beacon heartbeats, holo rings,
+        // field shimmer — and every spire rides the VISUAL terrain surface
+        // (visualGroundY) so distant relays never sink into displaced hills.
+        if (uplinkNet && uplinkPlaced) uplinkNet.update(delta, tSec, surgeVisual, visualGroundY);
+        // Explosive barrels ride the visual surface too (they scatter far
+        // past the flat zone, where the displaced ground would bury them).
+        // Gameplay position tracks the mesh so aimed shots stay true.
+        for (let bi = 0; bi < barrels.length; bi++) {
+          const b = barrels[bi];
+          if (b.detonated) continue;
+          const by = 0.65 + visualGroundY(b.position.x, b.position.z);
+          b.mesh.position.y = by;
+          b.position.y = by;
+        }
+        // EMP broadcast fronts — flash/shake the moment one crosses the player.
+        for (let w = empShockwaves.length - 1; w >= 0; w--) {
+          const emp = empShockwaves[w];
+          const alive = emp.update(delta);
+          if (!emp.crossedPlayer) {
+            const dp = Math.hypot(camera.position.x - emp.origin.x, camera.position.z - emp.origin.z);
+            if (emp.radius >= dp) {
+              emp.crossedPlayer = true;
+              triggerAbilityFlash('#ff3524');
+              if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
+              soundManager.play('hit', 0.7, false, 0.45);
+              soundManager.play('powerUp', 0.5, false, 0.42);
+              haptic('hurt');
+            }
+          }
+          if (!alive) { emp.dispose(scene); empShockwaves.splice(w, 1); }
+        }
+        // NULL-WAVE corruption envelope — a floor of unease + random spikes,
+        // so the tearing arrives in BURSTS like a failing feed, not a filter.
+        const glitchTarget = netWaveEvent === 'glitch' ? 1 : 0;
+        glitchVisual += (glitchTarget - glitchVisual) * Math.min(1, delta * 3.0);
+        if (glitchTarget === 0 && glitchVisual < 0.005) glitchVisual = 0;
+        if (glitchVisual > 0.01) {
+          if (frameNowMs >= nextGlitchBurstAt) {
+            glitchBurst = 0.5 + Math.random() * 0.7;
+            nextGlitchBurstAt = frameNowMs + 350 + Math.random() * 1500;
+          }
+          glitchBurst = Math.max(0, glitchBurst - delta * 1.8);
+          postFX?.setGlitch(glitchVisual * Math.min(1, netWaveEventIntensity || 1) * (0.16 + glitchBurst * 0.55));
+        } else {
+          postFX?.setGlitch(0);
+        }
+        // Player relay-field exposure — interference-cooked vision (post-FX
+        // wobble/blur/desat + the DOM static floor), geiger crackle, the
+        // equipment jam latch and the grace-period dose drain. Solo + MP
+        // (each client meters its own body).
+        if (uplinkNet && uplinkPlaced && !isTutorialMode && !playerEliminated && !isGameOver) {
+          const fieldF = uplinkFieldFactor(camera.position.x, camera.position.z);
+          radiationSmooth += (fieldF - radiationSmooth) * Math.min(1, delta * 4);
+          // The vision IS the warning — no HUD icon. WebGL interference on
+          // capable tiers; the quantised DOM overlay guarantees the read
+          // everywhere (and layers static under the blur on high tiers).
+          postFX?.setInterference(Math.min(1, radiationSmooth * 1.15));
+          if (frameNowMs >= nextRadPushAt) {
+            nextRadPushAt = frameNowMs + 250;
+            const q = Math.round(radiationSmooth * 20) / 20;
+            if (q !== lastRadPushed) {
+              lastRadPushed = q;
+              setInterferenceOverlay(q);
+            }
+          }
+          // Equipment jam — deep enough in the field, the interference fries
+          // active tech: timed powerups force-expire (see the timer block)
+          // and the held power can't be triggered. One notice per entry.
+          const jammedNow = fieldF > 0.12;
+          if (jammedNow && !playerSignalJammed && frameNowMs - jamNoticeShownAt > 4000) {
+            jamNoticeShownAt = frameNowMs;
+            showPowerMessage('⚠ SIGNAL JAMMED — EQUIPMENT OFFLINE IN THE FIELD', 2600);
+            soundManager.play('hack_fail', 0.55, false, 0.9);
+          }
+          playerSignalJammed = jammedNow;
+          if (fieldF > 0.02) {
+            radExposureS += delta;
+            // Geiger clicks accelerate toward the mast — the classic dosimeter
+            // read, built from the shell-casing tick at high pitch.
+            if (frameNowMs >= nextGeigerAt) {
+              nextGeigerAt = frameNowMs + 520 - fieldF * 430 + Math.random() * 140;
+              soundManager.play('casing', 0.22, false, 1.9 + Math.random() * 0.5);
+            }
+            // First contact — the lore drop that reframes the whole game.
+            if (!uplinkIntroFired && fieldF > 0.1) {
+              uplinkIntroFired = true;
+              setEnemyIntro({
+                id: Date.now(),
+                name: 'ARK-07 Relay',
+                tag: 'COMMAND RADIATION · ONE OF SEVERAL',
+                blurb: 'A pre-collapse relay spire — one node of a network still answering a dead satellite, still running its last order: field-test the units against a live target. That target is you. Inside its field the machines drink raw command bandwidth and stay supercharged long after they leave; your optics fry, your equipment jams, your body cooks. Kills made in the field pay a bounty.',
+                accent: '#49e06a',
+                icon: 'radiation',
+              });
+              soundManager.play('hack_deploy', 0.6, false, 0.8);
+              if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Relay signal source located — ARK-07', 'wave');
+            }
+            // Dose damage after a short grace window (so brushing the rim is
+            // free; CAMPING the bounty zone is a real trade).
+            if (radExposureS > 2.2 && frameNowMs >= nextRadTickAt) {
+              nextRadTickAt = frameNowMs + 700;
+              const doseScale = classicDifficulty === 'hard' ? 1.4
+                : classicDifficulty === 'easy' ? 0.6
+                : classicDifficulty === 'adaptive' ? 1.1
+                : 1.0;
+              takeEnemyDamage((0.6 + 2.4 * fieldF) * doseScale, 'Radiation Exposure', null, true);
+            }
+          } else {
+            radExposureS = Math.max(0, radExposureS - delta * 2);
+          }
+        }
       }
 
       // === SHARED-ENEMY SNAPSHOT (host → guests) ===
@@ -13174,8 +13841,20 @@ const ForestSurvivalGame = () => {
             lastEnemyKeyframeMs = frameNowMs;
             forceEnemyKeyframe = false;
             // Stamp the host send-time so guests can de-jitter the stream onto
-            // their own clock (same technique as remote players).
-            mp.broadcastEnemySync(wire, wave, true, frameNowMs);
+            // their own clock (same technique as remote players). Keyframes
+            // also carry the ARK-07 state (wave modifier + relay-spire list)
+            // so guests mirror the event + build the spires where the host did.
+            const spireList: number[] = [];
+            if (uplinkNet) {
+              for (const sp of uplinkNet.spires) {
+                spireList.push(Math.round(sp.x * 100) / 100, Math.round(sp.z * 100) / 100);
+              }
+            }
+            mp.broadcastEnemySync(wire, wave, true, frameNowMs, {
+              wm: netWaveEvent === 'surge' ? 1 : netWaveEvent === 'glitch' ? 2 : 0,
+              wi: Math.round(netWaveEventIntensity * 100),
+              us: spireList,
+            });
           } else if (wire.length > 0) {
             mp.broadcastEnemySync(wire, wave, false, frameNowMs);
           }
@@ -13565,6 +14244,37 @@ const ForestSurvivalGame = () => {
         );
         flareAnchorB.position.copy(wp);
         scene.add(flareAnchorB); warmupRetainedObjects.push(flareAnchorB);
+
+        // ── ARK-07 NETWORK-EVENT VISUALS ────────────────────────────────
+        // Surge halo + irradiated shell ride session-shared geo/mats — one
+        // render each links their programs for good (removed via `warm`,
+        // never disposed). The EMP shockwave's fog-free additive permutation
+        // gets a tiny retained anchor so the first OVERDRIVE broadcast
+        // mid-run never links a program.
+        const warmHalo = new THREE.Mesh(_surgeHaloGeo, _surgeHaloMat);
+        warmHalo.position.copy(wp); scene.add(warmHalo); warm.push(warmHalo);
+        const warmRadShell = new THREE.Mesh(_frostShellGeo, _radShellMat);
+        warmRadShell.position.copy(wp); scene.add(warmRadShell); warm.push(warmRadShell);
+        const empAnchor = new THREE.Mesh(
+          flareAnchorGeo,
+          new THREE.MeshBasicMaterial({
+            color: 0xff3524, transparent: true, opacity: 0.4, depthWrite: false,
+            blending: THREE.AdditiveBlending, toneMapped: false, fog: false,
+          }),
+        );
+        empAnchor.position.copy(wp);
+        scene.add(empAnchor); warmupRetainedObjects.push(empAnchor);
+        // The relay spires: on host/solo they already stand in the world, so
+        // the scene compile pass covers them — but a GUEST only builds them
+        // after the first host keyframe, mid-loader-hidden. Tiny quads pin
+        // every one of the network's material programs either way.
+        if (uplinkNet) {
+          uplinkNet.materials.forEach((m, mi) => {
+            const q = new THREE.Mesh(flareAnchorGeo, m);
+            q.position.copy(wp).add(new THREE.Vector3((mi - uplinkNet.materials.length / 2) * 0.03, 0, 0));
+            scene.add(q); warmupRetainedObjects.push(q);
+          });
+        }
 
         // Enemy + Revenant bolt tracers. Their materials are SHARED session-long
         // consts, so rendering one of each once links the program for good —
@@ -14134,6 +14844,22 @@ const ForestSurvivalGame = () => {
       fireNovas.length = 0;
       for (const ce of castEffects) ce.dispose(scene);
       castEffects.length = 0;
+
+      // Cleanup ARK-07 network-event resources: any in-flight EMP broadcast
+      // fronts, the event wrappers still worn by live enemies (shared assets —
+      // detach BEFORE the shared geo/mats below are disposed), the shared
+      // halo/shell assets themselves, the uplink structure, and the UI state
+      // so a restarted match never inherits a stale chip/vignette.
+      for (const emp of empShockwaves) emp.dispose(scene);
+      empShockwaves.length = 0;
+      for (const e of enemies) clearNetEventVisuals(e);
+      _surgeHaloGeo.dispose();
+      _surgeHaloMat.dispose();
+      _radShellMat.dispose();
+      uplinkNet?.dispose();
+      setWaveEventOverlay(null);
+      setInterferenceOverlay(0);
+      setWaveEventUI(null);
 
       // Cleanup the retained warmup effects. Their materials were deliberately
       // kept alive all session (warmup teardown used dispose(scene, false)) to
@@ -14722,6 +15448,7 @@ const ForestSurvivalGame = () => {
           isTouch={isTouch}
           weaponMastery={gameState.weaponMastery}
           weaponUnlockMult={gameState.weaponUnlockMult}
+          waveEvent={waveEventUI}
         />
       </div>
       )}

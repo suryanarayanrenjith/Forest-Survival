@@ -84,7 +84,61 @@ interface HUDProps {
    *  higher, adaptive dynamic). The locked-weapon tooltip shows the scaled
    *  requirement. Defaults to 1. */
   weaponUnlockMult?: number;
+  /** ARK-07 network-event state for the CURRENT wave — renders the warning
+   *  chip under the vitals panel ('surge' = OVERDRIVE, 'glitch' = NULL WAVE).
+   *  Null/undefined = clean signal, no chip. (Relay-field exposure has NO
+   *  chip by design — it announces itself through the interference vision.) */
+  waveEvent?: 'surge' | 'glitch' | null;
 }
+
+/** Slim warning chip for ARK-07 network events. Rendered under the vitals
+ *  panel (desktop) / inside the compact panel (touch). No backdrop-filter —
+ *  solid translucent fill, per the in-game perf rule. */
+const WaveEventChip = ({ waveEvent, compact = false }: {
+  waveEvent?: 'surge' | 'glitch' | null;
+  compact?: boolean;
+}) => {
+  if (!waveEvent) return null;
+  const pad = compact ? 'px-2 py-0.5' : 'px-3 py-1';
+  const text = compact ? 'text-[9px]' : 'text-[10px]';
+  return (
+    <div className={`flex ${compact ? 'flex-row gap-1' : 'flex-col gap-1.5'} mt-1.5`}>
+      {waveEvent === 'surge' && (
+        <div
+          className={`rounded-full border border-red-500/60 bg-red-950/85 ${pad} w-fit`}
+          style={{ animation: 'hudEventPulse 1.2s ease-in-out infinite', willChange: 'opacity' }}
+        >
+          <span className={`${text} font-bold tracking-[0.14em] uppercase text-red-300`}>
+            ⚡ Overdrive Surge
+          </span>
+        </div>
+      )}
+      {waveEvent === 'glitch' && (
+        <div
+          className={`rounded-full border border-cyan-400/50 bg-slate-950/85 ${pad} w-fit`}
+          style={{ animation: 'hudGlitchFlicker 0.7s steps(2, jump-none) infinite', willChange: 'opacity' }}
+        >
+          <span
+            className={`${text} font-bold tracking-[0.14em] uppercase text-cyan-300`}
+            style={{ textShadow: '1px 0 rgba(255,60,220,0.8), -1px 0 rgba(64,224,255,0.8)' }}
+          >
+            ▚ Signal Corrupted
+          </span>
+        </div>
+      )}
+      <style>{`
+        @keyframes hudEventPulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.55; }
+        }
+        @keyframes hudGlitchFlicker {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.4; }
+        }
+      `}</style>
+    </div>
+  );
+};
 
 const HUD = ({
   health, maxHealth = 100, ammo, maxAmmo, enemiesKilled, score, wave, weaponName,
@@ -92,6 +146,7 @@ const HUD = ({
   hideWave = false, abilities = [],
   staminaRatio = 1, staminaExhausted = false, unlimitedStamina = false,
   isTouch = false, weaponMastery, weaponUnlockMult = 1,
+  waveEvent = null,
 }: HUDProps) => {
   const [scorePopup, setScorePopup] = useState(false);
   const [prevScore, setPrevScore] = useState(score);
@@ -160,7 +215,13 @@ const HUD = ({
               {!hideWave && !hideStatsPanel && (
                 <div className="flex items-center gap-1">
                   <Waves className="h-3 w-3 text-emerald-500" strokeWidth={2.25} />
-                  <span className="text-xs font-semibold tabular-nums text-emerald-300">{wave}</span>
+                  {/* NULL WAVE corrupts the wave readout — the counter itself "glitches". */}
+                  <span
+                    className={`text-xs font-semibold tabular-nums ${waveEvent === 'glitch' ? 'text-cyan-300' : 'text-emerald-300'}`}
+                    style={waveEvent === 'glitch' ? { textShadow: '1px 0 rgba(255,60,220,0.8), -1px 0 rgba(64,224,255,0.8)' } : undefined}
+                  >
+                    {waveEvent === 'glitch' ? '▓▒' : wave}
+                  </span>
                 </div>
               )}
             </div>
@@ -176,6 +237,8 @@ const HUD = ({
                 </div>
               </div>
             </div>
+            {/* ARK-07 network-event warning chips (compact). */}
+            <WaveEventChip waveEvent={waveEvent} compact />
           </div>
         </div>
 
@@ -259,6 +322,9 @@ const HUD = ({
             </div>
           )}
         </div>
+        {/* ARK-07 network-event warning chips — under the vitals panel so they
+            read at a glance without touching the top-centre combo lane. */}
+        <WaveEventChip waveEvent={waveEvent} />
       </div>
 
       {/* ===== Top Right — Stats ===== */}
@@ -280,7 +346,13 @@ const HUD = ({
               {!hideWave && (
                 <div className="flex items-center gap-1.5">
                   <Waves className="w-3.5 h-3.5 text-emerald-500" strokeWidth={2.25} />
-                  <span className="text-sm font-semibold text-emerald-300 tabular-nums">{wave}</span>
+                  {/* NULL WAVE corrupts the wave readout — the counter itself "glitches". */}
+                  <span
+                    className={`text-sm font-semibold tabular-nums ${waveEvent === 'glitch' ? 'text-cyan-300' : 'text-emerald-300'}`}
+                    style={waveEvent === 'glitch' ? { textShadow: '1px 0 rgba(255,60,220,0.8), -1px 0 rgba(64,224,255,0.8)' } : undefined}
+                  >
+                    {waveEvent === 'glitch' ? '▓▒' : wave}
+                  </span>
                 </div>
               )}
             </div>

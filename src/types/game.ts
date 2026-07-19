@@ -347,6 +347,28 @@ export interface Enemy {
   frostShell?: THREE.Mesh;
   // Twitch offsets so the instability jitter can be cleanly zeroed out.
   hackJitter?: THREE.Vector3;
+  // ── ARK-07 network events (lore layer) ───────────────────────────────────
+  // surgeHalo: the red overclock ring hovering over this enemy while an
+  // OVERDRIVE SURGE wave is live (shared geo+mat, lightweight wrapper —
+  // attached/detached lazily in the enemy loop, MUST be detached before the
+  // pooled mesh is released or the release path would dispose the shared
+  // assets). radShell: the sickly-green irradiated shell worn while the enemy
+  // stands inside the ARK-07 uplink's radiation field (same shared-asset
+  // rules; attach/detach uses hysteresis so it doesn't flicker at the rim).
+  surgeHalo?: THREE.Mesh;
+  radShell?: THREE.Mesh;
+  // Next allowed "glitch-skip" (NULL WAVE teleport stutter) timestamp — set
+  // by the host/solo loop so a corrupted enemy doesn't chain-blink.
+  nextGlitchSkipAt?: number;
+  // ── Lingering irradiation charge ──
+  // A unit that bathes in a relay's command bandwidth stays SUPERCHARGED for
+  // a long while after leaving the field: irradiatedPower is the peak field
+  // factor it soaked up (0..1) and irradiatedUntil the ms timestamp the
+  // charge finally bleeds off. Both refreshed continuously while inside a
+  // field; read by the damage/speed empowerment helpers on the authority and
+  // by the shell visuals on every client.
+  irradiatedPower?: number;
+  irradiatedUntil?: number;
   // ── Battle-damage FX throttle ────────────────────────────────────────────
   // A badly-wounded robot vents smoke + arcs electricity from its breached
   // plating. This is the next-emit timestamp (ms) so the venting is rate-limited

@@ -125,224 +125,236 @@ export interface MusicMoodInput {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Per-map themes — the musical identity of each environment, written for a
-// SURVIVAL game: no major-key comfort anywhere. Chords are explicit semitone
-// stacks so each map's harmony is hand-chosen: uneasy aeolian forest, phrygian
-// volcanic dread, desolate ice, hijaz desert menace, murky tritone swamp,
-// cold dorian outpost, haunted bII dusk vale, ancient modal ruins.
+// Per-map themes — DARK-MYSTERY PASS (full rewrite of the old tunes).
+//
+// Every map's score now lives in the same haunted register: phrygian b2
+// unease, tritone colour chords that refuse to settle, hollow sus2 voicings,
+// lower roots, slower tempos, sparser melodies and longer, wetter reverbs.
+// DAY is no longer "the safe palette" — it's merely a thinner veil over the
+// same dread, so the whole game keeps one continuous dark-mystery tone.
+// Nothing here may ever read as pastoral, heroic or major-key; the score is
+// a quiet question the map never answers. Chords remain explicit semitone
+// stacks: watching-forest phrygian, furnace-deep wasteland, dead-white ice,
+// heat-mirage desert dread, tritone bog, ghost-garrison emptiness, wrong-dusk
+// vale, and ruins that remember something.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const THEMES: Record<MapType, ThemeDef> = {
-  // The flagship — quiet dread under the canopy. Felt piano over D aeolian
-  // with sus2 colours (The-Last-of-Us register), never resolving anywhere
-  // bright. Nights go near-still: low chimes over the drones.
+  // The flagship — the canopy WATCHES. Full phrygian felt piano over a low C,
+  // the bII lean never resolving, a buried tritone cluster in the tense pool.
+  // Nights go near-still: sparse low chimes over hollow drones.
   deep_forest: {
+    root: 48, // C3
+    day: {
+      scale: [0, 1, 3, 5, 7, 8, 10],
+      progs: [
+        [[0, 3, 7], [1, 5, 8], [8, 12, 15], [0, 3, 7]],
+        [[0, 2, 7], [8, 12, 15], [1, 5, 8], [0, 3, 7]],
+        [[0, 3, 7, 10], [1, 5, 8], [6, 10, 13], [0, 3, 7]],
+      ],
+      melodic: 'felt', melodyOct: 12, density: 0.3, tempo: 50, arp: 0.18,
+    },
+    night: {
+      scale: [0, 1, 3, 5, 7, 8, 10],
+      progs: [
+        [[0, 3, 7], [1, 5, 8], [0, 2, 7], [0, 3, 7]],
+        [[0, 3, 7], [6, 10, 13], [0, 3, 7], [0, 3, 7]],
+      ],
+      melodic: 'bell', melodyOct: 12, density: 0.2, tempo: 44, arp: 0.1,
+    },
+    pad: 'dark', padLevel: 0.95, bassLevel: 0.9,
+    bed: { sub: 0.9, drone: 0.85, air: 0.5, airHz: 700, shimmer: 0.05, fifth: true, cutoff: 380 },
+    reverb: { seconds: 3.8, decay: 2.4, wet: 0.46 },
+    gap: [40, 95], sparkleInst: 'bell', sparkleOct: 24, sparkleLevel: 0.55,
+    nightSparkle: true, color: 5200,
+  },
+
+  // Furnace-deep — the slowest, heaviest theme in the game. Phrygian drones
+  // over a C2 rumble, rare low piano embers by day, distant inharmonic gongs
+  // through the ash at night. The diminished cluster is the ground opening.
+  scorched_wasteland: {
+    root: 36, // C2
+    day: {
+      scale: [0, 1, 3, 5, 6, 8, 10],
+      progs: [
+        [[0, 3, 7], [1, 5, 8], [0, 3, 7], [10, 13, 17]],
+        [[0, 3, 6], [1, 5, 8], [8, 11, 15], [0, 3, 7]],
+      ],
+      melodic: 'felt', melodyOct: 24, density: 0.24, tempo: 42, arp: 0.08,
+    },
+    night: {
+      scale: [0, 1, 3, 5, 6, 8, 10],
+      progs: [
+        [[0, 3, 7], [1, 5, 8], [0, 3, 6], [0, 3, 7]],
+      ],
+      melodic: 'gong', melodyOct: 12, density: 0.16, tempo: 40, arp: 0.06,
+    },
+    pad: 'dark', padLevel: 0.95, bassLevel: 1.0,
+    bed: { sub: 1.0, drone: 0.95, air: 0.6, airHz: 260, shimmer: 0, fifth: false, cutoff: 260 },
+    reverb: { seconds: 4.2, decay: 2.8, wet: 0.34 },
+    gap: [55, 120], sparkleInst: 'gong', sparkleOct: 0, sparkleLevel: 0.5, color: 3800,
+  },
+
+  // Dead white plain — something under the ice. Sparse glass bells over a
+  // lowered aeolian with a half-diminished shadow chord; the sus2 voicings
+  // are windows into an empty house. Vast cold reverb, thin high wind.
+  frozen_tundra: {
+    root: 53, // F3
+    day: {
+      scale: [0, 2, 3, 5, 7, 8, 10],
+      progs: [
+        [[0, 3, 7], [8, 12, 15], [0, 2, 7], [10, 14, 17]],
+        [[0, 2, 7], [8, 12, 15], [0, 3, 6], [0, 3, 7]],
+        [[0, 3, 7], [5, 8, 12], [8, 12, 15], [0, 2, 7]],
+      ],
+      melodic: 'bell', melodyOct: 12, density: 0.26, tempo: 48, arp: 0.22,
+    },
+    night: {
+      scale: [0, 2, 3, 5, 7, 8, 10],
+      progs: [
+        [[0, 3, 7], [8, 12, 15], [0, 3, 6], [0, 2, 7]],
+      ],
+      melodic: 'bell', melodyOct: 12, density: 0.18, tempo: 44, arp: 0.14,
+    },
+    pad: 'glass', padLevel: 0.85, bassLevel: 0.75,
+    bed: { sub: 0.75, drone: 0.75, air: 0.7, airHz: 2000, shimmer: 0.18, fifth: true, cutoff: 520 },
+    reverb: { seconds: 5.0, decay: 2.2, wet: 0.5 },
+    gap: [50, 110], sparkleInst: 'bell', sparkleOct: 24, sparkleLevel: 0.7,
+    nightSparkle: true, color: 6200,
+  },
+
+  // Heat-mirage dread — the hijaz comfort is GONE: pure phrygian day and
+  // night, the I→bII sway now a slow shimmer over something buried in the
+  // sand. A bare, ornament-less flute by day reads as a signal, not a song;
+  // nights drop to hollow plucks and the tritone shadow.
+  desert_canyon: {
     root: 50, // D3
     day: {
-      scale: [0, 2, 3, 5, 7, 8, 10],
-      progs: [
-        [[0, 2, 7], [8, 12, 15], [0, 3, 7], [10, 14, 17]],
-        [[0, 3, 7, 10], [5, 8, 12], [8, 12, 15], [7, 10, 14]],
-        [[0, 3, 7], [8, 12, 15], [5, 8, 12], [0, 2, 7]],
-      ],
-      melodic: 'felt', melodyOct: 12, density: 0.42, tempo: 58, arp: 0.3,
-    },
-    night: {
-      scale: [0, 2, 3, 5, 7, 8, 10],
-      progs: [
-        [[0, 3, 7], [10, 14, 17], [8, 12, 15], [0, 2, 7]],
-        [[0, 2, 7], [8, 12, 15], [0, 3, 7], [0, 2, 7]],
-      ],
-      melodic: 'bell', melodyOct: 12, density: 0.26, tempo: 50, arp: 0.15,
-    },
-    pad: 'warm', padLevel: 0.9, bassLevel: 0.85,
-    bed: { sub: 0.8, drone: 0.8, air: 0.5, airHz: 800, shimmer: 0.08, fifth: true, cutoff: 440 },
-    reverb: { seconds: 3.0, decay: 2.4, wet: 0.4 },
-    gap: [50, 110], sparkleInst: 'bell', sparkleOct: 24, sparkleLevel: 0.6,
-    nightSparkle: true, color: 6800,
-  },
-
-  // Slowest and heaviest — phrygian drones over a deep rumble, sparse low
-  // piano embers by day, distant inharmonic gongs through the ash at night.
-  // The minor-bVI cluster in the tense pool is genuine dread.
-  scorched_wasteland: {
-    root: 38, // D2
-    day: {
       scale: [0, 1, 3, 5, 7, 8, 10],
       progs: [
         [[0, 3, 7], [1, 5, 8], [0, 3, 7], [10, 13, 17]],
-        [[0, 3, 7], [8, 11, 15], [1, 5, 8], [0, 3, 7]],
+        [[0, 3, 7], [6, 10, 13], [1, 5, 8], [0, 3, 7]],
       ],
-      melodic: 'felt', melodyOct: 24, density: 0.28, tempo: 46, arp: 0.1,
-    },
-    night: {
-      scale: [0, 1, 3, 5, 7, 8, 10],
-      progs: [
-        [[0, 3, 7], [1, 5, 8], [0, 3, 7], [10, 13, 17]],
-      ],
-      melodic: 'gong', melodyOct: 12, density: 0.2, tempo: 44, arp: 0.08,
-    },
-    pad: 'dark', padLevel: 0.9, bassLevel: 1.0,
-    bed: { sub: 1.0, drone: 0.9, air: 0.6, airHz: 300, shimmer: 0, fifth: false, cutoff: 300 },
-    reverb: { seconds: 3.6, decay: 2.8, wet: 0.32 },
-    gap: [60, 130], sparkleInst: 'gong', sparkleOct: 0, sparkleLevel: 0.5, color: 4600,
-  },
-
-  // Desolate, not majestic — sparse glass bells over aeolian ice with sus2
-  // hollowness and a minor-v pool that refuses any heroic cadence. Big cold
-  // reverb, high wind. Survival on a dead white plain.
-  frozen_tundra: {
-    root: 57, // A3
-    day: {
-      scale: [0, 2, 3, 5, 7, 8, 10],
-      progs: [
-        [[0, 3, 7], [8, 12, 15], [0, 3, 7], [10, 14, 17]],
-        [[0, 2, 7], [8, 12, 15], [5, 8, 12], [0, 3, 7]],
-        [[0, 3, 7], [5, 8, 12], [8, 12, 15], [7, 10, 14]],
-      ],
-      melodic: 'bell', melodyOct: 12, density: 0.32, tempo: 54, arp: 0.3,
-    },
-    night: {
-      scale: [0, 2, 3, 5, 7, 8, 10],
-      progs: [
-        [[0, 3, 7], [8, 12, 15], [0, 2, 7], [0, 3, 7]],
-      ],
-      melodic: 'bell', melodyOct: 12, density: 0.22, tempo: 48, arp: 0.2,
-    },
-    pad: 'glass', padLevel: 0.9, bassLevel: 0.7,
-    bed: { sub: 0.7, drone: 0.7, air: 0.75, airHz: 2200, shimmer: 0.25, fifth: true, cutoff: 620 },
-    reverb: { seconds: 4.4, decay: 2.2, wet: 0.5 },
-    gap: [55, 120], sparkleInst: 'bell', sparkleOct: 24, sparkleLevel: 0.8,
-    nightSparkle: true, color: 7600,
-  },
-
-  // Hijaz menace — the I→bII sway is heat-shimmer dread, flute kept bare and
-  // ornament-less. Nights drop the major third: pure phrygian minor plucks.
-  desert_canyon: {
-    root: 52, // E3
-    day: {
-      scale: [0, 1, 4, 5, 7, 8, 10],
-      progs: [
-        [[0, 4, 7], [1, 5, 8], [0, 4, 7], [10, 13, 17]],
-        [[0, 4, 7], [8, 12, 15], [1, 5, 8], [0, 4, 7]],
-      ],
-      melodic: 'flute', melodyOct: 12, density: 0.3, tempo: 50, arp: 0.2,
-    },
-    night: {
-      scale: [0, 1, 3, 5, 7, 8, 10],
-      progs: [
-        [[0, 3, 7], [1, 5, 8], [0, 3, 7], [10, 13, 17]],
-      ],
-      melodic: 'pluck', melodyOct: 12, density: 0.22, tempo: 46, arp: 0.12,
-    },
-    pad: 'warm', padLevel: 0.75, bassLevel: 0.8,
-    bed: { sub: 0.7, drone: 0.75, air: 0.6, airHz: 1300, shimmer: 0.06, fifth: true, cutoff: 480 },
-    reverb: { seconds: 3.8, decay: 2.6, wet: 0.4 },
-    gap: [60, 125], sparkleInst: 'pluck', sparkleOct: 12, sparkleLevel: 0.5, color: 6600,
-  },
-
-  // Murky aeolian with a tritone colour chord that never fully settles;
-  // water-drop plinks ARE the sparkle layer. The spore-bloom storm makes the
-  // music wobble, not duck.
-  toxic_swamp: {
-    root: 43, // G2
-    day: {
-      scale: [0, 2, 3, 5, 7, 8, 10],
-      progs: [
-        [[0, 3, 7], [6, 10, 13], [5, 8, 12], [0, 3, 7]],
-        [[0, 3, 7, 10], [8, 12, 15], [10, 13, 17], [0, 3, 7]],
-      ],
-      melodic: 'pluck', melodyOct: 24, density: 0.3, tempo: 48, arp: 0.15,
-    },
-    night: {
-      scale: [0, 2, 3, 5, 7, 8, 10],
-      progs: [
-        [[0, 3, 7], [6, 10, 13], [0, 3, 7], [0, 2, 7]],
-      ],
-      melodic: 'bell', melodyOct: 24, density: 0.2, tempo: 44, arp: 0.1,
-    },
-    pad: 'dark', padLevel: 0.85, bassLevel: 0.95,
-    bed: { sub: 0.9, drone: 0.8, air: 0.6, airHz: 420, shimmer: 0, fifth: false, cutoff: 330 },
-    reverb: { seconds: 3.2, decay: 2.6, wet: 0.36 },
-    gap: [45, 100], sparkleInst: 'drop', sparkleOct: 24, sparkleLevel: 1.0,
-    nightSparkle: true, color: 5000,
-  },
-
-  // Cold dorian melancholy for the abandoned base — the driest room in the
-  // game, muted piano, sus2 emptiness. Reads as "quiet after the war".
-  military_outpost: {
-    root: 45, // A2
-    day: {
-      scale: [0, 2, 3, 5, 7, 9, 10],
-      progs: [
-        [[0, 3, 7, 10], [5, 9, 12], [3, 7, 10], [0, 3, 7, 10]],
-        [[0, 2, 7], [10, 14, 17], [5, 9, 12], [0, 3, 7]],
-      ],
-      melodic: 'felt', melodyOct: 12, density: 0.32, tempo: 52, arp: 0.12,
-    },
-    night: {
-      scale: [0, 2, 3, 5, 7, 9, 10],
-      progs: [
-        [[0, 3, 7, 10], [5, 9, 12], [0, 2, 7], [0, 3, 7]],
-      ],
-      melodic: 'felt', melodyOct: 12, density: 0.22, tempo: 48, arp: 0.08,
-    },
-    pad: 'warm', padLevel: 0.65, bassLevel: 0.9,
-    bed: { sub: 0.75, drone: 0.6, air: 0.45, airHz: 650, shimmer: 0, fifth: true, cutoff: 380 },
-    reverb: { seconds: 2.6, decay: 3.0, wet: 0.26 },
-    gap: [60, 130], sparkleInst: 'pluck', sparkleOct: 12, sparkleLevel: 0.35, color: 5800,
-  },
-
-  // Twilight Vale — haunted, not lush: sus2 hollowness and a phrygian bII
-  // that makes the dusk feel WRONG, low choir pads, sparse tolls. The wisps
-  // storm is the one storm that blooms the sparkles instead of ducking.
-  autumn_grove: {
-    root: 47, // B2
-    day: {
-      scale: [0, 2, 3, 5, 7, 8, 10],
-      progs: [
-        [[0, 2, 7], [8, 12, 15], [3, 7, 10], [10, 14, 17]],
-        [[0, 3, 7], [1, 5, 8], [0, 3, 7], [8, 12, 15]],
-      ],
-      melodic: 'bell', melodyOct: 12, density: 0.3, tempo: 50, arp: 0.25,
+      melodic: 'flute', melodyOct: 12, density: 0.22, tempo: 46, arp: 0.12,
     },
     night: {
       scale: [0, 1, 3, 5, 7, 8, 10],
       progs: [
         [[0, 3, 7], [1, 5, 8], [0, 2, 7], [0, 3, 7]],
       ],
-      melodic: 'bell', melodyOct: 12, density: 0.22, tempo: 46, arp: 0.18,
+      melodic: 'pluck', melodyOct: 12, density: 0.16, tempo: 42, arp: 0.08,
     },
-    pad: 'choir', padLevel: 0.9, bassLevel: 0.6,
-    bed: { sub: 0.65, drone: 0.7, air: 0.55, airHz: 1600, shimmer: 0.3, fifth: true, cutoff: 560 },
-    reverb: { seconds: 4.8, decay: 2.0, wet: 0.52 },
-    gap: [45, 105], sparkleInst: 'bell', sparkleOct: 24, sparkleLevel: 0.9,
-    nightSparkle: true, color: 6800,
+    pad: 'dark', padLevel: 0.8, bassLevel: 0.85,
+    bed: { sub: 0.75, drone: 0.8, air: 0.6, airHz: 1100, shimmer: 0, fifth: true, cutoff: 400 },
+    reverb: { seconds: 4.4, decay: 2.6, wet: 0.42 },
+    gap: [55, 115], sparkleInst: 'pluck', sparkleOct: 12, sparkleLevel: 0.45, color: 5200,
   },
 
-  // Ancient modal dorian — harp plucks and low choir under the longest
-  // stone-hall reverb, distant bell tolls. Old, empty, watching.
-  ancient_ruins: {
-    root: 50, // D3
+  // The bog dissolves pitch itself — the scale carries a flat five, so even
+  // the melody wanders through the tritone. Water-drop plinks ARE the sparkle
+  // layer; the spore-bloom storm makes the music wobble, not duck.
+  toxic_swamp: {
+    root: 41, // F2
     day: {
-      scale: [0, 2, 3, 5, 7, 9, 10],
+      scale: [0, 2, 3, 5, 6, 8, 10],
       progs: [
-        [[0, 3, 7], [10, 14, 17], [5, 9, 12], [0, 3, 7]],
-        [[0, 3, 7, 10], [3, 7, 10, 14], [10, 14, 17], [0, 2, 7]],
+        [[0, 3, 7], [6, 10, 13], [0, 3, 6], [0, 3, 7]],
+        [[0, 3, 7, 10], [6, 10, 13], [8, 12, 15], [0, 3, 7]],
       ],
-      melodic: 'pluck', melodyOct: 12, density: 0.35, tempo: 52, arp: 0.3,
+      melodic: 'pluck', melodyOct: 24, density: 0.26, tempo: 44, arp: 0.12,
     },
     night: {
-      scale: [0, 2, 3, 5, 7, 9, 10],
+      scale: [0, 2, 3, 5, 6, 8, 10],
       progs: [
-        [[0, 3, 7], [10, 14, 17], [0, 2, 7], [0, 3, 7]],
+        [[0, 3, 7], [6, 10, 13], [0, 2, 7], [0, 3, 6]],
       ],
-      melodic: 'bell', melodyOct: 12, density: 0.22, tempo: 46, arp: 0.15,
+      melodic: 'bell', melodyOct: 24, density: 0.18, tempo: 40, arp: 0.08,
     },
-    pad: 'choir', padLevel: 0.85, bassLevel: 0.85,
-    bed: { sub: 0.75, drone: 0.75, air: 0.5, airHz: 1000, shimmer: 0.12, fifth: true, cutoff: 460 },
-    reverb: { seconds: 5.2, decay: 1.9, wet: 0.48 },
-    gap: [55, 115], sparkleInst: 'bell', sparkleOct: 12, sparkleLevel: 0.55, color: 6000,
+    pad: 'dark', padLevel: 0.9, bassLevel: 1.0,
+    bed: { sub: 0.95, drone: 0.85, air: 0.6, airHz: 380, shimmer: 0, fifth: false, cutoff: 300 },
+    reverb: { seconds: 3.6, decay: 2.7, wet: 0.4 },
+    gap: [40, 95], sparkleInst: 'drop', sparkleOct: 24, sparkleLevel: 1.0,
+    nightSparkle: true, color: 4400,
+  },
+
+  // Ghost garrison — the dorian warmth is stripped out: hollow sus2 frames,
+  // a bVI shadow and a bII flicker in an empty motor pool. Muted felt piano
+  // in a bigger, deader room. Reads as "everyone left mid-sentence".
+  military_outpost: {
+    root: 43, // G2
+    day: {
+      scale: [0, 2, 3, 5, 7, 8, 10],
+      progs: [
+        [[0, 2, 7], [8, 12, 15], [0, 3, 7, 10], [0, 2, 7]],
+        [[0, 3, 7], [10, 14, 17], [1, 5, 8], [0, 3, 7]],
+      ],
+      melodic: 'felt', melodyOct: 12, density: 0.26, tempo: 48, arp: 0.08,
+    },
+    night: {
+      scale: [0, 2, 3, 5, 7, 8, 10],
+      progs: [
+        [[0, 3, 7, 10], [8, 12, 15], [0, 2, 7], [0, 3, 7]],
+      ],
+      melodic: 'felt', melodyOct: 12, density: 0.18, tempo: 44, arp: 0.06,
+    },
+    pad: 'dark', padLevel: 0.75, bassLevel: 0.9,
+    bed: { sub: 0.8, drone: 0.7, air: 0.45, airHz: 600, shimmer: 0, fifth: true, cutoff: 340 },
+    reverb: { seconds: 3.4, decay: 2.8, wet: 0.32 },
+    gap: [50, 115], sparkleInst: 'pluck', sparkleOct: 12, sparkleLevel: 0.35, color: 4800,
+  },
+
+  // Twilight Vale — the dusk that is WRONG. Full phrygian day and night now,
+  // ghost-choir pads under sparse tolls, a tritone flicker in the tense pool.
+  // The wisps storm is the one storm that blooms the sparkles instead of
+  // ducking — the lights in the trees are singing back.
+  autumn_grove: {
+    root: 46, // Bb2
+    day: {
+      scale: [0, 1, 3, 5, 7, 8, 10],
+      progs: [
+        [[0, 3, 7], [1, 5, 8], [8, 12, 15], [0, 3, 7]],
+        [[0, 2, 7], [1, 5, 8], [6, 10, 13], [0, 3, 7]],
+      ],
+      melodic: 'bell', melodyOct: 12, density: 0.26, tempo: 46, arp: 0.2,
+    },
+    night: {
+      scale: [0, 1, 3, 5, 7, 8, 10],
+      progs: [
+        [[0, 3, 7], [1, 5, 8], [0, 2, 7], [0, 3, 7]],
+      ],
+      melodic: 'bell', melodyOct: 12, density: 0.2, tempo: 42, arp: 0.14,
+    },
+    pad: 'choir', padLevel: 0.95, bassLevel: 0.65,
+    bed: { sub: 0.7, drone: 0.75, air: 0.55, airHz: 1400, shimmer: 0.22, fifth: true, cutoff: 480 },
+    reverb: { seconds: 5.4, decay: 2.0, wet: 0.55 },
+    gap: [40, 95], sparkleInst: 'bell', sparkleOct: 24, sparkleLevel: 0.85,
+    nightSparkle: true, color: 5600,
+  },
+
+  // The ruins REMEMBER something. Aeolian plucks under a low half-heard
+  // choir, the longest stone-hall reverb in the game, and a tritone shadow
+  // chord like a door opening two rooms away. Distant gong tolls at night.
+  ancient_ruins: {
+    root: 48, // C3
+    day: {
+      scale: [0, 2, 3, 5, 7, 8, 10],
+      progs: [
+        [[0, 3, 7], [10, 14, 17], [1, 5, 8], [0, 3, 7]],
+        [[0, 3, 7, 10], [8, 12, 15], [6, 10, 13], [0, 2, 7]],
+      ],
+      melodic: 'pluck', melodyOct: 12, density: 0.28, tempo: 48, arp: 0.22,
+    },
+    night: {
+      scale: [0, 2, 3, 5, 7, 8, 10],
+      progs: [
+        [[0, 3, 7], [1, 5, 8], [0, 2, 7], [0, 3, 7]],
+      ],
+      melodic: 'gong', melodyOct: 12, density: 0.18, tempo: 42, arp: 0.1,
+    },
+    pad: 'choir', padLevel: 0.9, bassLevel: 0.9,
+    bed: { sub: 0.8, drone: 0.8, air: 0.5, airHz: 900, shimmer: 0.08, fifth: true, cutoff: 400 },
+    reverb: { seconds: 5.8, decay: 1.9, wet: 0.5 },
+    gap: [45, 105], sparkleInst: 'bell', sparkleOct: 12, sparkleLevel: 0.5, color: 5000,
   },
 };
 

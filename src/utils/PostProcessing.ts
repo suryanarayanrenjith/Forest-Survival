@@ -85,6 +85,15 @@ const CinematicGradeShader = {
     clarity: { value: 0.0 },              // local-contrast / midtone "definition" (Control-grade depth)
     lensDirt: { value: 0.0 },             // procedural dirty-lens bloom scatter
     shadowDepth: { value: 0.0 },          // detail-preserving shadow deepening (premium contrast)
+    // NULL-WAVE signal corruption (ARK-07 glitch waves): 0 = clean signal.
+    // Driven per-frame by the game loop in bursts; the branch below is
+    // uniform-gated so a clean signal costs nothing extra.
+    glitchStrength: { value: 0.0 },
+    // ARK-07 RELAY INTERFERENCE (radiation-field exposure): 0 = clear head.
+    // Rises as the player stands inside a relay's field — analogue wobble,
+    // a soft defocus blur and a sickly desaturation, the "your visor is
+    // being cooked" read. Uniform-gated like the glitch.
+    interferenceStrength: { value: 0.0 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -123,6 +132,8 @@ const CinematicGradeShader = {
     uniform float clarity;
     uniform float lensDirt;
     uniform float shadowDepth;
+    uniform float glitchStrength;
+    uniform float interferenceStrength;
     varying vec2  vUv;
 
     // ACES Filmic tonemap — Narkowicz fit; the curve used by Cyberpunk,
@@ -141,19 +152,70 @@ const CinematicGradeShader = {
     }
 
     void main() {
+      // ─── NULL-WAVE SIGNAL CORRUPTION (uv-space tearing) ────────────
+      // ARK-07 glitch waves: horizontal band tears + coarse block jitter on
+      // the source read, held on a stepped clock so artifacts "stick" for a
+      // few frames like real corrupted video instead of shimmering noise.
+      vec2 guv = vUv;
+      if (glitchStrength > 0.001) {
+        float gClock = floor(time * 16.0);
+        float band = floor(vUv.y * 24.0);
+        float bandR = filmHash(vec2(band, gClock));
+        float tear = step(0.78, bandR) * (bandR - 0.78) * 4.0
+                   * (filmHash(vec2(gClock, band)) - 0.5);
+        guv.x += tear * 0.09 * glitchStrength;
+        vec2 cell = floor(vUv * vec2(10.0, 6.0));
+        float cellR = filmHash(cell + vec2(gClock * 0.37, gClock * 0.11));
+        if (cellR > 0.965) {
+          guv += (vec2(filmHash(cell + gClock), filmHash(cell - gClock)) - 0.5)
+               * 0.05 * glitchStrength;
+        }
+        guv = clamp(guv, vec2(0.0), vec2(1.0));
+      }
+
+      // ─── ARK-07 RELAY INTERFERENCE (uv-space analogue wobble) ──────
+      // Standing in a relay's field cooks the player's optics: a slow
+      // rolling wobble on the source read (the blur + desaturation land
+      // after the colour is fetched below).
+      if (interferenceStrength > 0.001) {
+        float iw = interferenceStrength;
+        guv.x += sin(vUv.y * 42.0 + time * 2.3) * 0.0022 * iw;
+        guv.y += sin(vUv.x * 30.0 - time * 1.7) * 0.0014 * iw;
+        guv = clamp(guv, vec2(0.0), vec2(1.0));
+      }
+
       // ─── CHROMATIC ABERRATION (HDR, radial) ────────────────────────
       vec2 dir = vUv - 0.5;
       float dist = length(dir) * 1.4142;
-      float caStrength = chromaticAberration * (dist * dist + 0.2);
+      // Corrupted signal / relay exposure also fringe the whole frame.
+      float caStrength = chromaticAberration * (dist * dist + 0.2)
+        + glitchStrength * 0.0038 + interferenceStrength * 0.0016;
       vec3 hdr;
-      hdr.r = texture2D(tDiffuse, vUv - dir * caStrength).r;
-      hdr.g = texture2D(tDiffuse, vUv).g;
-      hdr.b = texture2D(tDiffuse, vUv + dir * caStrength).b;
-      float alpha = texture2D(tDiffuse, vUv).a;
+      hdr.r = texture2D(tDiffuse, guv - dir * caStrength).r;
+      hdr.g = texture2D(tDiffuse, guv).g;
+      hdr.b = texture2D(tDiffuse, guv + dir * caStrength).b;
+      float alpha = texture2D(tDiffuse, guv).a;
       // Safety: bloom may have pushed values above HALF_FLOAT_MAX in
       // pathological cases. Clamp to a sane HDR range so downstream
       // math doesn't produce Inf/NaN.
       hdr = clamp(hdr, vec3(0.0), vec3(64.0));
+
+      // ─── ARK-07 RELAY INTERFERENCE (defocus + sickly desaturation) ─
+      // A 4-tap cross blur widened by exposure — the soft "cooked visor"
+      // defocus — then the colour drains toward a grey-green cast. Gated,
+      // so a clear head pays zero extra taps.
+      if (interferenceStrength > 0.001) {
+        float iw = min(1.0, interferenceStrength);
+        vec2 bo = texelSize * (2.0 + 7.0 * iw);
+        vec3 blurSum =
+            clamp(texture2D(tDiffuse, clamp(guv + vec2( bo.x,  0.0), vec2(0.0), vec2(1.0))).rgb, vec3(0.0), vec3(64.0))
+          + clamp(texture2D(tDiffuse, clamp(guv + vec2(-bo.x,  0.0), vec2(0.0), vec2(1.0))).rgb, vec3(0.0), vec3(64.0))
+          + clamp(texture2D(tDiffuse, clamp(guv + vec2( 0.0,  bo.y), vec2(0.0), vec2(1.0))).rgb, vec3(0.0), vec3(64.0))
+          + clamp(texture2D(tDiffuse, clamp(guv + vec2( 0.0, -bo.y), vec2(0.0), vec2(1.0))).rgb, vec3(0.0), vec3(64.0));
+        hdr = mix(hdr, (hdr + blurSum) * 0.2, min(1.0, iw * 1.35));
+        float iLum = dot(hdr, vec3(0.2126, 0.7152, 0.0722));
+        hdr = mix(hdr, vec3(iLum) * vec3(0.9, 1.04, 0.94), 0.42 * iw);
+      }
 
       // ─── VOLUMETRIC LIGHT SHAFTS (god rays — additive radial blur) ──
       // 48-tap radial blur from current pixel toward the projected sun.
@@ -442,6 +504,18 @@ const CinematicGradeShader = {
       ldr = clamp(ldr, vec3(0.0), vec3(1.0));
       vec3 contrasted = ldr * ldr * (3.0 - 2.0 * ldr);
       ldr = mix(ldr, contrasted, 0.12);
+
+      // ─── NULL-WAVE INTERFERENCE (LDR) ───────────────────────────────
+      // Dark dropout lines + intermittent bit-crush quantisation while the
+      // signal is corrupted. Same stepped clock as the uv tearing above so
+      // every artifact family "holds" together.
+      if (glitchStrength > 0.001) {
+        float gClock2 = floor(time * 16.0);
+        float lineR = filmHash(vec2(floor(vUv.y * 220.0), gClock2));
+        ldr *= 1.0 - step(0.93, lineR) * 0.35 * glitchStrength;
+        float crush = step(0.7, filmHash(vec2(gClock2, 3.7)));
+        ldr = mix(ldr, floor(ldr * 6.0) * (1.0 / 6.0), crush * 0.5 * glitchStrength);
+      }
 
       // ─── VIGNETTE (LDR multiplicative) ──────────────────────────────
       float vig = smoothstep(vignetteOffset, 1.0, dist);
@@ -863,6 +937,24 @@ export class PostProcessingPipeline {
   render(delta: number) {
     this.cinematic.uniforms.time.value += delta;
     this.composer.render(delta);
+  }
+
+  /**
+   * NULL-WAVE signal corruption amount (0 = clean). Driven per-frame by the
+   * game loop during ARK-07 glitch waves — a plain uniform write on the
+   * always-resident grade shader, so toggling it can never compile anything.
+   */
+  setGlitch(strength: number) {
+    this.cinematic.uniforms.glitchStrength.value = THREE.MathUtils.clamp(strength, 0, 1);
+  }
+
+  /**
+   * ARK-07 relay interference (0 = clear). Rises with the player's field
+   * exposure: analogue wobble + soft defocus blur + sickly desaturation.
+   * Plain uniform write on the resident grade shader — never compiles.
+   */
+  setInterference(strength: number) {
+    this.cinematic.uniforms.interferenceStrength.value = THREE.MathUtils.clamp(strength, 0, 1);
   }
 
   setSize(width: number, height: number) {

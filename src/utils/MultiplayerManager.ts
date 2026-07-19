@@ -115,7 +115,15 @@ export type NetworkMessage =
   // anything absent); `full=false` is a DELTA carrying only the enemies that
   // changed since the last send (guests patch, never cull). Deltas slash
   // bandwidth; a keyframe ~1×/sec self-heals any drift.
-  | { type: 'enemy_sync'; enemies: EnemyWire[]; wave: number; full: boolean; t?: number }
+  //
+  // KEYFRAMES also carry the host's ARK-07 network-event state so guests
+  // mirror it (a handful of numbers/sec — negligible):
+  //   wm = wave modifier (0 none · 1 OVERDRIVE SURGE · 2 NULL WAVE/glitch)
+  //   wi = modifier intensity ×100 (0–200)
+  //   us = the relay-spire positions as a flat [x1,z1,x2,z2,…] list
+  //        (host-rolled at match start; guests build their local copies
+  //        there on first sight — max 4 spires / 8 numbers)
+  | { type: 'enemy_sync'; enemies: EnemyWire[]; wave: number; full: boolean; t?: number; wm?: number; wi?: number; us?: number[] }
   // Guest → host: "I've finished warming up and I'm in the match." The host
   // withholds the enemy stream until a guest is ready so it never floods a
   // peer that's still on the loading screen.
@@ -1096,10 +1104,27 @@ export class MultiplayerManager {
         const wave = finiteBetween(message.wave, 0, 1000);
         // BinaryPack turns undefined into null on the wire — treat both as absent.
         const t = message.t == null ? undefined : finiteBetween(message.t, 0, Number.MAX_SAFE_INTEGER);
+        // ARK-07 network-event fields (keyframes only; absent on deltas).
+        const wm = message.wm == null ? undefined : finiteBetween(message.wm, 0, 2);
+        const wi = message.wi == null ? undefined : finiteBetween(message.wi, 0, 200);
+        // Relay-spire coordinate list: flat [x,z,…] pairs, hard-capped so a
+        // hostile host can't flood guests with structures.
+        let us: number[] | undefined;
+        if (message.us != null) {
+          if (!Array.isArray(message.us) || message.us.length > 8 || message.us.length % 2 !== 0) return;
+          us = [];
+          for (const v of message.us) {
+            const n = finiteBetween(v, -MAX_WORLD_COORDINATE, MAX_WORLD_COORDINATE);
+            if (n === null) return;
+            us.push(n);
+          }
+        }
         const enemies = message.enemies.map((enemy) => sanitizeEnemyWire(enemy));
-        if (wave === null || t === null || enemies.some((enemy) => enemy === null)) return;
+        if (wave === null || t === null || wm === null || wi === null
+          || enemies.some((enemy) => enemy === null)) return;
         const syncMessage: NetworkMessage = {
           type: 'enemy_sync', enemies: enemies as EnemyWire[], wave: Math.floor(wave), full: message.full, t,
+          wm: wm === undefined ? undefined : Math.floor(wm), wi, us,
         };
         this.messageHandlers.get('enemy_sync')?.forEach((handler) => handler(syncMessage));
         break;
@@ -1308,8 +1333,13 @@ export class MultiplayerManager {
    * set, guests cull anything missing); `full=false` is a delta (changed
    * enemies only, guests patch without culling).
    */
-  broadcastEnemySync(enemies: EnemyWire[], wave: number, full: boolean, t?: number): void {
-    this.broadcastMessage({ type: 'enemy_sync', enemies, wave, full, t });
+  broadcastEnemySync(
+    enemies: EnemyWire[], wave: number, full: boolean, t?: number,
+    // ARK-07 network-event state — sent on keyframes so guests mirror the
+    // wave modifier + relay-spire placement (see the NetworkMessage comment).
+    mods?: { wm: number; wi: number; us: number[] },
+  ): void {
+    this.broadcastMessage({ type: 'enemy_sync', enemies, wave, full, t, ...(mods ?? {}) });
   }
 
   /** Guest → host: signal that this client has finished warming up. */

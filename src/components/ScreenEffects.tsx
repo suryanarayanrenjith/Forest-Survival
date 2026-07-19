@@ -12,6 +12,31 @@ let screenShakeCallback: (() => void) | null = null;
 let killFlashCallback: (() => void) | null = null;
 let headshotFlashCallback: (() => void) | null = null;
 let abilityFlashCallback: ((color: string) => void) | null = null;
+let waveEventCallback: ((kind: 'surge' | 'glitch' | null) => void) | null = null;
+let radiationCallback: ((level: number) => void) | null = null;
+
+/**
+ * ARK-07 network-event ambience — a PERSISTENT full-screen treatment that
+ * stays up for the whole modified wave (unlike the one-shot flashes above):
+ * 'surge' = pulsing red overdrive edges, 'glitch' = CSS interference bands
+ * (the WebGL corruption is layered by PostProcessing on capable tiers; this
+ * DOM layer is the guaranteed floor so Low/Ultra-Low read the event too),
+ * null = clean signal. Called from the game loop on wave transitions only.
+ */
+export const setWaveEventOverlay = (kind: 'surge' | 'glitch' | null) => {
+  if (waveEventCallback) waveEventCallback(kind);
+};
+
+/**
+ * ARK-07 relay interference (0 = clear → 1 = standing on a relay pad).
+ * The DOM floor of the "cooked visor" look: a desaturating static vignette +
+ * flickering scan bands. Capable tiers additionally get the WebGL defocus
+ * blur via PostProcessing.setInterference — this layer guarantees the read
+ * on Low/Ultra-Low. Throttled by the caller (~4Hz), never per frame.
+ */
+export const setInterferenceOverlay = (level: number) => {
+  if (radiationCallback) radiationCallback(level);
+};
 
 export const triggerDamageFlash = () => {
   if (damageFlashCallback) {
@@ -55,11 +80,19 @@ const ScreenEffects = ({ health, maxHealth = 100, isVisible }: ScreenEffectsProp
   const [killFlash, setKillFlash] = useState(false);
   const [headshotFlash, setHeadshotFlash] = useState(false);
   const [abilityFlash, setAbilityFlash] = useState<{ color: string; key: number } | null>(null);
+  const [waveEvent, setWaveEvent] = useState<'surge' | 'glitch' | null>(null);
+  const [radiation, setRadiation] = useState(0);
 
   useEffect(() => {
     abilityFlashCallback = (color: string) => {
       setAbilityFlash({ color, key: Date.now() });
       setTimeout(() => setAbilityFlash(null), 420);
+    };
+
+    waveEventCallback = (kind) => setWaveEvent(kind);
+    // Quantise to 0.05 steps so tiny per-push drift can't cause re-renders.
+    radiationCallback = (level) => {
+      setRadiation(Math.round(Math.max(0, Math.min(1, level)) * 20) / 20);
     };
 
     damageFlashCallback = () => {
@@ -88,6 +121,8 @@ const ScreenEffects = ({ health, maxHealth = 100, isVisible }: ScreenEffectsProp
       killFlashCallback = null;
       headshotFlashCallback = null;
       abilityFlashCallback = null;
+      waveEventCallback = null;
+      radiationCallback = null;
     };
   }, []);
 
@@ -99,6 +134,98 @@ const ScreenEffects = ({ health, maxHealth = 100, isVisible }: ScreenEffectsProp
 
   return (
     <>
+      {/* ── OVERDRIVE SURGE ambience — pulsing red overdrive edges held for
+          the whole surge wave. Own composited layer (will-change + translateZ)
+          so the persistent pulse never repaints the viewport. */}
+      {waveEvent === 'surge' && (
+        <div
+          className="fixed inset-0 pointer-events-none"
+          style={{
+            zIndex: 28,
+            background: 'radial-gradient(ellipse at center, transparent 52%, rgba(255, 42, 20, 0.16) 100%)',
+            animation: 'surgePulse 1.6s ease-in-out infinite',
+            willChange: 'opacity',
+            transform: 'translateZ(0)',
+          }}
+        />
+      )}
+
+      {/* ── NULL WAVE interference — DOM floor for the corrupted-signal look.
+          Two thin scanning tear-bands + a magenta/cyan fringe vignette. The
+          bands animate transform ONLY (positioning comes from top/left), so
+          nothing here trips the animation-clobbers-transform trap. */}
+      {waveEvent === 'glitch' && (
+        <>
+          <div
+            className="fixed inset-0 pointer-events-none"
+            style={{
+              zIndex: 28,
+              background: 'radial-gradient(ellipse at center, transparent 58%, rgba(64, 224, 255, 0.10) 88%, rgba(255, 60, 220, 0.12) 100%)',
+              animation: 'glitchVignette 0.9s steps(3, jump-none) infinite',
+              willChange: 'opacity',
+              transform: 'translateZ(0)',
+            }}
+          />
+          <div
+            className="fixed left-0 w-full pointer-events-none"
+            style={{
+              zIndex: 28,
+              top: '18%',
+              height: '3px',
+              background: 'rgba(120, 240, 255, 0.20)',
+              boxShadow: '0 0 12px rgba(120, 240, 255, 0.35)',
+              animation: 'glitchBandA 2.7s steps(9, jump-none) infinite',
+              willChange: 'transform, opacity',
+            }}
+          />
+          <div
+            className="fixed left-0 w-full pointer-events-none"
+            style={{
+              zIndex: 28,
+              top: '64%',
+              height: '2px',
+              background: 'rgba(255, 80, 230, 0.16)',
+              boxShadow: '0 0 10px rgba(255, 80, 230, 0.3)',
+              animation: 'glitchBandB 3.4s steps(11, jump-none) infinite',
+              willChange: 'transform, opacity',
+            }}
+          />
+        </>
+      )}
+
+      {/* ── ARK-07 RELAY INTERFERENCE — the "cooked visor" DOM layer. A
+          desaturating static-grey vignette with a faint sickly-green bias
+          closes in with exposure, and two whisper-thin scan bands drift the
+          frame. The real defocus blur runs in the WebGL grade shader on
+          capable tiers; this floor guarantees the read everywhere. */}
+      {radiation > 0.02 && (
+        <>
+          <div
+            className="fixed inset-0 pointer-events-none"
+            style={{
+              zIndex: 29,
+              background: `radial-gradient(ellipse at center, transparent ${Math.round(52 - radiation * 20)}%, rgba(140, 155, 140, ${(0.10 + radiation * 0.14).toFixed(3)}) 86%, rgba(96, 170, 110, ${(0.12 + radiation * 0.2).toFixed(3)}) 100%)`,
+              animation: radiation > 0.4 ? 'interferenceFlicker 0.65s steps(2, jump-none) infinite' : 'none',
+              willChange: radiation > 0.4 ? 'opacity' : undefined,
+              transform: 'translateZ(0)',
+            }}
+          />
+          {radiation > 0.3 && (
+            <div
+              className="fixed left-0 w-full pointer-events-none"
+              style={{
+                zIndex: 29,
+                top: '34%',
+                height: '2px',
+                background: `rgba(190, 220, 195, ${(radiation * 0.16).toFixed(3)})`,
+                animation: 'interferenceScan 4.2s linear infinite',
+                willChange: 'transform',
+              }}
+            />
+          )}
+        </>
+      )}
+
       {/* Low Health Vignette.
           PERF: this full-screen layer pulses for as long as the player stays
           critical, so it must live on its own GPU-composited layer
@@ -315,6 +442,46 @@ const ScreenEffects = ({ health, maxHealth = 100, isVisible }: ScreenEffectsProp
           50% {
             opacity: 0.5;
           }
+        }
+
+        @keyframes surgePulse {
+          0%, 100% { opacity: 0.75; }
+          50% { opacity: 1; }
+        }
+
+        @keyframes interferenceFlicker {
+          0%, 100% { opacity: 0.8; }
+          50% { opacity: 1; }
+        }
+
+        @keyframes interferenceScan {
+          0% { transform: translateY(-16vh); }
+          100% { transform: translateY(30vh); }
+        }
+
+        @keyframes glitchVignette {
+          0%, 100% { opacity: 0.55; }
+          33% { opacity: 1; }
+          66% { opacity: 0.3; }
+        }
+
+        @keyframes glitchBandA {
+          0% { transform: translateY(0); opacity: 0; }
+          8% { opacity: 0.9; }
+          34% { transform: translateY(38vh); opacity: 0.15; }
+          35% { opacity: 0; }
+          60% { transform: translateY(-12vh); opacity: 0.7; }
+          78% { transform: translateY(20vh); opacity: 0; }
+          100% { transform: translateY(0); opacity: 0; }
+        }
+
+        @keyframes glitchBandB {
+          0% { transform: translateY(0); opacity: 0; }
+          18% { transform: translateY(-26vh); opacity: 0.8; }
+          19% { opacity: 0; }
+          47% { transform: translateY(10vh); opacity: 0.55; }
+          72% { transform: translateY(-30vh); opacity: 0; }
+          100% { transform: translateY(0); opacity: 0; }
         }
       `}</style>
     </>
