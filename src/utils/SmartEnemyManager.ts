@@ -204,16 +204,23 @@ interface PerformanceMetrics {
   consecutiveHighFPSFrames: number;
 }
 
-// LOD distance thresholds.
+// BASE LOD distance thresholds — scaled at runtime by the graphics preset's
+// viewDistance (see lodScale in updateEnemyLOD) so enemy culling is
+// PROPORTIONAL to the player's chosen render distance: Ultra (300 m) keeps
+// full crowds visible far past the old fixed 100 m wall, Low (72 m) culls
+// tighter and saves the frame budget where it matters.
 // HIGH_TO_MEDIUM is pushed out to 45 m so the FULL-detail model (the only state
 // in which an enemy is damageable — see isDetailReady) covers a believable
 // engagement range; below this an enemy is the simplified "half texture" mesh
-// the player is not allowed to damage.
+// the player is not allowed to damage. Its 45 m FLOOR is load-bearing — it
+// only ever scales UP (capped ×1.5) so no preset can shrink the damage window.
 const LOD_DISTANCES = {
   HIGH_TO_MEDIUM: 45,
   MEDIUM_TO_LOW: 70,
   LOW_TO_CULLED: 100,
 };
+// viewDistance at which the base thresholds apply unscaled (the High preset).
+const LOD_REFERENCE_VIEW_DISTANCE = 150;
 
 // Beyond this distance an enemy stops casting a real-time shadow. A shadow at
 // 40 m is a few pixels on screen and reads as noise, but every caster past it
@@ -1013,13 +1020,23 @@ class SmartEnemyManager {
     const distance = pooledEnemy.group.position.distanceTo(this.camera.position);
     const viewDistance = this.graphicsPreset?.viewDistance ?? 200;
 
+    // ── Render-distance-proportional LOD ladder ──
+    // The whole ladder stretches/compresses with the preset's viewDistance so
+    // the enemy streaming radius tracks the player's render-distance setting.
+    // The damageable-range gate (HIGH_TO_MEDIUM) never drops below its 45 m
+    // floor — it only extends (capped) on long-view presets.
+    const lodScale = Math.min(2.0, Math.max(0.7, viewDistance / LOD_REFERENCE_VIEW_DISTANCE));
+    const highToMedium = LOD_DISTANCES.HIGH_TO_MEDIUM * Math.min(1.5, Math.max(1, lodScale));
+    const mediumToLow = Math.max(highToMedium + 5, LOD_DISTANCES.MEDIUM_TO_LOW * lodScale);
+    const cullDistance = Math.min(viewDistance, LOD_DISTANCES.LOW_TO_CULLED * lodScale);
+
     // Calculate LOD based on distance
     let newLOD: LODLevel;
-    if (distance > Math.min(viewDistance, LOD_DISTANCES.LOW_TO_CULLED)) {
+    if (distance > cullDistance) {
       newLOD = LODLevel.CULLED;
-    } else if (distance > LOD_DISTANCES.MEDIUM_TO_LOW) {
+    } else if (distance > mediumToLow) {
       newLOD = LODLevel.LOW;
-    } else if (distance > LOD_DISTANCES.HIGH_TO_MEDIUM) {
+    } else if (distance > highToMedium) {
       newLOD = LODLevel.MEDIUM;
     } else {
       newLOD = LODLevel.HIGH;
@@ -1032,7 +1049,7 @@ class SmartEnemyManager {
     // enemies are still culled for performance.
     if (
       newLOD !== LODLevel.CULLED &&
-      distance > LOD_DISTANCES.HIGH_TO_MEDIUM &&
+      distance > highToMedium &&
       !this.isInFrustum(pooledEnemy.group.position)
     ) {
       newLOD = LODLevel.CULLED;
@@ -1043,8 +1060,10 @@ class SmartEnemyManager {
     // culled / shadows off in the preset). A plain castShadow toggle on the
     // pre-collected caster meshes — never a recompile — so close enemies keep
     // their full shadows and only distant ones stop loading the shadow pass.
+    // Long-view presets have the headroom for a slightly deeper shadow ring.
+    const shadowReach = SHADOW_CAST_DISTANCE * Math.min(1.4, Math.max(1, lodScale));
     const shadowsOn = this.graphicsPreset?.shadowsEnabled ?? true;
-    const wantShadow = shadowsOn && newLOD !== LODLevel.CULLED && distance <= SHADOW_CAST_DISTANCE;
+    const wantShadow = shadowsOn && newLOD !== LODLevel.CULLED && distance <= shadowReach;
     if (pooledEnemy.shadowCasters && wantShadow !== pooledEnemy.castsShadow) {
       const casters = pooledEnemy.shadowCasters;
       for (let s = 0; s < casters.length; s++) casters[s].castShadow = wantShadow;

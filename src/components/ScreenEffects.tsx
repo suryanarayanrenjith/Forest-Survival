@@ -182,25 +182,20 @@ const ScreenEffects = ({ health, maxHealth = 100, isVisible }: ScreenEffectsProp
         />
       )}
 
-      {/* Headshot Flash - brighter white/gold flash */}
+      {/* Headshot Flash — brighter white/gold flash. The old "HEADSHOT" text
+          pill that rode with it was REMOVED: it overlapped the FPS pill and
+          the combo display in the same top-centre strip, and the headshot is
+          already announced by this flash + the red skull hit marker. One
+          event, one announcement. */}
       {headshotFlash && (
-        <>
-          <div
-            className="fixed inset-0 pointer-events-none"
-            style={{
-              zIndex: 41,
-              background: 'radial-gradient(circle at center, rgba(255, 255, 255, 0.15) 0%, rgba(250, 204, 21, 0.2) 50%, transparent 80%)',
-              animation: 'headshotFlash 0.4s ease-out forwards'
-            }}
-          />
-          <div className="fixed top-4 left-1/2 transform -translate-x-1/2 pointer-events-none"
-            style={{ zIndex: 42, animation: 'headshotText 0.4s ease-out forwards' }}
-          >
-            <div className="bg-yellow-500/95 rounded-full px-4 py-1">
-              <span className="text-black font-black text-sm tracking-wider">HEADSHOT</span>
-            </div>
-          </div>
-        </>
+        <div
+          className="fixed inset-0 pointer-events-none"
+          style={{
+            zIndex: 41,
+            background: 'radial-gradient(circle at center, rgba(255, 255, 255, 0.15) 0%, rgba(250, 204, 21, 0.2) 50%, transparent 80%)',
+            animation: 'headshotFlash 0.4s ease-out forwards'
+          }}
+        />
       )}
 
       {/* Blood Splatter Effect on Edges */}
@@ -310,24 +305,6 @@ const ScreenEffects = ({ health, maxHealth = 100, isVisible }: ScreenEffectsProp
           100% {
             opacity: 0;
             transform: scale(1.05);
-          }
-        }
-
-        @keyframes headshotText {
-          0% {
-            opacity: 0;
-            transform: translateX(-50%) translateY(10px) scale(0.8);
-          }
-          20% {
-            opacity: 1;
-            transform: translateX(-50%) translateY(0) scale(1.1);
-          }
-          80% {
-            opacity: 1;
-          }
-          100% {
-            opacity: 0;
-            transform: translateX(-50%) translateY(-5px) scale(1);
           }
         }
 

@@ -11,7 +11,7 @@
 
 ---
 
-Survive endless, escalating enemy waves across **eight distinct biome maps**. Fight through **5 enemy types** with **8 unlockable weapons**, choose from **8 character classes**, and push your score as high as you can. Features roguelike wave perks, daily challenges, mutators, persistent account progression, and P2P multiplayer — built with React, Three.js, Rapier physics, and Convex entirely through conversational AI coding.
+Survive endless, escalating enemy waves across **eight distinct biome maps**. Fight through **6 enemy types** with **8 unlockable weapons**, choose from **8 character classes**, and push your score as high as you can. Features roguelike wave perks, daily challenges, mutators, persistent account progression, and P2P multiplayer — built with React, Three.js, Rapier physics, and Convex entirely through conversational AI coding.
 
 ---
 

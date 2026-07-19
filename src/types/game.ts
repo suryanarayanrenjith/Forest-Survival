@@ -261,6 +261,9 @@ export interface Enemy {
   // "phase 2" when HP drops below half — `bossPhase` is the latched phase
   // so the trigger only fires once.
   isMiniBoss?: boolean;
+  // The mini-boss's 3D crown group (gold band + spikes + jewel, session-shared
+  // geometry/materials) — referenced so the enemy loop can spin/bob it.
+  crown?: THREE.Object3D;
   bossPhase?: 1 | 2;
   // ── Boss summoner (wave 10+) ─────────────────────────────────────────
   // From wave 10 the full boss periodically calls in a pack of minions —

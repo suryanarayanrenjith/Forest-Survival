@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
-  Heart, Crosshair, Skull, Waves, Flame, Lock,
+  Heart, Crosshair, Skull, Waves, Lock,
   Zap, Shield as ShieldIcon, Wind, Ghost, Footprints,
   Swords, Infinity as InfinityIcon, Boxes, PackageSearch, Bomb,
   Snowflake, Bolt, type LucideIcon,
@@ -50,7 +50,6 @@ interface HUDProps {
   score: number;
   wave: number;
   weaponName: string;
-  combo: number;
   t: (key: string) => string;
   unlockedWeapons: string[];
   currentWeapon: string;
@@ -81,9 +80,6 @@ interface HUDProps {
    *  free for the joystick + fire button, and the top-right for the
    *  weapon/pause touch buttons. Desktop (false) is unchanged. */
   isTouch?: boolean;
-  /** When the top-center FPS counter is on, the combo pill drops below it so
-   *  the two never overlap. */
-  fpsVisible?: boolean;
   /** Difficulty-scaled multiplier on weapon unlock scores (easy 1×, medium/hard
    *  higher, adaptive dynamic). The locked-weapon tooltip shows the scaled
    *  requirement. Defaults to 1. */
@@ -91,11 +87,11 @@ interface HUDProps {
 }
 
 const HUD = ({
-  health, maxHealth = 100, ammo, maxAmmo, enemiesKilled, score, wave, weaponName, combo,
+  health, maxHealth = 100, ammo, maxAmmo, enemiesKilled, score, wave, weaponName,
   unlockedWeapons, currentWeapon, hideStatsPanel = false, unlimitedHealth = false,
   hideWave = false, abilities = [],
   staminaRatio = 1, staminaExhausted = false, unlimitedStamina = false,
-  isTouch = false, fpsVisible = false, weaponMastery, weaponUnlockMult = 1,
+  isTouch = false, weaponMastery, weaponUnlockMult = 1,
 }: HUDProps) => {
   const [scorePopup, setScorePopup] = useState(false);
   const [prevScore, setPrevScore] = useState(score);
@@ -183,22 +179,8 @@ const HUD = ({
           </div>
         </div>
 
-        {/* Combo — top-center, transient. Drops below the FPS pill when shown. */}
-        {combo > 1 && (
-          <div className={`absolute left-1/2 ${fpsVisible ? 'top-11' : 'top-2'} -translate-x-1/2 select-none`} style={{ animation: 'comboIn 0.25s cubic-bezier(0.34, 1.56, 0.64, 1)' }}>
-            <div className="flex items-center gap-2 rounded-full border border-orange-400/40 bg-orange-950/75 px-3 py-1">
-              <Flame className="h-3.5 w-3.5 text-orange-400" strokeWidth={2.25} fill="currentColor" />
-              <span className="text-sm font-bold tabular-nums tracking-wide text-orange-200">{combo}x</span>
-            </div>
-          </div>
-        )}
-
-        <style>{`
-          @keyframes comboIn {
-            0% { transform: translateX(-50%) scale(0.6); opacity: 0; }
-            100% { transform: translateX(-50%) scale(1); opacity: 1; }
-          }
-        `}</style>
+        {/* NOTE: no combo pill here — ComboDisplay (top-centre, below the FPS
+            pill) is the single owner of combo/streak UI in every mode. */}
       </>
     );
   }
@@ -306,19 +288,9 @@ const HUD = ({
         </div>
       )}
 
-      {/* ===== Top Center — Combo ===== */}
-      {combo > 1 && (
-        <div
-          className={`absolute ${fpsVisible ? 'top-14' : 'top-5'} left-1/2 -translate-x-1/2 select-none`}
-          style={{ animation: 'comboIn 0.25s cubic-bezier(0.34, 1.56, 0.64, 1)' }}
-        >
-          <div className="flex items-center gap-2 rounded-full border border-orange-400/40 bg-orange-950/75 px-4 py-1.5">
-            <Flame className="w-4 h-4 text-orange-400" strokeWidth={2.25} fill="currentColor" />
-            <span className="text-base font-bold text-orange-200 tabular-nums tracking-wide">{combo}x</span>
-            <span className="text-[10px] font-semibold tracking-[0.2em] text-orange-300/80 uppercase">Combo</span>
-          </div>
-        </div>
-      )}
+      {/* NOTE: no combo pill here — ComboDisplay (top-centre, below the FPS
+          pill) is the single owner of combo/streak UI. The HUD used to render
+          its own duplicate pill in the same strip. */}
 
       {/* ===== Bottom Center — Ability Bar ===== */}
       {abilities.length > 0 && (
@@ -380,10 +352,6 @@ const HUD = ({
       </div>
 
       <style>{`
-        @keyframes comboIn {
-          0% { transform: translateX(-50%) scale(0.6); opacity: 0; }
-          100% { transform: translateX(-50%) scale(1); opacity: 1; }
-        }
         @keyframes abilityReady {
           0%, 100% { box-shadow: 0 0 0 0 rgba(52,211,153,0.0); }
           50% { box-shadow: 0 0 10px 1px rgba(52,211,153,0.45); }

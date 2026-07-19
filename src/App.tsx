@@ -3975,6 +3975,44 @@ const ForestSurvivalGame = () => {
       });
     };
 
+    // ── MINI-BOSS CROWN ─────────────────────────────────────────────────────
+    // A real lit 3D crown (brushed-gold band + spike ring + floating ruby)
+    // replacing the old flat unlit yellow sphere, which read as a 2D disc
+    // pasted over the enemy. Geometries + materials are SESSION-SHARED: safe
+    // with the enemy pool's add-on strip, because releaseEnemy only disposes
+    // direct Mesh children — this is a Group, so its sub-meshes are detached
+    // with it but never disposed. Freed once at scene teardown below.
+    const _crownBandGeo = new THREE.CylinderGeometry(0.3, 0.38, 0.24, 12, 1, true);
+    const _crownSpikeGeo = new THREE.ConeGeometry(0.075, 0.3, 4);
+    const _crownJewelGeo = new THREE.OctahedronGeometry(0.11, 0);
+    const _crownGoldMat = new THREE.MeshStandardMaterial({
+      color: 0xd9a92a, metalness: 0.92, roughness: 0.26,
+      emissive: 0x7a4d08, emissiveIntensity: 0.7,
+      side: THREE.DoubleSide, // open band — inner wall must render too
+    });
+    const _crownJewelMat = new THREE.MeshBasicMaterial({ color: 0xff4a3a, toneMapped: false, fog: false });
+    const buildMiniBossCrown = (): THREE.Group => {
+      const g = new THREE.Group();
+      const band = new THREE.Mesh(_crownBandGeo, _crownGoldMat);
+      band.userData.cannotReceiveAO = true;
+      g.add(band);
+      const SPIKES = 6;
+      for (let i = 0; i < SPIKES; i++) {
+        const ang = (i / SPIKES) * Math.PI * 2;
+        const spike = new THREE.Mesh(_crownSpikeGeo, _crownGoldMat);
+        spike.position.set(Math.cos(ang) * 0.31, 0.24, Math.sin(ang) * 0.31);
+        spike.rotation.y = -ang; // keep the 4-sided pyramid faces aligned outward
+        spike.userData.cannotReceiveAO = true;
+        g.add(spike);
+      }
+      const jewel = new THREE.Mesh(_crownJewelGeo, _crownJewelMat);
+      jewel.position.y = 0.3;
+      jewel.userData.cannotReceiveAO = true;
+      g.add(jewel);
+      g.userData.jewel = jewel; // counter-spun in the enemy loop for sparkle
+      return g;
+    };
+
 // Create enemy with OPTIMIZED pooled meshes from SmartEnemyManager
     // Returns null if enemy limit reached (adaptive performance management)
     const createEnemy = (x: number, z: number, type: 'normal' | 'fast' | 'tank' | 'boss' | 'ranged' | 'revenant' = 'normal'): Enemy | null => {
@@ -4292,6 +4330,18 @@ const ForestSurvivalGame = () => {
       }
     };
 
+    // ── Render-distance-proportional pickup streaming ─────────────────────
+    // A pickup farther than the preset's view distance is fully DESPAWNED
+    // visually: hidden, its pooled light released back for nearby loot, and
+    // every per-frame animation (bob, pulse, glow, halo shader clock) skipped.
+    // Walking back within ~92% of the radius rehydrates it seamlessly. The
+    // hysteresis gap stops boundary flicker; the radius follows the Settings
+    // render-distance slider, so Low presets stream aggressively while Ultra
+    // keeps loot beacons alive across the whole arena.
+    const PICKUP_SLEEP_DIST = graphicsPreset.viewDistance;
+    const PICKUP_SLEEP_DIST_SQ = PICKUP_SLEEP_DIST * PICKUP_SLEEP_DIST;
+    const PICKUP_WAKE_DIST_SQ = (PICKUP_SLEEP_DIST * 0.92) * (PICKUP_SLEEP_DIST * 0.92);
+
     // ── Airdrop glow light ────────────────────────────────────────────────
     // ONE permanent, scene-parented PointLight handed to the killstreak airdrop
     // system. Previously each landed crate scene.add()'d its own PointLight,
@@ -4602,6 +4652,16 @@ const ForestSurvivalGame = () => {
       ring.renderOrder = 988;
       group.add(ring);
 
+      // SECOND ORBIT RING — tilted, counter-rotating (same shared geometry +
+      // material: one extra draw, zero new GPU resources). The crossed pair
+      // gives every pickup a gyroscope silhouette that reads at distance.
+      const ring2 = new THREE.Mesh(ringGeoShared, getRingMat(coreColor));
+      ring2.rotation.x = Math.PI / 2 + 0.85;
+      ring2.scale.setScalar(1.18);
+      ring2.userData.cannotReceiveAO = true;
+      ring2.renderOrder = 988;
+      group.add(ring2);
+
       // GROUND HALO DISC (shared geometry + per-color shader material)
       const halo = new THREE.Mesh(haloGeoShared, getHaloMat(coreColor));
       halo.rotation.x = -Math.PI / 2;
@@ -4622,11 +4682,19 @@ const ForestSurvivalGame = () => {
       group.userData.glowInner = glowInner;
       group.userData.glowOuter = glowOuter;
       group.userData.ring = ring;
+      group.userData.ring2 = ring2;
       group.userData.halo = halo;
       group.userData.haloMat = halo.material as THREE.ShaderMaterial;
       group.userData.light = pickupLight; // may be null when pool exhausted
+      // Kept so the render-distance sleep/wake cycle can re-acquire a pool
+      // light in the right colour when a slept pickup rehydrates.
+      group.userData.coreColor = coreColor;
       // Phase offset so neighbouring pickups don't pulse in sync
       group.userData.pulsePhase = Math.random() * Math.PI * 2;
+      // Materialize-in: the drop pops from a point to full size over ~0.45s
+      // (driven in the per-frame loop) so loot arriving mid-fight has a beat.
+      group.userData.spawnAt = Date.now();
+      group.scale.setScalar(0.01);
       // `core` is the mesh exposed to gameplay code (pickup collision,
       // cleanup). Aliasing the group keeps `core.position` / `core.userData`
       // calls below working without further changes.
@@ -4881,23 +4949,20 @@ const ForestSurvivalGame = () => {
         const spot = findEnemySpawnSpot(baseDist, enemyRadius, preferredAngle);
         const enemy = createEnemy(spot.x, spot.z, type);
         if (enemy) {
-          // Mini-Boss elevation: quadruple HP, mark the flag, and slap a
-          // bright yellow "crown" emissive sphere above the head so the
-          // player can pick it out of the wave at a glance.
+          // Mini-Boss elevation: quadruple HP, mark the flag, and set a real
+          // 3D gold crown (band + spikes + floating ruby) above the head so
+          // the player can pick it out of the wave at a glance. Spun + bobbed
+          // in the enemy loop; assets are session-shared (buildMiniBossCrown).
           if (miniBoss) {
             enemy.isMiniBoss = true;
             enemy.health *= 4;
             enemy.maxHealth *= 4;
-            const crownGeo = new THREE.SphereGeometry(0.45, 12, 10);
-            const crownMat = new THREE.MeshBasicMaterial({
-              color: 0xfbbf24,
-              toneMapped: false,
-              fog: false,
-            });
-            const crown = new THREE.Mesh(crownGeo, crownMat);
-            crown.position.y = (enemy.head?.position.y ?? 1.9) + 0.9;
-            crown.userData.cannotReceiveAO = true;
+            const crown = buildMiniBossCrown();
+            const crownY = (enemy.head?.position.y ?? 1.9) + 0.85;
+            crown.position.y = crownY;
+            crown.userData.baseY = crownY;
             enemy.mesh.add(crown);
+            enemy.crown = crown;
           }
           // First full BOSS of the run (wave 10+) gets a one-time threat banner
           // so the player knows the summoner has arrived.
@@ -7713,16 +7778,14 @@ const ForestSurvivalGame = () => {
         if (gameSettingsManager.getSetting('hitMarkers')) addHitMarker(isCritical, true);
         // Skill points are no longer earned per kill — they're awarded at the end
         // of a Solo run (server-side) so the tree is a real, competitive grind.
-        if (gameSettingsManager.getSetting('killFeed')) {
-          // Cosmetic title prefix — gives equipped earners a flex moment.
-          const titlePrefix = equippedTitleRef.current ? `[${equippedTitleRef.current}] ` : '';
-          if (isCritical) addKillFeedEntry(`${titlePrefix}HEADSHOT!`, 'headshot');
-          else addKillFeedEntry(`${titlePrefix}Enemy Eliminated`, 'kill');
-          if (combo >= 5 && combo % 5 === 0) addKillFeedEntry(`${combo}x COMBO!`, 'combo');
-          if (killStreak === 10) addKillFeedEntry('10 Kill Streak!', 'combo');
-          else if (killStreak === 20) addKillFeedEntry('20 Kill Streak!', 'combo');
-          else if (killStreak === 30) addKillFeedEntry('30 Kill Streak! UNSTOPPABLE!', 'combo');
-        }
+        //
+        // NO per-kill feed entries — every elimination is already announced
+        // exactly once by the crosshair kill-confirm marker + screen flash
+        // (headshots additionally by the gold flash), and combo/streak
+        // milestones are owned solely by the top-centre ComboDisplay. The old
+        // "Enemy Eliminated"/"HEADSHOT!"/"Nx COMBO!" entries duplicated all
+        // three, spammed the 5-slot feed and collided with the tactical map.
+        // The feed is reserved for EVENTS (waves, boss beats, trampled, MP).
         // ── Achievements (solo only; every call no-ops when disabled) ──
         // Career kill totals drive the cumulative tiers; the running streak and
         // headshot tally drive the per-run feats.
@@ -8107,9 +8170,8 @@ const ForestSurvivalGame = () => {
       lastKillTime = currentTime;
       if (isCritical) triggerHeadshotFlash(); else triggerKillFlash();
       if (gameSettingsManager.getSetting('hitMarkers')) addHitMarker(isCritical, true);
-      if (gameSettingsManager.getSetting('killFeed')) {
-        addKillFeedEntry(isCritical ? 'HEADSHOT!' : 'Enemy Eliminated', isCritical ? 'headshot' : 'kill');
-      }
+      // No per-kill feed entry — mirrors handleEnemyKilled: the kill-confirm
+      // marker + flash are the single announcement for each elimination.
       if (mp) mp.incrementKills();
       updateGameState();
     };
@@ -9661,7 +9723,9 @@ const ForestSurvivalGame = () => {
       // Update enhanced power-ups (airdrops). Killstreak rewards descend
       // under a parachute and land near the player; on touch we apply the
       // effect IMMEDIATELY (these aren't held / queued like loot crates).
-      enhancedPowerUps.updateAirdrops(delta, scene);
+      // Landed crates farther than the render-distance setting sleep (hidden +
+      // zero animation cost) and rehydrate when the player closes back in.
+      enhancedPowerUps.updateAirdrops(delta, scene, camera.position, graphicsPreset.viewDistance);
       if (!playerEliminated && !isGameOver) {
         const playerX = camera.position.x;
         const playerZ = camera.position.z;
@@ -10932,11 +10996,54 @@ const ForestSurvivalGame = () => {
       }
 
       // Update power-ups
-      const _puNow = Date.now() * 0.001;
+      const _puNowMs = Date.now();
+      const _puNow = _puNowMs * 0.001;
       for (const powerUp of powerUps) {
         if (!powerUp.collected) {
           const root = powerUp.mesh as unknown as THREE.Group;
+
+          // ── Render-distance streaming (sleep/wake) ──────────────────────
+          // Beyond the preset's view distance the pickup is despawned: hidden,
+          // pooled light released, all animation below skipped. It rehydrates
+          // (light re-acquired if a slot is free) when the player closes back
+          // within the hysteresis radius. Collection can't trigger while
+          // asleep — asleep implies the player is far out of pickup range.
+          const _pdx = root.position.x - camera.position.x;
+          const _pdz = root.position.z - camera.position.z;
+          const _pDistSq = _pdx * _pdx + _pdz * _pdz;
+          if (root.userData.asleep === true) {
+            if (_pDistSq < PICKUP_WAKE_DIST_SQ) {
+              root.userData.asleep = false;
+              root.visible = true;
+              const relight = acquirePickupLight(root.userData.coreColor as number);
+              root.userData.light = relight;
+              if (relight) relight.position.set(root.position.x, root.position.y, root.position.z);
+            } else {
+              continue; // stays despawned — zero per-frame cost
+            }
+          } else if (_pDistSq > PICKUP_SLEEP_DIST_SQ) {
+            root.userData.asleep = true;
+            root.visible = false;
+            releasePickupLight(root.userData.light as THREE.PointLight | null | undefined);
+            root.userData.light = null;
+            continue;
+          }
+
           root.rotation.y += delta * 2;
+
+          // Materialize-in: pop from a point to full size with a soft
+          // overshoot during the first 0.45s after spawn, then lock at 1.
+          const spawnAge = _puNowMs - ((root.userData.spawnAt as number) || 0);
+          if (spawnAge < 450) {
+            const mt = spawnAge / 450;
+            // easeOutBack — 0 → overshoot (~1.09) → settle at 1.
+            const mb = mt - 1;
+            const k = 1 + 2.70158 * mb * mb * mb + 1.70158 * mb * mb;
+            root.scale.setScalar(Math.max(0.01, k));
+          } else if (root.scale.x !== 1) {
+            root.scale.setScalar(1);
+          }
+
           // Gentle vertical bob with a phase offset so neighbouring pickups
           // don't move in lockstep
           const phase = (root.userData.pulsePhase as number) || 0;
@@ -10975,6 +11082,13 @@ const ForestSurvivalGame = () => {
           if (ring) {
             ring.rotation.z += delta * 1.8;
             ring.scale.setScalar(1.0 + pulse * 0.08);
+          }
+          // Crossed gyroscope ring — counter-rotates on its tilted axis with
+          // a phase-offset pulse so the pair never reads as one rigid prop.
+          const ring2 = root.userData.ring2 as THREE.Mesh | undefined;
+          if (ring2) {
+            ring2.rotation.z -= delta * 2.4;
+            ring2.scale.setScalar(1.18 + (1 - pulse) * 0.08);
           }
 
           const halo = root.userData.halo as THREE.Mesh | undefined;
@@ -12256,6 +12370,15 @@ const ForestSurvivalGame = () => {
               enemy.frostShell.scale.setScalar(1 + Math.sin(frameNowMs * 0.012) * 0.04);
             }
           }
+          // Mini-boss crown: slow regal spin + gentle hover, ruby counter-spins
+          // for a glint. Cheap per-frame writes on an elite-only add-on.
+          if (enemy.crown) {
+            enemy.crown.rotation.y += delta * 1.4;
+            enemy.crown.position.y = (enemy.crown.userData.baseY as number ?? 2.7)
+              + Math.sin(frameNowMs * 0.0021) * 0.07;
+            const jewel = enemy.crown.userData.jewel as THREE.Mesh | undefined;
+            if (jewel) jewel.rotation.y -= delta * 3.2;
+          }
           const isMoving = !ccActive && distance > 2.2 && (!enemy.attackSystem || enemy.attackSystem.canMove());
 
           if (isMoving) {
@@ -13354,13 +13477,15 @@ const ForestSurvivalGame = () => {
           warm.push(warmShell);
         }
         spawnLightningBolt(wp.clone(), wp.clone().add(new THREE.Vector3(0, 0.01, 0.01)), 0xfff27a);
-        // Pre-warm the killstreak AIRDROP materials (crate, metal bands, glow
-        // panel + label, beacon, parachute vertex-colours, smoke points) so the
-        // first real airdrop never stalls compiling them. Spawned high overhead
-        // (startY ~100) so it's off-screen; the shared glow light is already
-        // scene-parented, so this never changes the light count. Cleared in
-        // teardown via enhancedPowerUps.clearAll.
-        enhancedPowerUps.createAirdrop(scene, wp.x, wp.z, 'speed');
+        // Pre-warm the killstreak AIRDROP with a FORCED TOUCHDOWN so every
+        // program links now — crate/bands/panel/beacon, the parachute's
+        // vertex-colour permutation, the smoke points AND the landed-only set
+        // (textured light beam + core, ground halo, chute collapse) that the
+        // old fall-from-100m warm crate never reached: the first real landing
+        // mid-fight used to compile those. The airdrop system's materials are
+        // session-shared now, so the programs stay pinned after clearAll
+        // removes this crate in teardown.
+        enhancedPowerUps.prewarm(scene, wp.x, wp.z);
         // Pre-warm the rain shader (hidden Points mesh) so a dynamic-weather
         // front can roll in mid-fight without a first-rain compile hitch.
         weatherSystem.prewarm();
@@ -13405,10 +13530,10 @@ const ForestSurvivalGame = () => {
         // smooth MeshStandard plate/studs) or a hacked enemy (chip/ring/scan
         // overlay) appears. Built once, kept off-screen-free in the scene for the
         // compile passes, then removed but retained so their programs persist.
-        const warmCrown = new THREE.Mesh(
-          new THREE.SphereGeometry(0.45, 12, 10),
-          new THREE.MeshBasicMaterial({ color: 0xfbbf24, toneMapped: false, fog: false }),
-        );
+        // Real mini-boss crown build — its DoubleSide MeshStandard band is its
+        // own program permutation, so warm the actual crown, not a stand-in.
+        // Materials are session-shared consts, retained until scene teardown.
+        const warmCrown = buildMiniBossCrown();
         warmCrown.position.copy(wp);
         scene.add(warmCrown); warmupRetainedObjects.push(warmCrown);
         const warmShield = buildRevenantShield();
@@ -13417,6 +13542,29 @@ const ForestSurvivalGame = () => {
         const warmHack = buildHackVisuals();
         warmHack.position.copy(wp);
         scene.add(warmHack); warmupRetainedObjects.push(warmHack);
+
+        // Ability-flare shader-program ANCHORS. The warm flares above are
+        // torn down (removed + materials disposed) before gameplay so they
+        // never linger on screen — but disposing the last material of a
+        // program variant drops its refcount to zero and EVICTS the compiled
+        // program, which meant the FIRST real ability cast mid-fight
+        // re-linked it: the exact activation stutter this stage exists to
+        // kill. These two tiny retained quads pin both MeshBasic permutations
+        // the flares use (fogged transparent front-side + the phantom aura's
+        // DoubleSide variant) for the whole session.
+        const flareAnchorGeo = new THREE.PlaneGeometry(0.02, 0.02);
+        const flareAnchorA = new THREE.Mesh(
+          flareAnchorGeo,
+          new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.4 }),
+        );
+        flareAnchorA.position.copy(wp);
+        scene.add(flareAnchorA); warmupRetainedObjects.push(flareAnchorA);
+        const flareAnchorB = new THREE.Mesh(
+          flareAnchorGeo,
+          new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.4, side: THREE.DoubleSide }),
+        );
+        flareAnchorB.position.copy(wp);
+        scene.add(flareAnchorB); warmupRetainedObjects.push(flareAnchorB);
 
         // Enemy + Revenant bolt tracers. Their materials are SHARED session-long
         // consts, so rendering one of each once links the program for good —
@@ -13510,6 +13658,11 @@ const ForestSurvivalGame = () => {
         addHitMarker(false);
         clearHitMarkers();
         clearDamageDirections();
+        // Mount the power-announcement pill once behind the (opaque) loader
+        // so its first real appearance — which lands in the same frame as an
+        // ability activation — doesn't pay the initial React mount + style
+        // recalculation during combat.
+        showPowerMessage(' ', 1);
       });
 
       // ── ENVIRONMENT (image-based lighting) ─────────────────────────────
@@ -13862,6 +14015,11 @@ const ForestSurvivalGame = () => {
         if (e.hackVisuals) { disposeHackVisuals(e.hackVisuals); e.hackVisuals = undefined; }
       }
 
+      // Cleanup live airdrop crates, then free the session-shared airdrop
+      // assets (kept alive all run so their shader programs stayed cached).
+      enhancedPowerUps.clearAll(scene);
+      enhancedPowerUps.disposeShared();
+
       // Cleanup SmartEnemyManager (releases pooled resources)
       smartEnemyManager.dispose();
 
@@ -13946,6 +14104,15 @@ const ForestSurvivalGame = () => {
       _bombSphGeo.dispose();
       _bombWireGeo.dispose();
       _bombBandGeo.dispose();
+
+      // Cleanup the session-shared mini-boss crown assets (crown groups on
+      // live/pooled enemies were detached by the pool's add-on strip; only
+      // these shared geometries/materials own GPU resources).
+      _crownBandGeo.dispose();
+      _crownSpikeGeo.dispose();
+      _crownJewelGeo.dispose();
+      _crownGoldMat.dispose();
+      _crownJewelMat.dispose();
 
       // Cleanup the left-hand detonator viewmodel (per-instance geos + mats).
       camera.remove(detonatorGroup);
@@ -14542,7 +14709,6 @@ const ForestSurvivalGame = () => {
           score={gameState.score}
           wave={gameState.wave}
           weaponName={WEAPONS[gameState.currentWeapon].name}
-          combo={gameState.combo}
           t={t}
           unlockedWeapons={gameState.unlockedWeapons}
           currentWeapon={gameState.currentWeapon}
@@ -14554,7 +14720,6 @@ const ForestSurvivalGame = () => {
           staminaExhausted={staminaExhaustedUI}
           unlimitedStamina={gameMode === 'tutorial'}
           isTouch={isTouch}
-          fpsVisible={userSettings.showFPS}
           weaponMastery={gameState.weaponMastery}
           weaponUnlockMult={gameState.weaponUnlockMult}
         />
@@ -14618,8 +14783,8 @@ const ForestSurvivalGame = () => {
         </div>
       )}
 
-      {/* FPS Counter — top-center. The combo pill drops below it (see HUD
-          fpsVisible) so the two never overlap. */}
+      {/* FPS Counter — top-center. ComboDisplay (the single combo/streak UI)
+          drops below it via its fpsVisible prop so the two never overlap. */}
       {userSettings.showFPS && gameStarted && !photoMode && (
         <div
           className="absolute top-2 left-1/2 transform -translate-x-1/2 z-20 select-none"
@@ -14954,7 +15119,10 @@ const ForestSurvivalGame = () => {
               isTouch
                 ? 'bottom-16 left-1/2 -translate-x-1/2 items-center'
                 : (gameMode === 'classic' || gameMode === 'tutorial')
-                  ? 'top-[384px] right-4'
+                  // Radar panel: top 152px + header/canvas/legend ≈ 380px
+                  // bottom edge. 416px leaves real breathing room so a feed
+                  // entry can never touch the tactical map again.
+                  ? 'top-[416px] right-4'
                   : 'top-36 right-4'
             }
           />
@@ -14962,6 +15130,7 @@ const ForestSurvivalGame = () => {
             combo={gameState.combo}
             killStreak={gameState.killStreak}
             visible={!isPaused}
+            fpsVisible={userSettings.showFPS}
           />
         </>
       )}

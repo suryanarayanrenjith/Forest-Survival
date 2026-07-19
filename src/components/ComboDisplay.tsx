@@ -5,9 +5,13 @@ interface ComboDisplayProps {
   combo: number;
   killStreak: number;
   visible: boolean;
+  /** When the top-centre FPS counter is on, the stack drops below it so the
+   *  two never overlap — this is the ONLY combo/streak UI in the game (the
+   *  HUD pill and the kill-feed milestone entries were removed as duplicates). */
+  fpsVisible?: boolean;
 }
 
-const ComboDisplay = ({ combo, killStreak, visible }: ComboDisplayProps) => {
+const ComboDisplay = ({ combo, killStreak, visible, fpsVisible = false }: ComboDisplayProps) => {
   const [previousCombo, setPreviousCombo] = useState(combo);
   const [comboIncreased, setComboIncreased] = useState(false);
   const [showNotification, setShowNotification] = useState(false);
@@ -70,8 +74,12 @@ const ComboDisplay = ({ combo, killStreak, visible }: ComboDisplayProps) => {
   const streakLabel = getStreakLabel(killStreak);
 
   return (
+    // Top-centre notification lane: FPS pill (top-2, when enabled) → this
+    // stack directly beneath it. Nothing else renders in this strip — the
+    // HEADSHOT pill and the HUD's own combo pill that used to fight over it
+    // were removed.
     <div
-      className={`fixed top-28 left-1/2 -translate-x-1/2 z-40 pointer-events-none flex flex-col items-center gap-1.5
+      className={`fixed ${fpsVisible ? 'top-12' : 'top-3'} left-1/2 -translate-x-1/2 z-40 pointer-events-none flex flex-col items-center gap-1.5
         transition-all duration-400 ${fadeOut ? 'opacity-0 -translate-y-2' : 'opacity-100'}`}
     >
       {/* Combo counter */}

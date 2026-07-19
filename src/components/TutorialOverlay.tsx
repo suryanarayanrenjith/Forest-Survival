@@ -98,8 +98,17 @@ export const TutorialOverlay = React.memo(function TutorialOverlay({
             on the SAME element — putting the animation on a separate INNER
             wrapper (which needs no static transform of its own) avoids that
             collision entirely. This is what was pushing tutorial cards off
-            the visible screen after their intro animation finished. */}
-        <div className="absolute bottom-24 left-1/2 -translate-x-1/2">
+            the visible screen after their intro animation finished.
+
+            ANCHOR: desktop parks the banner above the bottom-centre ability
+            bar. On TOUCH that lane is occupied by the action-button cluster +
+            fire button (bottom-right) and the joystick zone (bottom-left) —
+            the banner sat on top of the very buttons the step asks the player
+            to tap (Reload / Ability / Weapon), softlocking the tutorial. The
+            touch banner lives in the top-centre safe lane instead (below the
+            FPS pill, clear of the top-left HUD card and top-right weapon /
+            pause cluster). */}
+        <div className={`absolute left-1/2 -translate-x-1/2 ${touch ? 'top-14' : 'bottom-24'}`}>
           <div
             className="pointer-events-auto"
             style={{ animation: 'tutorialEnter 0.3s cubic-bezier(0.16,1,0.3,1) forwards' }}
@@ -293,8 +302,14 @@ export const CoachTip = React.memo(function CoachTip({
     critical: '#f87171',
   }[priority];
 
+  // Touch: bottom-56 lands on the action-button cluster (and the tip is
+  // pointer-events-auto for its dismiss ✕, so it also ATE those taps). The
+  // top-centre lane — below the FPS pill / practise banner — is the one strip
+  // guaranteed free of controls on phones and tablets.
+  const touch = detectIsTouch();
+
   return (
-    <div className="fixed bottom-56 left-1/2 -translate-x-1/2 z-40">
+    <div className={`fixed ${touch ? 'top-28' : 'bottom-56'} left-1/2 -translate-x-1/2 z-40`}>
       <div
         className={`rounded-2xl border bg-black/85 p-4 shadow-2xl max-w-md ${priority === 'critical' ? 'animate-pulse' : ''}`}
         style={{ borderColor: `${iconColor}88`, boxShadow: `0 0 30px ${iconColor}33` }}

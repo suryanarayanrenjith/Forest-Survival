@@ -290,6 +290,22 @@ export class AbilitySystem {
         vz: Math.sin(ang) * spd,
       });
     }
+    // Ember column — a tight core of risers that shoot straight up through the
+    // pillar, selling the "energy surging through the body" beat. Same shared
+    // geometry + materials, so the extra flourish costs zero new programs.
+    const riserCount = 6;
+    for (let i = 0; i < riserCount; i++) {
+      const mote = new THREE.Mesh(BURST_GEO.mote, i % 2 === 0 ? moteMatHot : moteMatBase);
+      const ang = (i / riserCount) * Math.PI * 2;
+      mote.position.set(Math.cos(ang) * 0.28, 0.4 + Math.random() * 0.6, Math.sin(ang) * 0.28);
+      group.add(mote);
+      motes.push({
+        mesh: mote,
+        vx: Math.cos(ang) * 0.35,
+        vy: 7.5 + Math.random() * 3.0,
+        vz: Math.sin(ang) * 0.35,
+      });
+    }
 
     scene.add(group);
 
@@ -350,19 +366,27 @@ export class AbilitySystem {
 
   // Create visual effect for ability use. Geometries are shared (FLARE_GEO);
   // only the lightweight per-effect materials are allocated here and disposed
-  // when the flare auto-removes.
+  // when the flare finishes. Every flare now ANIMATES (expand / spiral / fade)
+  // via its own short rAF driver — the old version parked a static group in
+  // the world for 2s, which read as frozen debris rather than a cast.
   createAbilityEffect(scene: THREE.Scene, position: THREE.Vector3, type: AbilityType): THREE.Group {
     const effect = new THREE.Group();
+    const mats: THREE.Material[] = [];
+    const track = (m: THREE.Material): THREE.Material => { mats.push(m); return m; };
+    // Per-mesh animation targets the tick below drives.
+    const rings: THREE.Mesh[] = [];
+    const swirls: { mesh: THREE.Mesh; ang: number; radius: number; riseSpd: number }[] = [];
+    const streaks: { mesh: THREE.Mesh; vx: number; vz: number }[] = [];
 
     switch (type) {
       case 'dash': {
-        // Speed lines — one shared material for all 10 (identical colour +
-        // opacity, so per-line materials were pure allocation churn).
-        const material = new THREE.MeshBasicMaterial({
+        // Speed lines — one shared material for all 10; they streak backward
+        // and fade like slipstream trails.
+        const material = track(new THREE.MeshBasicMaterial({
           color: 0x00ffff,
           transparent: true,
           opacity: 0.6
-        });
+        }));
         for (let i = 0; i < 10; i++) {
           const line = new THREE.Mesh(FLARE_GEO.dash, material);
           line.position.set(
@@ -371,66 +395,74 @@ export class AbilitySystem {
             Math.random() * 2 - 1
           );
           effect.add(line);
+          streaks.push({
+            mesh: line,
+            vx: (Math.random() - 0.5) * 2.4,
+            vz: 2.5 + Math.random() * 3.0,
+          });
         }
         break;
       }
 
       case 'shield': {
-        // Quick activation flare only — the persistent shield is a held mesh
+        // Expanding hard-light ring — the persistent shield is the held mesh
         // on the player's arm (managed in the game loop), NOT a bubble here.
-        const ringMaterial = new THREE.MeshBasicMaterial({
+        const ringMaterial = track(new THREE.MeshBasicMaterial({
           color: 0x55b0ff,
           transparent: true,
           opacity: 0.7,
-        });
+        }));
         const ring = new THREE.Mesh(FLARE_GEO.shield, ringMaterial);
         ring.rotation.x = Math.PI / 2;
         effect.add(ring);
+        rings.push(ring);
         break;
       }
 
       case 'overcharge': {
-        // Electric spark motes that pop on activation — two shared materials
-        // (gold + ember) instead of 18 throwaway ones.
-        const gold = new THREE.MeshBasicMaterial({ color: 0xffd23f, transparent: true, opacity: 0.9 });
-        const ember = new THREE.MeshBasicMaterial({ color: 0xff8a1e, transparent: true, opacity: 0.9 });
+        // Electric spark motes — two shared materials (gold + ember) that now
+        // spiral outward and up like a discharging coil.
+        const gold = track(new THREE.MeshBasicMaterial({ color: 0xffd23f, transparent: true, opacity: 0.9 }));
+        const ember = track(new THREE.MeshBasicMaterial({ color: 0xff8a1e, transparent: true, opacity: 0.9 }));
         for (let i = 0; i < 18; i++) {
-          const particle = new THREE.Mesh(FLARE_GEO.overcharge, Math.random() > 0.5 ? gold : ember);
-          particle.position.set(
-            Math.random() * 2 - 1,
-            Math.random() * 2,
-            Math.random() * 2 - 1
-          );
+          const particle = new THREE.Mesh(FLARE_GEO.overcharge, i % 2 === 0 ? gold : ember);
+          const ang = Math.random() * Math.PI * 2;
+          const radius = 0.25 + Math.random() * 0.6;
+          particle.position.set(Math.cos(ang) * radius, Math.random() * 1.6, Math.sin(ang) * radius);
           effect.add(particle);
+          swirls.push({ mesh: particle, ang, radius, riseSpd: 1.2 + Math.random() * 1.8 });
         }
         break;
       }
 
       case 'explosive': {
-        // Fire ring
-        const ringMaterial = new THREE.MeshBasicMaterial({
+        // Fire ring — races outward from the cast point.
+        const ringMaterial = track(new THREE.MeshBasicMaterial({
           color: 0xff4400,
           transparent: true,
           opacity: 0.7
-        });
+        }));
         const ring = new THREE.Mesh(FLARE_GEO.explosive, ringMaterial);
         ring.rotation.x = Math.PI / 2;
         effect.add(ring);
+        rings.push(ring);
         break;
       }
 
       case 'phantom': {
-        // Brief dematerialize pulse — the persistent translucency is applied
-        // to the player body in the game loop, not a bubble here.
-        const auraMaterial = new THREE.MeshBasicMaterial({
+        // Dematerialize pulse — the aura ring climbs the body while expanding,
+        // like a scan-line phasing the player out. Persistent translucency is
+        // applied to the player body in the game loop, not a bubble here.
+        const auraMaterial = track(new THREE.MeshBasicMaterial({
           color: 0x9a6bff,
           transparent: true,
           opacity: 0.5,
           side: THREE.DoubleSide
-        });
+        }));
         const aura = new THREE.Mesh(FLARE_GEO.phantom, auraMaterial);
         aura.rotation.x = Math.PI / 2;
         effect.add(aura);
+        rings.push(aura);
         break;
       }
     }
@@ -438,16 +470,50 @@ export class AbilitySystem {
     effect.position.copy(position);
     scene.add(effect);
 
-    // Auto-remove after animation. Dispose only the per-effect materials —
-    // the geometries are shared (FLARE_GEO) and must persist.
-    setTimeout(() => {
-      scene.remove(effect);
-      effect.traverse((child) => {
-        if (child instanceof THREE.Mesh && child.material instanceof THREE.Material) {
-          child.material.dispose();
-        }
-      });
-    }, 2000);
+    // Self-driving animation: rings expand + rise, swirl motes orbit outward,
+    // dash streaks race backward — all fading on one clock, then dispose.
+    // Shared FLARE_GEO geometries are never disposed. The parent-check guard
+    // also lets an external owner (warmup teardown) remove the group early.
+    const DURATION = 0.85;
+    let elapsed = 0;
+    let last = performance.now();
+    const tick = () => {
+      if (!effect.parent) { mats.forEach((m) => m.dispose()); return; }
+      const now = performance.now();
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      elapsed += dt;
+      const t = Math.min(1, elapsed / DURATION);
+      const e = _easeOut(t);
+      const fade = 1 - t;
+
+      for (const m of mats) (m as THREE.MeshBasicMaterial).opacity = fade * 0.9;
+      for (const ring of rings) {
+        const s = 0.6 + e * 1.6;
+        ring.scale.set(s, s, 1);
+        ring.position.y = e * 1.4;
+      }
+      for (const sw of swirls) {
+        sw.ang += dt * 6.5;
+        const r = sw.radius + e * 1.3;
+        sw.mesh.position.x = Math.cos(sw.ang) * r;
+        sw.mesh.position.z = Math.sin(sw.ang) * r;
+        sw.mesh.position.y += sw.riseSpd * dt;
+      }
+      for (const st of streaks) {
+        st.mesh.position.x += st.vx * dt;
+        st.mesh.position.z += st.vz * dt;
+        st.mesh.scale.x = 1 + e * 2.2; // stretch into a trail
+      }
+
+      if (t >= 1) {
+        scene.remove(effect);
+        mats.forEach((m) => m.dispose());
+        return;
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
 
     return effect;
   }

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Crosshair, ChevronsUp, ChevronsRight, ChevronsDown, RotateCw, Zap, Pause,
   Wind, Shield as ShieldIcon, Flame, Heart, Infinity as InfinityIcon, Ghost, Bomb,
-  Boxes, Swords, PackageSearch, ChevronDown, Lock,
+  Boxes, Swords, PackageSearch, ChevronDown, Lock, X,
   type LucideIcon,
 } from 'lucide-react';
 import { touchControls } from '../utils/touchControls';
@@ -152,32 +153,77 @@ const TouchControls = ({
             <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${weaponOpen ? 'rotate-180' : ''}`} strokeWidth={2.5} />
           </button>
 
-          {weaponOpen && (
-            <div className="absolute right-0 top-14 flex max-h-[58vh] w-44 flex-col gap-1 overflow-y-auto rounded-2xl border border-white/12 bg-black/90 p-1.5">
-              {Object.keys(WEAPONS).map((key, idx) => {
-                const unlocked = unlockedWeapons.includes(key);
-                const current = key === currentWeapon;
-                return (
+          {/* WEAPON SELECT SHEET — CODM/PUBGM-style full-screen armory picker.
+              The old anchored drop-down list rendered inside this z-[45]
+              stacking context, so the right-edge toggle rail (radar / MP
+              scoreboard buttons at z-46) painted ON TOP of it and swallowed
+              taps on the middle weapon rows — mobile players literally could
+              not switch guns. The sheet is PORTALED to document.body at
+              z-[70]: it owns the whole screen while open (its scrim blocks
+              every other control, so overlap is impossible by construction),
+              shows all 8 slots as big thumb-sized tiles, and one tap equips
+              and closes. Tapping the scrim or ✕ dismisses. */}
+          {weaponOpen && createPortal(
+            <div
+              className="fixed inset-0 z-[70] select-none"
+              style={{ pointerEvents: 'auto' }}
+              onPointerDown={() => setWeaponOpen(false)}
+            >
+              <div className="absolute inset-0 bg-black/70" />
+              <div
+                className="absolute left-1/2 top-1/2 w-[min(92vw,30rem)] -translate-x-1/2 -translate-y-1/2 rounded-3xl border border-white/12 bg-[#0b0f15]/95 p-4 shadow-2xl"
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                <div className="mb-3 flex items-center justify-between">
+                  <span className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.2em] text-gray-300">
+                    <Crosshair className="h-4 w-4 text-emerald-300" strokeWidth={2.25} />
+                    Select Weapon
+                  </span>
                   <button
-                    key={key}
                     type="button"
-                    disabled={!unlocked}
-                    onClick={() => unlocked && selectWeapon(key)}
-                    className={`flex items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-bold transition-colors ${
-                      current ? 'bg-emerald-500/20 text-emerald-200'
-                        : unlocked ? 'text-gray-200 active:bg-white/10'
-                        : 'text-gray-600'
-                    }`}
+                    aria-label="Close weapon select"
+                    onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); setWeaponOpen(false); }}
+                    className="flex h-9 w-9 items-center justify-center rounded-xl border border-white/12 bg-white/[0.04] active:scale-90"
                   >
-                    <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded text-[10px] font-black tabular-nums ${current ? 'bg-emerald-400/25 text-emerald-100' : 'bg-white/10 text-gray-400'}`}>
-                      {idx + 1}
-                    </span>
-                    <span className="flex-1 truncate">{WEAPONS[key].name}</span>
-                    {!unlocked && <Lock className="ml-1 h-3 w-3 shrink-0 text-gray-600" strokeWidth={2.5} />}
+                    <X className="h-4 w-4 text-gray-300" strokeWidth={2.5} />
                   </button>
-                );
-              })}
-            </div>
+                </div>
+                <div className="grid grid-cols-4 gap-2">
+                  {Object.keys(WEAPONS).map((key, idx) => {
+                    const unlocked = unlockedWeapons.includes(key);
+                    const current = key === currentWeapon;
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        disabled={!unlocked}
+                        onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); if (unlocked) selectWeapon(key); }}
+                        className={`relative flex min-h-[64px] flex-col items-center justify-center gap-1 rounded-2xl border px-1 py-2 transition-transform active:scale-95 ${
+                          current ? 'border-emerald-400/70 bg-emerald-500/15'
+                            : unlocked ? 'border-white/12 bg-white/[0.04]'
+                            : 'border-white/5 bg-black/40'
+                        }`}
+                      >
+                        <span className={`flex h-6 w-6 items-center justify-center rounded-lg text-[11px] font-black tabular-nums ${
+                          current ? 'bg-emerald-400/25 text-emerald-100' : unlocked ? 'bg-white/10 text-gray-300' : 'bg-white/5 text-gray-600'
+                        }`}>
+                          {unlocked ? idx + 1 : <Lock className="h-3 w-3" strokeWidth={2.5} />}
+                        </span>
+                        <span className={`max-w-full truncate text-[10px] font-bold ${
+                          current ? 'text-emerald-200' : unlocked ? 'text-gray-200' : 'text-gray-600'
+                        }`}>
+                          {WEAPONS[key].name}
+                        </span>
+                        {current && (
+                          <span className="absolute -bottom-0.5 left-1/2 h-1 w-1 -translate-x-1/2 rounded-full bg-emerald-400" />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>,
+            document.body,
           )}
         </div>
 
