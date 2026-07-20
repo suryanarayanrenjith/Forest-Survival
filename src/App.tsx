@@ -31,6 +31,7 @@ import { RemotePlayerManager } from './utils/RemotePlayerManager';
 import { prewarmPlayerWounds, disposePlayerWoundAssets } from './utils/PlayerWounds';
 import { SnapshotInterpolator, type TransformSample } from './utils/SnapshotInterpolator';
 import Minimap, { renderMinimapFrame, isMinimapActive, toggleMinimapExpanded, type MinimapBlip } from './components/Minimap';
+import CombatStatsPanel from './components/CombatStatsPanel';
 import { LocalPlayerShadow } from './utils/LocalPlayerShadow';
 import type { ClassId } from './utils/CharacterModels';
 import { AbilitySystem } from './utils/AbilitySystem';
@@ -631,9 +632,13 @@ const ForestSurvivalGame = () => {
   // any game loop starts (mount-time), so the loop always reads the right flag.
   useEffect(() => {
     touchControls.enabled = isTouch;
-    if (isTouch) document.body.classList.add('is-touch');
+    if (isTouch) {
+      // `is-touch` gates in-game touch CSS; `mobile-ui` gates the dedicated
+      // phone/tablet layouts of the menus (full-bleed sheets, compact chrome).
+      document.body.classList.add('is-touch', 'mobile-ui');
+    }
     return () => {
-      document.body.classList.remove('is-touch');
+      document.body.classList.remove('is-touch', 'mobile-ui');
       touchControls.enabled = false;
     };
   }, [isTouch]);
@@ -3511,6 +3516,13 @@ const ForestSurvivalGame = () => {
     // Tutorial mode hands the player every weapon so they can try them all.
     const unlockedWeapons = isTutorialMode ? Object.keys(WEAPONS) : ['pistol'];
     let isAiming = false;
+    // ── MOBILE AUTO-AIM (CODM-style) ──────────────────────────────────────
+    // Touch has NO dedicated ADS button. Instead, pressing FIRE auto-engages
+    // aim-down-sights for weapons that support it (`canAim`) AND the camera
+    // magnetism below snaps onto the nearest enemy — "auto aim, then shoot".
+    // This timestamp (ms) keeps the sights up briefly after each shot so
+    // tap-firing a semi-auto never flickers the zoom in/out. Desktop ignores it.
+    let mobileAdsLingerUntil = 0;
     let timeScale = 1.0; // For transient slow-mo effects (1.0 = normal speed)
     // ── Critical-health adrenaline time-dilation ──────────────────────────
     // Separate, *continuous* slow-mo factor that smoothly ramps in while the
@@ -7551,6 +7563,7 @@ const ForestSurvivalGame = () => {
         unlockedWeapons: [...unlockedWeapons],
         weaponMastery: masteryHud,
         weaponUnlockMult: weaponUnlockMultNow(),
+        headshots: headshotsThisRun,
       });
     };
 
@@ -10355,9 +10368,10 @@ const ForestSurvivalGame = () => {
         return;
       }
 
-      // ── TOUCH LOOK + ADS ── consume the right-half swipe delta into the base
-      // aim (`euler`), mirroring the desktop onMouseMove handler, and mirror the
-      // ADS button into `isAiming`. Guarded so the desktop path is untouched.
+      // ── TOUCH LOOK + AUTO-AIM ── consume the right-half swipe delta into the
+      // base aim (`euler`), mirroring the desktop onMouseMove handler, then
+      // derive ADS from the FIRE state (no aim button on touch). Guarded so the
+      // desktop path is untouched.
       if (touchControls.enabled) {
         const tSens = 0.0032 * sensitivityMultiplier;
         const ldx = touchControls.consumeLookX();
@@ -10369,21 +10383,32 @@ const ForestSurvivalGame = () => {
           euler.x = Math.max(-PI_2, Math.min(PI_2, euler.x));
           if (isTutorialMode) tutorial.recordAction('look', 1);
         }
-        isAiming = touchControls.aiming && WEAPONS[currentWeapon].canAim === true;
+        // ── AUTO-AIM DOWN SIGHTS ── there is no ADS button on touch, so FIRE
+        // itself brings up the sights for any aim-capable weapon (CODM-style).
+        // A short linger past the last shot keeps the zoom steady through
+        // tap-fire; weapons that can't aim (e.g. the Subverter) just shoot.
+        const nowMs = performance.now();
+        if (mouseDown) mobileAdsLingerUntil = nowMs + 260;
+        const autoAimHeld = mouseDown || nowMs < mobileAdsLingerUntil;
+        isAiming = autoAimHeld && WEAPONS[currentWeapon].canAim === true;
 
         // ── AIM ASSIST (mobile/tablet only) ── console-style magnetism: while
-        // firing, aiming, or actively swiping, gently rotate the camera toward
-        // the nearest enemy inside a small acquisition cone. It never fully
-        // locks — a deliberate swipe always overrides it — and stays idle when
-        // the player isn't interacting, so the camera never drifts on its own.
-        const firing = mouseDown || touchControls.aiming;
+        // firing (or briefly after), and while actively swiping, rotate the
+        // camera toward the nearest enemy inside an acquisition cone so a thumb
+        // never has to land the reticle perfectly. It never fully locks — a
+        // deliberate swipe always overrides it — and stays idle when the player
+        // isn't interacting, so the camera never drifts on its own.
+        const firing = autoAimHeld;
         // Hardened gate: the camera magnetism runs ONLY in a genuine touch
         // session (real hardware + a trusted touch). On desktop — or if someone
         // flips `touchControls.enabled` in the console — assistAllowed() is
         // false, so the assist never engages and a mouse aims with zero help.
         if (touchControls.assistAllowed() && (firing || looked)) {
           camera.getWorldDirection(_assistFwd);
-          const ACQUIRE_COS = 0.978; // ~12° cone
+          // Auto-aim is the ONLY aiming on touch, so the acquisition cone is a
+          // little wider (~15°) than a desktop assist would be — a rough thumb
+          // swipe toward a target is enough for the lock to catch it.
+          const ACQUIRE_COS = 0.965; // ~15° cone
           const ASSIST_RANGE = 75;
           let bestEnemy: Enemy | null = null;
           let bestDot = ACQUIRE_COS;
@@ -10406,9 +10431,12 @@ const ForestSurvivalGame = () => {
             while (dY > Math.PI) dY -= Math.PI * 2;
             while (dY < -Math.PI) dY += Math.PI * 2;
             const dX = targetPitch - euler.x;
-            // Soft pull, scaled by how centered the target is (gentler at the edge).
+            // Pull scaled by how centered the target is (gentler at the edge).
+            // Firing pulls firmly so "tap fire" reliably lands on the nearest
+            // enemy; a bare swipe (no fire) only nudges so the player still
+            // steers. Never a full 1.0 lock — a hard swipe always wins.
             const closeness = (bestDot - ACQUIRE_COS) / (1 - ACQUIRE_COS);
-            const pull = (firing ? 0.20 : 0.06) * (0.35 + 0.65 * closeness);
+            const pull = (firing ? 0.32 : 0.06) * (0.4 + 0.6 * closeness);
             euler.y += dY * pull;
             euler.x += dX * pull;
             euler.x = Math.max(-PI_2, Math.min(PI_2, euler.x));
@@ -15794,13 +15822,23 @@ const ForestSurvivalGame = () => {
 
       {/* Tactical map for Solo & Tutorial — same radar as multiplayer, but it
           only shows enemies (no other players). Desktop docks a compact radar
-          below the top-right stats panel; touch uses a right-edge toggle. Press
-          M (or the on-screen button) to expand. Hidden while paused. */}
+          below the top-right stats panel, with a small kills/headshots readout
+          stacked directly under it (same flex column, so the two panels can
+          never overlap regardless of either one's rendered height — the HUD
+          Score panel at right-4 top-4 w-44 runs to ~129px tall, so top-[152px]
+          leaves a clean ~24px gap above the map). Touch uses a right-edge
+          toggle instead (no room for a docked stack). Press M (or the
+          on-screen button) to expand. Hidden while paused. */}
       {gameStarted && !gameState.isGameOver && !isPaused && !photoMode
         && (gameMode === 'classic' || gameMode === 'tutorial') && (
         isTouch
           ? <Minimap isTouch soloMode />
-          : <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 12 }}><Minimap standalone soloMode /></div>
+          : (
+            <div className="pointer-events-none absolute right-4 top-[152px] z-[12] flex w-44 flex-col gap-2">
+              <Minimap soloMode />
+              <CombatStatsPanel kills={gameState.enemiesKilled} headshots={gameState.headshots ?? 0} />
+            </div>
+          )
       )}
 
       {/* Achievement Notifications - Stacked vertically.

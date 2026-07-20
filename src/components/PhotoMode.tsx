@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Camera, X, RotateCcw, Sparkles, Check, Loader2, ImageOff, MousePointer2 } from 'lucide-react';
+import { Camera, X, RotateCcw, Sparkles, Check, Loader2, ImageOff, MousePointer2, Hand } from 'lucide-react';
+import { detectIsTouch } from '../hooks/useDeviceInfo';
+
+const IS_TOUCH = detectIsTouch();
 
 interface PhotoModeProps {
   /** How many photos the player has already saved. */
@@ -105,21 +108,33 @@ const PhotoMode = ({ photoCount, maxPhotos, onFilterChange, onCapture, onExit }:
 
   return (
     <div className="pointer-events-none absolute inset-0 z-[90] flex flex-col">
-      {/* Top hint bar */}
-      <div className="flex justify-center pt-5">
-        <div className="pointer-events-auto flex items-center gap-2.5 rounded-full border border-white/10 bg-black/55 px-4 py-2 text-[12px] text-gray-300 backdrop-blur-md">
-          <Camera className="h-4 w-4 text-emerald-300" strokeWidth={2.2} />
-          <span className="font-hud font-bold tracking-[0.22em] text-white">PHOTO MODE</span>
-          <span className="text-gray-500">·</span>
-          <MousePointer2 className="h-3.5 w-3.5 text-gray-400" strokeWidth={2.2} />
-          <span>Drag to look</span>
-          <span className="text-gray-500">·</span>
-          <span><kbd className="rounded bg-white/10 px-1 font-mono text-[10px] text-gray-200">WASD</kbd> move</span>
-          <span className="text-gray-500">·</span>
-          <span><kbd className="rounded bg-white/10 px-1 font-mono text-[10px] text-gray-200">Scroll</kbd> zoom</span>
-          <span className="text-gray-500">·</span>
-          <span><kbd className="rounded bg-white/10 px-1 font-mono text-[10px] text-gray-200">Space/Shift</kbd> height</span>
-        </div>
+      {/* Top hint bar — desktop lists the keyboard shortcuts; touch shows the
+          single gesture that applies (drag to reposition the shot) so the pill
+          stays compact instead of overflowing with irrelevant key hints. */}
+      <div className="m-safe flex justify-center pt-5">
+        {IS_TOUCH ? (
+          <div className="pointer-events-auto flex items-center gap-2 rounded-full border border-white/10 bg-black/55 px-4 py-2 text-[12px] text-gray-300 backdrop-blur-md">
+            <Camera className="h-4 w-4 text-emerald-300" strokeWidth={2.2} />
+            <span className="font-hud font-bold tracking-[0.22em] text-white">PHOTO MODE</span>
+            <span className="text-gray-500">·</span>
+            <Hand className="h-3.5 w-3.5 text-gray-400" strokeWidth={2.2} />
+            <span>Drag to look around</span>
+          </div>
+        ) : (
+          <div className="pointer-events-auto flex items-center gap-2.5 rounded-full border border-white/10 bg-black/55 px-4 py-2 text-[12px] text-gray-300 backdrop-blur-md">
+            <Camera className="h-4 w-4 text-emerald-300" strokeWidth={2.2} />
+            <span className="font-hud font-bold tracking-[0.22em] text-white">PHOTO MODE</span>
+            <span className="text-gray-500">·</span>
+            <MousePointer2 className="h-3.5 w-3.5 text-gray-400" strokeWidth={2.2} />
+            <span>Drag to look</span>
+            <span className="text-gray-500">·</span>
+            <span><kbd className="rounded bg-white/10 px-1 font-mono text-[10px] text-gray-200">WASD</kbd> move</span>
+            <span className="text-gray-500">·</span>
+            <span><kbd className="rounded bg-white/10 px-1 font-mono text-[10px] text-gray-200">Scroll</kbd> zoom</span>
+            <span className="text-gray-500">·</span>
+            <span><kbd className="rounded bg-white/10 px-1 font-mono text-[10px] text-gray-200">Space/Shift</kbd> height</span>
+          </div>
+        )}
       </div>
 
       <div className="flex-1" />

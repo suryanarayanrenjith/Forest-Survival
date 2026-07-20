@@ -64,8 +64,9 @@ class TouchControlsBridge {
   /** True when the joystick is pushed to its outer ring → sprint. */
   sprinting = false;
 
-  // ── Aim down sights (ADS button held) ──
-  aiming = false;
+  // NOTE: there is no ADS field anymore — touch has no aim button. Firing
+  // auto-engages the sights (see the mobile ADS block in App.tsx), so aiming
+  // state is derived from `mouseDown` there rather than carried here.
 
   // ── Look (right-half swipe) ──
   // Deltas accumulate between frames and are consumed (reset) when the loop reads
@@ -102,7 +103,6 @@ class TouchControlsBridge {
     this.moveX = 0;
     this.moveY = 0;
     this.sprinting = false;
-    this.aiming = false;
     this.lookX = 0;
     this.lookY = 0;
   }

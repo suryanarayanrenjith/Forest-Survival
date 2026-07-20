@@ -1,9 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Settings, X, Gamepad2, Volume2, SlidersHorizontal, Monitor,
-  ChevronsUp, ChevronsDown, ChevronsRight, Wind, Zap,
-  Crosshair, Target, RotateCcw, Grid3x3, Pause, Music, MousePointer2,
-  Eye, Activity, Skull, Check, Headphones, Sparkles, Hand, Radar, Bone, Flame, Terminal, Navigation,
+  Settings, X, Gamepad2, Volume2, SlidersHorizontal, Monitor, Wind, Zap,
+  Crosshair, Target, RotateCcw, Music, MousePointer2,
+  Eye, Activity, Skull, Check, Headphones, Sparkles, Hand, Bone, Flame, Terminal, Navigation,
   Maximize, Moon, Aperture, Wand2, Trees, Users, Gauge, Cpu, type LucideIcon,
 } from 'lucide-react';
 import { soundManager } from '../utils/SoundManager';
@@ -14,6 +13,7 @@ import {
 import { detectHardwareTier } from '../utils/hardwareDetect';
 import { detectIsTouch } from '../hooks/useDeviceInfo';
 import KeyBindingsEditor from './KeyBindingsEditor';
+import TouchLayoutEditor from './TouchLayoutEditor';
 
 interface SettingsMenuProps {
   onClose: () => void;
@@ -100,25 +100,9 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
     setDetectSummary(report.summary);
   };
 
-  // Touch devices remap every action to the on-screen controls, so the
-  // reference list shown here swaps to the touch gestures/buttons.
+  // Touch devices remap every action to the on-screen controls, so the Controls
+  // tab swaps to the drag-to-arrange HUD editor instead of key bindings.
   const isTouch = detectIsTouch();
-
-  const touchControlsList: { key: string; action: string; icon: LucideIcon }[] = [
-    { key: 'Left stick', action: 'Move', icon: Gamepad2 },
-    { key: 'Swipe right', action: 'Look Around', icon: Hand },
-    { key: 'Push stick', action: 'Sprint', icon: Wind },
-    { key: 'FIRE', action: 'Shoot', icon: Crosshair },
-    { key: 'Aim', action: 'Aim Down Sights', icon: Target },
-    { key: 'Jump', action: 'Jump', icon: ChevronsUp },
-    { key: 'Dash', action: 'Dash', icon: ChevronsRight },
-    { key: 'Crouch', action: 'Crouch', icon: ChevronsDown },
-    { key: 'Power', action: 'Use Power-Up', icon: Sparkles },
-    { key: 'Reload', action: 'Reload', icon: RotateCcw },
-    { key: 'Weapon', action: 'Switch Weapon', icon: Grid3x3 },
-    { key: 'Map', action: 'Tactical Map', icon: Radar },
-    { key: 'Pause', action: 'Pause Menu', icon: Pause },
-  ];
 
   const tabs: { id: 'controls' | 'audio' | 'gameplay' | 'display'; label: string; icon: LucideIcon }[] = [
     { id: 'controls', label: 'Controls', icon: Gamepad2 },
@@ -129,15 +113,19 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 menu-overlay-in"
+      className={isTouch
+        ? 'm-safe fixed inset-0 z-50 flex flex-col menu-overlay-in'
+        : 'fixed inset-0 z-50 flex items-center justify-center p-4 menu-overlay-in'}
       style={{ background: 'rgba(5,8,10,0.92)', backdropFilter: 'blur(12px)' }}
     >
       <div
-        className="hud-frame w-full max-w-3xl flex flex-col rounded-2xl border border-emerald-400/15 bg-[#080d0b] shadow-[0_40px_100px_rgba(0,0,0,0.6)]"
-        style={{ maxHeight: '94dvh', animation: 'smFade 0.3s cubic-bezier(0.16,1,0.3,1)' }}
+        className={isTouch
+          ? 'm-sheet-in flex h-full w-full flex-col overflow-hidden border-t border-emerald-400/15 bg-[#080d0b]'
+          : 'hud-frame w-full max-w-3xl flex flex-col rounded-2xl border border-emerald-400/15 bg-[#080d0b] shadow-[0_40px_100px_rgba(0,0,0,0.6)]'}
+        style={isTouch ? undefined : { maxHeight: '94dvh', animation: 'smFade 0.3s cubic-bezier(0.16,1,0.3,1)' }}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 sm:px-6 py-4 border-b border-white/[0.07]">
+        <div className={`flex items-center justify-between border-b border-white/[0.07] ${isTouch ? 'px-4 py-2.5' : 'px-5 sm:px-6 py-4'}`}>
           <div className="flex items-center gap-3">
             <div className="relative flex items-center justify-center w-10 h-10 rounded-xl bg-emerald-500/12 border border-emerald-400/30">
               <Settings className="w-5 h-5 text-emerald-300" strokeWidth={2} />
@@ -178,28 +166,10 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
         </div>
 
         {/* Content */}
-        <div className="p-5 overflow-y-auto flex-1 min-h-0">
+        <div className={`m-scroll overflow-y-auto flex-1 min-h-0 ${isTouch ? 'p-3' : 'p-5'}`}>
           {activeTab === 'controls' && (
             isTouch ? (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2" style={{ animation: 'smFade 0.2s ease-out' }}>
-                {touchControlsList.map((c) => {
-                  const Icon = c.icon;
-                  return (
-                    <div key={c.action} className="flex items-center justify-between rounded-xl border border-white/[0.07] bg-white/[0.02] px-3.5 py-2.5">
-                      <div className="flex items-center gap-2.5">
-                        <Icon className="w-4 h-4 text-gray-500" strokeWidth={2} />
-                        <span className="text-sm text-gray-300 font-medium">{c.action}</span>
-                      </div>
-                      <kbd className="px-2 py-1 rounded-md bg-white/[0.06] border border-white/10 text-gray-300 font-mono text-[11px] font-semibold">
-                        {c.key}
-                      </kbd>
-                    </div>
-                  );
-                })}
-                <p className="sm:col-span-2 text-xs text-gray-600 text-center mt-1">
-                  On-screen touch controls are active. Play in landscape.
-                </p>
-              </div>
+              <TouchLayoutEditor />
             ) : (
               <div style={{ animation: 'smFade 0.2s ease-out' }}>
                 <KeyBindingsEditor accent="#34d399" />
@@ -527,7 +497,7 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between px-5 sm:px-6 py-4 border-t border-white/[0.07]">
+        <div className={`flex items-center justify-between border-t border-white/[0.07] ${isTouch ? 'px-4 py-2.5' : 'px-5 sm:px-6 py-4'}`}>
           <button
             onClick={() => {
               gameSettingsManager.resetToDefaults();
@@ -536,12 +506,12 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
             }}
             className="font-hud text-xs font-semibold uppercase tracking-wider text-gray-400 transition-colors hover:text-white"
           >
-            Reset to defaults
+            Reset{isTouch ? '' : ' to defaults'}
           </button>
           <button
             onClick={onClose}
-            className="font-hud rounded-xl px-7 py-2.5 text-sm font-bold uppercase tracking-wider text-[#04130a]
-              transition-all duration-200 hover:-translate-y-0.5 hover:brightness-110"
+            className={`font-hud rounded-xl text-sm font-bold uppercase tracking-wider text-[#04130a]
+              transition-all duration-200 hover:-translate-y-0.5 hover:brightness-110 ${isTouch ? 'px-5 py-2.5' : 'px-7 py-2.5'}`}
             style={{ background: 'linear-gradient(135deg, #34d399, #22c55e)', boxShadow: '0 12px 30px -12px rgba(46,232,180,0.7)' }}
           >
             Save &amp; Close

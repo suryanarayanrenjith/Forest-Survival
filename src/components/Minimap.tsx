@@ -321,7 +321,7 @@ const ExpandedRadar = ({ onClose, soloMode = false }: { onClose: () => void; sol
   document.body,
 );
 
-const Minimap = ({ isTouch = false, standalone = false, soloMode = false }: { isTouch?: boolean; standalone?: boolean; soloMode?: boolean }) => {
+const Minimap = ({ isTouch = false, soloMode = false }: { isTouch?: boolean; soloMode?: boolean }) => {
   const [expanded, setExpanded] = useState(false);
 
   // Expose an open/close toggle so the M keybind (game loop) can drive it.
@@ -381,17 +381,13 @@ const Minimap = ({ isTouch = false, standalone = false, soloMode = false }: { is
 
   // While the expanded map is open we HIDE the compact radar entirely so the
   // big map is the only one on screen (no redundant duplicate in the corner).
+  // Desktop callers position the bare panel themselves (see MultiplayerHUD's
+  // flex column, and the Solo/Tutorial dock in App.tsx which stacks it above
+  // CombatStatsPanel) — this keeps positioning in ONE place per layout
+  // instead of duplicating pixel offsets here.
   return (
     <>
-      {!expanded && (standalone
-        // Solo / tutorial: self-position below the top-right stats panel.
-        // The HUD.tsx Score panel (right-4 top-4 w-44) is taller than it looks —
-        // label + 3xl score + kills/wave row + py-3 padding put its bottom edge
-        // at ~129px, so the old top-[124px] actually OVERLAPPED it. Sit at
-        // top-[152px] for a clean ~24px breathing gap, same w-44 width so the
-        // two panels still read as one tidy vertical column.
-        ? <div className="pointer-events-none absolute right-4 top-[152px] z-[12] w-44">{panel}</div>
-        : panel)}
+      {!expanded && panel}
       {expanded && <ExpandedRadar onClose={() => setExpanded(false)} soloMode={soloMode} />}
     </>
   );

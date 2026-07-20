@@ -9,6 +9,7 @@ import {
 import { touchControls } from '../utils/touchControls';
 import { haptic } from '../utils/haptics';
 import { WEAPONS } from '../types/game';
+import { useTouchLayout, DEFAULT_LAYOUT, type TouchControlId } from '../utils/touchLayout';
 import type { AbilityHudItem } from './HUD';
 
 interface TouchControlsProps {
@@ -46,10 +47,38 @@ const WEAPON_DIGIT: Record<string, string> = {
 
 const JOYSTICK_RADIUS = 46; // px of thumb travel
 
+// Positions each on-screen control by its saved CENTER (viewport fraction),
+// applying the global size + opacity from the layout store. Its children keep
+// their own `pointer-events-auto`, so only the button itself is tappable — the
+// wrapper never eats a look-swipe.
+const Positioned = ({
+  id, layout, children,
+}: {
+  id: TouchControlId;
+  layout: ReturnType<typeof useTouchLayout>;
+  children: React.ReactNode;
+}) => {
+  const pos = layout.positions[id] ?? DEFAULT_LAYOUT.positions[id];
+  return (
+    <div
+      className="pointer-events-none absolute"
+      style={{
+        left: `${pos.x * 100}%`,
+        top: `${pos.y * 100}%`,
+        transform: `translate(-50%, -50%) scale(${layout.scale})`,
+        opacity: layout.opacity,
+      }}
+    >
+      {children}
+    </div>
+  );
+};
+
 const TouchControls = ({
   unlockedWeapons, currentWeapon, abilities = [], reloadDuration = null, canPause = true,
 }: TouchControlsProps) => {
   const [weaponOpen, setWeaponOpen] = useState(false);
+  const layout = useTouchLayout();
 
   // If the controls unmount while a finger is still down (e.g. on game over or
   // returning to the menu), make sure no movement/aim input is left "stuck".
@@ -89,17 +118,9 @@ const TouchControls = ({
     dispatchMouse('mouseup', 0);
   }, []);
 
-  // ── Aim down sights (hold) ──
-  const onAimDown = useCallback((e: React.PointerEvent) => {
-    e.preventDefault();
-    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
-    haptic('tap');
-    touchControls.aiming = true;
-  }, []);
-  const onAimUp = useCallback((e: React.PointerEvent) => {
-    e.preventDefault();
-    touchControls.aiming = false;
-  }, []);
+  // NOTE: there is no aim-down-sights button on touch. Firing auto-engages the
+  // sights for aim-capable weapons and the aim-assist snaps to the nearest
+  // enemy ("auto aim, then shoot" — see the mobile ADS block in App.tsx).
 
   // ── Jump (hold for full height, tap for a hop) ──
   const onJumpDown = useCallback((e: React.PointerEvent) => {
@@ -130,8 +151,8 @@ const TouchControls = ({
       {/* Movement joystick zone — left side, above the look surface. */}
       <Joystick />
 
-      {/* ── Top-right: weapon switcher + pause ── */}
-      <div className="touch-safe-pad pointer-events-none absolute right-0 top-0 flex items-start gap-2 p-2">
+      {/* ── Weapon switcher (draggable) ── */}
+      <Positioned id="weapon" layout={layout}>
         <div className="pointer-events-auto relative">
           {/* Labelled weapon pill — shows the equipped gun + a chevron so it
               reads clearly as "tap to switch weapons". */}
@@ -226,8 +247,11 @@ const TouchControls = ({
             document.body,
           )}
         </div>
+      </Positioned>
 
-        {canPause && (
+      {/* ── Pause (draggable) ── */}
+      {canPause && (
+        <Positioned id="pause" layout={layout}>
           <button
             type="button"
             aria-label="Pause"
@@ -236,45 +260,62 @@ const TouchControls = ({
           >
             <Pause className="h-5 w-5 text-white" strokeWidth={2.25} fill="currentColor" />
           </button>
-        )}
-      </div>
+        </Positioned>
+      )}
 
-      {/* ── Bottom-right: action cluster + FIRE ── */}
-      <div className="touch-safe-pad pointer-events-none absolute bottom-0 right-0 flex items-end gap-3 p-4">
-        {/* Secondary actions — 2-col grid keeps them from overlapping. */}
-        <div className="pointer-events-none grid grid-cols-2 gap-2.5">
-          <ActionButton label="Reload" icon={RotateCw} onTap={() => tapKey('KeyR')} busy={isReloading} accent="amber" />
-          <HoldButton label="Jump" icon={ChevronsUp} onDown={onJumpDown} onUp={onJumpUp} />
-          <ActionButton label={dash?.name ?? 'Ability'} icon={abilityIcon} onTap={() => tapKey('KeyQ')} ready={dashReady} cooldown={dash?.cooldown ?? 1} accent="emerald" />
-          <ActionButton label="Crouch" icon={ChevronsDown} onTap={() => tapKey('KeyC')} />
-          <ActionButton label="Melee" icon={Swords} onTap={() => tapKey('KeyV')} />
-          <HoldButton label="Aim" icon={Crosshair} onDown={onAimDown} onUp={onAimUp} />
-          <PowerButton
-            label={powerHeld || powerActive ? (power?.name ?? 'Power') : 'Power'}
-            icon={powerIcon}
-            onTap={() => tapKey('KeyE')}
-            held={powerHeld}
-            active={powerActive}
-            ratio={power?.ratio}
-          />
-        </div>
+      {/* ── Action cluster — each button is independently draggable (positions
+          come from the per-device layout the player set in Settings). ── */}
+      <Positioned id="reload" layout={layout}>
+        <ActionButton label="Reload" icon={RotateCw} onTap={() => tapKey('KeyR')} busy={isReloading} accent="amber" />
+      </Positioned>
+      <Positioned id="jump" layout={layout}>
+        <HoldButton label="Jump" icon={ChevronsUp} onDown={onJumpDown} onUp={onJumpUp} />
+      </Positioned>
+      <Positioned id="ability" layout={layout}>
+        <ActionButton label={dash?.name ?? 'Ability'} icon={abilityIcon} onTap={() => tapKey('KeyQ')} ready={dashReady} cooldown={dash?.cooldown ?? 1} accent="emerald" />
+      </Positioned>
+      <Positioned id="crouch" layout={layout}>
+        <ActionButton label="Crouch" icon={ChevronsDown} onTap={() => tapKey('KeyC')} />
+      </Positioned>
+      <Positioned id="melee" layout={layout}>
+        <ActionButton label="Melee" icon={Swords} onTap={() => tapKey('KeyV')} />
+      </Positioned>
+      <Positioned id="power" layout={layout}>
+        <PowerButton
+          label={powerHeld || powerActive ? (power?.name ?? 'Power') : 'Power'}
+          icon={powerIcon}
+          onTap={() => tapKey('KeyE')}
+          held={powerHeld}
+          active={powerActive}
+          ratio={power?.ratio}
+        />
+      </Positioned>
 
-        {/* FIRE — primary, under the looking thumb. */}
-        <button
-          type="button"
-          aria-label="Fire"
-          onPointerDown={onFireDown}
-          onPointerUp={onFireUp}
-          onPointerCancel={onFireUp}
-          onContextMenu={(e) => e.preventDefault()}
-          className="pointer-events-auto flex h-[78px] w-[78px] items-center justify-center rounded-full border-2 border-red-400/60 bg-red-500/30 transition-transform active:scale-90 active:bg-red-500/45"
-        >
-          <span className="flex flex-col items-center leading-none">
-            <Crosshair className="h-7 w-7 text-red-200" strokeWidth={2.25} />
-            <span className="mt-0.5 text-[9px] font-bold uppercase tracking-widest text-red-200/90">Fire</span>
+      {/* ── FIRE (draggable) — primary, under the looking thumb. Firing
+          auto-aims to the nearest enemy (and auto-ADS for aim-capable guns),
+          so there is no separate aim button. The badge advertises that. ── */}
+      <Positioned id="fire" layout={layout}>
+        <div className="pointer-events-none relative flex flex-col items-center">
+          <span className="mb-1.5 flex items-center gap-1 rounded-full border border-emerald-400/40 bg-black/70 px-2 py-0.5 text-[8px] font-bold uppercase tracking-widest text-emerald-300">
+            <Crosshair className="h-2.5 w-2.5" strokeWidth={2.5} />
+            Auto-Aim
           </span>
-        </button>
-      </div>
+          <button
+            type="button"
+            aria-label="Fire (auto-aim)"
+            onPointerDown={onFireDown}
+            onPointerUp={onFireUp}
+            onPointerCancel={onFireUp}
+            onContextMenu={(e) => e.preventDefault()}
+            className="pointer-events-auto flex h-[78px] w-[78px] items-center justify-center rounded-full border-2 border-red-400/60 bg-red-500/30 transition-transform active:scale-90 active:bg-red-500/45"
+          >
+            <span className="flex flex-col items-center leading-none">
+              <Crosshair className="h-7 w-7 text-red-200" strokeWidth={2.25} />
+              <span className="mt-0.5 text-[9px] font-bold uppercase tracking-widest text-red-200/90">Fire</span>
+            </span>
+          </button>
+        </div>
+      </Positioned>
     </div>
   );
 };

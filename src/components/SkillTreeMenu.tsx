@@ -4,6 +4,7 @@ import {
   Sigma, Coins, ChevronRight, ArrowRight, TrendingUp, Star, type LucideIcon,
 } from 'lucide-react';
 import MusicMuteButton from './MusicMuteButton';
+import { detectIsTouch } from '../hooks/useDeviceInfo';
 import { type Skill, type SkillEffect, type SkillCategory, type PlayStyle } from '../utils/SmartSkillTreeSystem';
 
 interface SkillTreeMenuProps {
@@ -82,6 +83,7 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
   const [hoveredSkill, setHoveredSkill] = useState<Skill | null>(null);
   const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null);
   const focused = hoveredSkill ?? selectedSkill;
+  const isTouch = detectIsTouch();
 
   // Only categories that actually have skills (keeps the sidebar clean).
   const availableCategories = Array.from(new Set(skills.map((s) => s.category)));
@@ -124,12 +126,16 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 menu-overlay-in"
+      className={isTouch
+        ? 'm-safe fixed inset-0 z-50 flex flex-col menu-overlay-in'
+        : 'fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 menu-overlay-in'}
       style={{ background: 'rgba(4,7,9,0.9)', backdropFilter: 'blur(16px)' }}
     >
       <MusicMuteButton />
       <div
-        className="hud-frame relative w-full max-w-6xl h-[92dvh] flex flex-col rounded-2xl border border-emerald-400/15 overflow-hidden"
+        className={isTouch
+          ? 'hud-frame relative w-full h-full max-w-none flex flex-col rounded-none border-t border-emerald-400/15 overflow-hidden'
+          : 'hud-frame relative w-full max-w-6xl h-[92dvh] flex flex-col rounded-2xl border border-emerald-400/15 overflow-hidden'}
         style={{
           background: 'linear-gradient(157deg, #0a100e 0%, #070c0b 52%, #05090a 100%)',
           boxShadow: '0 50px 130px rgba(0,0,0,0.72), inset 0 1px 0 rgba(255,255,255,0.05)',

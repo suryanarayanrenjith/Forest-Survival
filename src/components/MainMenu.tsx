@@ -260,12 +260,14 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode, onSkillTre
           extreme short/landscape viewports. */}
       {!showSettings && (
         <div className="relative z-10 h-dvh overflow-y-auto overscroll-contain">
-        <div className="flex min-h-full flex-col px-5 sm:px-8 py-5 sm:py-6">
-          <div className="m-auto w-full max-w-md lg:max-w-5xl">
-            <div className="lg:grid lg:grid-cols-[1.05fr_minmax(0,27rem)] lg:gap-12 lg:items-center">
+        <div className={`m-safe flex min-h-full flex-col ${isTouch ? 'px-4 py-4' : 'px-5 sm:px-8 py-5 sm:py-6'}`}>
+          <div className={`m-auto w-full ${isTouch ? 'max-w-md md:max-w-4xl' : 'max-w-md lg:max-w-5xl'}`}>
+            <div className={isTouch
+              ? 'md:grid md:grid-cols-[1fr_minmax(0,23rem)] md:gap-7 md:items-center'
+              : 'lg:grid lg:grid-cols-[1.05fr_minmax(0,27rem)] lg:gap-12 lg:items-center'}>
 
               {/* ── Trailer feature ─────────────────────────────────── */}
-              <div className="title-reveal relative mb-6 flex justify-center lg:mb-0">
+              <div className={`title-reveal relative flex justify-center ${isTouch ? 'mb-4 md:mb-0' : 'mb-6 lg:mb-0'}`}>
                 {/* The trailer is the complete feature on this side of the
                     menu. Its compact width and centered placement balance the
                     taller action stack without competing with a second hero. */}
@@ -298,7 +300,7 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode, onSkillTre
               </div>
 
               {/* ── Actions column ──────────────────────────────────── */}
-              <div className="menu-stagger flex w-full max-w-md mx-auto lg:mx-0 flex-col gap-2.5">
+              <div className={`menu-stagger flex w-full max-w-md flex-col gap-2.5 ${isTouch ? 'mx-auto md:mx-0' : 'mx-auto lg:mx-0'}`}>
                 {accessCard && (
                   <div className="hud-frame w-full rounded-2xl border border-amber-400/20 bg-white/[0.045] px-5 py-3.5 text-left shadow-[0_18px_50px_rgba(0,0,0,0.3)] backdrop-blur-md"
                     style={{ '--hud-bracket': 'rgba(245,158,11,0.5)' } as CSSProperties}>
@@ -443,7 +445,7 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode, onSkillTre
             </div>
 
             {/* ── Utility footer ──────────────────────────────────────── */}
-            <div className="font-hud mt-6 lg:mt-8 flex items-center justify-center lg:justify-start gap-2.5 text-[10px] tracking-[0.3em] text-gray-600 uppercase">
+            <div className={`font-hud flex items-center gap-2.5 text-[10px] tracking-[0.3em] text-gray-600 uppercase ${isTouch ? 'mt-5 justify-center md:mt-7 md:justify-start' : 'mt-6 lg:mt-8 justify-center lg:justify-start'}`}>
               <span>v1.0</span>
               <span className="h-1 w-1 rounded-full bg-emerald-400/60 shadow-[0_0_6px_rgba(52,211,153,0.8)]" />
               <button

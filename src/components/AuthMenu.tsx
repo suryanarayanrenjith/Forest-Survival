@@ -5,6 +5,7 @@ import { useQuery } from 'convex/react';
 import { api } from '../../convex/_generated/api';
 import { getDeviceFingerprints } from '../utils/deviceFingerprint';
 import { extractConvexError } from '../utils/convexErrors';
+import { detectIsTouch } from '../hooks/useDeviceInfo';
 import {
   checkDisplayName,
   checkDob,
@@ -40,6 +41,7 @@ const AuthMenu = ({ onClose, onSignedIn, initialMode = 'signIn' }: AuthMenuProps
   const isSignUp = mode === 'signUp';
   const registrationFull = availability?.full ?? false;
   const remaining = availability?.remaining;
+  const isTouch = detectIsTouch();
 
   // ── Live username validation + availability check (sign-up step 1) ─────────
   // The username runs through the SAME `checkUsername` the server uses, so a
@@ -174,10 +176,14 @@ const AuthMenu = ({ onClose, onSignedIn, initialMode = 'signIn' }: AuthMenuProps
     >
       <MenuShell variant="main" />
 
-      <div className="relative z-10 flex min-h-full items-center justify-center p-3 sm:p-5">
+      <div className={isTouch
+        ? 'relative z-10 m-safe flex min-h-full flex-col'
+        : 'relative z-10 flex min-h-full items-center justify-center p-3 sm:p-5'}>
       <div
-        className="relative grid w-full max-w-4xl overflow-hidden rounded-[22px] border border-emerald-400/15 bg-[#080d0b] shadow-[0_40px_100px_rgba(0,0,0,0.6)] md:grid-cols-[0.92fr_1fr]"
-        style={{ animation: 'authFade 0.28s cubic-bezier(0.16,1,0.3,1) forwards' }}
+        className={isTouch
+          ? 'm-sheet-in relative grid w-full max-w-none flex-1 overflow-hidden border-0 bg-[#080d0b] md:grid-cols-[0.92fr_1fr]'
+          : 'relative grid w-full max-w-4xl overflow-hidden rounded-[22px] border border-emerald-400/15 bg-[#080d0b] shadow-[0_40px_100px_rgba(0,0,0,0.6)] md:grid-cols-[0.92fr_1fr]'}
+        style={isTouch ? undefined : { animation: 'authFade 0.28s cubic-bezier(0.16,1,0.3,1) forwards' }}
       >
         {/* ── LEFT · brand / value panel (desktop) ───────────────────── */}
         <aside

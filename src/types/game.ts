@@ -458,4 +458,8 @@ export interface GameState {
    *  medium/hard higher, adaptive dynamic). Drives the locked-weapon "Unlocks at
    *  N pts" readout in the HUD. Defaults to 1 when omitted. */
   weaponUnlockMult?: number;
+  /** This-run headshot (critical hit) count. Drives the compact combat-stats
+   *  readout docked under the Solo/Tutorial tactical map. Omitted in
+   *  multiplayer (per-player headshots aren't tracked over the network). */
+  headshots?: number;
 }

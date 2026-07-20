@@ -71,6 +71,12 @@ Boss wave timing, enrage phases, mini-boss crowns, and environmental threats are
 
 ---
 
+## ARK-07 Relay Network
+
+Every map hides several derelict relay spires still broadcasting a dead satellite's last order. Step into a spire's radiation field and enemies overclock — hitting harder, moving faster, and self-repairing — a charge that lingers long after they walk out. The player instead gets interference-distorted vision and a jammed loadout. Waves can randomly turn **Overdrive** (an EMP-lit swarm, red-eyed and enraged) or **Null** (a corrupted, screen-glitching wave that fights unfair) — both scale with difficulty. Full mechanics are on the **[Known Features →](https://github.com/suryanarayanrenjith/Forest-Survival/wiki/Known-Features)** wiki page.
+
+---
+
 ## Controls
 
 | Key | Action |

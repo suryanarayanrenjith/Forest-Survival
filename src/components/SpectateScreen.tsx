@@ -4,6 +4,7 @@ import {
   ChevronLeft, ChevronRight, Eye, Swords,
 } from 'lucide-react';
 import type { PlayerData } from '../utils/MultiplayerManager';
+import { detectIsTouch } from '../hooks/useDeviceInfo';
 
 interface SpectateScreenProps {
   localPlayer: PlayerData;
@@ -28,6 +29,7 @@ const weaponLabel = (w: string): string => (w ? w.charAt(0).toUpperCase() + w.sl
 const rankColor = (rank: number) => (rank === 0 ? '#fbbf24' : rank === 1 ? '#cbd5e1' : rank === 2 ? '#fb923c' : '#64748b');
 
 const SpectateScreen = ({ localPlayer, alivePlayers, allPlayers, killerInfo, onMainMenu }: SpectateScreenProps) => {
+  const isTouch = detectIsTouch();
   const [focusIndex, setFocusIndex] = useState(0);
 
   const sortedPlayers = [...allPlayers].sort((a, b) => {
@@ -58,11 +60,15 @@ const SpectateScreen = ({ localPlayer, alivePlayers, allPlayers, killerInfo, onM
 
   return (
     <div
-      className="fixed inset-0 flex items-center justify-center p-4 menu-overlay-in"
+      className={isTouch
+        ? 'm-safe fixed inset-0 flex flex-col menu-overlay-in'
+        : 'fixed inset-0 flex items-center justify-center p-4 menu-overlay-in'}
       style={{ zIndex: 150, background: 'rgba(6,9,13,0.86)', backdropFilter: 'blur(10px)' }}
     >
       <div
-        className="w-full max-w-3xl max-h-[94dvh] overflow-y-auto space-y-3"
+        className={isTouch
+          ? 'm-scroll w-full max-w-none flex-1 overflow-y-auto space-y-3 p-3'
+          : 'w-full max-w-3xl max-h-[94dvh] overflow-y-auto space-y-3'}
         style={{ animation: 'spFade 0.35s cubic-bezier(0.16,1,0.3,1) forwards' }}
       >
         {/* Eliminated banner */}

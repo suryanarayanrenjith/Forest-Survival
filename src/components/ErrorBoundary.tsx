@@ -80,14 +80,14 @@ export class ErrorBoundary extends Component<Props, State> {
 
       // Default fallback UI
       return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-[#05080a]/95 backdrop-blur-sm">
-          <div className="w-full max-w-2xl rounded-2xl border border-white/10 bg-[#0b0f15] shadow-2xl p-8">
+        <div className="fixed inset-0 z-50 flex overflow-y-auto p-4 sm:p-6 bg-[#05080a]/95 backdrop-blur-sm">
+          <div className="m-auto w-full max-w-2xl rounded-2xl border border-white/10 bg-[#0b0f15] shadow-2xl p-5 sm:p-8">
             {/* Error Icon */}
-            <div className="text-center mb-6">
-              <div className="inline-flex items-center justify-center w-20 h-20 rounded-2xl bg-red-500/10 border border-red-500/30 mb-4">
-                <AlertTriangle className="w-10 h-10 text-red-400" strokeWidth={1.75} />
+            <div className="text-center mb-5 sm:mb-6">
+              <div className="inline-flex items-center justify-center w-16 h-16 sm:w-20 sm:h-20 rounded-2xl bg-red-500/10 border border-red-500/30 mb-4">
+                <AlertTriangle className="w-8 h-8 sm:w-10 sm:h-10 text-red-400" strokeWidth={1.75} />
               </div>
-              <h1 className="text-3xl font-bold text-white mb-2">Something Went Wrong</h1>
+              <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Something Went Wrong</h1>
               <p className="text-sm text-gray-400">The game encountered an unexpected error</p>
             </div>
 

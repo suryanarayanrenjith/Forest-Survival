@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Trophy, X, Crown, Medal, Loader2, EyeOff } from 'lucide-react';
 import { useMutation, useQuery } from 'convex/react';
 import { api } from '../../convex/_generated/api';
+import { detectIsTouch } from '../hooks/useDeviceInfo';
 import MenuShell from './MenuShell';
 import UserAvatar from './UserAvatar';
 
@@ -147,20 +148,25 @@ interface LeaderboardMenuProps {
 }
 
 /** Standalone modal wrapper (Main Menu entry). */
-const LeaderboardMenu = ({ onClose }: LeaderboardMenuProps) =>
-  createPortal(
+const LeaderboardMenu = ({ onClose }: LeaderboardMenuProps) => {
+  const isTouch = detectIsTouch();
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto p-3 sm:p-4"
+      className={isTouch
+        ? 'm-safe fixed inset-0 z-50 flex flex-col'
+        : 'fixed inset-0 z-50 flex items-center justify-center overflow-y-auto p-3 sm:p-4'}
       style={{ background: 'rgba(5,8,10,0.94)', backdropFilter: 'blur(14px)' }}
     >
       <MenuShell variant="main" />
 
       <div
-        className="relative z-10 flex max-h-[94dvh] w-full max-w-2xl flex-col overflow-hidden rounded-[24px] border border-white/10 bg-[#0b0f15] shadow-[0_30px_120px_rgba(0,0,0,0.58)]"
-        style={{ animation: 'authFade 0.32s cubic-bezier(0.16,1,0.3,1) forwards' }}
+        className={isTouch
+          ? 'm-sheet-in relative z-10 flex h-full w-full flex-col overflow-hidden border-t border-white/10 bg-[#0b0f15]'
+          : 'relative z-10 flex max-h-[94dvh] w-full max-w-2xl flex-col overflow-hidden rounded-[24px] border border-white/10 bg-[#0b0f15] shadow-[0_30px_120px_rgba(0,0,0,0.58)]'}
+        style={isTouch ? undefined : { animation: 'authFade 0.32s cubic-bezier(0.16,1,0.3,1) forwards' }}
       >
         {/* Header */}
-        <div className="flex items-start justify-between gap-4 border-b border-white/[0.07] px-5 py-4">
+        <div className={`flex items-start justify-between gap-4 border-b border-white/[0.07] ${isTouch ? 'px-4 py-2.5' : 'px-5 py-4'}`}>
           <div className="flex items-center gap-3">
             <div className="relative flex h-10 w-10 items-center justify-center rounded-xl border border-amber-400/30 bg-amber-500/12">
               <Trophy className="h-5 w-5 text-amber-300" strokeWidth={2.1} />
@@ -179,12 +185,13 @@ const LeaderboardMenu = ({ onClose }: LeaderboardMenuProps) =>
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-5 sm:p-6">
+        <div className={`m-scroll flex-1 overflow-y-auto ${isTouch ? 'p-3' : 'p-5 sm:p-6'}`}>
           <LeaderboardList />
         </div>
       </div>
     </div>,
     document.body,
   );
+};
 
 export default LeaderboardMenu;

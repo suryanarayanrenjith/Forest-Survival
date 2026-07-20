@@ -11,6 +11,7 @@ import type { Id } from '../../convex/_generated/dataModel';
 import { useAuthActions } from '@convex-dev/auth/react';
 import { api } from '../../convex/_generated/api';
 import { usePlayerData } from '../hooks/usePlayerData';
+import { detectIsTouch } from '../hooks/useDeviceInfo';
 import MenuShell from './MenuShell';
 import UserAvatar from './UserAvatar';
 import RankBadge from './RankBadge';
@@ -97,6 +98,7 @@ const ProfileMenu = ({ onClose, onSkillTree }: ProfileMenuProps) => {
   const [tab, setTab] = useState<TabKey>('overview');
   const [pwOpen, setPwOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+  const isTouch = detectIsTouch();
 
   // Display-name inline editor (the username is permanent and never editable).
   const [nameEditing, setNameEditing] = useState(false);
@@ -231,17 +233,21 @@ const ProfileMenu = ({ onClose, onSkillTree }: ProfileMenuProps) => {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto p-3 sm:p-4 menu-overlay-in"
+      className={isTouch
+        ? 'm-safe fixed inset-0 z-50 flex flex-col menu-overlay-in'
+        : 'fixed inset-0 z-50 flex items-center justify-center overflow-y-auto p-3 sm:p-4 menu-overlay-in'}
       style={{ background: 'rgba(4,8,7,0.92)', backdropFilter: 'blur(16px)' }}
     >
       <MenuShell variant="main" />
 
       <div
-        className="hud-frame relative z-10 flex max-h-[94dvh] w-full max-w-5xl flex-col overflow-hidden rounded-[24px] border border-emerald-400/15 bg-[#080d0b] shadow-[0_40px_120px_rgba(0,0,0,0.6)]"
-        style={{ animation: 'authFade 0.32s cubic-bezier(0.16,1,0.3,1) forwards' }}
+        className={isTouch
+          ? 'm-sheet-in relative z-10 flex h-full w-full flex-col overflow-hidden border-t border-emerald-400/15 bg-[#080d0b]'
+          : 'hud-frame relative z-10 flex max-h-[94dvh] w-full max-w-5xl flex-col overflow-hidden rounded-[24px] border border-emerald-400/15 bg-[#080d0b] shadow-[0_40px_120px_rgba(0,0,0,0.6)]'}
+        style={isTouch ? undefined : { animation: 'authFade 0.32s cubic-bezier(0.16,1,0.3,1) forwards' }}
       >
         {/* Header */}
-        <div className="flex items-center justify-between gap-4 border-b border-white/[0.07] px-5 sm:px-6 py-4">
+        <div className={`flex items-center justify-between gap-4 border-b border-white/[0.07] ${isTouch ? 'px-4 py-2.5' : 'px-5 sm:px-6 py-4'}`}>
           <div className="flex items-center gap-3">
             <div className="relative flex items-center justify-center w-10 h-10 rounded-xl bg-emerald-500/12 border border-emerald-400/30">
               <ShieldCheck className="w-5 h-5 text-emerald-300" strokeWidth={2.1} />
@@ -261,9 +267,9 @@ const ProfileMenu = ({ onClose, onSkillTree }: ProfileMenuProps) => {
         </div>
 
         {/* Body — LEFT account column · RIGHT showcase column */}
-        <div className="flex flex-1 min-h-0 flex-col overflow-y-auto md:flex-row md:overflow-hidden">
+        <div className="m-scroll flex flex-1 min-h-0 flex-col overflow-y-auto md:flex-row md:overflow-hidden">
           {/* ── LEFT · ACCOUNT ─────────────────────────────────────────── */}
-          <aside className="w-full flex-shrink-0 space-y-4 border-b border-white/[0.07] p-5 md:w-[340px] md:border-b-0 md:border-r md:overflow-y-auto">
+          <aside className={`w-full flex-shrink-0 border-b border-white/[0.07] md:w-[340px] md:border-b-0 md:border-r md:overflow-y-auto ${isTouch ? 'space-y-3 p-3' : 'space-y-4 p-5'}`}>
             {/* Identity */}
             <div
               className="hud-frame relative overflow-hidden rounded-2xl border border-emerald-400/20 bg-gradient-to-br from-emerald-500/[0.1] to-transparent p-4"
@@ -454,7 +460,10 @@ const ProfileMenu = ({ onClose, onSkillTree }: ProfileMenuProps) => {
 
           {/* ── RIGHT · SHOWCASE ───────────────────────────────────────── */}
           <section className="flex min-w-0 flex-1 flex-col">
-            <div className="flex gap-1 overflow-x-auto border-b border-white/[0.07] px-3 py-2">
+            {/* On touch this tab strip sticks to the top of the scroll so the
+                showcase tabs stay reachable after scrolling past the account
+                cards above. */}
+            <div className={`m-tabscroll flex gap-1 overflow-x-auto border-b border-white/[0.07] px-3 py-2 ${isTouch ? 'sticky top-0 z-10 bg-[#080d0b]/95 backdrop-blur-sm' : ''}`}>
               {TABS.map(({ key, label, Icon }) => (
                 <button
                   key={key}
@@ -464,12 +473,12 @@ const ProfileMenu = ({ onClose, onSkillTree }: ProfileMenuProps) => {
                   }`}
                 >
                   <Icon className="w-4 h-4" strokeWidth={2.1} />
-                  <span className="hidden sm:inline">{label}</span>
+                  <span className={isTouch ? 'inline' : 'hidden sm:inline'}>{label}</span>
                 </button>
               ))}
             </div>
 
-            <div className="p-5 sm:p-6 md:flex-1 md:overflow-y-auto">
+            <div className={`md:flex-1 md:overflow-y-auto ${isTouch ? 'p-3' : 'p-5 sm:p-6'}`}>
               {tab === 'overview' && (
                 <div className="space-y-5">
                   {rank && (

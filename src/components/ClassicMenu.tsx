@@ -7,6 +7,9 @@ import {
 import CharacterSelect from './CharacterSelect';
 import { MAP_CONFIGS, getRandomMap, type MapType } from '../utils/MapSystem';
 import type { ClassId } from '../utils/CharacterModels';
+import { detectIsTouch } from '../hooks/useDeviceInfo';
+
+const IS_TOUCH = detectIsTouch();
 
 interface ClassicMenuProps {
   onStartGame: (difficulty: 'easy' | 'medium' | 'hard' | 'adaptive', timeOfDay: 'day' | 'night' | 'auto', map: MapType, isRandom: boolean) => void;
@@ -68,11 +71,11 @@ const ClassicMenu = ({ onStartGame, onBack, selectedCharacter, onSelectCharacter
 
       {/* Scrollable content */}
       <div className="relative z-20 h-dvh overflow-y-auto">
-        <div className="flex flex-col items-center px-4 pt-20 pb-36 max-w-2xl mx-auto">
+        <div className={`m-safe flex flex-col items-center max-w-2xl mx-auto ${IS_TOUCH ? 'px-4 pt-16 pb-32' : 'px-4 pt-20 pb-36'}`}>
           {/* Title */}
-          <div className="text-center mb-8">
+          <div className={`text-center ${IS_TOUCH ? 'mb-5' : 'mb-8'}`}>
             <p className="font-hud text-[10px] tracking-[0.4em] text-emerald-400/90 font-semibold uppercase mb-2">Solo Survival</p>
-            <h1 className="font-display title-bio text-4xl sm:text-5xl font-semibold uppercase tracking-wide">
+            <h1 className={`font-display title-bio font-semibold uppercase tracking-wide ${IS_TOUCH ? 'text-3xl' : 'text-4xl sm:text-5xl'}`}>
               CLASSIC MODE
             </h1>
           </div>

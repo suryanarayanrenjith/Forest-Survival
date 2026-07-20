@@ -7,6 +7,7 @@ import {
   HeartPulse, Wrench, Ghost, Lock, Sun, Moon, SunMoon, Smartphone, UserX, type LucideIcon,
 } from 'lucide-react';
 import { usePlayerData } from '../hooks/usePlayerData';
+import { detectIsTouch } from '../hooks/useDeviceInfo';
 import UserAvatar from './UserAvatar';
 import PlayerStatsModal from './PlayerStatsModal';
 import { computeRank, legacySoloRankXp, RANK_TIERS } from '../utils/rankSystem';
@@ -740,12 +741,21 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
   // Layout-only — the dark tint + full-screen blur behind the lobby panels
   // is rendered statically at App level (outside the menu transition), so
   // the backdrop can't drift while this screen slides in/out.
-  const backdrop = 'fixed inset-0 z-50 flex items-center justify-center p-4 overflow-y-auto menu-overlay-in';
+  const isTouch = detectIsTouch();
+  const backdrop = isTouch
+    ? 'm-safe fixed inset-0 z-50 flex flex-col overflow-y-auto menu-overlay-in'
+    : 'fixed inset-0 z-50 flex items-center justify-center p-4 overflow-y-auto menu-overlay-in';
   const backdropStyle = {} as const;
   // Transparent dark-green glass — uniform with the Solo/Tutorial menus so the
-  // forest backdrop reads through, instead of the old opaque slab.
-  const panelClass = 'hud-frame w-full max-w-sm rounded-3xl border border-emerald-400/15 bg-[#0a1410]/70 backdrop-blur-xl shadow-[0_30px_90px_-24px_rgba(0,0,0,0.85)]';
-  const panelInnerClass = 'hud-frame w-full max-w-xl rounded-3xl border border-emerald-400/15 bg-[#0a1410]/70 backdrop-blur-xl shadow-[0_30px_90px_-24px_rgba(0,0,0,0.85)] overflow-hidden flex flex-col max-h-[94dvh]';
+  // forest backdrop reads through, instead of the old opaque slab. On touch the
+  // main lobby panel fills the screen (full-bleed sheet); the small auth/error
+  // cards stay centered via m-auto.
+  const panelClass = isTouch
+    ? 'hud-frame m-auto w-full max-w-sm rounded-3xl border border-emerald-400/15 bg-[#0a1410]/70 backdrop-blur-xl shadow-[0_30px_90px_-24px_rgba(0,0,0,0.85)]'
+    : 'hud-frame w-full max-w-sm rounded-3xl border border-emerald-400/15 bg-[#0a1410]/70 backdrop-blur-xl shadow-[0_30px_90px_-24px_rgba(0,0,0,0.85)]';
+  const panelInnerClass = isTouch
+    ? 'hud-frame w-full max-w-none flex-1 rounded-none border-t border-emerald-400/15 bg-[#0a1410]/70 backdrop-blur-xl overflow-hidden flex flex-col'
+    : 'hud-frame w-full max-w-xl rounded-3xl border border-emerald-400/15 bg-[#0a1410]/70 backdrop-blur-xl shadow-[0_30px_90px_-24px_rgba(0,0,0,0.85)] overflow-hidden flex flex-col max-h-[94dvh]';
 
   // ── AUTH GATE ───────────────────────────────────────────────────────────
   // Multiplayer always plays as the signed-in account username. Guests who
@@ -753,7 +763,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
   if (currentUser === undefined) {
     return (
       <div className={backdrop} style={backdropStyle}>
-        <div className="flex flex-col items-center gap-4 rounded-3xl border border-white/10 bg-[#0a1410]/70 backdrop-blur-xl px-6 py-5 shadow-[0_24px_80px_-24px_rgba(0,0,0,0.8)]">
+        <div className="m-auto flex flex-col items-center gap-4 rounded-3xl border border-white/10 bg-[#0a1410]/70 backdrop-blur-xl px-6 py-5 shadow-[0_24px_80px_-24px_rgba(0,0,0,0.8)]">
           <Loader2 className="w-10 h-10 text-sky-400 animate-spin" strokeWidth={2} />
           <div className="text-sm font-semibold tracking-wide text-gray-300">Checking your session…</div>
         </div>
@@ -854,7 +864,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
   if (view === 'host' && isConnecting && !manager) {
     return (
       <div className={backdrop} style={backdropStyle}>
-        <div className="flex flex-col items-center gap-4 rounded-3xl border border-white/10 bg-[#0a1410]/70 backdrop-blur-xl px-6 py-5 shadow-[0_24px_80px_-24px_rgba(0,0,0,0.8)]">
+        <div className="m-auto flex flex-col items-center gap-4 rounded-3xl border border-white/10 bg-[#0a1410]/70 backdrop-blur-xl px-6 py-5 shadow-[0_24px_80px_-24px_rgba(0,0,0,0.8)]">
           <Loader2 className="w-10 h-10 text-emerald-400 animate-spin" strokeWidth={2} />
           <div className="text-sm font-semibold tracking-wide text-gray-300">Creating lobby…</div>
         </div>
@@ -1212,7 +1222,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
   if (view === 'join' && manager) {
     return (
       <div className={backdrop} style={backdropStyle}>
-        <div className="w-full max-w-md rounded-3xl border border-white/10 bg-[#0a1410]/70 backdrop-blur-xl overflow-hidden shadow-[0_24px_80px_-24px_rgba(0,0,0,0.8)]"
+        <div className={`w-full rounded-3xl border border-white/10 bg-[#0a1410]/70 backdrop-blur-xl overflow-hidden shadow-[0_24px_80px_-24px_rgba(0,0,0,0.8)] ${isTouch ? 'm-auto max-w-lg' : 'max-w-md'}`}
           style={{ animation: 'mlFade 0.35s cubic-bezier(0.16,1,0.3,1) forwards' }}>
           <div className="flex items-center gap-3 px-5 py-4 border-b border-white/[0.07]">
             <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-sky-500/12">

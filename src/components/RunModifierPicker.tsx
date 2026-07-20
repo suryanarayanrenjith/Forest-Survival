@@ -94,7 +94,7 @@ const RunModifierPicker = ({ options: initialOptions, onChoose, onBack }: RunMod
   }, [options, focusedIdx, onChoose, onBack]);
 
   return (
-    <div className="fixed inset-0 z-[90] flex overflow-y-auto px-4 py-8">
+    <div className={`m-safe m-scroll fixed inset-0 z-[90] flex overflow-y-auto ${IS_TOUCH ? 'px-3 py-4' : 'px-4 py-8'}`}>
       {/* The shared dark gradient chrome lives at App level (static, outside
           the menu transition). Only this screen's rose identity tint renders
           here — subtle enough that the slide doesn't read as a moving sheet. */}
@@ -106,11 +106,11 @@ const RunModifierPicker = ({ options: initialOptions, onChoose, onBack }: RunMod
           phones instead of clipping the header (flex-centred overflow bug). */}
       <div className="relative z-20 m-auto w-full max-w-3xl">
         {/* Header */}
-        <div className="mb-7 text-center">
+        <div className={`text-center ${IS_TOUCH ? 'mb-4' : 'mb-7'}`}>
           <p className="font-hud text-[10px] font-bold uppercase tracking-[0.5em] text-rose-300/85">
             Randomized Stakes · roll the dice
           </p>
-          <h2 className="font-display mt-2 text-4xl font-semibold uppercase tracking-wide text-white sm:text-5xl"
+          <h2 className={`font-display mt-2 font-semibold uppercase tracking-wide text-white ${IS_TOUCH ? 'text-3xl' : 'text-4xl sm:text-5xl'}`}
             style={{ filter: 'drop-shadow(0 4px 20px rgba(244,63,94,0.3))' }}>
             Raise the Stakes
           </h2>
@@ -131,7 +131,7 @@ const RunModifierPicker = ({ options: initialOptions, onChoose, onBack }: RunMod
                 type="button"
                 onClick={() => onChoose(mod)}
                 onMouseEnter={() => setFocusedIdx(idx)}
-                className="group relative flex flex-col gap-3 rounded-2xl border p-5 text-left backdrop-blur-md transition-all"
+                className={`group relative flex flex-col gap-3 rounded-2xl border text-left backdrop-blur-md transition-all ${IS_TOUCH ? 'p-4' : 'p-5'}`}
                 style={{
                   borderColor: isFocused ? accent.ring : `${accent.ring}55`,
                   background: isFocused ? accent.chip : accent.soft,

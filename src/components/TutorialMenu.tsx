@@ -7,6 +7,9 @@ import CharacterSelect from './CharacterSelect';
 import { MAP_CONFIGS, type MapType } from '../utils/MapSystem';
 import type { ClassId } from '../utils/CharacterModels';
 import { WIKI_BASE } from '../utils/TutorialSystem';
+import { detectIsTouch } from '../hooks/useDeviceInfo';
+
+const IS_TOUCH = detectIsTouch();
 
 interface TutorialMenuProps {
   onStartTutorial: (map: MapType, timeOfDay: 'day' | 'night' | 'auto') => void;
@@ -61,15 +64,15 @@ const TutorialMenu = ({ onStartTutorial, onBack, selectedCharacter, onSelectChar
 
       {/* Scrollable content */}
       <div className="relative z-20 h-dvh overflow-y-auto">
-        <div className="flex flex-col items-center px-4 pt-20 pb-36 max-w-2xl mx-auto">
+        <div className={`m-safe flex flex-col items-center max-w-2xl mx-auto ${IS_TOUCH ? 'px-4 pt-16 pb-32' : 'px-4 pt-20 pb-36'}`}>
           {/* Title */}
-          <div className="text-center mb-8">
+          <div className={`text-center ${IS_TOUCH ? 'mb-5' : 'mb-8'}`}>
             <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl border border-amber-400/30 bg-amber-500/10 mb-4">
               <GraduationCap className="w-7 h-7 text-amber-400" strokeWidth={1.75} />
             </div>
             <p className="font-hud text-[10px] tracking-[0.4em] text-amber-300/90 font-semibold uppercase mb-2">Tutorial</p>
             <h1
-              className="font-display text-4xl sm:text-5xl font-semibold uppercase tracking-wide"
+              className={`font-display font-semibold uppercase tracking-wide ${IS_TOUCH ? 'text-3xl' : 'text-4xl sm:text-5xl'}`}
               style={{
                 background: 'linear-gradient(180deg, #fef3c7 0%, #fcd34d 60%, #f59e0b 100%)',
                 WebkitBackgroundClip: 'text',

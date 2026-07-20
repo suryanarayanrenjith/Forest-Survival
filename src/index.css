@@ -651,6 +651,46 @@ canvas {
   animation: rotateHint 2.2s ease-in-out infinite;
 }
 
+/* ===== MOBILE MENU / PANEL SYSTEM =====
+   Dedicated phone/tablet presentation for the overlay menus (Settings,
+   Credits, Profile, main menu). The desktop JSX path is left byte-identical —
+   each panel swaps to these full-bleed sheet classes only when `isTouch`, so
+   nothing below changes the desktop look. `.mobile-ui` is set on <body>
+   alongside `.is-touch` when a touch device is detected. */
+
+/* Notch-safe insets for a full-bleed mobile sheet. Applied to the fixed
+   outer container; the header / body / footer own their own inner padding. */
+.m-safe {
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+}
+
+/* Horizontally scrollable tab / chip strip with the scrollbar hidden — the
+   native mobile pattern for a row of section tabs that can overflow. */
+.m-tabscroll {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.m-tabscroll::-webkit-scrollbar { display: none; }
+
+/* Momentum scrolling for the mobile sheet bodies on iOS. */
+.m-scroll {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+/* Sheet rise — the panel slides up from the bottom edge like a native sheet,
+   while its dark backdrop simply fades (see .menu-overlay-in). */
+@keyframes mSheetIn {
+  from { opacity: 0; transform: translateY(3%); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.m-sheet-in {
+  animation: mSheetIn 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
 /* ===== MENU TRANSITION SYSTEM =====
    Cinematic cross-screen transitions for the menu shell (Main / Classic /
    Tutorial / Multiplayer / modifier picker). The wrapper is full-viewport, so

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Crown, Skull, Crosshair, Star, Medal, RotateCcw, Home, Hourglass, Smartphone } from 'lucide-react';
 import type { PlayerData } from '../utils/MultiplayerManager';
 import { RANK_TIERS } from '../utils/rankSystem';
+import { detectIsTouch } from '../hooks/useDeviceInfo';
 import PlayerStatsModal from './PlayerStatsModal';
 
 interface MultiplayerGameOverProps {
@@ -30,6 +31,7 @@ const MultiplayerGameOver = ({
   winnerId, finalStats, localPlayerId, onRestart, onMainMenu, canRestart = true,
 }: MultiplayerGameOverProps) => {
   const [viewStatsUser, setViewStatsUser] = useState<string | null>(null);
+  const isTouch = detectIsTouch();
   const sortedPlayers = [...finalStats].sort((a, b) => {
     if (b.kills !== a.kills) return b.kills - a.kills;
     return b.score - a.score;
@@ -49,12 +51,16 @@ const MultiplayerGameOver = ({
 
   return (
     <div
-      className="fixed inset-0 flex items-center justify-center p-4 menu-overlay-in"
+      className={isTouch
+        ? 'm-safe fixed inset-0 flex flex-col menu-overlay-in'
+        : 'fixed inset-0 flex items-center justify-center p-4 menu-overlay-in'}
       style={{ zIndex: 200, background: 'rgba(5,8,10,0.95)', backdropFilter: 'blur(12px)' }}
     >
       <div
-        className="hud-frame w-full max-w-2xl max-h-[96dvh] overflow-y-auto rounded-2xl border bg-[#080d0b]/95 p-6"
-        style={{ borderColor: `${accent}44`, animation: 'mgoFade 0.4s cubic-bezier(0.16,1,0.3,1) forwards' }}
+        className={isTouch
+          ? 'm-sheet-in m-scroll hud-frame h-full w-full overflow-y-auto border-t bg-[#080d0b]/95 p-4'
+          : 'hud-frame w-full max-w-2xl max-h-[96dvh] overflow-y-auto rounded-2xl border bg-[#080d0b]/95 p-6'}
+        style={{ borderColor: `${accent}44`, ...(isTouch ? {} : { animation: 'mgoFade 0.4s cubic-bezier(0.16,1,0.3,1) forwards' }) }}
       >
         {/* Header */}
         <div className="text-center mb-6">

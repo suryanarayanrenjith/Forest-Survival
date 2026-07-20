@@ -5,6 +5,7 @@ import {
   Gamepad2, Network, Brush, Cog, Bone, HeartHandshake,
   type LucideIcon,
 } from 'lucide-react';
+import { detectIsTouch } from '../hooks/useDeviceInfo';
 
 interface CreditsMenuProps {
   onClose: () => void;
@@ -53,6 +54,7 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
   const portfolioUrl = 'https://surya.is-a.dev/';
   const githubUrl = 'https://github.com/suryanarayanrenjith/Forest-Survival';
   const wikiUrl = 'https://github.com/suryanarayanrenjith/Forest-Survival/wiki';
+  const isTouch = detectIsTouch();
 
   return (
     <>
@@ -65,14 +67,19 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
       />
       {/* The panel owns the only scroll surface. Keeping the page-sized overlay
           static avoids nested scroll containers fighting over wheel/touch input
-          and keeps every row on a stable compositing layer. */}
-      <div className="fixed inset-0 z-50 grid place-items-center p-4 sm:p-6 menu-overlay-in">
+          and keeps every row on a stable compositing layer. On touch it becomes
+          a full-bleed sheet instead of a centered dossier card. */}
+      <div className={isTouch
+        ? 'm-safe fixed inset-0 z-50 flex flex-col menu-overlay-in'
+        : 'fixed inset-0 z-50 grid place-items-center p-4 sm:p-6 menu-overlay-in'}>
       <div
         role="dialog"
         aria-modal="true"
         aria-labelledby="credits-title"
-        className="hud-frame relative flex w-full max-w-3xl max-h-[calc(100dvh-2rem)] sm:max-h-[calc(100dvh-3rem)] flex-col overflow-hidden rounded-2xl border border-emerald-400/15 bg-[#080d0b] shadow-[0_40px_100px_rgba(0,0,0,0.6)] isolate"
-        style={{ animation: 'crFade 0.4s cubic-bezier(0.16,1,0.3,1) forwards' }}
+        className={isTouch
+          ? 'm-sheet-in relative flex h-full w-full flex-col overflow-hidden border-t border-emerald-400/15 bg-[#080d0b] isolate'
+          : 'hud-frame relative flex w-full max-w-3xl max-h-[calc(100dvh-2rem)] sm:max-h-[calc(100dvh-3rem)] flex-col overflow-hidden rounded-2xl border border-emerald-400/15 bg-[#080d0b] shadow-[0_40px_100px_rgba(0,0,0,0.6)] isolate'}
+        style={isTouch ? undefined : { animation: 'crFade 0.4s cubic-bezier(0.16,1,0.3,1) forwards' }}
       >
         {/* Ambient drifting bloom — pure atmosphere behind the content */}
         <div
@@ -81,7 +88,7 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
         />
 
         {/* Header */}
-        <div className="relative flex flex-none items-center justify-between border-b border-white/[0.07] px-5 py-4 sm:px-6">
+        <div className={`relative flex flex-none items-center justify-between border-b border-white/[0.07] ${isTouch ? 'px-4 py-2.5' : 'px-5 py-4 sm:px-6'}`}>
           <div className="flex items-center gap-3">
             <div className="relative flex items-center justify-center w-10 h-10 rounded-xl bg-emerald-500/12 border border-emerald-400/30">
               <Sparkles className="w-5 h-5 text-emerald-300" strokeWidth={2} fill="currentColor" />
@@ -104,15 +111,15 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
           </button>
         </div>
 
-        <div className="relative min-h-0 flex-1 space-y-7 overflow-y-auto overscroll-contain p-5 sm:p-7 [scrollbar-gutter:stable]">
+        <div className={`m-scroll relative min-h-0 flex-1 overflow-y-auto overscroll-contain [scrollbar-gutter:stable] ${isTouch ? 'space-y-5 p-4' : 'space-y-7 p-5 sm:p-7'}`}>
           {/* ── Hero ─────────────────────────────────────────────────── */}
-          <div className="relative overflow-hidden rounded-2xl border border-emerald-400/15 bg-emerald-500/[0.035] p-5 sm:p-6">
+          <div className={`relative overflow-hidden rounded-2xl border border-emerald-400/15 bg-emerald-500/[0.035] ${isTouch ? 'p-4' : 'p-5 sm:p-6'}`}>
             <div className="relative flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0 text-left">
                 <p className="font-hud flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.36em] text-emerald-300/80">
                   <Crosshair className="h-3 w-3" strokeWidth={2.2} /> A solo project by
                 </p>
-                <h3 className="font-display title-bio mt-2 text-5xl font-semibold uppercase leading-none tracking-[0.04em] sm:text-6xl">
+                <h3 className={`font-display title-bio mt-2 font-semibold uppercase leading-none tracking-[0.04em] ${isTouch ? 'text-4xl' : 'text-5xl sm:text-6xl'}`}>
                   Surya
                 </h3>
                 <p className="mt-4 max-w-xl text-[13px] leading-relaxed text-gray-300/90">
