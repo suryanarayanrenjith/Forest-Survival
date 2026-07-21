@@ -166,22 +166,22 @@ const LeaderboardMenu = ({ onClose }: LeaderboardMenuProps) => {
         style={isTouch ? undefined : { animation: 'authFade 0.32s cubic-bezier(0.16,1,0.3,1) forwards' }}
       >
         {/* Header */}
-        <div className={`flex items-start justify-between gap-4 border-b border-white/[0.07] ${isTouch ? 'px-4 py-2.5' : 'px-5 py-4'}`}>
-          <div className="flex items-center gap-3">
-            <div className="relative flex h-10 w-10 items-center justify-center rounded-xl border border-amber-400/30 bg-amber-500/12">
-              <Trophy className="h-5 w-5 text-amber-300" strokeWidth={2.1} />
+        <div className={`flex flex-none items-center justify-between border-b border-white/[0.07] ${isTouch ? 'gap-2 px-3 py-1.5' : 'items-start gap-4 px-5 py-4'}`}>
+          <div className={`flex items-center ${isTouch ? 'gap-2' : 'gap-3'}`}>
+            <div className={`relative flex items-center justify-center rounded-lg border border-amber-400/30 bg-amber-500/12 ${isTouch ? 'h-7 w-7' : 'h-10 w-10 rounded-xl'}`}>
+              <Trophy className={isTouch ? 'h-4 w-4 text-amber-300' : 'h-5 w-5 text-amber-300'} strokeWidth={2.1} />
             </div>
             <div>
-              <p className="text-[10px] font-semibold uppercase tracking-[0.35em] text-amber-300/90">Global</p>
-              <h2 className="text-lg font-bold tracking-wide text-white">Leaderboard</h2>
+              {!isTouch && <p className="text-[10px] font-semibold uppercase tracking-[0.35em] text-amber-300/90">Global</p>}
+              <h2 className={`font-bold tracking-wide text-white ${isTouch ? 'text-sm leading-none' : 'text-lg'}`}>Leaderboard</h2>
             </div>
           </div>
           <button
             onClick={onClose}
             aria-label="Close leaderboard"
-            className="flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 text-gray-400 transition-colors hover:bg-white/[0.06] hover:text-white"
+            className={`flex flex-none items-center justify-center rounded-lg border border-white/10 text-gray-400 transition-colors hover:bg-white/[0.06] hover:text-white ${isTouch ? 'm-tap h-8 w-8' : 'h-9 w-9'}`}
           >
-            <X className="h-[18px] w-[18px]" strokeWidth={2.25} />
+            <X className={isTouch ? 'h-4 w-4' : 'h-[18px] w-[18px]'} strokeWidth={2.25} />
           </button>
         </div>
 

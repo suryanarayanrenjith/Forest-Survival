@@ -667,6 +667,16 @@ canvas {
   padding-left: env(safe-area-inset-left, 0px);
 }
 
+/* Compact chrome opt-out. The global `button { min-height: 44px }` rule is
+   right for primary controls, but on a short landscape phone it makes sheet
+   headers, tab strips and close buttons eat the little vertical space there
+   is. `.m-tap` relaxes that minimum for those chrome-only controls (they stay
+   comfortably tappable) and is scoped to touch, so desktop is untouched. */
+.mobile-ui .m-tap {
+  min-height: 32px;
+  min-width: 32px;
+}
+
 /* Horizontally scrollable tab / chip strip with the scrollbar hidden — the
    native mobile pattern for a row of section tabs that can overflow. */
 .m-tabscroll {

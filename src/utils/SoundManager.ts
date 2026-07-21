@@ -66,6 +66,20 @@ class SoundManager {
   }
 
   /**
+   * Mobile browsers SUSPEND the AudioContext whenever the tab/app goes to the
+   * background (and iOS can start it suspended). Without this the game comes
+   * back from a phone call completely silent. Cheap + idempotent — call on
+   * return-to-foreground and on any user gesture.
+   */
+  resumeContext(): void {
+    const ctx = this.audioContext;
+    if (!ctx) return;
+    if (ctx.state === 'suspended') {
+      void ctx.resume().catch(() => { /* blocked until a real gesture — retried later */ });
+    }
+  }
+
+  /**
    * Drive the slow-motion / low-health audio muffle. `amount` 0→1 smoothly
    * drags the master lowpass cutoff from fully-open (~22kHz) down to a dull
    * ~600Hz and ducks the bus a touch, so combat reads as a muffled, slowed

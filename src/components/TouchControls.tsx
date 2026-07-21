@@ -146,10 +146,11 @@ const TouchControls = ({
     <div className="touch-control fixed inset-0 z-[45] pointer-events-none select-none">
       {/* Look surface — full screen, lowest layer. Right-thumb swipe aims the
           camera. The joystick zone + buttons sit on top and intercept first. */}
-      <LookSurface />
+      <LookSurface mirrored={layout.mirrored} />
 
-      {/* Movement joystick zone — left side, above the look surface. */}
-      <Joystick />
+      {/* Movement joystick zone — above the look surface. Sides swap in
+          left-handed mode so the stick lands under the dominant thumb. */}
+      <Joystick mirrored={layout.mirrored} />
 
       {/* ── Weapon switcher (draggable) ── */}
       <Positioned id="weapon" layout={layout}>
@@ -321,7 +322,7 @@ const TouchControls = ({
 };
 
 // ── Full-screen swipe-to-look surface ─────────────────────────────────────
-const LookSurface = () => {
+const LookSurface = ({ mirrored }: { mirrored: boolean }) => {
   const pointerId = useRef<number | null>(null);
   const last = useRef({ x: 0, y: 0 });
 
@@ -341,11 +342,11 @@ const LookSurface = () => {
     pointerId.current = null;
   };
 
-  // Right ~60% of the screen only — the standard mobile-FPS look zone. Keeps
-  // the top-left HUD and any left-side overlays free to receive their own taps.
+  // ~60% of the screen on the aiming side — the standard mobile-FPS look zone.
+  // Keeps the opposite corner's HUD and overlays free to receive their own taps.
   return (
     <div
-      className="absolute right-0 top-0 h-full w-[60%] pointer-events-auto"
+      className={`absolute top-0 h-full w-[60%] pointer-events-auto ${mirrored ? 'left-0' : 'right-0'}`}
       onPointerDown={onDown}
       onPointerMove={onMove}
       onPointerUp={end}
@@ -355,7 +356,7 @@ const LookSurface = () => {
 };
 
 // ── Floating movement joystick ─────────────────────────────────────────────
-const Joystick = () => {
+const Joystick = ({ mirrored }: { mirrored: boolean }) => {
   const [origin, setOrigin] = useState<{ x: number; y: number } | null>(null);
   const [thumb, setThumb] = useState({ x: 0, y: 0 });
   const pointerId = useRef<number | null>(null);
@@ -393,7 +394,7 @@ const Joystick = () => {
 
   return (
     <div
-      className="absolute bottom-0 left-0 h-[64%] w-[42%] pointer-events-auto"
+      className={`absolute bottom-0 h-[64%] w-[42%] pointer-events-auto ${mirrored ? 'right-0' : 'left-0'}`}
       onPointerDown={onDown}
       onPointerMove={onMove}
       onPointerUp={end}

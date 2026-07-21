@@ -26,6 +26,8 @@ export interface TouchHudLayout {
   opacity: number;
   /** Editor: snap dragged buttons to a grid + auto-separate overlaps. */
   snap: boolean;
+  /** Left-handed: movement stick on the RIGHT, look-swipe on the LEFT. */
+  mirrored: boolean;
 }
 
 /** Draggable order (also the order chips are stacked in the editor legend). */
@@ -71,6 +73,7 @@ export const DEFAULT_LAYOUT: TouchHudLayout = {
   scale: 1,
   opacity: 1,
   snap: true,
+  mirrored: false,
 };
 
 const STORAGE_KEY = 'touchHudLayout.v1';
@@ -85,6 +88,7 @@ function freshDefault(): TouchHudLayout {
     scale: DEFAULT_LAYOUT.scale,
     opacity: DEFAULT_LAYOUT.opacity,
     snap: DEFAULT_LAYOUT.snap,
+    mirrored: DEFAULT_LAYOUT.mirrored,
   };
 }
 
@@ -109,6 +113,7 @@ function sanitize(raw: unknown): TouchHudLayout {
     if (Number.isFinite(r.scale)) out.scale = clamp(r.scale as number, SCALE_RANGE.min, SCALE_RANGE.max);
     if (Number.isFinite(r.opacity)) out.opacity = clamp(r.opacity as number, OPACITY_RANGE.min, OPACITY_RANGE.max);
     if (typeof r.snap === 'boolean') out.snap = r.snap;
+    if (typeof r.mirrored === 'boolean') out.mirrored = r.mirrored;
   }
   return out;
 }
@@ -156,6 +161,23 @@ export function applyPositions(next: Partial<Record<TouchControlId, { x: number;
     if (p) positions[id] = { x: clamp(p.x, 0, 1), y: clamp(p.y, 0, 1) };
   }
   current = { ...current, positions };
+  persistNow();
+  emit();
+}
+
+/**
+ * Flip handedness. Swaps which side owns the movement stick vs the look-swipe
+ * AND mirrors every button across the screen, so a left-handed player gets a
+ * true mirror of their layout rather than half of one.
+ */
+export function setLayoutMirrored(mirrored: boolean): void {
+  const positions = { ...current.positions };
+  if (mirrored !== current.mirrored) {
+    for (const id of Object.keys(positions) as TouchControlId[]) {
+      positions[id] = { x: clamp(1 - positions[id].x, 0, 1), y: positions[id].y };
+    }
+  }
+  current = { ...current, positions, mirrored };
   persistNow();
   emit();
 }

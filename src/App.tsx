@@ -99,6 +99,7 @@ import { usePlayerData, setPlayerStatsPaused } from './hooks/usePlayerData';
 import { useDeviceInfo } from './hooks/useDeviceInfo';
 import { touchControls } from './utils/touchControls';
 import { haptic } from './utils/haptics';
+import { acquireWakeLock, releaseWakeLock, refreshWakeLock } from './utils/wakeLock';
 import TouchControls from './components/TouchControls';
 import OrientationGate from './components/OrientationGate';
 import MobileNotice from './components/MobileNotice';
@@ -535,8 +536,13 @@ const ForestSurvivalGame = () => {
   // Tutorial & Skill Tree refs + state (bridge useEffect closure → React render)
   const tutorialRef = useRef<TutorialSystem | null>(null);
   const tutorialActiveRef = useRef(false); // true while tutorial popup is showing — blocks pointer lock
+  // True while the guided run is still meant to finish normally. "End Tutorial"
+  // clears it, which is how the render loop tells a real completion (show the
+  // celebration card) apart from the player bailing out (straight back to play).
+  const tutorialRunningRef = useRef(false);
   const [tutorialStep, setTutorialStep] = useState<TutorialStep | null>(null);
   const [tutorialProgress, setTutorialProgress] = useState(0);
+  const [tutorialMeta, setTutorialMeta] = useState({ number: 0, total: 0 });
   // Shows the "Tutorial Complete" card once the player finishes every step.
   const [tutorialComplete, setTutorialComplete] = useState(false);
   const skillTreeRef = useRef<SmartSkillTreeSystem | null>(null);
@@ -641,6 +647,26 @@ const ForestSurvivalGame = () => {
       document.body.classList.remove('is-touch', 'mobile-ui');
       touchControls.enabled = false;
     };
+  }, [isTouch]);
+
+  // Hold the screen awake for as long as a run is on screen (touch only).
+  // Phones sleep on an idle timer and holding a stick/trigger doesn't reliably
+  // reset it, so without this the display dims mid-firefight. Released the
+  // moment gameplay ends so it never keeps a menu screen lit.
+  useEffect(() => {
+    if (!isTouch || !gameStarted) return;
+    void acquireWakeLock();
+    return () => releaseWakeLock();
+  }, [isTouch, gameStarted]);
+
+  // Mobile browsers suspend the AudioContext aggressively (backgrounding, the
+  // silent switch, call interruptions). Any tap is a valid moment to bring it
+  // back — the call is a no-op unless it's actually suspended.
+  useEffect(() => {
+    if (!isTouch) return;
+    const resumeAudio = () => soundManager.resumeContext();
+    window.addEventListener('pointerdown', resumeAudio, { passive: true });
+    return () => window.removeEventListener('pointerdown', resumeAudio);
   }, [isTouch]);
 
   // First-run graphics default: probe the browser/device (CPU threads, RAM, GPU)
@@ -1375,10 +1401,9 @@ const ForestSurvivalGame = () => {
       skillTree.hydrate(playerStatsRef.current.skills, playerStatsRef.current.skillPoints);
     }
 
-    // 6. Tutorial System - Contextual learning
+    // 6. Tutorial System — the guided drill (tutorial mode only)
     const tutorial = new TutorialSystem();
     tutorial.setEnabled(RUNTIME_PREFS.showTutorial);
-    tutorial.setShowHints(RUNTIME_PREFS.showHints);
 
     // Store refs so React render can access these systems
     tutorialRef.current = tutorial;
@@ -1386,8 +1411,54 @@ const ForestSurvivalGame = () => {
 
     // Tutorial mode: force tutorial on + reduce difficulty for learning
     const isTutorialMode = gameMode === 'tutorial';
+
+    // ── GUIDED-TUTORIAL CAPABILITY LADDER ────────────────────────────────
+    // The tutorial teaches one control at a time, so everything it hasn't
+    // taught YET is genuinely inert: look-only, then walking, then sprint +
+    // the full combat kit, and finally the abilities. `true` = still locked.
+    // Outside tutorial mode every lock is open forever, so the hot paths that
+    // read these pay for one boolean and behave exactly as before.
+    const tutorialLocks = {
+      move: isTutorialMode,
+      sprint: isTutorialMode,
+      combat: isTutorialMode,
+      ability: isTutorialMode,
+    };
+    // Re-read the ladder from the tutorial system. Called on every step change
+    // and when the run ends (`isGranted` opens everything once it's inactive),
+    // never per-frame — it walks the step list.
+    const syncTutorialLocks = () => {
+      tutorialLocks.move = isTutorialMode && !tutorial.isGranted('move');
+      tutorialLocks.sprint = isTutorialMode && !tutorial.isGranted('sprint');
+      tutorialLocks.combat = isTutorialMode && !tutorial.isGranted('combat');
+      tutorialLocks.ability = isTutorialMode && !tutorial.isGranted('ability');
+    };
+
+    // Step-transition bookkeeping. The render loop is the SINGLE owner of every
+    // transition (spawns, locks, pointer lock, React state) — the overlay's
+    // buttons only poke the system and let the loop notice.
+    let tutorialGuidedOn = false;
+    let tutorialLastStepId: string | null = null;
+    let tutorialLastStepDone = false;
+
+    // `look` / `move` / `sprint` are CONTINUOUS actions. Sampling them once per
+    // frame made a drill 8x shorter on a 240Hz rig than on a 30fps laptop (and a
+    // 1000Hz mouse finished the look step before the player registered it), so
+    // they're sampled at a fixed 30Hz instead — the step takes the same real
+    // time on every machine.
+    const tutorialHoldAt: Record<string, number> = {};
+    const recordTutorialHold = (action: string) => {
+      const t = performance.now();
+      if (t - (tutorialHoldAt[action] ?? 0) < 33) return;
+      tutorialHoldAt[action] = t;
+      tutorial.recordAction(action, 1);
+    };
+
     if (isTutorialMode) {
       tutorial.start();
+      tutorialGuidedOn = true;
+      tutorialRunningRef.current = true;
+      syncTutorialLocks();
       setShowTutorial(true);
       tutorialActiveRef.current = true; // Block pointer lock while tutorial popup shows
       // Tutorial is forgiving via slower, sparser enemies (the player can't be
@@ -1401,9 +1472,11 @@ const ForestSurvivalGame = () => {
       // Set initial tutorial step immediately so overlay renders on first frame
       const firstStep = tutorial.getCurrentStep();
       if (firstStep) {
+        tutorialLastStepId = firstStep.id;
+        tutorialLastStepDone = false;
         setTutorialStep({ ...firstStep });
         setTutorialProgress(tutorial.getProgress());
-        (tutorial as TutorialSystem & { _lastStepId?: string })._lastStepId = firstStep.id;
+        setTutorialMeta({ number: tutorial.getStepNumber(), total: tutorial.getStepCount() });
       }
     }
 
@@ -3567,6 +3640,24 @@ const ForestSurvivalGame = () => {
       }, ms);
     };
 
+    // ── GUIDED-TUTORIAL "not yet" FEEDBACK ───────────────────────────────
+    // A control the tutorial hasn't handed over yet must never feel BROKEN.
+    // Pressing it answers with a short pill + a soft denial click that says
+    // when it opens up. Throttled, because the things that hit this are held
+    // keys (W, SHIFT) and held triggers, which fire every frame.
+    const TUT_LOCK_MOVE = '🔒 Look around first — walking unlocks next';
+    const TUT_LOCK_SPRINT = '🔒 Sprint unlocks in the next step';
+    const TUT_LOCK_COMBAT = '🔒 Your weapon comes online after the sprint drill';
+    const TUT_LOCK_ABILITY = '🔒 Abilities unlock later in the tutorial';
+    let tutorialLockMsgAt = 0;
+    const tutorialLockedNotice = (msg: string) => {
+      const t = performance.now();
+      if (t - tutorialLockMsgAt < 1500) return;
+      tutorialLockMsgAt = t;
+      showPowerMessage(msg, 1500);
+      soundManager.play('empty', 0.22, false, 1.5);
+    };
+
     // ── DIFFICULTY-SCALED WEAPON UNLOCKS ─────────────────────────────────────
     // Easy uses the weapons' native unlock scores; Medium and Hard demand
     // progressively more points, so a harder run is a longer grind to the full
@@ -5126,13 +5217,22 @@ const ForestSurvivalGame = () => {
       }
     };
 
-    const spawnEnemyBatch = (count: number, typeOverride?: 'normal' | 'fast' | 'tank' | 'boss' | 'ranged' | 'revenant', miniBoss = false): number => {
+    const spawnEnemyBatch = (
+      count: number,
+      typeOverride?: 'normal' | 'fast' | 'tank' | 'boss' | 'ranged' | 'revenant',
+      miniBoss = false,
+      // Staging overrides — used by the guided tutorial to place a drill target
+      // close and in front instead of 45m out on a random bearing. Both default
+      // to the normal randomised behaviour.
+      spawnDist?: number,
+      spawnBearing?: number,
+    ): number => {
       const adaptiveMax = smartEnemyManager.getCurrentMaxEnemies();
       const hardish = classicDifficulty === 'hard' || classicDifficulty === 'adaptive';
       // Spread the batch's spawn bearings evenly around the player (random
       // start angle + even increments). Combined with the surround AI, the wave
       // closes in from every side instead of trickling out of one direction.
-      const spreadBase = Math.random() * Math.PI * 2;
+      const spreadBase = spawnBearing ?? Math.random() * Math.PI * 2;
       let spawned = 0;
       for (let i = 0; i < count; i++) {
         if (enemies.length >= adaptiveMax || !smartEnemyManager.canSpawnMore()) break;
@@ -5173,7 +5273,7 @@ const ForestSurvivalGame = () => {
         }
         // Bosses are bigger (scale 2.0) so they need a wider clearance.
         const enemyRadius = type === 'boss' ? 2.0 : type === 'tank' ? 1.6 : 1.2;
-        const baseDist = (42 + Math.random() * 26) * mapSpawnReach;
+        const baseDist = spawnDist ?? (42 + Math.random() * 26) * mapSpawnReach;
         // Each enemy in the batch gets its own evenly-spaced bearing slot.
         const preferredAngle = spreadBase + (i / Math.max(1, count)) * Math.PI * 2;
         const spot = findEnemySpawnSpot(baseDist, enemyRadius, preferredAngle);
@@ -5458,13 +5558,13 @@ const ForestSurvivalGame = () => {
         : wave === 2 ? 2
         : 3 + (Math.random() < 0.4 ? 1 : 0);
       if (isTutorialMode) {
-        // Tutorial — no wave progression. A small, deliberate starter group;
-        // the guided tutorial spawns the rest ON DEMAND per step (see the
-        // step-sync block below) instead of flooding the arena while the
-        // player is still learning to move and look around. Once the player
-        // skips/finishes the guided steps, continuousSpawn() takes over with
-        // a gentle free-roam trickle.
-        spawnEnemyBatch(2);
+        // Tutorial — no wave progression. While the guided drill is running the
+        // arena opens EMPTY: the drill stages exactly what each step needs on
+        // demand (see the step-sync block below), and a robot wandering past
+        // while the player is still learning to look around is pure noise.
+        // Free-roam (drill finished or ended) gets the small starter group,
+        // then continuousSpawn() takes over with a gentle trickle.
+        if (!tutorialGuidedOn) spawnEnemyBatch(2);
         return;
       }
       // ── ARK-07 roll — decides whether THIS wave arrives overclocked
@@ -5558,12 +5658,12 @@ const ForestSurvivalGame = () => {
     };
     const spawnSettings = getSpawnSettings();
 
-    // Early guided steps (movement/camera/trigger practice) need zero enemies
-    // and stay calmer without them; from `kill_enemy` onward the player is
-    // actively fighting, so ambient enemies must keep flowing (gently) or
-    // later steps — headshots, and especially a 3x COMBO, which needs several
-    // kills in quick succession — would have nothing left to practise on.
-    const TUTORIAL_QUIET_STEPS = new Set(['welcome', 'movement_basic', 'camera_control', 'shooting_basic']);
+    // The opening drills (look / walk / sprint / first shot) need ZERO enemies
+    // — they're about the controls, and a robot wandering in only distracts.
+    // From the `kill` step onward the player is actively fighting, so ambient
+    // enemies keep flowing (gently) on top of the exact per-step guarantees in
+    // the step-sync block, or the later drills run out of things to shoot.
+    const TUTORIAL_QUIET_STEPS = new Set(['look', 'move', 'sprint', 'shoot']);
 
     const continuousSpawn = () => {
       // Guests never spawn — their enemies are mirrored from the host.
@@ -5625,9 +5725,17 @@ const ForestSurvivalGame = () => {
     const ARROW_FALLBACK: Partial<Record<keyof KeyBindings, string>> = {
       moveForward: 'ArrowUp', moveBackward: 'ArrowDown', moveLeft: 'ArrowLeft', moveRight: 'ArrowRight',
     };
-    const moving = (action: keyof KeyBindings): boolean => {
+    const movingRaw = (action: keyof KeyBindings): boolean => {
       const alt = ARROW_FALLBACK[action];
       return held(action) || (alt ? !!keys[alt] : false);
+    };
+    // Walking is the first thing the guided tutorial hands over, so until it
+    // does, the four direction keys read as "not pressed". Photo Mode drives
+    // its free camera through the same helper and is never part of the drill,
+    // so it always sees the raw keys.
+    const moving = (action: keyof KeyBindings): boolean => {
+      if (tutorialLocks.move && !photoModeRef.current) return false;
+      return movingRaw(action);
     };
     const moveSpeed = 0.3;
     const sprintMultiplier = 1.8;
@@ -6359,6 +6467,7 @@ const ForestSurvivalGame = () => {
       // first-person — the Ranger dips into a forward lunge, the Heavy braces
       // into a crouch, the Pyro bucks up off the blast, and so on.
       triggerAbilityFlash(activeAbility.color);
+      haptic('dash'); // the signature move lands as a firm thump in the hand
       const castColor = parseInt(activeAbility.color.replace('#', ''), 16) || 0x22d3ee;
       castEffects.push(new AbilityCastEffect(scene, camera.position, castColor));
       switch (activeAbility.id) {
@@ -6493,10 +6602,14 @@ const ForestSurvivalGame = () => {
     };
     const startReload = (): boolean => {
       if (isReloading || paused || isGameOver || tutorialActiveRef.current) return false;
+      // Guided tutorial: the weapon isn't the player's yet (the key path has
+      // already explained why; this also covers the auto-reload-on-empty call).
+      if (tutorialLocks.combat) return false;
       const weapon = WEAPONS[currentWeapon];
       const maxAmmoNow = effectiveMaxAmmo(currentWeapon);
       if (ammo >= maxAmmoNow) return false;
       isReloading = true;
+      haptic('reload'); // double-tick under the thumb as the mag drops
       gunModel.cancelInspect(); // a reload overrides an in-progress inspect
       tutorial.recordAction('reload', 1);
       // Quickdraw skill + Engineer MP passive + Weapon Mastery all speed up
@@ -6604,6 +6717,35 @@ const ForestSurvivalGame = () => {
         keys[e.code] = true;
       }
 
+      // ── GUIDED TUTORIAL — answer a not-yet-taught control instead of
+      // swallowing it. Movement keys are already latched into `keys` above;
+      // `moving()` / the jump + sprint gates are what actually hold them, so
+      // this only owns the explanation. (Touch has no keydown for the
+      // joystick — that notice lives in the movement block of the loop.)
+      if (isMovementKey && (tutorialLocks.move || tutorialLocks.sprint)) {
+        if (e.code === b.sprint) {
+          if (tutorialLocks.sprint) {
+            tutorialLockedNotice(tutorialLocks.move ? TUT_LOCK_MOVE : TUT_LOCK_SPRINT);
+            return;
+          }
+        } else if (tutorialLocks.move) {
+          tutorialLockedNotice(TUT_LOCK_MOVE);
+          return;
+        }
+      }
+      if (e.code === b.dash && tutorialLocks.ability) {
+        tutorialLockedNotice(TUT_LOCK_ABILITY);
+        return;
+      }
+      if (e.code === b.usePower && tutorialLocks.ability) {
+        tutorialLockedNotice(TUT_LOCK_ABILITY);
+        return;
+      }
+      if ((e.code === b.reload || e.code === b.melee) && tutorialLocks.combat) {
+        tutorialLockedNotice(TUT_LOCK_COMBAT);
+        return;
+      }
+
       // CHARACTER ABILITY — the bound ability key fires the selected class's
       // signature move (Dash for the Ranger, Firestorm for the Pyro, …), gated
       // by the unified ability cooldown. Same key, same gate, every game mode.
@@ -6622,8 +6764,13 @@ const ForestSurvivalGame = () => {
         return; // Don't process other ability actions
       }
 
-      // CROUCH TOGGLE - bound crouch key
+      // CROUCH TOGGLE - bound crouch key (part of the movement kit, so it
+      // opens up with walking rather than before it)
       if (e.code === b.crouch && !paused) {
+        if (tutorialLocks.move) {
+          tutorialLockedNotice(TUT_LOCK_MOVE);
+          return;
+        }
         isCrouching = !isCrouching;
         soundManager.play('footstep', 0.3);
         return;
@@ -6633,7 +6780,7 @@ const ForestSurvivalGame = () => {
       // Cooldown-gated inside doMeleeStrike; allowed mid-reload (it doesn't
       // cancel the reload) but not mid-dash (the charge IS the melee there).
       if (e.code === b.melee && !paused && !isGameOver && !isDashing
-          && !tutorialActiveRef.current) {
+          && !tutorialActiveRef.current && !tutorialLocks.combat) {
         doMeleeStrike();
         return;
       }
@@ -6682,6 +6829,11 @@ const ForestSurvivalGame = () => {
         'Digit7': 'launcher',
         'Digit8': 'subverter'
       };
+
+      if (weaponKeys[e.code] && tutorialLocks.combat) {
+        tutorialLockedNotice(TUT_LOCK_COMBAT);
+        return;
+      }
 
       if (weaponKeys[e.code] && !isReloading) {
         const weaponName = weaponKeys[e.code];
@@ -7135,6 +7287,13 @@ const ForestSurvivalGame = () => {
     let gunLightOffAt = 0;
 
     const shoot = () => {
+      // Guided tutorial: the trigger is dead until the sprint drill brings the
+      // weapon online. Covers desktop clicks, held auto-fire and the touch FIRE
+      // button (which dispatches the same synthetic mousedown).
+      if (tutorialLocks.combat) {
+        tutorialLockedNotice(TUT_LOCK_COMBAT);
+        return;
+      }
       // Empty magazine — dry-fire click + auto-reload so pulling the trigger on
       // an empty mag actually does something instead of a dead click. The
       // !isReloading guard means only the first pull clicks; subsequent pulls
@@ -7471,7 +7630,7 @@ const ForestSurvivalGame = () => {
           euler.x -= e.movementY * baseSens;
           euler.x = Math.max(-PI_2, Math.min(PI_2, euler.x));
           if (isTutorialMode && (Math.abs(e.movementX) > 1 || Math.abs(e.movementY) > 1)) {
-            tutorial.recordAction('look', 1); // advances the camera-control step
+            recordTutorialHold('look'); // advances the opening "Look Around" drill
           }
         }
       }
@@ -7490,7 +7649,7 @@ const ForestSurvivalGame = () => {
       // Blocked mid-reload for parity with the digit keys — a wheel flick used
       // to abandon the reload animation while its completion timer kept running
       // and then filled the NEW weapon to the OLD weapon's mag size.
-      if (!paused && !isGameOver && !isReloading) {
+      if (!paused && !isGameOver && !isReloading && !tutorialLocks.combat) {
         e.preventDefault();
 
         const weaponKeys = Object.keys(WEAPONS);
@@ -7720,6 +7879,31 @@ const ForestSurvivalGame = () => {
       // Pause/resume clock when visibility changes to prevent huge delta on return
       if (isTabVisible) {
         clock.getDelta(); // Reset delta to avoid jump
+        // Coming back from a call / app switch: the browser suspended audio and
+        // dropped the screen wake lock. Restore both.
+        soundManager.resumeContext();
+        refreshWakeLock();
+      } else {
+        // ── MOBILE LIFE HAPPENS ──────────────────────────────────────────
+        // A phone call, a notification tap, or the screen locking must never
+        // cost the player a run. Backgrounding auto-pauses solo/tutorial play
+        // and wipes any held stick/trigger so nothing is stuck on return.
+        // Multiplayer is excluded: its waves are host-authoritative and keep
+        // running, so a local pause would only desync the player.
+        const inMultiplayerGame = isMultiplayer || gameMode === 'multiplayer';
+        if (touchControls.enabled && !paused && !isGameOver && !inMultiplayerGame
+            && !tutorialActiveRef.current && !photoModeRef.current
+            && !wavePerkActiveRef.current) {
+          paused = true;
+          setIsPaused(true);
+        }
+        if (touchControls.enabled) {
+          touchControls.reset();
+          // A finger can never "lift" once the app is gone, so the trigger
+          // would still be held on return. Drop it and stop any auto-fire.
+          mouseDown = false;
+          if (autoFireInterval) { clearInterval(autoFireInterval); autoFireInterval = null; }
+        }
       }
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -8117,6 +8301,9 @@ const ForestSurvivalGame = () => {
         // announcing each new species the moment it's earned.
         if (isTutorialMode) updateTutorialRoster(enemiesKilled);
         if (isCritical) triggerHeadshotFlash(); else triggerKillFlash();
+        // Confirm the kill in the hand — a distinct triple-tick from the flat
+        // per-hit tick, so a downed enemy reads without looking at the feed.
+        haptic(enemy.type === 'boss' ? 'heavy' : 'kill');
         // Crosshair KILL confirm — a bold X + sweeping ring at centre screen so
         // every elimination lands with a satisfying, AAA-grade punch.
         if (gameSettingsManager.getSetting('hitMarkers')) addHitMarker(isCritical, true);
@@ -10189,8 +10376,10 @@ const ForestSurvivalGame = () => {
         }
       }
 
-      // Get coach tips every 15 seconds
-      if (frameCount % 900 === 0 && RUNTIME_PREFS.showHints) {
+      // Get coach tips every 15 seconds. Silenced during the guided tutorial —
+      // a second, unrelated advice popup competing with the step card is
+      // exactly the noise the drill is trying to avoid.
+      if (frameCount % 900 === 0 && RUNTIME_PREFS.showHints && !tutorialGuidedOn) {
         const tip = combatCoach.analyzeAndCoach({
           playerHealth: health,
           maxHealth: playerMaxHealth,
@@ -10214,46 +10403,93 @@ const ForestSurvivalGame = () => {
         }
       }
 
-      // Update tutorial — propagate state to React (throttled to avoid 60fps re-renders)
-      if (tutorial.isActive()) {
-        const step = tutorial.getCurrentStep();
-        const progress = tutorial.getProgress();
-        // Only update React state when step actually changes
-        const tutRef = tutorialRef.current as (TutorialSystem & { _lastStepId?: string }) | null;
-        if (step && tutRef && step.id !== tutRef._lastStepId) {
-          tutRef._lastStepId = step.id;
-          setTutorialStep({ ...step });
-          setTutorialProgress(progress);
-          tutorialActiveRef.current = true;
-          // Safety: exit pointer lock so cursor is visible for new tutorial popup
-          if (document.pointerLockElement) {
-            document.exitPointerLock();
-          }
+      // ── GUIDED TUTORIAL ───────────────────────────────────────────────────
+      // The single owner of every step transition. React state is pushed only
+      // when the step CHANGES or the player just satisfied it — never per frame
+      // — so the (very large) App tree reconciles at most twice per step.
+      if (tutorialGuidedOn) {
+        tutorial.tick(); // drives the short "Nice!" beat, then hands over
+        const step = tutorial.isActive() ? tutorial.getCurrentStep() : null;
 
-          // ── Planned tutorial spawns — guarantee the exact thing a step
-          // asks the player to do is actually right there, instead of hoping
-          // the ambient spawner or random loot RNG happens to provide one
-          // nearby. Complements the gentle ambient trickle from `kill_enemy`
-          // onward (see TUTORIAL_QUIET_STEPS / continuousSpawn above). ─────
-          const aliveEnemyCount = enemies.filter(e => !e.dead).length;
-          if (step.id === 'kill_enemy' && aliveEnemyCount === 0) {
-            spawnEnemyBatch(1);
-          } else if (step.id === 'headshots' && aliveEnemyCount === 0) {
-            spawnEnemyBatch(1);
-          } else if (step.id === 'combo_system' && aliveEnemyCount < 3) {
-            // A 3x combo needs several kills within ~2s of each other — a
-            // single stray enemy isn't enough, so top up to a small cluster.
-            spawnEnemyBatch(3 - aliveEnemyCount);
-          } else if (step.id === 'powerups') {
+        if (step && step.id !== tutorialLastStepId) {
+          // ── NEW STEP ──
+          tutorialLastStepId = step.id;
+          tutorialLastStepDone = false;
+          syncTutorialLocks(); // this step's own control opens up immediately
+          setTutorialStep({ ...step });
+          setTutorialProgress(tutorial.getProgress());
+          setTutorialMeta({ number: tutorial.getStepNumber(), total: tutorial.getStepCount() });
+          // The instruction card blocks play until the player hits "Try it",
+          // so release the cursor onto it.
+          tutorialActiveRef.current = true;
+          if (document.pointerLockElement) document.exitPointerLock();
+
+          // Planned staging — guarantee the exact thing this step asks for is
+          // actually there AND actually doable, instead of hoping the ambient
+          // spawner or the loot RNG provides one. A drill that can't be
+          // completed is a soft-lock. (Ambient enemies only start flowing from
+          // `kill` onward; see TUTORIAL_QUIET_STEPS / continuousSpawn above.)
+          if (step.id === 'sprint') {
+            // Sprinting is cancelled by the crouch stance, so a player who
+            // crouched during the movement drill could never satisfy this one.
+            isCrouching = false;
+          } else if (step.id === 'kill') {
+            let alive = 0;
+            for (const e of enemies) if (!e.dead) alive++;
+            if (alive === 0) {
+              // Stage the target CLOSE and dead ahead. The normal 42-68m spawn
+              // ring plus tutorial-slowed legs meant nearly a minute of standing
+              // around waiting for something to shoot — the single biggest
+              // reason this step read as broken.
+              const facing = new THREE.Vector3();
+              camera.getWorldDirection(facing);
+              spawnEnemyBatch(1, undefined, false, 18, Math.atan2(facing.z, facing.x));
+            }
+          } else if (step.id === 'reload') {
+            // Reloading a FULL magazine is a no-op — open a visible gap so the
+            // drill always has something to top up.
+            const magMax = effectiveMaxAmmo(currentWeapon);
+            if (ammo >= magMax) {
+              ammo = Math.max(1, magMax - Math.max(1, Math.ceil(magMax * 0.35)));
+              updateGameState();
+            }
+          } else if (step.id === 'ability') {
+            abilityCooldown = 0; // the drill can't ask for a move that isn't ready
+          } else if (step.id === 'powerup') {
             const spot = findPickupSpot(camera.position.x, camera.position.z, 3, 6);
             powerUps.push(createPowerUp(spot.x, spot.z, randomLoot()));
           }
+        } else if (step && step.completed !== tutorialLastStepDone) {
+          // ── JUST SATISFIED ── push the confirmation the instant the action
+          // lands so the practise banner flips to "Nice!" rather than sitting
+          // there looking like the input did nothing.
+          tutorialLastStepDone = step.completed;
+          setTutorialStep({ ...step });
+          setTutorialProgress(tutorial.getProgress());
+        } else if (!step) {
+          // ── RUN OVER ── finished, or ended from the card. Either way the
+          // player gets their whole kit back (`isGranted` opens up once the
+          // system goes inactive).
+          tutorialGuidedOn = false;
+          syncTutorialLocks();
+          setShowTutorial(false);
+          setTutorialStep(null);
+          if (tutorialRunningRef.current) {
+            // Completed for real — the celebration card owns the screen until
+            // the player picks Keep Playing / Main Menu. The last step finished
+            // mid-practise with the pointer LOCKED, so hand the cursor back or
+            // its buttons are unclickable. Blocking stays on so the game's own
+            // mousedown handler can't read a click on that card as a
+            // "re-acquire pointer lock" click; each button clears it itself.
+            tutorialRunningRef.current = false;
+            tutorialActiveRef.current = true;
+            if (document.pointerLockElement) document.exitPointerLock();
+            setTutorialComplete(true);
+          } else {
+            // "End Tutorial" — that handler already restored the pointer lock.
+            tutorialActiveRef.current = false;
+          }
         }
-      } else if (showTutorial) {
-        // Tutorial completed — close overlay
-        setShowTutorial(false);
-        setTutorialStep(null);
-        tutorialActiveRef.current = false;
       }
 
       // Update multiplayer (sync player position + crouch + held weapon)
@@ -10381,7 +10617,7 @@ const ForestSurvivalGame = () => {
           euler.y -= ldx * tSens;
           euler.x -= ldy * tSens;
           euler.x = Math.max(-PI_2, Math.min(PI_2, euler.x));
-          if (isTutorialMode) tutorial.recordAction('look', 1);
+          if (isTutorialMode) recordTutorialHold('look');
         }
         // ── AUTO-AIM DOWN SIGHTS ── there is no ADS button on touch, so FIRE
         // itself brings up the sights for any aim-capable weapon (CODM-style).
@@ -10392,24 +10628,24 @@ const ForestSurvivalGame = () => {
         const autoAimHeld = mouseDown || nowMs < mobileAdsLingerUntil;
         isAiming = autoAimHeld && WEAPONS[currentWeapon].canAim === true;
 
-        // ── AIM ASSIST (mobile/tablet only) ── console-style magnetism: while
-        // firing (or briefly after), and while actively swiping, rotate the
-        // camera toward the nearest enemy inside an acquisition cone so a thumb
-        // never has to land the reticle perfectly. It never fully locks — a
-        // deliberate swipe always overrides it — and stays idle when the player
-        // isn't interacting, so the camera never drifts on its own.
+        // ── AIM ASSIST (mobile/tablet only) ── a light drag toward the target
+        // the player is ALREADY on, not a lock-on. This is deliberately weak:
+        // an earlier build snapped the camera onto the nearest enemy and played
+        // like an aimbot. The player must do the aiming; this only shaves the
+        // last few pixels of thumb imprecision. It never locks, a deliberate
+        // swipe always wins, and it stays idle when the player isn't
+        // interacting so the camera never drifts on its own.
         const firing = autoAimHeld;
-        // Hardened gate: the camera magnetism runs ONLY in a genuine touch
-        // session (real hardware + a trusted touch). On desktop — or if someone
-        // flips `touchControls.enabled` in the console — assistAllowed() is
-        // false, so the assist never engages and a mouse aims with zero help.
+        // Hardened gate: the magnetism runs ONLY in a genuine touch session
+        // (real touch hardware + a trusted touch event + no mouse used this
+        // session). Desktop can never satisfy it — see touchControls.
         if (touchControls.assistAllowed() && (firing || looked)) {
           camera.getWorldDirection(_assistFwd);
-          // Auto-aim is the ONLY aiming on touch, so the acquisition cone is a
-          // little wider (~15°) than a desktop assist would be — a rough thumb
-          // swipe toward a target is enough for the lock to catch it.
-          const ACQUIRE_COS = 0.965; // ~15° cone
-          const ASSIST_RANGE = 75;
+          // TIGHT cone: the reticle must already be essentially on the target
+          // for any help at all, so the assist can't hunt for enemies the
+          // player never aimed at.
+          const ACQUIRE_COS = 0.9945; // ~6° cone
+          const ASSIST_RANGE = 55;
           let bestEnemy: Enemy | null = null;
           let bestDot = ACQUIRE_COS;
           for (let i = 0; i < enemies.length; i++) {
@@ -10431,12 +10667,13 @@ const ForestSurvivalGame = () => {
             while (dY > Math.PI) dY -= Math.PI * 2;
             while (dY < -Math.PI) dY += Math.PI * 2;
             const dX = targetPitch - euler.x;
-            // Pull scaled by how centered the target is (gentler at the edge).
-            // Firing pulls firmly so "tap fire" reliably lands on the nearest
-            // enemy; a bare swipe (no fire) only nudges so the player still
-            // steers. Never a full 1.0 lock — a hard swipe always wins.
+            // ~10% of a lock. At 0.032/frame the camera closes only a small
+            // fraction of the remaining error per second, so it reads as the
+            // reticle "settling" rather than snapping — the player still has
+            // to track the target themselves. Scaled by how centred the target
+            // already is, so help fades out toward the edge of the cone.
             const closeness = (bestDot - ACQUIRE_COS) / (1 - ACQUIRE_COS);
-            const pull = (firing ? 0.32 : 0.06) * (0.4 + 0.6 * closeness);
+            const pull = (firing ? 0.032 : 0.008) * (0.35 + 0.65 * closeness);
             euler.y += dY * pull;
             euler.x += dX * pull;
             euler.x = Math.max(-PI_2, Math.min(PI_2, euler.x));
@@ -10711,10 +10948,10 @@ const ForestSurvivalGame = () => {
       // Player movement with weight-based speed and ability effects.
       // On touch, the analog joystick contributes to both "is moving" and the
       // sprint intent (pushed to the outer ring).
-      const touchMoving = touchControls.enabled && touchControls.moving;
+      const touchMoving = touchControls.enabled && touchControls.moving && !tutorialLocks.move;
       const isMoving = moving('moveForward') || moving('moveBackward') || moving('moveLeft') || moving('moveRight') || touchMoving;
-      if (isTutorialMode && isMoving) tutorial.recordAction('move', 1); // advances the movement step
-      const wantsToSprint = (held('sprint') || (touchControls.enabled && touchControls.sprinting)) && !isCrouching;
+      const wantsToSprint = (held('sprint') || (touchControls.enabled && touchControls.sprinting))
+        && !isCrouching && !tutorialLocks.sprint;
       // Stamina gates sprinting. Once exhausted, the player must let
       // stamina rebuild past STAMINA_REQUIRED_TO_SPRINT before they
       // can sprint again — prevents 0-stamina stutter-sprint exploit.
@@ -10724,6 +10961,18 @@ const ForestSurvivalGame = () => {
       // Aiming down sights cancels the sprint (COD-style) so the two poses
       // never fight each other — release aim to sprint again.
       const isRunning = wantsToSprint && isMoving && !staminaExhausted && !aimingActive;
+
+      // ── GUIDED TUTORIAL — walk/sprint practice + the touch "not yet" notice.
+      // The joystick has no keydown to hang an explanation on (that path is
+      // handled in onKeyDown), so a locked push is answered here instead.
+      if (isTutorialMode) {
+        if (isMoving) recordTutorialHold('move');
+        if (isRunning) recordTutorialHold('sprint');
+        if (touchControls.enabled && touchControls.moving) {
+          if (tutorialLocks.move) tutorialLockedNotice(TUT_LOCK_MOVE);
+          else if (tutorialLocks.sprint && touchControls.sprinting) tutorialLockedNotice(TUT_LOCK_SPRINT);
+        }
+      }
 
       // Mirror the stance out for weapon bloom (shoot() + dynamic crosshair),
       // and recover sustained-fire bloom while the trigger is at rest.
@@ -11031,7 +11280,7 @@ const ForestSurvivalGame = () => {
       const floorY = currentCameraHeight + supportY;
 
       // Jump - weight-based jump height (auto-uncrouch when jumping)
-      if (held('jump') && !isJumping && jumpCooldown <= 0 && camera.position.y <= floorY + 0.1) {
+      if (held('jump') && !tutorialLocks.move && !isJumping && jumpCooldown <= 0 && camera.position.y <= floorY + 0.1) {
         // Auto-uncrouch when jumping
         if (isCrouching) {
           isCrouching = false;
@@ -11914,31 +12163,26 @@ const ForestSurvivalGame = () => {
           const closeDX = closeX - enemy.mesh.position.x;
           const closeDZ = closeZ - enemy.mesh.position.z;
           const closeXZsq = closeDX * closeDX + closeDZ * closeDZ;
-          // FORGIVING (genuine touch only): the old wide 2m XZ cylinder with NO
-          // height test — the mobile aim-assist that lets thumb-aim connect.
-          // PRECISE (desktop / untampered): a tight body radius that ALSO
-          // requires the bullet to pass through the enemy's vertical extent, so
-          // firing over the head or wide of the body genuinely whiffs instead of
-          // magnetically landing.
-          let bodyHit: boolean;
-          if (aimAssist) {
-            bodyHit = closeXZsq < 4;
-          } else {
-            const eScale = enemy.type === 'fast' ? 0.7
-              : enemy.type === 'tank' ? 1.5
-              : enemy.type === 'boss' ? 2.0
-              : enemy.type === 'ranged' ? 1.05
-              : enemy.type === 'revenant' ? 0.85
-              : 1.0;
-            const bodyR = Math.max(1.1, 1.1 * eScale);
-            const contactY = _bulletPrev.y + (bullet.mesh.position.y - _bulletPrev.y) * tHit;
-            const footY = enemy.mesh.position.y - 0.4;
-            // Up to the TOP of the head (head centre ≈1.9·scale + ~0.8·scale
-            // radius) so legit top-of-skull headshots still land; anything fired
-            // clearly above that genuinely sails over.
-            const headY = enemy.mesh.position.y + 2.8 * eScale;
-            bodyHit = closeXZsq < bodyR * bodyR && contactY >= footY && contactY <= headY;
-          }
+          // Desktop and touch now use the SAME shape test — a body cylinder
+          // with a real vertical extent — so a round fired over the head or
+          // wide of the body genuinely whiffs on a phone too. Touch only gets
+          // a modest radius bonus for thumb imprecision; the old path gave it
+          // a 2m cylinder with NO height test at all, which is what made mobile
+          // play like an aimbot.
+          const eScale = enemy.type === 'fast' ? 0.7
+            : enemy.type === 'tank' ? 1.5
+            : enemy.type === 'boss' ? 2.0
+            : enemy.type === 'ranged' ? 1.05
+            : enemy.type === 'revenant' ? 0.85
+            : 1.0;
+          const bodyR = Math.max(1.1, 1.1 * eScale) * (aimAssist ? 1.3 : 1);
+          const contactY = _bulletPrev.y + (bullet.mesh.position.y - _bulletPrev.y) * tHit;
+          const footY = enemy.mesh.position.y - 0.4;
+          // Up to the TOP of the head (head centre ≈1.9·scale + ~0.8·scale
+          // radius) so legit top-of-skull headshots still land; anything fired
+          // clearly above that genuinely sails over.
+          const headY = enemy.mesh.position.y + 2.8 * eScale;
+          const bodyHit = closeXZsq < bodyR * bodyR && contactY >= footY && contactY <= headY;
           if (bodyHit) {
             // Snap to the contact point so all downstream effects are exact.
             bullet.mesh.position.set(
@@ -15991,71 +16235,35 @@ const ForestSurvivalGame = () => {
         />
       )}
 
-      {/* Tutorial Overlay — wired to real tutorial state */}
+      {/* Tutorial Overlay — wired to real tutorial state. These handlers only
+          poke the system / pointer lock: the render loop is the single owner of
+          step transitions, spawns, capability locks and React state, so it
+          picks every one of these up on the very next frame. */}
       {showTutorial && gameStarted && !gameState.isGameOver && (
         <TutorialOverlay
           currentStep={tutorialStep}
           progress={tutorialProgress}
-          onSkip={() => {
-            tutorialRef.current?.skipCurrentStep();
-            const tut = tutorialRef.current;
-            if (tut) {
-              const nextStep = tut.getCurrentStep();
-              if (nextStep) {
-                (tut as TutorialSystem & { _lastStepId?: string | null })._lastStepId = null;
-                setTutorialStep({ ...nextStep });
-                setTutorialProgress(tut.getProgress());
-              } else {
-                // Tutorial done — unlock pointer
-                setShowTutorial(false);
-                setTutorialStep(null);
-                tutorialActiveRef.current = false;
-                const canvas = mountRef.current?.querySelector('canvas');
-                if (canvas && !isTouch) setTimeout(() => canvas.requestPointerLock(), 100);
-              }
-            }
-          }}
+          stepNumber={tutorialMeta.number}
+          stepTotal={tutorialMeta.total}
+          onSkip={() => { tutorialRef.current?.skipCurrentStep(); }}
           onTry={() => {
-            // Practising an interactive step — unblock input + grab pointer lock
-            // so the action can actually be performed. The per-frame loop
-            // re-blocks automatically once the step advances.
+            // Practising a step — unblock input + grab pointer lock so the
+            // action can actually be performed. The loop re-blocks
+            // automatically the moment the step hands over.
             tutorialActiveRef.current = false;
             const canvas = mountRef.current?.querySelector('canvas');
             if (canvas && !isTouch) (canvas as HTMLCanvasElement).requestPointerLock();
           }}
-          onNext={() => {
-            const tut = tutorialRef.current;
-            if (tut && tutorialStep?.id) {
-              tut.completeStep(tutorialStep.id);
-              const nextStep = tut.getCurrentStep();
-              if (nextStep) {
-                (tut as TutorialSystem & { _lastStepId?: string | null })._lastStepId = null;
-                setTutorialStep({ ...nextStep });
-                setTutorialProgress(tut.getProgress());
-              } else {
-                // Tutorial done — show the completion card. `tutorialActiveRef`
-                // stays TRUE (blocked) here on purpose: it's what stops the
-                // underlying game's own mousedown handler from treating a
-                // click on this card's buttons as a "re-acquire pointer lock"
-                // click, which was silently grabbing the cursor the instant
-                // the player clicked Keep Playing / Main Menu. It's cleared
-                // explicitly by whichever button the player actually picks.
-                setShowTutorial(false);
-                setTutorialStep(null);
-                setTutorialComplete(true);
-              }
-            }
-          }}
           onEndTutorial={() => {
-            // Exit tutorial entirely — unlock pointer
-            setShowTutorial(false);
-            setTutorialStep(null);
+            // Bail out entirely. Clearing `tutorialRunningRef` FIRST is what
+            // tells the loop this was a bail-out, not a completion, so it skips
+            // the celebration card — and `setEnabled(false)` makes every locked
+            // capability grant again on the next frame.
+            tutorialRunningRef.current = false;
+            tutorialRef.current?.setEnabled(false);
             tutorialActiveRef.current = false;
-            if (tutorialRef.current) {
-              tutorialRef.current.setEnabled(false);
-            }
             const canvas = mountRef.current?.querySelector('canvas');
-            if (canvas && !isTouch) setTimeout(() => canvas.requestPointerLock(), 100);
+            if (canvas && !isTouch) (canvas as HTMLCanvasElement).requestPointerLock();
           }}
         />
       )}

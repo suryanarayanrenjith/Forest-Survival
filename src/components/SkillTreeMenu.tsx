@@ -175,20 +175,22 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
         </div>
 
         {/* ===== HEADER ===== */}
-        <div className="relative z-10 flex items-center justify-between gap-3 px-5 sm:px-6 py-4 border-b border-white/[0.07] bg-gradient-to-b from-white/[0.025] to-transparent">
-          <div className="flex items-center gap-3.5 min-w-0">
+        <div className={`relative z-10 flex flex-none items-center justify-between border-b border-white/[0.07] bg-gradient-to-b from-white/[0.025] to-transparent ${isTouch ? 'gap-2 px-3 py-1.5' : 'gap-3 px-5 sm:px-6 py-4'}`}>
+          <div className={`flex items-center min-w-0 ${isTouch ? 'gap-2' : 'gap-3.5'}`}>
             <div
-              className="relative flex items-center justify-center w-11 h-11 rounded-xl border border-emerald-400/35 flex-shrink-0"
+              className={`relative flex items-center justify-center rounded-lg border border-emerald-400/35 flex-shrink-0 ${isTouch ? 'h-7 w-7' : 'w-11 h-11 rounded-xl'}`}
               style={{ background: 'radial-gradient(circle at 50% 30%, rgba(46,232,180,0.22), rgba(46,232,180,0.06))', boxShadow: '0 0 22px -6px rgba(46,232,180,0.6), inset 0 0 0 1px rgba(46,232,180,0.12)' }}
             >
-              <Sparkles className="w-5 h-5 text-emerald-200" strokeWidth={2} />
+              <Sparkles className={isTouch ? 'h-4 w-4 text-emerald-200' : 'w-5 h-5 text-emerald-200'} strokeWidth={2} />
             </div>
             <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="aurora-rule hidden sm:block h-px w-6 bg-emerald-400/40" />
-                <p className="font-hud text-[10px] tracking-[0.38em] text-emerald-300/90 font-semibold uppercase">Progression · Bio-Lattice</p>
-              </div>
-              <h2 className="font-display text-xl sm:text-2xl font-semibold uppercase tracking-[0.06em] text-white leading-none mt-0.5">Skill Tree</h2>
+              {!isTouch && (
+                <div className="flex items-center gap-2">
+                  <span className="aurora-rule hidden sm:block h-px w-6 bg-emerald-400/40" />
+                  <p className="font-hud text-[10px] tracking-[0.38em] text-emerald-300/90 font-semibold uppercase">Progression · Bio-Lattice</p>
+                </div>
+              )}
+              <h2 className={`font-display font-semibold uppercase tracking-[0.06em] text-white leading-none ${isTouch ? 'text-sm' : 'text-xl sm:text-2xl mt-0.5'}`}>Skill Tree</h2>
             </div>
           </div>
 

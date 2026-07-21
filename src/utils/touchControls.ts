@@ -13,35 +13,66 @@
 // Everything the game loop reads is gated behind `enabled`, so when this is
 // false (desktop) the loop's behaviour is byte-for-byte identical to before.
 
-class TouchControlsBridge {
-  /** True only on detected touch phones/tablets. Set from useDeviceInfo. */
-  enabled = false;
+import { detectIsTouch } from '../hooks/useDeviceInfo';
 
+class TouchControlsBridge {
   // ── TAMPER-RESISTANT "GENUINE TOUCH" GATE ───────────────────────────────
-  // `enabled` is a plain flag derived from device detection — a determined
-  // desktop user could flip it in the console to try to unlock the mobile
-  // aim-assist + forgiving hitbox (an unfair advantage). So those features do
-  // NOT trust `enabled` alone: they require `assistAllowed()`, which also
-  // demands real touch HARDWARE *and* a browser-TRUSTED touch event this
-  // session. A mouse cannot synthesise a trusted touch (`isTrusted === false`
-  // on any dispatched/forged event), so a desktop player can never satisfy
-  // this no matter what flags they poke. These fields are private so there's
-  // no public setter to abuse, and the listeners self-install once at load.
+  // The mobile-only aim-assist + forgiving hitbox are a real advantage, so
+  // they must be impossible to switch on from a desktop — including from the
+  // console. Four independent conditions, none of which a desktop can forge:
+  //
+  //   1. `_deviceIsTouch` — the SAME detection the app uses, sampled ONCE at
+  //      load into a private field. `enabled` is now an accessor that refuses
+  //      to latch true unless this holds, so `touchControls.enabled = true`
+  //      in a desktop console silently does nothing.
+  //   2. `_hardwareTouch` — real touch digitiser present.
+  //   3. `_sawTrustedTouch` — a browser-dispatched touch actually happened.
+  //      A script cannot forge this: any dispatched event has isTrusted false.
+  //   4. `!_sawTrustedMouse` — NO genuine mouse input this session. This is
+  //      what closes the touchscreen-laptop / 2-in-1 hole: tapping once and
+  //      then playing with a mouse permanently disarms the assist. It keys off
+  //      PointerEvent.pointerType === 'mouse', which touch never produces
+  //      (touch reports 'touch'/'pen'), so it can't misfire on a phone.
+  //
+  // All fields are private with no public setter, and the listeners
+  // self-install once at load.
+  private _enabled = false;
+  private _deviceIsTouch = false;
   private _hardwareTouch = false;
   private _sawTrustedTouch = false;
+  private _sawTrustedMouse = false;
+
+  /** True only on detected touch phones/tablets. Set from useDeviceInfo. */
+  get enabled(): boolean {
+    return this._enabled;
+  }
+
+  set enabled(value: boolean) {
+    // Turning OFF is always honoured. Turning ON only sticks on a device that
+    // genuinely reads as a phone/tablet.
+    this._enabled = value ? this._deviceIsTouch : false;
+  }
 
   constructor() {
     if (typeof window === 'undefined') return;
     try {
       const nav = typeof navigator !== 'undefined' ? navigator : undefined;
-      this._hardwareTouch =
-        (nav?.maxTouchPoints ?? 0) > 0 || 'ontouchstart' in window;
-      // Capture-phase + passive so the mark can't be suppressed by a
-      // stopPropagation handler and never blocks scrolling. Only a genuine,
-      // browser-dispatched touch (isTrusted) flips the latch.
-      const mark = (e: Event) => { if (e.isTrusted) this._sawTrustedTouch = true; };
-      window.addEventListener('touchstart', mark, { capture: true, passive: true });
-      window.addEventListener('touchmove', mark, { capture: true, passive: true });
+      this._hardwareTouch = (nav?.maxTouchPoints ?? 0) > 0 || 'ontouchstart' in window;
+      this._deviceIsTouch = detectIsTouch();
+
+      // Capture-phase + passive so the marks can't be suppressed by a
+      // stopPropagation handler and never block scrolling.
+      const markTouch = (e: Event) => { if (e.isTrusted) this._sawTrustedTouch = true; };
+      window.addEventListener('touchstart', markTouch, { capture: true, passive: true });
+      window.addEventListener('touchmove', markTouch, { capture: true, passive: true });
+
+      // A genuine mouse disarms the assist for the rest of the session.
+      const markMouse = (e: PointerEvent) => {
+        if (this._sawTrustedMouse) return; // latched — nothing more to do
+        if (e.isTrusted && e.pointerType === 'mouse') this._sawTrustedMouse = true;
+      };
+      window.addEventListener('pointerdown', markMouse, { capture: true, passive: true });
+      window.addEventListener('pointermove', markMouse, { capture: true, passive: true });
     } catch {
       /* defensive: any detection failure simply leaves the assist disabled */
     }
@@ -49,12 +80,15 @@ class TouchControlsBridge {
 
   /**
    * The hardened gate for the mobile-only aim-assist + forgiving hitbox.
-   * Requires ALL of: the device flagged as touch, real touch hardware, and a
-   * genuine trusted touch having occurred. Desktop (mouse) can never pass it,
-   * even with `enabled` forced true — so the assist cannot be unlocked there.
+   * Requires ALL FOUR conditions above. Desktop can never pass it — with or
+   * without a touchscreen, and no matter what flags are poked in the console.
    */
   assistAllowed(): boolean {
-    return this.enabled && this._hardwareTouch && this._sawTrustedTouch;
+    return this._enabled
+      && this._deviceIsTouch
+      && this._hardwareTouch
+      && this._sawTrustedTouch
+      && !this._sawTrustedMouse;
   }
 
   // ── Analog movement (left joystick) ──

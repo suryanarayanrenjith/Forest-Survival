@@ -2,11 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Crosshair, ChevronsUp, ChevronsRight, ChevronsDown, RotateCw, Swords, Pause,
   PackageSearch, Move, RotateCcw, Gamepad2, Maximize2, Eye, Hand, Wand2, Magnet,
+  FlipHorizontal2,
   type LucideIcon,
 } from 'lucide-react';
 import {
   useTouchLayout, setControlPosition, setLayoutScale, setLayoutOpacity, setLayoutSnap,
-  resetTouchLayout, applyPositions,
+  setLayoutMirrored, resetTouchLayout, applyPositions,
   CONTROL_BASE_SIZE, TOUCH_CONTROL_ORDER, SCALE_RANGE, OPACITY_RANGE,
   type TouchControlId,
 } from '../utils/touchLayout';
@@ -213,18 +214,11 @@ const TouchLayoutEditor = () => {
   }, [layout.positions, layout.scale, device.aspect, device.w]);
 
   return (
-    <div className="space-y-3" style={{ animation: 'smFade 0.2s ease-out' }}>
-      {/* Intro */}
-      <div className="flex items-start gap-2.5 rounded-xl border border-emerald-400/20 bg-emerald-500/[0.05] px-3.5 py-2.5">
-        <Move className="mt-0.5 h-4 w-4 flex-shrink-0 text-emerald-300" strokeWidth={2.2} />
-        <p className="text-[11px] leading-snug text-gray-300">
-          <span className="font-semibold text-white">Drag any button</span> onto the scene. With <span className="font-semibold text-emerald-300">Auto-align</span> on
-          they snap to an even grid and never overlap. Saved to <span className="font-semibold text-emerald-300">this device only</span> — applies instantly in-game.
-        </p>
-      </div>
-
-      {/* Device-accurate 3D preview */}
-      <div className="mx-auto w-full" style={{ maxWidth: `calc(52dvh * ${device.aspect})` }}>
+    // Landscape puts the scene beside its controls so the whole arranger fits
+    // on one screen without scrolling; narrow/portrait stacks them.
+    <div className="flex flex-col gap-2.5 sm:flex-row sm:items-start" style={{ animation: 'smFade 0.2s ease-out' }}>
+      {/* ── Device-accurate 3D preview ── */}
+      <div className="mx-auto w-full min-w-0 sm:flex-1" style={{ maxWidth: `calc(66dvh * ${device.aspect})` }}>
         <div
           ref={boxRef}
           className="relative w-full touch-none select-none overflow-hidden rounded-2xl border border-white/12 shadow-[0_18px_50px_rgba(0,0,0,0.5)]"
@@ -240,16 +234,16 @@ const TouchLayoutEditor = () => {
           {/* Legibility veil so light buttons read on the bright grass */}
           <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/35 via-transparent to-black/15" />
 
-          {/* Movement joystick zone hint (left) — not draggable. */}
-          <div className="pointer-events-none absolute bottom-0 left-0 flex h-[64%] w-[40%] items-center justify-center">
+          {/* Movement joystick zone hint — follows handedness, not draggable. */}
+          <div className={`pointer-events-none absolute bottom-0 flex h-[64%] w-[40%] items-center justify-center ${layout.mirrored ? 'right-0' : 'left-0'}`}>
             <div className="flex flex-col items-center gap-1 rounded-2xl border border-dashed border-white/25 bg-black/25 px-3 py-2">
               <Gamepad2 className="h-4 w-4 text-white/70" strokeWidth={2} />
               <span className="text-[7px] font-bold uppercase tracking-[0.15em] text-white/70">Move zone</span>
             </div>
           </div>
 
-          {/* Look-swipe hint (top-right, subtle) */}
-          <div className="pointer-events-none absolute right-2 top-2 flex items-center gap-1 rounded-full border border-white/15 bg-black/35 px-2 py-0.5">
+          {/* Look-swipe hint — sits on the aiming side. */}
+          <div className={`pointer-events-none absolute top-2 flex items-center gap-1 rounded-full border border-white/15 bg-black/35 px-2 py-0.5 ${layout.mirrored ? 'left-2' : 'right-2'}`}>
             <Hand className="h-2.5 w-2.5 text-white/60" strokeWidth={2.2} />
             <span className="text-[7px] font-bold uppercase tracking-wider text-white/60">Swipe to look</span>
           </div>
@@ -303,8 +297,19 @@ const TouchLayoutEditor = () => {
         </div>
       </div>
 
+      {/* ── Controls column ── */}
+      <div className="flex w-full flex-col gap-2 sm:w-[248px] sm:flex-none">
+      {/* Intro */}
+      <div className="flex items-start gap-2 rounded-xl border border-emerald-400/20 bg-emerald-500/[0.05] px-2.5 py-2">
+        <Move className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-emerald-300" strokeWidth={2.2} />
+        <p className="text-[10px] leading-snug text-gray-300">
+          <span className="font-semibold text-white">Drag any button</span> onto the scene. <span className="font-semibold text-emerald-300">Auto-align</span> snaps
+          them to a grid so they never overlap. Saved to this device.
+        </p>
+      </div>
+
       {/* Auto-arrange + auto-align */}
-      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-1">
         <button
           onClick={onAutoArrange}
           className="flex items-center justify-center gap-2 rounded-xl border border-emerald-400/35 bg-emerald-500/[0.1] py-2.5 text-xs font-bold uppercase tracking-wider text-emerald-200 transition-colors hover:bg-emerald-500/20 active:scale-[0.99]"
@@ -327,10 +332,26 @@ const TouchLayoutEditor = () => {
             <span className={`absolute top-0.5 h-[16px] w-[16px] rounded-full bg-white transition-all ${layout.snap ? 'right-0.5' : 'left-0.5'}`} />
           </span>
         </button>
+        {/* Handedness — swaps the stick/look sides AND mirrors every button. */}
+        <button
+          onClick={() => { haptic('tap'); setLayoutMirrored(!layout.mirrored); }}
+          aria-pressed={layout.mirrored}
+          className={`col-span-2 flex items-center justify-between gap-2 rounded-xl border px-3.5 py-2.5 text-left transition-colors sm:col-span-1 ${
+            layout.mirrored ? 'border-emerald-400/35 bg-emerald-500/[0.08]' : 'border-white/10 bg-white/[0.02]'
+          }`}
+        >
+          <span className="flex items-center gap-2">
+            <FlipHorizontal2 className={`h-4 w-4 ${layout.mirrored ? 'text-emerald-300' : 'text-gray-500'}`} strokeWidth={2.25} />
+            <span className="text-xs font-bold uppercase tracking-wider text-gray-200">Left-handed</span>
+          </span>
+          <span className={`relative h-5 w-9 flex-shrink-0 rounded-full transition-colors ${layout.mirrored ? 'bg-emerald-500' : 'bg-white/15'}`}>
+            <span className={`absolute top-0.5 h-[16px] w-[16px] rounded-full bg-white transition-all ${layout.mirrored ? 'right-0.5' : 'left-0.5'}`} />
+          </span>
+        </button>
       </div>
 
       {/* Sizing + opacity */}
-      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-1">
         <EditorSlider
           label="Button Size" icon={Maximize2}
           value={Math.round(layout.scale * 100)}
@@ -349,16 +370,17 @@ const TouchLayoutEditor = () => {
       {/* Reset */}
       <button
         onClick={() => { haptic('tap'); resetTouchLayout(); }}
-        className="flex w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] py-2.5 text-xs font-semibold uppercase tracking-wider text-gray-300 transition-colors hover:bg-white/[0.06] hover:text-white active:scale-[0.99]"
+        className="flex w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] py-2 text-[11px] font-semibold uppercase tracking-wider text-gray-300 transition-colors hover:bg-white/[0.06] hover:text-white active:scale-[0.99]"
       >
-        <RotateCcw className="h-4 w-4" strokeWidth={2.25} />
-        Reset to default layout
+        <RotateCcw className="h-3.5 w-3.5" strokeWidth={2.25} />
+        Reset layout
       </button>
 
-      <p className="flex items-center justify-center gap-1.5 text-center text-[10px] text-gray-600">
-        <Crosshair className="h-3 w-3 text-emerald-500/70" strokeWidth={2} />
-        Firing auto-aims — there's no separate aim button to place.
+      <p className="flex items-center justify-center gap-1.5 text-center text-[9px] leading-tight text-gray-600">
+        <Crosshair className="h-3 w-3 flex-none text-emerald-500/70" strokeWidth={2} />
+        Firing auto-aims — no aim button to place.
       </p>
+      </div>
     </div>
   );
 };

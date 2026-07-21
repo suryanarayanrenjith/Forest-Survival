@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   Settings, X, Gamepad2, Volume2, SlidersHorizontal, Monitor, Wind, Zap,
-  Crosshair, Target, RotateCcw, Music, MousePointer2,
+  Crosshair, Target, RotateCcw, Music, MousePointer2, Move, ChevronRight,
   Eye, Activity, Skull, Check, Headphones, Sparkles, Hand, Bone, Flame, Terminal, Navigation,
   Maximize, Moon, Aperture, Wand2, Trees, Users, Gauge, Cpu, type LucideIcon,
 } from 'lucide-react';
@@ -46,6 +46,32 @@ const pickSimple = (s: UserSettings): SimpleSettings => {
   for (const k of SIMPLE_KEYS) (out as Record<string, unknown>)[k] = s[k];
   return out;
 };
+
+// Touch is a fixed device capability — resolved once so the shared control
+// primitives below (Slider / Toggle / Segmented), which live outside the
+// component, can render a denser layout on phones without prop-drilling.
+const IS_TOUCH = detectIsTouch();
+
+// Shared density tokens — every settings card/label/pill reads from these so
+// the touch build is uniformly compact and the desktop build is unchanged.
+const CARD_PAD = IS_TOUCH ? 'p-2.5' : 'p-4';
+const CARD_HEAD_GAP = IS_TOUCH ? 'mb-2' : 'mb-3';
+const LABEL_CLS = IS_TOUCH
+  ? 'font-hud text-[10px] font-semibold uppercase tracking-[0.16em] text-gray-300'
+  : 'font-hud text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-300';
+const ICON_CLS = IS_TOUCH ? 'h-3.5 w-3.5 text-gray-400' : 'w-4 h-4 text-gray-400';
+/** Small selectable pill (crosshair style, FPS cap, presets). */
+const PILL_CLS = IS_TOUCH ? 'm-tap py-1.5 text-[11px]' : 'py-2.5 text-xs';
+/** Colour swatch — opts out of the global 44px minimum on touch. */
+const SWATCH_CLS = IS_TOUCH ? 'm-tap h-8 w-8' : 'w-9 h-9';
+
+/** Compact gesture cheat-sheet shown on the touch Controls tab. */
+const TOUCH_GESTURES: { key: string; action: string; icon: LucideIcon }[] = [
+  { key: 'L-stick', action: 'Move', icon: Gamepad2 },
+  { key: 'Swipe', action: 'Look around', icon: Hand },
+  { key: 'Push', action: 'Sprint', icon: Wind },
+  { key: 'FIRE', action: 'Auto-aim & shoot', icon: Crosshair },
+];
 
 const PRESET_META: { id: GraphicsQuality; label: string; desc: string }[] = [
   { id: 'ultralow', label: 'Ultra Low', desc: 'Max FPS' },
@@ -102,7 +128,12 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
 
   // Touch devices remap every action to the on-screen controls, so the Controls
   // tab swaps to the drag-to-arrange HUD editor instead of key bindings.
-  const isTouch = detectIsTouch();
+  const isTouch = IS_TOUCH;
+  // The HUD arranger lives in its OWN full-screen modal on touch: it needs a
+  // no-scroll drag surface, which would otherwise swallow the settings sheet's
+  // scroll gestures and make the rest of the panel unreachable on a short
+  // landscape phone.
+  const [layoutOpen, setLayoutOpen] = useState(false);
 
   const tabs: { id: 'controls' | 'audio' | 'gameplay' | 'display'; label: string; icon: LucideIcon }[] = [
     { id: 'controls', label: 'Controls', icon: Gamepad2 },
@@ -124,29 +155,32 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
           : 'hud-frame w-full max-w-3xl flex flex-col rounded-2xl border border-emerald-400/15 bg-[#080d0b] shadow-[0_40px_100px_rgba(0,0,0,0.6)]'}
         style={isTouch ? undefined : { maxHeight: '94dvh', animation: 'smFade 0.3s cubic-bezier(0.16,1,0.3,1)' }}
       >
-        {/* Header */}
-        <div className={`flex items-center justify-between border-b border-white/[0.07] ${isTouch ? 'px-4 py-2.5' : 'px-5 sm:px-6 py-4'}`}>
-          <div className="flex items-center gap-3">
-            <div className="relative flex items-center justify-center w-10 h-10 rounded-xl bg-emerald-500/12 border border-emerald-400/30">
-              <Settings className="w-5 h-5 text-emerald-300" strokeWidth={2} />
+        {/* Header — a single compact row on touch (the eyebrow + tall glyph
+            ate scarce vertical space on a landscape phone). */}
+        <div className={`flex flex-none items-center justify-between border-b border-white/[0.07] ${isTouch ? 'gap-2 px-3 py-1.5' : 'px-5 sm:px-6 py-4'}`}>
+          <div className={`flex items-center ${isTouch ? 'gap-2' : 'gap-3'}`}>
+            <div className={`relative flex items-center justify-center rounded-lg bg-emerald-500/12 border border-emerald-400/30 ${isTouch ? 'h-7 w-7' : 'w-10 h-10 rounded-xl'}`}>
+              <Settings className={isTouch ? 'h-4 w-4 text-emerald-300' : 'w-5 h-5 text-emerald-300'} strokeWidth={2} />
             </div>
             <div>
-              <p className="font-hud text-[10px] tracking-[0.36em] text-emerald-300/90 font-semibold uppercase">Configuration</p>
-              <h2 className="font-display text-lg font-semibold uppercase tracking-wide text-white">Settings</h2>
+              {!isTouch && (
+                <p className="font-hud text-[10px] tracking-[0.36em] text-emerald-300/90 font-semibold uppercase">Configuration</p>
+              )}
+              <h2 className={`font-display font-semibold uppercase tracking-wide text-white ${isTouch ? 'text-sm leading-none' : 'text-lg'}`}>Settings</h2>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="flex items-center justify-center w-9 h-9 rounded-lg border border-white/10 text-gray-400
-              transition-colors hover:text-white hover:bg-white/[0.06]"
+            className={`flex flex-none items-center justify-center rounded-lg border border-white/10 text-gray-400
+              transition-colors hover:text-white hover:bg-white/[0.06] ${isTouch ? 'm-tap h-8 w-8' : 'w-9 h-9'}`}
             aria-label="Close settings"
           >
-            <X className="w-[18px] h-[18px]" strokeWidth={2.25} />
+            <X className={isTouch ? 'h-4 w-4' : 'w-[18px] h-[18px]'} strokeWidth={2.25} />
           </button>
         </div>
 
         {/* Tabs */}
-        <div className="flex gap-1 p-2 border-b border-white/[0.07]">
+        <div className={`flex flex-none gap-1 border-b border-white/[0.07] ${isTouch ? 'p-1' : 'p-2'}`}>
           {tabs.map((tab) => {
             const Icon = tab.icon;
             const active = activeTab === tab.id;
@@ -154,12 +188,14 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`font-hud flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-200 ${
+                className={`font-hud flex-1 flex items-center justify-center gap-1.5 rounded-lg font-semibold uppercase tracking-wider transition-all duration-200 ${
+                  isTouch ? 'm-tap py-1.5 text-[10px]' : 'gap-2 py-2.5 text-xs'
+                } ${
                   active ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-400/40' : 'text-gray-400 border border-transparent hover:text-gray-200 hover:bg-white/[0.04]'
                 }`}
               >
-                <Icon className="w-4 h-4" strokeWidth={2.25} />
-                <span className="hidden sm:inline">{tab.label}</span>
+                <Icon className={isTouch ? 'h-3.5 w-3.5' : 'w-4 h-4'} strokeWidth={2.25} />
+                <span className={isTouch ? 'inline' : 'hidden sm:inline'}>{tab.label}</span>
               </button>
             );
           })}
@@ -169,7 +205,38 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
         <div className={`m-scroll overflow-y-auto flex-1 min-h-0 ${isTouch ? 'p-3' : 'p-5'}`}>
           {activeTab === 'controls' && (
             isTouch ? (
-              <TouchLayoutEditor />
+              <div className="space-y-2" style={{ animation: 'smFade 0.2s ease-out' }}>
+                {/* Opens the arranger in its own full-screen modal — it owns a
+                    drag surface that can't share scrolling with this sheet. */}
+                <button
+                  onClick={() => setLayoutOpen(true)}
+                  className="flex w-full items-center gap-3 rounded-xl border border-emerald-400/30 bg-emerald-500/[0.08] px-3 py-2.5 text-left transition-colors active:bg-emerald-500/[0.16]"
+                >
+                  <span className="flex h-9 w-9 flex-none items-center justify-center rounded-lg border border-emerald-400/30 bg-emerald-500/15">
+                    <Move className="h-4 w-4 text-emerald-300" strokeWidth={2.25} />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[13px] font-bold text-white">Button Layout</span>
+                    <span className="block text-[11px] leading-tight text-gray-400">Drag your on-screen controls anywhere</span>
+                  </span>
+                  <ChevronRight className="h-4 w-4 flex-none text-emerald-300/70" strokeWidth={2.5} />
+                </button>
+
+                {/* Quick gesture reference — two compact columns. */}
+                <div className="grid grid-cols-2 gap-1.5">
+                  {TOUCH_GESTURES.map((g) => {
+                    const Icon = g.icon;
+                    return (
+                      <div key={g.action} className="flex items-center gap-2 rounded-lg border border-white/[0.07] bg-white/[0.02] px-2.5 py-1.5">
+                        <Icon className="h-3.5 w-3.5 flex-none text-gray-500" strokeWidth={2} />
+                        <span className="min-w-0 flex-1 truncate text-[11px] text-gray-300">{g.action}</span>
+                        <kbd className="flex-none rounded bg-white/[0.06] px-1.5 py-0.5 font-mono text-[9px] font-semibold text-gray-400">{g.key}</kbd>
+                      </div>
+                    );
+                  })}
+                </div>
+                <Toggle label="Haptics" desc="Vibration on fire, hits & damage" icon={Hand} value={settings.haptics} onChange={(v) => updateSetting('haptics', v)} />
+              </div>
             ) : (
               <div style={{ animation: 'smFade 0.2s ease-out' }}>
                 <KeyBindingsEditor accent="#34d399" />
@@ -178,21 +245,25 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
           )}
 
           {activeTab === 'audio' && (
-            <div className="space-y-3" style={{ animation: 'smFade 0.2s ease-out' }}>
-              <Slider label="Master Volume" icon={Volume2} value={settings.masterVolume} onChange={(v) => updateSetting('masterVolume', v)} />
-              <Slider label="Sound Effects" icon={Zap} value={settings.sfxVolume} onChange={(v) => updateSetting('sfxVolume', v)} />
-              <Slider label="Menu Music" icon={Music} value={settings.musicVolume} onChange={(v) => updateSetting('musicVolume', v)} />
-              {/* In-game procedural ambient score (per-map survival music) —
-                  independent of the menu music so either can be tuned alone.
-                  Changes apply live mid-run via the manager subscription. */}
-              <Slider label="Ambience Music" icon={Trees} value={settings.ambienceVolume} onChange={(v) => updateSetting('ambienceVolume', v)} />
+            <div className={IS_TOUCH ? 'space-y-2' : 'space-y-3'} style={{ animation: 'smFade 0.2s ease-out' }}>
+              {/* Two columns on touch: a landscape phone is wide but short, so
+                  side-by-side sliders keep everything above the fold. */}
+              <div className={IS_TOUCH ? 'grid grid-cols-2 gap-2' : 'space-y-3'}>
+                <Slider label="Master Volume" icon={Volume2} value={settings.masterVolume} onChange={(v) => updateSetting('masterVolume', v)} />
+                <Slider label="Sound Effects" icon={Zap} value={settings.sfxVolume} onChange={(v) => updateSetting('sfxVolume', v)} />
+                <Slider label="Menu Music" icon={Music} value={settings.musicVolume} onChange={(v) => updateSetting('musicVolume', v)} />
+                {/* In-game procedural ambient score (per-map survival music) —
+                    independent of the menu music so either can be tuned alone.
+                    Changes apply live mid-run via the manager subscription. */}
+                <Slider label="Ambience Music" icon={Trees} value={settings.ambienceVolume} onChange={(v) => updateSetting('ambienceVolume', v)} />
+              </div>
 
-              <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-4">
-                <div className="flex items-center gap-2 mb-3">
-                  <Headphones className="w-4 h-4 text-gray-400" strokeWidth={2.25} />
-                  <span className="font-hud text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-300">Sound Test</span>
+              <div className={`rounded-xl border border-white/[0.07] bg-white/[0.02] ${IS_TOUCH ? 'p-2.5' : 'p-4'}`}>
+                <div className={`flex items-center gap-2 ${IS_TOUCH ? 'mb-2' : 'mb-3'}`}>
+                  <Headphones className={IS_TOUCH ? 'h-3.5 w-3.5 text-gray-400' : 'w-4 h-4 text-gray-400'} strokeWidth={2.25} />
+                  <span className={`font-hud font-semibold uppercase tracking-[0.16em] text-gray-300 ${IS_TOUCH ? 'text-[10px]' : 'text-[11px] tracking-[0.18em]'}`}>Sound Test</span>
                 </div>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <div className="grid grid-cols-4 gap-2">
                   {[
                     { name: 'Gunshot', sound: 'shoot' },
                     { name: 'Reload', sound: 'reload' },
@@ -202,8 +273,8 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
                     <button
                       key={item.sound}
                       onClick={() => soundManager.play(item.sound as 'shoot' | 'reload' | 'enemyHit' | 'playerHurt')}
-                      className="rounded-lg border border-white/10 bg-white/[0.03] py-2.5 text-sm font-semibold text-gray-300
-                        transition-colors hover:bg-white/[0.07] hover:text-white"
+                      className={`rounded-lg border border-white/10 bg-white/[0.03] font-semibold text-gray-300
+                        transition-colors hover:bg-white/[0.07] hover:text-white ${IS_TOUCH ? 'm-tap py-1.5 text-[11px]' : 'py-2.5 text-sm'}`}
                     >
                       {item.name}
                     </button>
@@ -214,9 +285,9 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
           )}
 
           {activeTab === 'gameplay' && (
-            <div className="space-y-3" style={{ animation: 'smFade 0.2s ease-out' }}>
-              <Slider label="Mouse Sensitivity" icon={MousePointer2} value={settings.sensitivity} min={10} max={100} onChange={(v) => updateSetting('sensitivity', v)} />
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div className={IS_TOUCH ? 'space-y-2' : 'space-y-3'} style={{ animation: 'smFade 0.2s ease-out' }}>
+              <Slider label={IS_TOUCH ? 'Look Sensitivity' : 'Mouse Sensitivity'} icon={MousePointer2} value={settings.sensitivity} min={10} max={100} onChange={(v) => updateSetting('sensitivity', v)} />
+              <div className={`grid gap-2 ${IS_TOUCH ? 'grid-cols-3' : 'grid-cols-1 sm:grid-cols-2'}`}>
                 <Toggle label="Screen Shake" desc="Camera shake on impacts" icon={Activity} value={settings.screenShake} onChange={(v) => updateSetting('screenShake', v)} />
                 <Toggle label="Hit Markers" desc="Feedback when you land hits" icon={Crosshair} value={settings.hitMarkers} onChange={(v) => updateSetting('hitMarkers', v)} />
                 <Toggle label="Kill Feed" desc="Elimination notifications" icon={Skull} value={settings.killFeed} onChange={(v) => updateSetting('killFeed', v)} />
@@ -225,15 +296,13 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
                 <Toggle label="Auto Reload" desc="Reload automatically on empty mag" icon={RotateCcw} value={settings.autoReload} onChange={(v) => updateSetting('autoReload', v)} />
                 <Toggle label="Camera Bob" desc="Head-bob while moving" icon={Wind} value={settings.cameraBob} onChange={(v) => updateSetting('cameraBob', v)} />
                 <Toggle label="Show Crosshair" desc="Display the aiming reticle" icon={Target} value={settings.showCrosshair} onChange={(v) => updateSetting('showCrosshair', v)} />
-                {isTouch && (
-                  <Toggle label="Haptics" desc="Vibration on fire, hits & damage" icon={Hand} value={settings.haptics} onChange={(v) => updateSetting('haptics', v)} />
-                )}
+                {/* Haptics lives on the touch Controls tab (desktop has none). */}
               </div>
-              <div className={`rounded-xl border border-white/[0.07] bg-white/[0.02] p-4 transition-opacity ${settings.showCrosshair ? '' : 'opacity-50'}`}>
-                <div className="flex items-center justify-between gap-2 mb-3">
+              <div className={`rounded-xl border border-white/[0.07] bg-white/[0.02] ${CARD_PAD} transition-opacity ${settings.showCrosshair ? '' : 'opacity-50'}`}>
+                <div className={`flex items-center justify-between gap-2 ${CARD_HEAD_GAP}`}>
                   <div className="flex items-center gap-2">
-                    <Crosshair className="w-4 h-4 text-gray-400" strokeWidth={2.25} />
-                    <span className="font-hud text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-300">Crosshair Style</span>
+                    <Crosshair className={ICON_CLS} strokeWidth={2.25} />
+                    <span className={LABEL_CLS}>Crosshair Style</span>
                   </div>
                   {!settings.showCrosshair && (
                     <span className="font-hud text-[9px] font-semibold uppercase tracking-wider text-gray-500">Crosshair hidden</span>
@@ -247,7 +316,7 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
                         key={style}
                         disabled={!settings.showCrosshair}
                         onClick={() => updateSetting('crosshairStyle', style)}
-                        className={`py-2.5 rounded-lg text-xs font-semibold capitalize transition-all border disabled:cursor-not-allowed ${
+                        className={`rounded-lg font-semibold capitalize transition-all border disabled:cursor-not-allowed ${PILL_CLS} ${
                           active ? 'border-emerald-400/50 bg-emerald-500/15 text-emerald-300' : 'border-white/10 bg-white/[0.03] text-gray-400 enabled:hover:bg-white/[0.06]'
                         }`}
                       >
@@ -260,11 +329,11 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
 
               {/* Crosshair colour (relocated from Display so all aiming
                   personalisation lives together in Gameplay). */}
-              <div className={`rounded-xl border border-white/[0.07] bg-white/[0.02] p-4 transition-opacity ${settings.showCrosshair ? '' : 'opacity-50'}`}>
-                <div className="flex items-center justify-between gap-2 mb-3">
+              <div className={`rounded-xl border border-white/[0.07] bg-white/[0.02] ${CARD_PAD} transition-opacity ${settings.showCrosshair ? '' : 'opacity-50'}`}>
+                <div className={`flex items-center justify-between gap-2 ${CARD_HEAD_GAP}`}>
                   <div className="flex items-center gap-2">
-                    <Crosshair className="w-4 h-4 text-gray-400" strokeWidth={2.25} />
-                    <span className="font-hud text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-300">Crosshair Color</span>
+                    <Crosshair className={ICON_CLS} strokeWidth={2.25} />
+                    <span className={LABEL_CLS}>Crosshair Color</span>
                   </div>
                   {!settings.showCrosshair && (
                     <span className="font-hud text-[9px] font-semibold uppercase tracking-wider text-gray-500">Crosshair hidden</span>
@@ -276,7 +345,7 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
                       key={color}
                       disabled={!settings.showCrosshair}
                       onClick={() => updateSetting('crosshairColor', color)}
-                      className={`w-9 h-9 rounded-lg transition-transform enabled:hover:scale-110 disabled:cursor-not-allowed ${
+                      className={`rounded-lg transition-transform enabled:hover:scale-110 disabled:cursor-not-allowed ${SWATCH_CLS} ${
                         settings.crosshairColor === color ? 'ring-2 ring-white ring-offset-2 ring-offset-[#080d0b]' : ''
                       }`}
                       style={{ backgroundColor: color }}
@@ -288,18 +357,18 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
 
               {/* Enemy GPS marker colour — the hunt arrows that point at the
                   last 1–2 enemies of a wave. */}
-              <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-4">
+              <div className={`rounded-xl border border-white/[0.07] bg-white/[0.02] ${CARD_PAD}`}>
                 <div className="flex items-center gap-2 mb-1">
-                  <Navigation className="w-4 h-4 text-gray-400" strokeWidth={2.25} />
-                  <span className="font-hud text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-300">Enemy Marker Color</span>
+                  <Navigation className={ICON_CLS} strokeWidth={2.25} />
+                  <span className={LABEL_CLS}>Enemy Marker Color</span>
                 </div>
-                <p className="mb-3 text-[10px] text-gray-600">GPS arrows guide you to the last 1–2 enemies of a wave.</p>
-                <div className="flex gap-2.5">
+                {!IS_TOUCH && <p className="mb-3 text-[10px] text-gray-600">GPS arrows guide you to the last 1–2 enemies of a wave.</p>}
+                <div className={`flex gap-2.5 ${IS_TOUCH ? 'mt-2' : ''}`}>
                   {COLOR_SWATCHES.map((color) => (
                     <button
                       key={color}
                       onClick={() => updateSetting('enemyArrowColor', color)}
-                      className={`w-9 h-9 rounded-lg transition-transform hover:scale-110 ${
+                      className={`rounded-lg transition-transform hover:scale-110 ${SWATCH_CLS} ${
                         settings.enemyArrowColor === color ? 'ring-2 ring-white ring-offset-2 ring-offset-[#080d0b]' : ''
                       }`}
                       style={{ backgroundColor: color }}
@@ -314,11 +383,11 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
           {activeTab === 'display' && (
             <div className="space-y-3" style={{ animation: 'smFade 0.2s ease-out' }}>
               {/* ── GRAPHICS PRESETS ── */}
-              <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-4">
-                <div className="flex items-center justify-between gap-2 mb-3">
+              <div className={`rounded-xl border border-white/[0.07] bg-white/[0.02] ${CARD_PAD}`}>
+                <div className={`flex items-center justify-between gap-2 ${CARD_HEAD_GAP}`}>
                   <div className="flex items-center gap-2">
-                    <Monitor className="w-4 h-4 text-gray-400" strokeWidth={2.25} />
-                    <span className="font-hud text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-300">Graphics Quality</span>
+                    <Monitor className={ICON_CLS} strokeWidth={2.25} />
+                    <span className={LABEL_CLS}>Graphics Quality</span>
                   </div>
                   <span className={`font-hud text-[9px] font-bold uppercase tracking-wider rounded-full px-2 py-0.5 border transition-colors ${
                     graphics.preset === 'custom'
@@ -335,12 +404,12 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
                       <button
                         key={id}
                         onClick={() => selectPreset(id)}
-                        className={`relative py-3 rounded-lg border transition-all ${
+                        className={`relative rounded-lg border transition-all ${IS_TOUCH ? 'm-tap py-1.5' : 'py-3'} ${
                           active ? 'border-emerald-400/50 bg-emerald-500/15' : 'border-white/10 bg-white/[0.03] hover:bg-white/[0.06]'
                         }`}
                       >
-                        <div className={`text-sm font-bold uppercase ${active ? 'text-emerald-300' : 'text-gray-300'}`}>{label}</div>
-                        <div className="text-[10px] text-gray-500 mt-0.5">{desc}</div>
+                        <div className={`font-bold uppercase ${IS_TOUCH ? 'text-[11px]' : 'text-sm'} ${active ? 'text-emerald-300' : 'text-gray-300'}`}>{label}</div>
+                        {!IS_TOUCH && <div className="text-[10px] text-gray-500 mt-0.5">{desc}</div>}
                         {active && (
                           <span className="absolute -top-1.5 -right-1.5 flex items-center justify-center w-5 h-5 rounded-full bg-emerald-400">
                             <Check className="w-3 h-3 text-[#04130a]" strokeWidth={3} />
@@ -356,12 +425,12 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
                     return (
                       <button
                         onClick={enterCustom}
-                        className={`relative py-3 rounded-lg border transition-all ${
+                        className={`relative rounded-lg border transition-all ${IS_TOUCH ? 'm-tap py-1.5' : 'py-3'} ${
                           active ? 'border-amber-400/60 bg-amber-400/15' : 'border-white/10 bg-white/[0.03] hover:bg-white/[0.06]'
                         }`}
                       >
-                        <div className={`text-sm font-bold uppercase ${active ? 'text-amber-300' : 'text-gray-300'}`}>Custom</div>
-                        <div className="text-[10px] text-gray-500 mt-0.5">Your mix</div>
+                        <div className={`font-bold uppercase ${IS_TOUCH ? 'text-[11px]' : 'text-sm'} ${active ? 'text-amber-300' : 'text-gray-300'}`}>Custom</div>
+                        {!IS_TOUCH && <div className="text-[10px] text-gray-500 mt-0.5">Your mix</div>}
                         {active && (
                           <span className="absolute -top-1.5 -right-1.5 flex items-center justify-center w-5 h-5 rounded-full bg-amber-400">
                             <Check className="w-3 h-3 text-[#1a1204]" strokeWidth={3} />
@@ -374,27 +443,31 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
                 {/* Auto-detect — probe CPU/RAM/GPU and apply the matching preset. */}
                 <button
                   onClick={autoDetect}
-                  className="mt-3 w-full flex items-center justify-center gap-2 rounded-lg border border-emerald-400/25 bg-emerald-500/[0.08] py-2.5
-                    text-emerald-300 transition-colors hover:bg-emerald-500/15"
+                  className={`w-full flex items-center justify-center gap-2 rounded-lg border border-emerald-400/25 bg-emerald-500/[0.08]
+                    text-emerald-300 transition-colors hover:bg-emerald-500/15 ${IS_TOUCH ? 'm-tap mt-2 py-1.5' : 'mt-3 py-2.5'}`}
                 >
-                  <Cpu className="w-4 h-4" strokeWidth={2.25} />
-                  <span className="font-hud text-[11px] font-bold uppercase tracking-wider">Auto-Detect Best Preset</span>
+                  <Cpu className={IS_TOUCH ? 'h-3.5 w-3.5' : 'w-4 h-4'} strokeWidth={2.25} />
+                  <span className={`font-hud font-bold uppercase tracking-wider ${IS_TOUCH ? 'text-[10px]' : 'text-[11px]'}`}>Auto-Detect Best Preset</span>
                 </button>
                 {detectSummary
-                  ? <p className="mt-2 text-[11px] text-emerald-300/80">{detectSummary}</p>
-                  : <p className="mt-3 text-[11px] text-gray-500">
+                  ? <p className={`text-emerald-300/80 ${IS_TOUCH ? 'mt-1.5 text-[10px]' : 'mt-2 text-[11px]'}`}>{detectSummary}</p>
+                  : !IS_TOUCH && (
+                    <p className="mt-3 text-[11px] text-gray-500">
                       Pick a preset, hit Auto-Detect, or fine-tune any control below for a <span className="text-amber-300/90 font-semibold">Custom</span> mix.
                       Graphics changes apply on your next match.
-                    </p>}
+                    </p>
+                  )}
               </div>
 
               {/* ── ADVANCED GRAPHICS (drives Custom) ── */}
-              <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-4 space-y-3">
+              <div className={`rounded-xl border border-white/[0.07] bg-white/[0.02] ${CARD_PAD} ${IS_TOUCH ? 'space-y-2' : 'space-y-3'}`}>
                 <div className="flex items-center gap-2">
-                  <SlidersHorizontal className="w-4 h-4 text-gray-400" strokeWidth={2.25} />
-                  <span className="font-hud text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-300">Advanced</span>
+                  <SlidersHorizontal className={ICON_CLS} strokeWidth={2.25} />
+                  <span className={LABEL_CLS}>Advanced</span>
                 </div>
 
+                {/* Side-by-side on touch so the whole block fits a short screen. */}
+                <div className={IS_TOUCH ? 'grid grid-cols-2 gap-2' : 'space-y-3'}>
                 <Slider
                   label="Resolution Scale" icon={Maximize}
                   value={Math.round(graphics.resolution * 100)}
@@ -452,19 +525,20 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
                   step={1} suffix=""
                   onChange={(v) => editGraphics({ maxEnemies: v })}
                 />
+                </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                <div className="grid grid-cols-2 gap-2 pt-1">
                   <Toggle label="Post-Processing" desc="Bloom, god rays & colour grade" icon={Wand2} value={graphics.postProcessing} onChange={(v) => editGraphics({ postProcessing: v })} />
                   <Toggle label="Anti-Aliasing" desc="Smooth jagged edges (MSAA/SMAA)" icon={Aperture} value={graphics.antialias} onChange={(v) => editGraphics({ antialias: v })} />
                 </div>
               </div>
 
               {/* ── FRAME RATE CAP ── */}
-              <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-4 py-3.5">
-                <div className="flex items-center justify-between gap-2 mb-2.5">
-                  <div className="flex items-center gap-2.5">
-                    <Gauge className="w-4 h-4 text-gray-400" strokeWidth={2.25} />
-                    <span className="font-hud text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-300">Frame Rate Cap</span>
+              <div className={`rounded-xl border border-white/[0.07] bg-white/[0.02] ${IS_TOUCH ? 'px-3 py-2' : 'px-4 py-3.5'}`}>
+                <div className={`flex items-center justify-between gap-2 ${IS_TOUCH ? 'mb-1.5' : 'mb-2.5'}`}>
+                  <div className={`flex items-center ${IS_TOUCH ? 'gap-2' : 'gap-2.5'}`}>
+                    <Gauge className={ICON_CLS} strokeWidth={2.25} />
+                    <span className={LABEL_CLS}>Frame Rate Cap</span>
                   </div>
                   <span className="text-[11px] text-gray-500">{settings.fpsCap === 0 ? 'V-Sync' : `${settings.fpsCap} FPS`}</span>
                 </div>
@@ -475,7 +549,7 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
                       <button
                         key={cap}
                         onClick={() => updateSetting('fpsCap', cap)}
-                        className={`py-2 rounded-lg text-xs font-semibold transition-all border ${
+                        className={`rounded-lg font-semibold transition-all border ${IS_TOUCH ? 'm-tap py-1.5 text-[10px]' : 'py-2 text-xs'} ${
                           active ? 'border-emerald-400/50 bg-emerald-500/15 text-emerald-300' : 'border-white/10 bg-white/[0.03] text-gray-400 hover:bg-white/[0.06]'
                         }`}
                       >
@@ -484,34 +558,36 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
                     );
                   })}
                 </div>
-                <p className="mt-2 text-[10px] text-gray-600">Unlimited follows your display's refresh rate (V-Sync).</p>
+                {!IS_TOUCH && <p className="mt-2 text-[10px] text-gray-600">Unlimited follows your display's refresh rate (V-Sync).</p>}
               </div>
 
-              <Slider label="Field of View" icon={Eye} value={settings.fov} min={60} max={120} suffix="°" onChange={(v) => updateSetting('fov', v)} />
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                <Toggle label="Show FPS Counter" desc="FPS counter only" icon={Activity} value={settings.showFPS} onChange={(v) => updateSetting('showFPS', v)} />
-                <Toggle label="Show Console / Info" desc="FPS with in-depth detail — renderer, memory & hardware" icon={Terminal} value={settings.showConsole} onChange={(v) => updateSetting('showConsole', v)} />
+              <div className={IS_TOUCH ? 'grid grid-cols-2 gap-2' : 'space-y-3'}>
+                <Slider label="Field of View" icon={Eye} value={settings.fov} min={60} max={120} suffix="°" onChange={(v) => updateSetting('fov', v)} />
+                <div className="grid grid-cols-2 gap-2">
+                  <Toggle label="Show FPS Counter" desc="FPS counter only" icon={Activity} value={settings.showFPS} onChange={(v) => updateSetting('showFPS', v)} />
+                  <Toggle label="Show Console / Info" desc="FPS with in-depth detail — renderer, memory & hardware" icon={Terminal} value={settings.showConsole} onChange={(v) => updateSetting('showConsole', v)} />
+                </div>
               </div>
             </div>
           )}
         </div>
 
         {/* Footer */}
-        <div className={`flex items-center justify-between border-t border-white/[0.07] ${isTouch ? 'px-4 py-2.5' : 'px-5 sm:px-6 py-4'}`}>
+        <div className={`flex flex-none items-center justify-between border-t border-white/[0.07] ${isTouch ? 'px-3 py-1.5' : 'px-5 sm:px-6 py-4'}`}>
           <button
             onClick={() => {
               gameSettingsManager.resetToDefaults();
               setSettings(pickSimple(gameSettingsManager.getSettings()));
               setGraphics(gameSettingsManager.getGraphics());
             }}
-            className="font-hud text-xs font-semibold uppercase tracking-wider text-gray-400 transition-colors hover:text-white"
+            className={`font-hud font-semibold uppercase tracking-wider text-gray-400 transition-colors hover:text-white ${isTouch ? 'm-tap text-[11px]' : 'text-xs'}`}
           >
             Reset{isTouch ? '' : ' to defaults'}
           </button>
           <button
             onClick={onClose}
-            className={`font-hud rounded-xl text-sm font-bold uppercase tracking-wider text-[#04130a]
-              transition-all duration-200 hover:-translate-y-0.5 hover:brightness-110 ${isTouch ? 'px-5 py-2.5' : 'px-7 py-2.5'}`}
+            className={`font-hud rounded-xl font-bold uppercase tracking-wider text-[#04130a]
+              transition-all duration-200 hover:-translate-y-0.5 hover:brightness-110 ${isTouch ? 'm-tap px-4 py-1.5 text-xs' : 'px-7 py-2.5 text-sm'}`}
             style={{ background: 'linear-gradient(135deg, #34d399, #22c55e)', boxShadow: '0 12px 30px -12px rgba(46,232,180,0.7)' }}
           >
             Save &amp; Close
@@ -536,6 +612,33 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
           background: #34d399; cursor: pointer; border: 2px solid #080d0b;
         }
       `}</style>
+
+      {/* ── HUD ARRANGER — its own full-screen modal (touch only) ──────────
+          Kept out of the settings sheet on purpose: the drag surface sets
+          `touch-action: none`, so nesting it inside a scrollable panel made
+          the rest of Settings unreachable on a short landscape phone. */}
+      {isTouch && layoutOpen && (
+        <div className="m-safe m-sheet-in fixed inset-0 z-[60] flex flex-col bg-[#05080a]">
+          <div className="flex flex-none items-center justify-between gap-2 border-b border-white/[0.07] px-3 py-1.5">
+            <div className="flex items-center gap-2">
+              <span className="flex h-7 w-7 items-center justify-center rounded-lg border border-emerald-400/30 bg-emerald-500/12">
+                <Move className="h-4 w-4 text-emerald-300" strokeWidth={2.25} />
+              </span>
+              <h2 className="font-display text-sm font-semibold uppercase leading-none tracking-wide text-white">Button Layout</h2>
+            </div>
+            <button
+              onClick={() => setLayoutOpen(false)}
+              aria-label="Close button layout"
+              className="m-tap flex h-8 w-8 flex-none items-center justify-center rounded-lg border border-white/10 text-gray-400 transition-colors hover:bg-white/[0.06] hover:text-white"
+            >
+              <X className="h-4 w-4" strokeWidth={2.25} />
+            </button>
+          </div>
+          <div className="m-scroll min-h-0 flex-1 overflow-y-auto p-2.5">
+            <TouchLayoutEditor />
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -545,13 +648,13 @@ const Slider = ({ label, icon: Icon, value, onChange, min = 0, max = 100, step =
 }) => {
   const pct = ((value - min) / (max - min)) * 100;
   return (
-    <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-4 py-3.5">
-      <div className="flex items-center justify-between mb-2.5">
-        <div className="flex items-center gap-2.5">
-          <Icon className="w-4 h-4 text-gray-400" strokeWidth={2.25} />
-          <span className="font-hud text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-300">{label}</span>
+    <div className={`rounded-xl border border-white/[0.07] bg-white/[0.02] ${IS_TOUCH ? 'px-3 py-2' : 'px-4 py-3.5'}`}>
+      <div className={`flex items-center justify-between ${IS_TOUCH ? 'mb-1.5' : 'mb-2.5'}`}>
+        <div className={`flex items-center ${IS_TOUCH ? 'gap-2' : 'gap-2.5'}`}>
+          <Icon className={IS_TOUCH ? 'h-3.5 w-3.5 text-gray-400' : 'w-4 h-4 text-gray-400'} strokeWidth={2.25} />
+          <span className={`font-hud font-semibold uppercase tracking-[0.16em] text-gray-300 ${IS_TOUCH ? 'text-[10px]' : 'text-[11px] tracking-[0.18em]'}`}>{label}</span>
         </div>
-        <span className="text-sm font-bold text-emerald-300 tabular-nums">{value}{suffix}</span>
+        <span className={`font-bold text-emerald-300 tabular-nums ${IS_TOUCH ? 'text-xs' : 'text-sm'}`}>{value}{suffix}</span>
       </div>
       <input
         type="range" min={min} max={max} step={step} value={value}
@@ -569,10 +672,10 @@ function Segmented<T extends string>({ label, icon: Icon, value, options, onChan
   label: string; icon: LucideIcon; value: T; options: { value: T; label: string }[]; onChange: (v: T) => void;
 }) {
   return (
-    <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-4 py-3.5">
-      <div className="flex items-center gap-2.5 mb-2.5">
-        <Icon className="w-4 h-4 text-gray-400" strokeWidth={2.25} />
-        <span className="font-hud text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-300">{label}</span>
+    <div className={`rounded-xl border border-white/[0.07] bg-white/[0.02] ${IS_TOUCH ? 'px-3 py-2' : 'px-4 py-3.5'}`}>
+      <div className={`flex items-center ${IS_TOUCH ? 'gap-2 mb-1.5' : 'gap-2.5 mb-2.5'}`}>
+        <Icon className={IS_TOUCH ? 'h-3.5 w-3.5 text-gray-400' : 'w-4 h-4 text-gray-400'} strokeWidth={2.25} />
+        <span className={`font-hud font-semibold uppercase tracking-[0.16em] text-gray-300 ${IS_TOUCH ? 'text-[10px]' : 'text-[11px] tracking-[0.18em]'}`}>{label}</span>
       </div>
       <div className="grid gap-1.5" style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}>
         {options.map((opt) => {
@@ -581,7 +684,7 @@ function Segmented<T extends string>({ label, icon: Icon, value, options, onChan
             <button
               key={opt.value}
               onClick={() => onChange(opt.value)}
-              className={`py-2 rounded-lg text-xs font-semibold transition-all border ${
+              className={`rounded-lg font-semibold transition-all border ${IS_TOUCH ? 'm-tap py-1.5 text-[11px]' : 'py-2 text-xs'} ${
                 active ? 'border-emerald-400/50 bg-emerald-500/15 text-emerald-300' : 'border-white/10 bg-white/[0.03] text-gray-400 hover:bg-white/[0.06]'
               }`}
             >
@@ -599,19 +702,21 @@ const Toggle = ({ label, desc, icon: Icon, value, onChange }: {
 }) => (
   <button
     onClick={() => onChange(!value)}
-    className={`flex items-center justify-between rounded-xl border px-3.5 py-3 text-left transition-all ${
-      value ? 'border-emerald-400/30 bg-emerald-500/[0.07]' : 'border-white/[0.07] bg-white/[0.02] hover:bg-white/[0.05]'
-    }`}
+    // Touch drops the description line — on a landscape phone that second line
+    // is what pushes a list of toggles past the fold; the label carries it.
+    className={`flex items-center justify-between rounded-xl border text-left transition-all ${
+      IS_TOUCH ? 'm-tap gap-2 px-2.5 py-1.5' : 'px-3.5 py-3'
+    } ${value ? 'border-emerald-400/30 bg-emerald-500/[0.07]' : 'border-white/[0.07] bg-white/[0.02] hover:bg-white/[0.05]'}`}
   >
-    <div className="flex items-center gap-2.5 min-w-0">
-      <Icon className={`w-4 h-4 flex-shrink-0 ${value ? 'text-emerald-400' : 'text-gray-500'}`} strokeWidth={2.25} />
+    <div className={`flex items-center min-w-0 ${IS_TOUCH ? 'gap-2' : 'gap-2.5'}`}>
+      <Icon className={`flex-shrink-0 ${IS_TOUCH ? 'h-3.5 w-3.5' : 'w-4 h-4'} ${value ? 'text-emerald-400' : 'text-gray-500'}`} strokeWidth={2.25} />
       <div className="min-w-0">
-        <div className="text-sm font-semibold text-gray-200">{label}</div>
-        {desc && <div className="text-[11px] text-gray-500 truncate">{desc}</div>}
+        <div className={`font-semibold text-gray-200 ${IS_TOUCH ? 'text-[12px] leading-tight' : 'text-sm'}`}>{label}</div>
+        {desc && !IS_TOUCH && <div className="text-[11px] text-gray-500 truncate">{desc}</div>}
       </div>
     </div>
-    <span className={`relative w-10 h-5 rounded-full flex-shrink-0 transition-colors ${value ? 'bg-emerald-500' : 'bg-white/15'}`}>
-      <span className={`absolute top-0.5 w-[18px] h-[18px] rounded-full bg-white transition-all ${value ? 'right-0.5' : 'left-0.5'}`} />
+    <span className={`relative rounded-full flex-shrink-0 transition-colors ${IS_TOUCH ? 'h-[18px] w-8' : 'w-10 h-5'} ${value ? 'bg-emerald-500' : 'bg-white/15'}`}>
+      <span className={`absolute top-0.5 rounded-full bg-white transition-all ${IS_TOUCH ? 'h-[14px] w-[14px]' : 'w-[18px] h-[18px]'} ${value ? 'right-0.5' : 'left-0.5'}`} />
     </span>
   </button>
 );

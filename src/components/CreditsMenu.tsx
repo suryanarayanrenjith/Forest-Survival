@@ -88,26 +88,30 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
         />
 
         {/* Header */}
-        <div className={`relative flex flex-none items-center justify-between border-b border-white/[0.07] ${isTouch ? 'px-4 py-2.5' : 'px-5 py-4 sm:px-6'}`}>
-          <div className="flex items-center gap-3">
-            <div className="relative flex items-center justify-center w-10 h-10 rounded-xl bg-emerald-500/12 border border-emerald-400/30">
-              <Sparkles className="w-5 h-5 text-emerald-300" strokeWidth={2} fill="currentColor" />
-              <span className="absolute inset-0 rounded-xl border border-emerald-400/30" style={{ animation: 'crPulse 2.6s ease-in-out infinite' }} />
+        <div className={`relative flex flex-none items-center justify-between border-b border-white/[0.07] ${isTouch ? 'gap-2 px-3 py-1.5' : 'px-5 py-4 sm:px-6'}`}>
+          <div className={`flex items-center ${isTouch ? 'gap-2' : 'gap-3'}`}>
+            <div className={`relative flex items-center justify-center rounded-lg bg-emerald-500/12 border border-emerald-400/30 ${isTouch ? 'h-7 w-7' : 'w-10 h-10 rounded-xl'}`}>
+              <Sparkles className={isTouch ? 'h-4 w-4 text-emerald-300' : 'w-5 h-5 text-emerald-300'} strokeWidth={2} fill="currentColor" />
+              {!isTouch && <span className="absolute inset-0 rounded-xl border border-emerald-400/30" style={{ animation: 'crPulse 2.6s ease-in-out infinite' }} />}
             </div>
             <div>
-              <p className="font-hud text-[10px] tracking-[0.36em] text-emerald-300/90 font-semibold uppercase">
-                Credits
-              </p>
-              <h2 id="credits-title" className="font-display text-lg font-semibold uppercase tracking-wide text-white">Forest Survival</h2>
+              {!isTouch && (
+                <p className="font-hud text-[10px] tracking-[0.36em] text-emerald-300/90 font-semibold uppercase">
+                  Credits
+                </p>
+              )}
+              <h2 id="credits-title" className={`font-display font-semibold uppercase tracking-wide text-white ${isTouch ? 'text-sm leading-none' : 'text-lg'}`}>
+                {isTouch ? 'Credits' : 'Forest Survival'}
+              </h2>
             </div>
           </div>
           <button
             onClick={onClose}
             aria-label="Close credits"
-            className="flex items-center justify-center w-9 h-9 rounded-lg border border-white/10 text-gray-400
-              transition-colors hover:text-white hover:bg-white/[0.06]"
+            className={`flex flex-none items-center justify-center rounded-lg border border-white/10 text-gray-400
+              transition-colors hover:text-white hover:bg-white/[0.06] ${isTouch ? 'm-tap h-8 w-8' : 'w-9 h-9'}`}
           >
-            <X className="w-[18px] h-[18px]" strokeWidth={2.25} />
+            <X className={isTouch ? 'h-4 w-4' : 'w-[18px] h-[18px]'} strokeWidth={2.25} />
           </button>
         </div>
 
