@@ -2,7 +2,27 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { type GraphicsPreset } from './GameSettingsManager';
 
-export type EnemyType = 'normal' | 'fast' | 'tank' | 'boss' | 'ranged' | 'revenant';
+// ⚠ ADDING A TYPE HERE IS A RIPPLE. The compiler catches most of it (every
+// Record<EnemyType, …> below, plus ENEMY_SCALE / ENEMY_SPAWN_CLEARANCE), but
+// four things it CANNOT catch and that must be done by hand:
+//   1. App.tsx ENEMY_TYPE_CODE / ENEMY_TYPE_FROM_CODE — an APPEND-ONLY wire
+//      format. Inserting in the middle silently reassigns archetypes for any
+//      client on an older build mid-match.
+//   2. App.tsx `warmEnemyTypes` in the shader warmup — omit it and the first
+//      spawn of that archetype hitches while its materials link.
+//   3. createEnemy's stat switch + AI personality + attackArchetype narrowing.
+//   4. Spawn eligibility in spawnWave().
+export type EnemyType =
+  | 'normal' | 'fast' | 'tank' | 'boss' | 'ranged' | 'revenant'
+  // ── TACTICAL ARCHETYPES ──
+  // The original six all did the same thing: walk at the player and hit them.
+  // Four of them were the same enemy with different HP/speed/scale numbers, so
+  // nothing on the field ever asked the player to change what they were doing.
+  // Each of these forces a DIFFERENT response instead of just being tougher.
+  | 'bulwark'   // frontal shield      → forces flanking
+  | 'howler'    // ally overshield aura → forces priority targeting
+  | 'leaper'    // telegraphed pounce   → forces reaction, punishes cover
+  | 'splitter'; // splits on death      → forces weapon choice and spacing
 
 // Result type for mesh acquisition - used by App.tsx createEnemy
 export interface AcquiredMesh {
@@ -112,6 +132,90 @@ const ENEMY_CONFIGS: Record<EnemyType, EnemyVisualConfig> = {
     emissiveIntensity: 0.34,
     scale: 0.85,
   },
+  // BULWARK — a walking wall. Heavy slate-and-steel body with a cold cyan
+  // shield glow so the protected arc is readable at a glance: the player has
+  // to SEE which way it's facing to know where it's safe to shoot from.
+  bulwark: {
+    baseColor: 0x3d4550,
+    accentColor: 0x2a303a,
+    brightColor: 0x7f93a8,
+    darkColor: 0x20252e,
+    glowColor: 0x5fd8ff,
+    emissiveIntensity: 0.26,
+    scale: 1.35,
+  },
+  // HOWLER — support caster. Violet-white and deliberately spindly: a small,
+  // non-threatening silhouette the player must learn to prioritise ANYWAY,
+  // which is the whole lesson of the archetype.
+  howler: {
+    baseColor: 0x5b3f7a,
+    accentColor: 0x412c59,
+    brightColor: 0xc9a6ee,
+    darkColor: 0x281a36,
+    glowColor: 0xd08cff,
+    emissiveIntensity: 0.38,
+    scale: 0.95,
+  },
+  // LEAPER — coiled and lean, hot orange. Reads as "about to move fast".
+  leaper: {
+    baseColor: 0x8a4420,
+    accentColor: 0x5e2d14,
+    brightColor: 0xe08a4a,
+    darkColor: 0x3a1c0d,
+    glowColor: 0xff8c2e,
+    emissiveIntensity: 0.30,
+    scale: 0.9,
+  },
+  // SPLITTER — bloated and sickly green, visually unstable. The bulk telegraphs
+  // that there is something inside it.
+  splitter: {
+    baseColor: 0x4a6b32,
+    accentColor: 0x354d23,
+    brightColor: 0x9ccc5f,
+    darkColor: 0x24331a,
+    glowColor: 0xb6ff5a,
+    emissiveIntensity: 0.32,
+    scale: 1.25,
+  },
+};
+
+/**
+ * Per-type body scale — THE single source of truth.
+ *
+ * This used to be a hand-written ternary chain duplicated at seven separate
+ * call sites in App.tsx (hit tests, headshot height, ragdoll launch, death
+ * anim, terrain grounding, battle-damage stamping). Three of those copies had
+ * silently drifted and omitted `ranged` entirely, so sniper enemies were
+ * ragdolled, animated and ground-clamped at 1.0 instead of 1.05.
+ *
+ * Derived from ENEMY_CONFIGS so it can never drift again, and typed as
+ * Record<EnemyType, number> so adding an archetype to the union is a COMPILE
+ * ERROR here rather than a silent fall-through to 1.0.
+ */
+export const ENEMY_SCALE: Record<EnemyType, number> = Object.fromEntries(
+  (Object.keys(ENEMY_CONFIGS) as EnemyType[]).map((t) => [t, ENEMY_CONFIGS[t].scale]),
+) as Record<EnemyType, number>;
+
+/**
+ * Spawn-clearance radius (m) — how much empty ground an enemy of this type
+ * needs to materialise into without ending up inside a tree trunk.
+ *
+ * Deliberately NOT derived from ENEMY_SCALE: it's a hand-tuned spawn-placement
+ * value, not a mesh dimension (a tank is scale 1.5 but wants 1.6 m of slack).
+ * Lives here, next to the type union, purely so adding an archetype is a
+ * compile error rather than a silent fall-through to the default.
+ */
+export const ENEMY_SPAWN_CLEARANCE: Record<EnemyType, number> = {
+  normal: 1.2,
+  fast: 1.2,
+  tank: 1.6,
+  boss: 2.0,
+  ranged: 1.2,
+  revenant: 1.2,
+  bulwark: 1.5,
+  howler: 1.2,
+  leaper: 1.2,
+  splitter: 1.5,
 };
 
 // Shared geometry cache - created once, reused for all enemies
@@ -508,7 +612,6 @@ class SmartEnemyManager {
    */
   private markEnemyAOSafe(root: THREE.Object3D): void {
     root.traverse((object) => {
-      object.userData.cannotReceiveAO = true;
       if (object instanceof THREE.Mesh) {
         object.receiveShadow = false;
       }
@@ -719,7 +822,6 @@ class SmartEnemyManager {
       { geo: G.beltHigh, pos: [0, -0.5, 0] },
       { geo: G.jetGlowHigh, pos: [0, -0.18, -0.43] },
     ]), glowMat);
-    bodyGlow.userData.cannotReceiveAO = true;
     body.add(bodyGlow);
 
     // ── Arms (fist + elbow pad merged into one dark mesh per arm) ──
@@ -763,7 +865,6 @@ class SmartEnemyManager {
       // emissive bits read as one "energy weapon" set.
       const muzzle = new THREE.Mesh(G.muzzleGlowHigh, glowMat);
       muzzle.position.set(0.06, -0.65, 1.46);
-      muzzle.userData.cannotReceiveAO = true;
       rightArmRig.armMesh.add(muzzle);
     }
 
@@ -778,7 +879,6 @@ class SmartEnemyManager {
       rightArmRig.armMesh.add(rifle);
       const revMuzzle = new THREE.Mesh(G.muzzleGlowHigh, glowMat);
       revMuzzle.position.set(0.06, -0.6, 1.2);
-      revMuzzle.userData.cannotReceiveAO = true;
       rightArmRig.armMesh.add(revMuzzle);
     }
 
@@ -828,7 +928,6 @@ class SmartEnemyManager {
         horn.position.set(s * 0.34, 0.62, -0.06);
         horn.rotation.z = s * 0.5;
         horn.rotation.x = -0.3;
-        horn.userData.cannotReceiveAO = true;
         head.add(horn);
       });
     }

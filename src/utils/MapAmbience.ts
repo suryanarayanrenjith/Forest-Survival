@@ -272,7 +272,6 @@ export class MapAmbience {
     this.points.frustumCulled = false;
     this.points.renderOrder = 3;
     // Flags the AO / post passes leave it alone (matches the storm field).
-    this.points.userData.cannotReceiveAO = true;
     this.scene.add(this.points);
   }
 

@@ -582,20 +582,17 @@ export class EnhancedPowerUpSystem {
     // inside" tell at distance and the main bloom catcher. ──
     const topPanel = new THREE.Mesh(s.panelGeo, this.getPanelMat(powerUpType));
     topPanel.position.y = halfSize + 0.02;
-    topPanel.userData.cannotReceiveAO = true;
     group.add(topPanel);
 
     // ── FRONT LABEL STRIPE — reinforces the readable "package" silhouette. ──
     const frontLabel = new THREE.Mesh(s.labelGeo, this.getLabelMat(powerUpType));
     frontLabel.position.set(0, 0.05, halfSize + 0.012);
-    frontLabel.userData.cannotReceiveAO = true;
     group.add(frontLabel);
 
     // ── STROBE BEACON — red blinker pulsed in the per-frame update. Shared
     // material: simultaneous landed crates strobe in phase, which reads fine. ──
     const beacon = new THREE.Mesh(s.beaconGeo, s.beaconMat);
     beacon.position.set(halfSize - 0.18, halfSize + 0.05, halfSize - 0.18);
-    beacon.userData.cannotReceiveAO = true;
     beacon.userData.airdropBeacon = true; // tag for the strobe animation
     group.add(beacon);
 
@@ -653,7 +650,6 @@ export class EnhancedPowerUpSystem {
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
 
     const smoke = new THREE.Points(geometry, this.ensureShared().smokeMat);
-    smoke.userData.cannotReceiveAO = true;
     airdrop.smoke = smoke;
   }
 
@@ -674,12 +670,10 @@ export class EnhancedPowerUpSystem {
     const beam = new THREE.Mesh(s.beamGeo, beamMat);
     beam.position.y = groundLocalY + 4.5; // base on the ground, rising 9 units
     beam.renderOrder = 990;
-    beam.userData.cannotReceiveAO = true;
     // Bright inner core — same material, tighter cone → a hot centre line that
     // makes the shaft read volumetric instead of flat.
     const core = new THREE.Mesh(s.beamCoreGeo, beamMat);
     core.renderOrder = 991;
-    core.userData.cannotReceiveAO = true;
     beam.add(core);
     airdrop.mesh.add(beam);
     airdrop.beam = beam;
@@ -687,7 +681,6 @@ export class EnhancedPowerUpSystem {
     const halo = new THREE.Mesh(s.haloGeo, this.getHaloMat(airdrop.powerUpType));
     halo.position.y = groundLocalY + 0.06;
     halo.renderOrder = 989;
-    halo.userData.cannotReceiveAO = true;
     airdrop.mesh.add(halo);
     airdrop.halo = halo;
   }

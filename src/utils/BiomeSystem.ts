@@ -1079,7 +1079,8 @@ export class BiomeSystem {
     const pool = new THREE.Mesh(this.circle(1, 12), poolMat);
     pool.scale.setScalar(radius);
     pool.rotation.x = -Math.PI / 2; pool.position.set(x, 0.05, z); pool.receiveShadow = true;
-    return { mesh: pool, x, z, type: 'water', collidable: false, radius };
+    // Molten rock now behaves like molten rock — see HazardKind.
+    return { mesh: pool, x, z, type: 'water', collidable: false, radius, hazard: 'lava' };
   }
 
   private createSmokeVent(x: number, z: number): TerrainObject {
@@ -1200,7 +1201,8 @@ export class BiomeSystem {
     const pond = new THREE.Mesh(this.circle(1, 12), pondMat);
     pond.scale.setScalar(radius);
     pond.rotation.x = -Math.PI / 2; pond.position.set(x, 0.08, z); pond.receiveShadow = true;
-    return { mesh: pond, x, z, type: 'water', collidable: false, radius };
+    // Ice doesn't hurt — it makes you slide, which is its own kind of danger.
+    return { mesh: pond, x, z, type: 'water', collidable: false, radius, hazard: 'ice' };
   }
 
   private createIcicleCluster(x: number, z: number): TerrainObject {
@@ -1503,7 +1505,8 @@ export class BiomeSystem {
       group.add(bubble);
     }
     group.position.set(x, 0, z);
-    return { mesh: group, x, z, type: 'water', collidable: false, radius };
+    // Slow, survivable corrosion — a zone to avoid, not an instant death.
+    return { mesh: group, x, z, type: 'water', collidable: false, radius, hazard: 'toxic' };
   }
 
   private createHollowLog(x: number, z: number): TerrainObject {

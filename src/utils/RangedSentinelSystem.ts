@@ -55,7 +55,6 @@ export function buildRangedSentinel(x: number, z: number): RangedSentinel {
   const body = new THREE.Mesh(TURRET_BODY, TURRET_BODY_MAT);
   body.position.y = 0.7;
   body.castShadow = true;
-  body.userData.cannotReceiveAO = true;
   group.add(body);
 
   // Head gets a UNIQUE material so we can spike its emissive intensity to
@@ -70,7 +69,6 @@ export function buildRangedSentinel(x: number, z: number): RangedSentinel {
   });
   const head = new THREE.Mesh(TURRET_HEAD, headMat);
   head.position.y = 1.6;
-  head.userData.cannotReceiveAO = true;
   group.add(head);
 
   return {

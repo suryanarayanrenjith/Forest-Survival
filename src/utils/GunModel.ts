@@ -59,19 +59,115 @@ const _gunMaterialCache = new Map<string, THREE.MeshStandardMaterial>();
 // shader-variant count tiny (one textured-standard variant, pre-compiled by
 // warmup stage 4 which cycles every weapon). Anisotropy comes free from
 // textureDefaults (imported first in main.tsx).
-interface FinishMaps { albedo: THREE.CanvasTexture; rough: THREE.CanvasTexture; bump: THREE.CanvasTexture }
-let _metalFinish: FinishMaps | null = null;
-let _polymerFinish: FinishMaps | null = null;
+// NORMAL MAPS, NOT BUMP MAPS
+//
+// The rig previously shipped a 128px bumpMap. Bump derives a normal per-pixel
+// from a height gradient, which has two problems here: it produces noise rather
+// than FEATURES (no directional detail for a rim light to catch), and it barely
+// responds to image-based lighting — and with envMapIntensity at 1.25 under an
+// HDRI, IBL is most of what lights the viewmodel. So most of that "detail" was
+// invisible in exactly the lighting the game actually uses.
+//
+// Now each finish bakes a real tangent-space normal map by Sobel-filtering its
+// height canvas. Cost is identical (one texture slot either way) and the shader
+// permutation count is unchanged: USE_BUMPMAP simply becomes USE_NORMALMAP, so
+// it stays ONE textured-standard variant and warmup stage 4 still covers it.
+//
+// Height is preserved in the normal map's ALPHA channel, which the cavity-AO
+// injection then samples for free — no extra texture, no extra binding.
+interface FinishMaps { albedo: THREE.CanvasTexture; rough: THREE.CanvasTexture; normal: THREE.CanvasTexture }
 
-function _bakeTex(size: number, repeat: number, srgb: boolean, paint: (ctx: CanvasRenderingContext2D, s: number) => void): THREE.CanvasTexture {
+/**
+ * Per-weapon surface identity.
+ *
+ * Every gun used to sample the SAME three canvases, so a pistol slide, a
+ * minigun barrel and a sniper receiver were literally the same surface. These
+ * are variations on the same bake machinery — different scratch density, streak
+ * length, stipple size, blueing mottle.
+ *
+ * Crucially this costs ZERO extra shader programs: the material shape is
+ * identical, only the texture contents differ, and mat()'s cache key already
+ * carries the finish name.
+ */
+type FinishName = 'metal' | 'metal_worn' | 'metal_blued' | 'polymer' | 'polymer_rough' | 'wood';
+
+const _finishes = new Map<FinishName, FinishMaps>();
+
+/**
+ * Paint a square canvas and hand back the CANVAS.
+ *
+ * Split out of _bakeTex because the height→normal Sobel pass needs the raw
+ * pixels, and a THREE.CanvasTexture gives no way back to them.
+ */
+function _bakeCanvas(size: number, paint: (ctx: CanvasRenderingContext2D, s: number) => void): HTMLCanvasElement {
   const c = document.createElement('canvas');
   c.width = c.height = size;
-  const ctx = c.getContext('2d')!;
-  paint(ctx, size);
+  paint(c.getContext('2d')!, size);
+  return c;
+}
+
+/** Wrap an already-painted canvas as a tiling texture. */
+function _texFromCanvas(c: HTMLCanvasElement, repeat: number, srgb: boolean): THREE.CanvasTexture {
   const tex = new THREE.CanvasTexture(c);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.repeat.set(repeat, repeat);
   if (srgb) tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+function _bakeTex(size: number, repeat: number, srgb: boolean, paint: (ctx: CanvasRenderingContext2D, s: number) => void): THREE.CanvasTexture {
+  return _texFromCanvas(_bakeCanvas(size, paint), repeat, srgb);
+}
+
+/**
+ * Sobel a greyscale HEIGHT canvas into a tangent-space normal map.
+ *
+ * `strength` is height-units-per-texel — higher digs the crevices deeper.
+ * The original height is written to ALPHA so the cavity-AO shader injection can
+ * read occlusion from the same sampler it already binds for normals.
+ *
+ * Two details here are load-bearing, and both are silent failures if missed:
+ *
+ *   1. Neighbour lookups WRAP. The finishes are RepeatWrapping, so a clamped
+ *      Sobel would bake a visible lighting seam along every tile boundary.
+ *   2. The result is left at NoColorSpace. Tagging a normal map sRGB is the
+ *      classic bug — three would de-gamma the vectors and every surface would
+ *      light subtly wrong with nothing obviously "broken" to point at.
+ */
+function _heightToNormal(src: HTMLCanvasElement, strength: number): THREE.CanvasTexture {
+  const s = src.width;
+  const srcData = src.getContext('2d')!.getImageData(0, 0, s, s).data;
+  const out = document.createElement('canvas');
+  out.width = out.height = s;
+  const outCtx = out.getContext('2d')!;
+  const img = outCtx.createImageData(s, s);
+  const d = img.data;
+  // Red channel is enough — the height canvases are painted greyscale.
+  const h = (x: number, y: number) => srcData[(((y + s) % s) * s + ((x + s) % s)) * 4] / 255;
+
+  for (let y = 0; y < s; y++) {
+    for (let x = 0; x < s; x++) {
+      const tl = h(x - 1, y - 1), t = h(x, y - 1), tr = h(x + 1, y - 1);
+      const l  = h(x - 1, y),                      r  = h(x + 1, y);
+      const bl = h(x - 1, y + 1), b = h(x, y + 1), br = h(x + 1, y + 1);
+      const dx = (tr + 2 * r + br) - (tl + 2 * l + bl);
+      const dy = (bl + 2 * b + br) - (tl + 2 * t + tr);
+      // Normalise (-dx, -dy, 1/strength) and pack to 0..255.
+      let nx = -dx * strength, ny = -dy * strength;
+      const nz = 1;
+      const inv = 1 / Math.hypot(nx, ny, nz);
+      nx *= inv; ny *= inv;
+      const i = (y * s + x) * 4;
+      d[i]     = Math.round((nx * 0.5 + 0.5) * 255);
+      d[i + 1] = Math.round((ny * 0.5 + 0.5) * 255);
+      d[i + 2] = Math.round((nz * inv * 0.5 + 0.5) * 255);
+      d[i + 3] = Math.round(h(x, y) * 255); // height → alpha, for cavity AO
+    }
+  }
+  outCtx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(out);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  // repeat stays (1,1): uvScale() already bakes world texel density into the UVs.
   return tex;
 }
 
@@ -96,80 +192,174 @@ function _grain(ctx: CanvasRenderingContext2D, s: number, base: number, jitter: 
   }
 }
 
-function _getMetalFinish(): FinishMaps {
-  if (_metalFinish) return _metalFinish;
-  _metalFinish = {
-    // Albedo: near-white (multiplies the part colour) with brushed streaks and
-    // a few pale edge-wear scratches — subtle tonal life, hue untouched.
-    albedo: _bakeTex(256, 2, true, (ctx, s) => {
-      _grain(ctx, s, 246, 7, true);
-      for (let i = 0; i < 26; i++) {
-        const w = 255;
-        ctx.strokeStyle = `rgba(${w},${w},${w},${0.18 + Math.random() * 0.3})`;
-        ctx.lineWidth = 0.7 + Math.random();
-        const x = Math.random() * s, y = Math.random() * s;
-        ctx.beginPath();
-        ctx.moveTo(x, y);
-        ctx.lineTo(x + (Math.random() - 0.3) * 46, y + (Math.random() - 0.5) * 7);
-        ctx.stroke();
-      }
-    }),
-    // Roughness: brushed variation so highlights break up along the streaks;
-    // scratches read shinier (darker = smoother) like real worn gunmetal.
-    rough: _bakeTex(256, 2, false, (ctx, s) => {
-      _grain(ctx, s, 228, 26, true);
-      for (let i = 0; i < 26; i++) {
-        ctx.strokeStyle = `rgba(150,150,150,${0.3 + Math.random() * 0.35})`;
-        ctx.lineWidth = 0.7 + Math.random();
-        const x = Math.random() * s, y = Math.random() * s;
-        ctx.beginPath();
-        ctx.moveTo(x, y);
-        ctx.lineTo(x + (Math.random() - 0.3) * 46, y + (Math.random() - 0.5) * 7);
-        ctx.stroke();
-      }
-    }),
-    bump: _bakeTex(128, 2, false, (ctx, s) => _grain(ctx, s, 128, 10, true)),
-  };
-  return _metalFinish;
+/** Scatter short scratches — edge wear from holsters, rails and handling. */
+function _scratches(ctx: CanvasRenderingContext2D, s: number, count: number, style: (a: number) => string, len: number) {
+  for (let i = 0; i < count; i++) {
+    ctx.strokeStyle = style(0.18 + Math.random() * 0.3);
+    ctx.lineWidth = 0.7 + Math.random();
+    const x = Math.random() * s, y = Math.random() * s;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + (Math.random() - 0.3) * len, y + (Math.random() - 0.5) * 7);
+    ctx.stroke();
+  }
 }
 
-function _getPolymerFinish(): FinishMaps {
-  if (_polymerFinish) return _polymerFinish;
-  _polymerFinish = {
-    // Stippled injection-mould grain — the matte, grippy read of a real
-    // polymer frame/stock instead of dead flat plastic.
-    albedo: _bakeTex(256, 3, true, (ctx, s) => _grain(ctx, s, 245, 9, false)),
-    rough: _bakeTex(256, 3, false, (ctx, s) => _grain(ctx, s, 238, 16, false)),
-    bump: _bakeTex(128, 3, false, (ctx, s) => _grain(ctx, s, 128, 22, false)),
-  };
-  return _polymerFinish;
-}
-
-let _woodFinish: FinishMaps | null = null;
-function _getWoodFinish(): FinishMaps {
-  if (_woodFinish) return _woodFinish;
-  const grainLines = (ctx: CanvasRenderingContext2D, s: number, alpha: number) => {
-    // Long wavering grain lines — the signature read of oiled gun furniture.
-    for (let i = 0; i < 34; i++) {
-      const y = Math.random() * s;
-      const tone = 165 + Math.round(Math.random() * 50);
-      ctx.strokeStyle = `rgba(${tone},${tone},${tone},${alpha * (0.4 + Math.random() * 0.6)})`;
-      ctx.lineWidth = 0.8 + Math.random() * 1.6;
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      for (let x = 0; x <= s; x += 16) {
-        ctx.lineTo(x, y + Math.sin(x * 0.05 + i) * 3 + (Math.random() - 0.5) * 2);
-      }
-      ctx.stroke();
+/** Long wavering grain lines — the signature read of oiled gun furniture. */
+function _woodGrain(ctx: CanvasRenderingContext2D, s: number, alpha: number) {
+  for (let i = 0; i < 34; i++) {
+    const y = Math.random() * s;
+    const tone = 165 + Math.round(Math.random() * 50);
+    ctx.strokeStyle = `rgba(${tone},${tone},${tone},${alpha * (0.4 + Math.random() * 0.6)})`;
+    ctx.lineWidth = 0.8 + Math.random() * 1.6;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    for (let x = 0; x <= s; x += 16) {
+      ctx.lineTo(x, y + Math.sin(x * 0.05 + i) * 3 + (Math.random() - 0.5) * 2);
     }
-  };
-  _woodFinish = {
-    albedo: _bakeTex(256, 1.5, true, (ctx, s) => { _grain(ctx, s, 242, 10, true); grainLines(ctx, s, 0.5); }),
-    rough: _bakeTex(256, 1.5, false, (ctx, s) => { _grain(ctx, s, 232, 18, true); grainLines(ctx, s, 0.6); }),
-    bump: _bakeTex(128, 1.5, false, (ctx, s) => { _grain(ctx, s, 128, 12, true); grainLines(ctx, s, 0.7); }),
-  };
-  return _woodFinish;
+    ctx.stroke();
+  }
 }
+
+/** Soft irregular blotches — cold-blueing mottle and anodising variation. */
+function _mottle(ctx: CanvasRenderingContext2D, s: number, count: number, radius: number, alpha: number) {
+  for (let i = 0; i < count; i++) {
+    const x = Math.random() * s, y = Math.random() * s;
+    const r = radius * (0.5 + Math.random());
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    const tone = 200 + Math.round(Math.random() * 55);
+    g.addColorStop(0, `rgba(${tone},${tone},${tone},${alpha})`);
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+}
+
+/** How each finish is painted. Albedo is near-white — it MULTIPLIES the part
+ *  colour, so these add tonal life without touching hue. */
+const _FINISH_SPECS: Record<FinishName, {
+  albedo: (ctx: CanvasRenderingContext2D, s: number) => void;
+  rough: (ctx: CanvasRenderingContext2D, s: number) => void;
+  height: (ctx: CanvasRenderingContext2D, s: number) => void;
+  strength: number;
+}> = {
+  // Machined gunmetal: brushed streaks + light edge wear.
+  metal: {
+    albedo: (c, s) => { _grain(c, s, 246, 7, true); _scratches(c, s, 26, (a) => `rgba(255,255,255,${a})`, 46); },
+    rough:  (c, s) => { _grain(c, s, 228, 26, true); _scratches(c, s, 26, (a) => `rgba(150,150,150,${a + 0.12})`, 46); },
+    height: (c, s) => { _grain(c, s, 128, 10, true); _scratches(c, s, 26, (a) => `rgba(96,96,96,${a})`, 46); },
+    strength: 1.6,
+  },
+  // Beaten service metal — heavier, longer scratches and blotchy wear. Shotgun,
+  // minigun: the guns that read as abused hardware.
+  metal_worn: {
+    albedo: (c, s) => { _grain(c, s, 240, 11, true); _scratches(c, s, 58, (a) => `rgba(255,255,255,${a})`, 78); _mottle(c, s, 14, 26, 0.10); },
+    rough:  (c, s) => { _grain(c, s, 214, 34, true); _scratches(c, s, 58, (a) => `rgba(140,140,140,${a + 0.16})`, 78); },
+    height: (c, s) => { _grain(c, s, 128, 16, true); _scratches(c, s, 58, (a) => `rgba(86,86,86,${a + 0.1})`, 78); },
+    strength: 2.1,
+  },
+  // Cold-blued precision steel — near-flawless, faint mottle, very few marks.
+  // Pistol slide and sniper receiver: the guns that read as cared-for.
+  metal_blued: {
+    albedo: (c, s) => { _grain(c, s, 250, 5, true); _mottle(c, s, 20, 34, 0.07); _scratches(c, s, 9, (a) => `rgba(255,255,255,${a * 0.7})`, 30); },
+    rough:  (c, s) => { _grain(c, s, 238, 15, true); _mottle(c, s, 20, 34, 0.12); },
+    height: (c, s) => { _grain(c, s, 128, 6, true); },
+    strength: 1.1,
+  },
+  // Injection-moulded polymer stipple — matte and grippy, not dead flat plastic.
+  polymer: {
+    albedo: (c, s) => _grain(c, s, 245, 9, false),
+    rough:  (c, s) => _grain(c, s, 238, 16, false),
+    height: (c, s) => _grain(c, s, 128, 22, false),
+    strength: 3.2,
+  },
+  // Coarse checkered polymer — launcher shell, aggressive grip texture.
+  polymer_rough: {
+    albedo: (c, s) => { _grain(c, s, 242, 13, false); _mottle(c, s, 10, 20, 0.08); },
+    rough:  (c, s) => _grain(c, s, 230, 24, false),
+    height: (c, s) => _grain(c, s, 128, 38, false),
+    strength: 4.0,
+  },
+  // Oiled walnut furniture.
+  wood: {
+    albedo: (c, s) => { _grain(c, s, 242, 10, true); _woodGrain(c, s, 0.5); },
+    rough:  (c, s) => { _grain(c, s, 232, 18, true); _woodGrain(c, s, 0.6); },
+    height: (c, s) => { _grain(c, s, 128, 12, true); _woodGrain(c, s, 0.7); },
+    strength: 2.2,
+  },
+};
+
+/**
+ * Lazily bake (and then share) a finish.
+ *
+ * All finish textures sit at repeat (1,1) — uvScale() bakes world texel density
+ * into the geometry's UVs instead, which is what makes a 0.3-unit rail and a
+ * 6-unit barrel finally agree.
+ */
+function _getFinish(name: FinishName): FinishMaps {
+  const hit = _finishes.get(name);
+  if (hit) return hit;
+  const spec = _FINISH_SPECS[name];
+  // 256 for height: at 128 the Sobel has too little to work with and the normal
+  // map comes out mushy rather than detailed.
+  const heightCanvas = _bakeCanvas(256, spec.height);
+  const maps: FinishMaps = {
+    albedo: _bakeTex(256, 1, true, spec.albedo),
+    rough: _bakeTex(256, 1, false, spec.rough),
+    normal: _heightToNormal(heightCanvas, spec.strength),
+  };
+  _finishes.set(name, maps);
+  return maps;
+}
+
+/**
+ * Per-finish normalMap intensity. SHARED Vector2 instances — three reads these
+ * per-draw and never mutates them, so one object per finish is correct and
+ * avoids an allocation per cached material.
+ */
+const _NORMAL_SCALE: Record<FinishName, THREE.Vector2> = {
+  metal:         new THREE.Vector2(0.75, 0.75),
+  metal_worn:    new THREE.Vector2(1.05, 1.05),
+  metal_blued:   new THREE.Vector2(0.45, 0.45),
+  polymer:       new THREE.Vector2(0.95, 0.95),
+  polymer_rough: new THREE.Vector2(1.25, 1.25),
+  wood:          new THREE.Vector2(0.85, 0.85),
+};
+
+// CONTACT / CAVITY AO
+//
+// The post chain has no depth-based AO (no SSAO/GTAO pass), which is a large
+// part of why assembled primitives read as "floating parts": every crevice —
+// trigger guard, magwell, rail slots, between fingers and grip — has zero
+// occlusion darkening.
+//
+// A real GTAO pass was rejected: it needs a depth+normal prepass bolted onto a
+// chain that is null on low presets, and the viewmodel sits at a wildly
+// different depth scale from the world, so a radius tuned for a 6-unit gun at
+// half a metre haloes the scenery behind it. Baked vertex-colour AO was also
+// rejected: vertexColors is a MATERIAL-level flag and these materials are
+// shared across parts and weapons, so it would be all-or-nothing and add
+// USE_COLOR to every variant, plus ~1M build-time raycasts — precisely the
+// stall the rig cache exists to avoid.
+//
+// Instead: sample the height already packed into the normal map's alpha and
+// darken by it. Four instructions, same sampler, no new binding.
+//
+// customProgramCacheKey is LOAD-BEARING. Without it three must assume every
+// material with an onBeforeCompile is potentially a distinct program, and the
+// variant count goes from one to ~30 — which would break the warmup guarantee
+// that stage 4 pre-compiles everything by cycling the weapons once.
+const _GUN_CAVITY_OBC = (shader: { fragmentShader: string }) => {
+  shader.fragmentShader = shader.fragmentShader.replace(
+    '#include <lights_fragment_begin>',
+    `#ifdef USE_NORMALMAP
+      // Alpha of the normal map is the source height field: low = crevice.
+      float _cav = texture2D( normalMap, vNormalMapUv ).a;
+      diffuseColor.rgb *= mix( 1.0, 0.55 + 0.45 * _cav, 0.85 );
+    #endif
+    #include <lights_fragment_begin>`,
+  );
+};
 
 function _matKey(color: number, metalness: number, roughness: number, extra: Partial<THREE.MeshStandardMaterialParameters>): string {
   return [
@@ -306,6 +496,17 @@ interface WeaponRig {
   // An Object3D, not a Mesh: the sniper's bolt is a pivot GROUP so its handle
   // can rotate about the bore axis (lift / lock) as well as translate.
   bolt: THREE.Object3D | null;
+  /**
+   * Empty marker at the weapon's actual BORE EXIT.
+   *
+   * The muzzle flash used to be spawned at `gunModel.group`'s world position —
+   * i.e. the viewmodel root at basePosition {0.3,-0.3,-0.5} — which is not the
+   * muzzle of any weapon in the game. On the sniper (11-unit barrel) the flash
+   * detonated roughly 1.7 world units BEHIND the barrel tip, and the smoke
+   * puff with it. Anchoring an empty here lets the effect follow every recoil,
+   * sway, ADS and reload pose for free, because it's parented into the rig.
+   */
+  muzzle: THREE.Object3D | null;
   reload: ReloadProps;
   spinningPart: THREE.Group | null;
   triggerHandGroup: THREE.Group | null;
@@ -356,6 +557,9 @@ export class GunModel {
 
   // Spinning part (minigun barrel cluster)
   private spinningPart: THREE.Group | null = null;
+
+  // Bore-exit marker for the active weapon (see WeaponRig.muzzle).
+  private muzzleAnchor: THREE.Object3D | null = null;
 
   // ── Subverter (hacking deck) animated parts ──
   // The screen and emitter glow are driven per-frame: an idle data-scroll
@@ -562,14 +766,96 @@ export class GunModel {
     s.quadraticCurveTo(x0, y0 + H, x0, y0 + H - r);
     s.lineTo(x0, y0 + r);
     s.quadraticCurveTo(x0, y0, x0 + r, y0);
+    // bevelSegments 1 → 2 and curveSegments 2 → 3 on the LARGE parts only
+    // (receivers, grips, hands — the things filling a third of the screen). A
+    // single-facet bevel still reads as a hard corner at viewmodel distance;
+    // two segments roll the highlight properly. Small parts keep the cheap
+    // single facet — the difference is invisible on a 0.2-unit rail slot, and
+    // there are far more of those. Rigs are cached for the session, so the
+    // extra vertices are paid once per weapon, never per frame.
+    const big = w > 0.6 || h > 0.6;
     const geo = new THREE.ExtrudeGeometry(s, {
       depth: D,
-      bevelEnabled: true, bevelSize: b, bevelThickness: b, bevelSegments: 1,
-      curveSegments: 2, steps: 1,
+      bevelEnabled: true, bevelSize: b, bevelThickness: b,
+      bevelSegments: big ? 2 : 1,
+      curveSegments: big ? 3 : 2,
+      steps: 1,
     });
     // Extrude runs 0..depth along +Z; recentre it on the part's own origin.
     geo.translate(0, 0, -D / 2);
     return geo;
+  }
+
+  /**
+   * Rewrite a part's UVs to a CONSTANT WORLD TEXEL DENSITY.
+   *
+   * The rig mixes three geometry sources with three incompatible UV
+   * conventions, which is why the shared finish maps used to read at a
+   * different scale on almost every part of the same gun:
+   *
+   *   • BoxGeometry     — 0..1 per face. A 0.3-unit rail and a 6-unit barrel
+   *                       each get exactly one tile.
+   *   • cbox()          — ExtrudeGeometry's default WorldUVGenerator emits
+   *                       OBJECT-SPACE coordinates: roughly world-scaled, i.e.
+   *                       the opposite convention to the above.
+   *   • CylinderGeometry— (angle, height) normalised, so a long thin barrel
+   *                       smears the noise ~20:1 along its length.
+   *
+   * Fix: per-vertex triplanar assignment. Pick the dominant axis of each
+   * vertex normal and derive UV from the two remaining world axes, scaled by
+   * a single global density knob. Box faces, extrude caps and cylinder walls
+   * then all agree, and every finish texture can sit at repeat (1,1).
+   *
+   * Cheap: runs once per part at rig-build time, and rigs are cached for the
+   * whole session. Idempotent via userData.uvScaled. Mutating in place is safe
+   * precisely because cbox() geometry is deliberately not shared (see above).
+   */
+  private uvScale(geo: THREE.BufferGeometry, texelsPerUnit = 0.55): THREE.BufferGeometry {
+    if (geo.userData.uvScaled) return geo;
+    const pos = geo.getAttribute('position') as THREE.BufferAttribute | undefined;
+    const nrm = geo.getAttribute('normal') as THREE.BufferAttribute | undefined;
+    if (!pos || !nrm) return geo;
+    const n = pos.count;
+    const uv = new Float32Array(n * 2);
+    for (let i = 0; i < n; i++) {
+      const px = pos.getX(i), py = pos.getY(i), pz = pos.getZ(i);
+      const ax = Math.abs(nrm.getX(i)), ay = Math.abs(nrm.getY(i)), az = Math.abs(nrm.getZ(i));
+      let u: number, v: number;
+      if (ax >= ay && ax >= az)      { u = pz; v = py; } // facing ±X → project ZY
+      else if (ay >= ax && ay >= az) { u = px; v = pz; } // facing ±Y → project XZ
+      else                           { u = px; v = py; } // facing ±Z → project XY
+      uv[i * 2]     = u * texelsPerUnit;
+      uv[i * 2 + 1] = v * texelsPerUnit;
+    }
+    geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    geo.userData.uvScaled = true;
+    return geo;
+  }
+
+  /**
+   * Mark the weapon's bore exit. Each create* method calls this once with the
+   * front face of its muzzle device (flash hider / brake / choke / tube mouth).
+   *
+   * An empty Object3D, not a mesh: it costs nothing to draw and, because it is
+   * parented into the rig, it inherits every recoil kick, sway, ADS blend and
+   * reload pose automatically. The alternative — recomputing a muzzle offset in
+   * App each shot — would drift out of sync the moment an animation moved.
+   */
+  private setMuzzle(x: number, y: number, z: number): void {
+    const anchor = new THREE.Object3D();
+    anchor.position.set(x, y, z);
+    this.group.add(anchor);
+    this.muzzleAnchor = anchor;
+  }
+
+  /**
+   * World position of the active weapon's bore exit, written into `out`.
+   * Falls back to the viewmodel root for any weapon without an anchor (the
+   * Subverter, which never fires a bullet). Returns `out` for chaining.
+   */
+  getMuzzleWorldPosition(out: THREE.Vector3): THREE.Vector3 {
+    if (this.muzzleAnchor) return this.muzzleAnchor.getWorldPosition(out);
+    return this.group.getWorldPosition(out);
   }
 
   /** Helper — create a mesh, position it, enable shadows, add to group. */
@@ -581,7 +867,9 @@ export class GunModel {
     z = 0,
     shadow = true,
   ): THREE.Mesh {
-    const m = new THREE.Mesh(geo, mat);
+    // Single choke point: every part of every weapon goes through here, so one
+    // call normalises texel density across the entire rig.
+    const m = new THREE.Mesh(this.uvScale(geo), mat);
     m.position.set(x, y, z);
     if (shadow) {
       m.castShadow = true;
@@ -596,27 +884,26 @@ export class GunModel {
     metalness: number,
     roughness: number,
     extra: Partial<THREE.MeshStandardMaterialParameters> = {},
-    finishOverride?: 'metal' | 'polymer' | 'wood',
+    finishOverride?: FinishName,
   ): THREE.MeshStandardMaterial {
     // Procedural finish — metal-family parts (receivers, slides, barrels) get
     // the brushed/worn machining maps, softer parts the polymer stipple, and
     // furniture can explicitly ask for wood grain. Derived from metalness when
-    // not overridden; the resolved name is folded into the cache key.
-    const finishName = finishOverride ?? (metalness >= 0.55 ? 'metal' : 'polymer');
+    // not overridden; the resolved name is folded into the cache key, so the
+    // six finishes cost cache entries but ZERO extra shader programs.
+    const finishName: FinishName = finishOverride ?? (metalness >= 0.55 ? 'metal' : 'polymer');
     const key = `${_matKey(color, metalness, roughness, extra)}:${finishName}`;
     const cached = _gunMaterialCache.get(key);
     if (cached) return cached;
-    const finish = finishName === 'metal' ? _getMetalFinish()
-      : finishName === 'wood' ? _getWoodFinish()
-      : _getPolymerFinish();
+    const finish = _getFinish(finishName);
     const fresh = new THREE.MeshStandardMaterial({
       color,
       metalness,
       roughness,
       map: finish.albedo,
       roughnessMap: finish.rough,
-      bumpMap: finish.bump,
-      bumpScale: finishName === 'metal' ? 0.5 : finishName === 'wood' ? 1.1 : 0.9,
+      normalMap: finish.normal,
+      normalScale: _NORMAL_SCALE[finishName],
       // Lifted from 1.1 → 1.25: the viewmodel catches a touch more of the
       // sky/sun environment (IBL), so the metal reads crisper and more premium
       // and sunlight glints across it as the day cycle turns — without the
@@ -624,6 +911,10 @@ export class GunModel {
       envMapIntensity: 1.25,
       ...extra,
     });
+    // Crevice darkening from the normal map's height alpha. Shared function +
+    // constant cache key ⇒ exactly ONE extra shader program for the whole rig.
+    fresh.onBeforeCompile = _GUN_CAVITY_OBC;
+    fresh.customProgramCacheKey = () => 'gunCavity';
     fresh.userData.cached = true; // dispose loop will skip this
     _gunMaterialCache.set(key, fresh);
     return fresh;
@@ -735,6 +1026,7 @@ export class GunModel {
     this.slide = null;
     this.bolt = null;
     this.spinningPart = null;
+    this.muzzleAnchor = null;
     this.subScreenMat = null;
     this.subEmitterMat = null;
     this.subCodeMats = [];
@@ -786,6 +1078,7 @@ export class GunModel {
       magazine: this.magazine,
       slide: this.slide,
       bolt: this.bolt,
+      muzzle: this.muzzleAnchor,
       reload: this.rp,
       spinningPart: this.spinningPart,
       triggerHandGroup: this.triggerHandGroup,
@@ -857,6 +1150,7 @@ export class GunModel {
     this.magazine = rig.magazine;
     this.slide = rig.slide;
     this.bolt = rig.bolt;
+    this.muzzleAnchor = rig.muzzle;
     this.rp = rig.reload;
     this.spinningPart = rig.spinningPart;
     this.triggerHandGroup = rig.triggerHandGroup;
@@ -928,6 +1222,7 @@ export class GunModel {
     this.slide = null;
     this.bolt = null;
     this.spinningPart = null;
+    this.muzzleAnchor = null;
     this.triggerHandGroup = null;
     this.supportHandGroup = null;
     this.subScreenMat = null;
@@ -986,10 +1281,12 @@ export class GunModel {
     this.slideRest = -1.5;
     this.magRestY = -1;
 
-    const metal = this.mat(0x16181c, 0.95, 0.18, { envMapIntensity: 1.5 });
-    const gunmetal = this.mat(0x26282d, 0.9, 0.28);
+    // A cared-for sidearm: cold-blued slide and frame, near-flawless with only
+    // faint holster wear, against a stippled polymer grip.
+    const metal = this.mat(0x16181c, 0.95, 0.18, { envMapIntensity: 1.5 }, 'metal_blued');
+    const gunmetal = this.mat(0x26282d, 0.9, 0.28, {}, 'metal_blued');
     const polymer = this.mat(0x0c0d10, 0.25, 0.85, { envMapIntensity: 0.5 });
-    const accent = this.mat(0x111317, 0.85, 0.3);
+    const accent = this.mat(0x111317, 0.85, 0.3, {}, 'metal_blued');
 
     // Slide (animated). Its bevel and serrations are PARENTED to it so they
     // reciprocate with it — the reload holds the slide locked to the rear for
@@ -1025,6 +1322,7 @@ export class GunModel {
     muzzle.rotation.x = Math.PI / 2;
     const bore = this.p(new THREE.CylinderGeometry(0.2, 0.2, 0.2, 14), this.mat(0x000000, 1, 0.4), 0, 0.8, -5.45, false);
     bore.rotation.x = Math.PI / 2;
+    this.setMuzzle(0, 0.8, -5.55); // front face of the muzzle collar
 
     // Frame / dust cover
     this.p(this.cbox(0.92, 0.55, 4.4, 0.07), polymer, 0, 0.28, -1.4);
@@ -1100,6 +1398,7 @@ export class GunModel {
     gasTube.rotation.x = Math.PI / 2;
     const flash = this.p(new THREE.CylinderGeometry(0.34, 0.3, 0.7, 10), black, 0, 0.32, -8.6);
     flash.rotation.x = Math.PI / 2;
+    this.setMuzzle(0, 0.32, -8.95); // flash-hider mouth
     // Flash hider slots
     for (let i = 0; i < 4; i++) {
       const slot = this.p(new THREE.BoxGeometry(0.5, 0.08, 0.4), this.mat(0, 1, 0.5), 0, 0.32, -8.6, false);
@@ -1197,8 +1496,9 @@ export class GunModel {
     // carrier down to a position it was never built at.
     this.magRestY = -0.55;
 
-    const steel = this.mat(0x202227, 0.85, 0.3);
-    const black = this.mat(0x0d0e11, 0.9, 0.22);
+    // A working gun: beaten receiver and heat-scarred barrel over walnut.
+    const steel = this.mat(0x202227, 0.85, 0.3, {}, 'metal_worn');
+    const black = this.mat(0x0d0e11, 0.9, 0.22, {}, 'metal_worn');
     // Oiled walnut furniture — dedicated wood-grain finish maps, with a touch
     // of clear-coat sheen (low roughness for the varnish glint on the grain).
     const wood = this.mat(0x4a2f18, 0.15, 0.62, { envMapIntensity: 1.0 }, 'wood');
@@ -1219,6 +1519,7 @@ export class GunModel {
     // Muzzle
     const muzzle = this.p(new THREE.CylinderGeometry(0.46, 0.42, 0.4, 14), black, 0, 0.55, -6);
     muzzle.rotation.x = Math.PI / 2;
+    this.setMuzzle(0, 0.55, -6.2); // choke mouth
 
     // Magazine tube under barrel
     const tube = this.p(new THREE.CylinderGeometry(0.3, 0.3, 5, 12), steel, 0, -0.2, -2.6);
@@ -1284,6 +1585,7 @@ export class GunModel {
     barrel.rotation.x = Math.PI / 2;
     const muzzle = this.p(new THREE.CylinderGeometry(0.28, 0.24, 0.45, 10), black, 0, 0.7, -4.4);
     muzzle.rotation.x = Math.PI / 2;
+    this.setMuzzle(0, 0.7, -4.65); // compensator mouth
 
     // Ejection port + bolt (animated)
     this.p(new THREE.BoxGeometry(0.14, 0.3, 0.85), black, 0.6, 0.45, -0.3, false);
@@ -1331,9 +1633,11 @@ export class GunModel {
     // Bring the scope to screen centre when aiming
     this.aimPosition = { x: 0, y: -0.24, z: -0.38 };
 
+    // A precision instrument: blued steel receiver and match barrel, kept
+    // immaculate — the visual opposite of the shotgun's abused hardware.
     const olive = this.mat(0x2f3322, 0.5, 0.55);
-    const black = this.mat(0x090a0c, 0.95, 0.1);
-    const steel = this.mat(0x23252b, 0.88, 0.22);
+    const black = this.mat(0x090a0c, 0.95, 0.1, {}, 'metal_blued');
+    const steel = this.mat(0x23252b, 0.88, 0.22, {}, 'metal_blued');
     const glass = this.glassMat(0x2c3c46); // see-through scope lenses
 
     // Receiver
@@ -1396,6 +1700,9 @@ export class GunModel {
     // Muzzle brake
     const brake = this.p(new THREE.CylinderGeometry(0.4, 0.36, 1.8, 14), black, 0, 0.18, -11.4);
     brake.rotation.x = Math.PI / 2;
+    // The worst offender under the old scheme: this is ~1.7 units forward of
+    // where the flash used to spawn.
+    this.setMuzzle(0, 0.18, -12.3); // muzzle-brake mouth
     for (let i = 0; i < 4; i++) {
       this.p(new THREE.BoxGeometry(0.86, 0.12, 0.5), this.mat(0, 1, 0.5), 0, 0.18, -11 - i * 0.35, false);
     }
@@ -1494,10 +1801,11 @@ export class GunModel {
     // side so right-click reads as "bracing + zoom" rather than a face-full of
     // barrels.
     this.aimPosition = { x: 0.12, y: -0.36, z: -0.52 };
-    const steel = this.mat(0x202228, 0.9, 0.25);
-    const black = this.mat(0x0b0c0f, 0.95, 0.14);
+    // Industrial ordnance — the most abused surface in the game.
+    const steel = this.mat(0x202228, 0.9, 0.25, {}, 'metal_worn');
+    const black = this.mat(0x0b0c0f, 0.95, 0.14, {}, 'metal_worn');
     const brass = this.mat(0xc8962e, 0.85, 0.3, { emissive: 0x3a2a05, emissiveIntensity: 0.25 });
-    const housing = this.mat(0x2c2f36, 0.8, 0.35);
+    const housing = this.mat(0x2c2f36, 0.8, 0.35, {}, 'metal_worn');
 
     // Rotating barrel cluster
     const barrelGroup = new THREE.Group();
@@ -1515,6 +1823,9 @@ export class GunModel {
       ring.position.set(cx, cy, -8.3);
       barrelGroup.add(ring);
     }
+    // On the bore axis, level with the barrel mouths — the cluster spins, so
+    // anchoring to one rotating barrel would make the flash orbit.
+    this.setMuzzle(0, 0, -8.5);
     // Front + rear barrel clamps
     for (const z of [-7.4, -1.2]) {
       const clamp = new THREE.Mesh(new THREE.CylinderGeometry(0.92, 0.92, 0.45, 18), steel);
@@ -1588,14 +1899,16 @@ export class GunModel {
 
   // LAUNCHER — shoulder-fired rocket launcher
   private createLauncher() {
-    const olive = this.mat(0x33381f, 0.45, 0.6);
-    const black = this.mat(0x0c0d10, 0.85, 0.25);
-    const steel = this.mat(0x22242a, 0.85, 0.3);
+    // Composite launch tube — coarse moulded shell, scuffed steel furniture.
+    const olive = this.mat(0x33381f, 0.45, 0.6, {}, 'polymer_rough');
+    const black = this.mat(0x0c0d10, 0.85, 0.25, {}, 'metal_worn');
+    const steel = this.mat(0x22242a, 0.85, 0.3, {}, 'metal_worn');
     const warhead = this.mat(0xb43018, 0.5, 0.4, { emissive: 0x4a1005, emissiveIntensity: 0.4 });
 
     // Main launch tube
     const tube = this.p(new THREE.CylinderGeometry(0.62, 0.62, 8, 18), olive, 0, 0.3, -2);
     tube.rotation.x = Math.PI / 2;
+    this.setMuzzle(0, 0.3, -6.1); // tube mouth
     // Reinforcement bands
     for (let i = 0; i < 4; i++) {
       const band = this.p(new THREE.TorusGeometry(0.66, 0.07, 8, 18), black, 0, 0.3, -5 + i * 2, false);

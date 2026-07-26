@@ -74,7 +74,7 @@ export function bonusForLevel(level: number): MasteryBonus {
 }
 
 /** XP granted per kill — modest so reaching L10 is a meaningful grind. */
-export function xpPerKill(enemyType: 'normal' | 'fast' | 'tank' | 'boss' | 'ranged' | 'revenant', isMiniBoss?: boolean): number {
+export function xpPerKill(enemyType: string, isMiniBoss?: boolean): number {
   let base: number;
   switch (enemyType) {
     case 'fast':   base = 4;  break;

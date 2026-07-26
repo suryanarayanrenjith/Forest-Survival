@@ -150,13 +150,32 @@ class SoundManager {
 
     this.sounds.set('powerUp', this.createPowerUpSound(ctx, sampleRate));
 
+    // ── DISTINCT REWARD CUES ─────────────────────────────────────────────
+    // `powerUp` was fired from ~27 call sites as a catch-all "something good
+    // happened" ping, so a perk pick, an achievement, a level-up and picking
+    // up a health pack were literally the same sound. These separate the
+    // events the player most needs to tell apart by ear.
+    const C = (o: Parameters<typeof this.createChime>[2]) => this.createChime(ctx, sampleRate, o);
+    // Perk taken — a confident rising major triad.
+    this.sounds.set('cue_perk',        C({ duration: 0.62, root: 523, steps: [0, 4, 7, 12], shimmer: 0.16 }));
+    // Achievement — higher, brighter, four notes with more sparkle.
+    this.sounds.set('cue_achievement', C({ duration: 0.78, root: 659, steps: [0, 7, 12, 16], shimmer: 0.26 }));
+    // Objective / mission complete — a two-note "done" stab.
+    this.sounds.set('cue_objective',   C({ duration: 0.34, root: 587, steps: [0, 7], shimmer: 0.12 }));
+    // Purchase — a short, dry, transactional double blip.
+    this.sounds.set('cue_purchase',    C({ duration: 0.24, root: 784, steps: [0, 5], shimmer: 0.06 }));
+
     this.sounds.set('playerHurt', this.createHurtSound(ctx, sampleRate));
 
     this.sounds.set('reload', this.createReloadSound(ctx, sampleRate));
 
     this.sounds.set('waveComplete', this.createWaveCompleteSound(ctx, sampleRate));
 
-    this.sounds.set('ambient', this.createAmbientSound(ctx, sampleRate));
+    // NOTE: there is deliberately no 'ambient' bed here. A 2s white-noise +
+    // 100Hz hum loop was generated at init and never played by anything; wiring
+    // it up would have layered a constant hiss under AmbientMusicSystem's BED
+    // layer, which already exists precisely so silence never reads as dead air.
+    // Removed rather than "fixed" — the right sound was already playing.
 
     // Headshot / critical ping — bright metallic "ding" so crits feel
     // distinct from a normal body hit (was referenced but never registered).
@@ -193,6 +212,38 @@ class SoundManager {
     this.sounds.set('shoot_sniper',   W({ duration: 0.40, punchFreq: 70,  punchDecay: 9,  sweep: 1.0, bodyLevel: 0.78, noiseLevel: 0.60, noiseDecay: 13, crackLevel: 0.92, crackDecay: 120, lowpass: 0.40 }));
     this.sounds.set('shoot_minigun',  W({ duration: 0.10, punchFreq: 135, punchDecay: 30, sweep: 1.6, bodyLevel: 0.45, noiseLevel: 0.55, noiseDecay: 32, crackLevel: 0.60, crackDecay: 170, lowpass: 0.60 }));
     this.sounds.set('shoot_launcher', W({ duration: 0.45, punchFreq: 55,  punchDecay: 8,  sweep: 0.8, bodyLevel: 0.82, noiseLevel: 0.60, noiseDecay: 9,  crackLevel: 0.45, crackDecay: 70,  lowpass: 0.28 }));
+
+    // ── EXPLOSIONS ───────────────────────────────────────────────────────
+    // Three weights so a barrel, a rocket and the nuke are distinguishable
+    // by ear alone. All previously SILENT.
+    this.sounds.set('explosion_small', this.createExplosion(ctx, sampleRate, 0.3));  // barrel
+    this.sounds.set('explosion', this.createExplosion(ctx, sampleRate, 0.6));        // rocket / grenade
+    this.sounds.set('explosion_huge', this.createExplosion(ctx, sampleRate, 1.0));   // nuke
+
+    // ── BULLET IMPACTS ON THE WORLD ──────────────────────────────────────
+    // Matched to the surfaces BulletDecalSystem already classifies.
+    const I = (o: Parameters<typeof this.createImpact>[2]) => this.createImpact(ctx, sampleRate, o);
+    // Wood: hollow thock, fast decay, splintery tail.
+    this.sounds.set('impact_wood',  I({ duration: 0.16, tone: 220, decay: 55, click: 0.34, ring: 0.06, ringDecay: 90,  grit: 0.20, lowpass: 0.30 }));
+    // Metal: bright ping with a long inharmonic ring.
+    this.sounds.set('impact_metal', I({ duration: 0.26, tone: 880, decay: 34, click: 0.46, ring: 0.30, ringDecay: 16,  grit: 0.10, lowpass: 0.70 }));
+    // Stone: hard crack, almost no ring, gritty chips.
+    this.sounds.set('impact_stone', I({ duration: 0.18, tone: 420, decay: 80, click: 0.50, ring: 0.10, ringDecay: 120, grit: 0.30, lowpass: 0.55 }));
+    // Dirt: dull thud, no ring at all, soft scatter.
+    this.sounds.set('impact_dirt',  I({ duration: 0.14, tone: 150, decay: 70, click: 0.20, ring: 0.00, ringDecay: 200, grit: 0.34, lowpass: 0.16 }));
+
+    // ── ENEMY VOCALIZATIONS ──────────────────────────────────────────────
+    // Enemies were completely mute. These give the swarm an audible presence
+    // and — with positional playback — a directional warning.
+    const V = (o: Parameters<typeof this.createVocal>[2]) => this.createVocal(ctx, sampleRate, o);
+    // Spotting the player: a short rising alert chirp.
+    this.sounds.set('enemy_alert',  V({ duration: 0.30, f0: 210, bend:  0.75, growl: 0.55, servo: 0.16, grit: 0.10 }));
+    // Winding up a melee swing — the telegraph.
+    this.sounds.set('enemy_attack', V({ duration: 0.24, f0: 150, bend:  0.40, growl: 0.70, servo: 0.10, grit: 0.16 }));
+    // Dying: pitch collapses as the servos lose power.
+    this.sounds.set('enemy_die',    V({ duration: 0.55, f0: 240, bend: -0.72, growl: 0.60, servo: 0.20, grit: 0.22 }));
+    // Boss: much lower, longer, and far more menacing.
+    this.sounds.set('boss_roar',    V({ duration: 1.10, f0:  72, bend:  0.28, growl: 0.95, servo: 0.26, grit: 0.30 }));
 
     // ── Subverter (robot-hacking deck) ───────────────────────────────────
     // Deploy: a glitchy digital "zap + datastream" as the chip launches.
@@ -385,6 +436,40 @@ class SoundManager {
     return buffer;
   }
 
+  /**
+   * A short arpeggiated chime — the "you gained something lasting" cue.
+   *
+   * `powerUp` was doing the work of about six different events (pickups, perk
+   * picks, level-ups, achievements, mission completes, crate drops, boss
+   * announcements), so every reward in the game sounded identical and none of
+   * them meant anything specific. These give the distinct ones their own voice.
+   *
+   * `steps` are semitone offsets from `root`, played in sequence.
+   */
+  private createChime(
+    ctx: AudioContext,
+    sampleRate: number,
+    o: { duration: number; root: number; steps: number[]; shimmer: number },
+  ): AudioBuffer {
+    const buffer = ctx.createBuffer(1, Math.floor(sampleRate * o.duration), sampleRate);
+    const data = buffer.getChannelData(0);
+    const stepLen = o.duration / o.steps.length;
+    for (let i = 0; i < buffer.length; i++) {
+      const t = i / sampleRate;
+      const idx = Math.min(o.steps.length - 1, Math.floor(t / stepLen));
+      const local = t - idx * stepLen;
+      const f = o.root * Math.pow(2, o.steps[idx] / 12);
+      // Bell-ish: fundamental + an octave + a bright inharmonic shimmer.
+      const env = Math.exp(-local * 9) * Math.min(1, local * 220);
+      const tone = Math.sin(2 * Math.PI * f * local)
+        + Math.sin(2 * Math.PI * f * 2 * local) * 0.32
+        + Math.sin(2 * Math.PI * f * 5.4 * local) * o.shimmer;
+      // Overlapping tail so the notes ring into each other instead of clicking.
+      data[i] += tone * env * 0.22;
+    }
+    return buffer;
+  }
+
   private createHurtSound(ctx: AudioContext, sampleRate: number): AudioBuffer {
     const duration = 0.2;
     const buffer = ctx.createBuffer(1, sampleRate * duration, sampleRate);
@@ -430,21 +515,6 @@ class SoundManager {
       const freq = notes[noteIndex];
       const envelope = Math.max(0, 1 - (t % 0.2) * 5);
       data[i] = Math.sin(2 * Math.PI * freq * t) * envelope * 0.2;
-    }
-
-    return buffer;
-  }
-
-  private createAmbientSound(ctx: AudioContext, sampleRate: number): AudioBuffer {
-    const duration = 2.0;
-    const buffer = ctx.createBuffer(1, sampleRate * duration, sampleRate);
-    const data = buffer.getChannelData(0);
-
-    for (let i = 0; i < buffer.length; i++) {
-      const t = i / sampleRate;
-      const noise = (Math.random() * 2 - 1) * 0.05;
-      const lowFreq = Math.sin(2 * Math.PI * 100 * t) * 0.02;
-      data[i] = noise + lowFreq;
     }
 
     return buffer;
@@ -562,6 +632,125 @@ class SoundManager {
       const sweepFreq = o.punchFreq * (1 + o.sweep * Math.exp(-t * 35));
       const punch = Math.sin(2 * Math.PI * sweepFreq * t) * Math.exp(-t * o.punchDecay) * o.bodyLevel;
       data[i] = Math.tanh((crack + body + punch) * 1.4) * 0.6;
+    }
+    return buffer;
+  }
+
+  /**
+   * EXPLOSION — rockets, barrels, the tactical nuke.
+   *
+   * These were completely SILENT: a 150-damage rocket landed with no sound at
+   * all, and a chained barrel detonation only ever played the generic enemy
+   * death blip. For the loudest thing in the game that was the single biggest
+   * game-feel gap in the audio.
+   *
+   * Structure of a real blast, in order: an instantaneous crack, a wide-band
+   * noise body that decays as it lowpasses (high frequencies die first, which
+   * is what sells DISTANCE and SIZE), a sub-bass thump you feel more than
+   * hear, and a long diffuse rumble tail.
+   *
+   * `scale` 0..1 grows all of it: 0.35 = a barrel, 1 = the nuke.
+   */
+  private createExplosion(ctx: AudioContext, sampleRate: number, scale: number): AudioBuffer {
+    const duration = 0.55 + scale * 1.5;
+    const buffer = ctx.createBuffer(1, Math.floor(sampleRate * duration), sampleRate);
+    const data = buffer.getChannelData(0);
+    // Bigger blasts are darker and decay slower.
+    const subFreq = 62 - scale * 26;
+    const bodyDecay = 9 - scale * 6.2;
+    const rumbleDecay = 3.4 - scale * 2.4;
+    let lp = 0;
+    let lp2 = 0;
+    for (let i = 0; i < buffer.length; i++) {
+      const t = i / sampleRate;
+      // Initial crack — very short, very bright.
+      const crack = (Math.random() * 2 - 1) * Math.exp(-t * 140) * 0.55;
+      // Body: noise through a lowpass that CLOSES over time, so the blast
+      // audibly darkens as it expands.
+      const raw = Math.random() * 2 - 1;
+      const cutoff = Math.max(0.03, 0.55 * Math.exp(-t * 6));
+      lp += (raw - lp) * cutoff;
+      const body = lp * Math.exp(-t * bodyDecay) * (0.85 + scale * 0.35);
+      // Sub thump with a downward sweep — the chest hit.
+      const sweep = subFreq * (1 + 1.4 * Math.exp(-t * 18));
+      const sub = Math.sin(2 * Math.PI * sweep * t) * Math.exp(-t * (13 - scale * 8)) * (0.7 + scale * 0.5);
+      // Diffuse rumble tail — heavily smoothed noise that outlives the body.
+      lp2 += (raw - lp2) * 0.018;
+      const rumble = lp2 * Math.exp(-t * rumbleDecay) * (0.4 + scale * 0.75);
+      data[i] = Math.tanh((crack + body + sub + rumble) * 1.35) * 0.62;
+    }
+    return buffer;
+  }
+
+  /**
+   * BULLET IMPACT on world geometry — wood, metal, stone, dirt.
+   *
+   * The game paints surface-tinted bullet holes on trees/rocks/walls/ground
+   * (BulletDecalSystem) with ZERO audio: rounds landed on the world in total
+   * silence, so only enemy hits ever made a sound and missing felt like
+   * nothing happened.
+   *
+   * Each material is the same three-part model at different settings: a
+   * contact transient, a short pitched body (the resonance of what was hit),
+   * and a debris tail.
+   */
+  private createImpact(
+    ctx: AudioContext,
+    sampleRate: number,
+    o: { duration: number; tone: number; decay: number; click: number; ring: number; ringDecay: number; grit: number; lowpass: number },
+  ): AudioBuffer {
+    const buffer = ctx.createBuffer(1, Math.floor(sampleRate * o.duration), sampleRate);
+    const data = buffer.getChannelData(0);
+    let lp = 0;
+    for (let i = 0; i < buffer.length; i++) {
+      const t = i / sampleRate;
+      const click = (Math.random() * 2 - 1) * Math.exp(-t * 320) * o.click;
+      const body = Math.sin(2 * Math.PI * o.tone * t) * Math.exp(-t * o.decay) * 0.32;
+      // Inharmonic partial — what makes metal ping and stone crack.
+      const ring = Math.sin(2 * Math.PI * o.tone * 2.71 * t) * Math.exp(-t * o.ringDecay) * o.ring;
+      const raw = Math.random() * 2 - 1;
+      lp += (raw - lp) * o.lowpass;
+      const grit = lp * Math.exp(-t * 26) * o.grit;
+      data[i] = Math.tanh((click + body + ring + grit) * 1.3) * 0.42;
+    }
+    return buffer;
+  }
+
+  /**
+   * ENEMY VOCALIZATION — a servo-driven mechanical vocal cord.
+   *
+   * Enemies were entirely mute: no aggro alert, no attack telegraph, no death
+   * cry, no boss roar. In a game where they converge from every bearing, that
+   * removed the main non-visual channel for "something is behind you".
+   *
+   * A two-formant buzz over a pitch contour, plus servo whine and gearbox
+   * grit, so it reads as a machine trying to shout rather than an animal.
+   */
+  private createVocal(
+    ctx: AudioContext,
+    sampleRate: number,
+    o: { duration: number; f0: number; bend: number; growl: number; servo: number; grit: number },
+  ): AudioBuffer {
+    const buffer = ctx.createBuffer(1, Math.floor(sampleRate * o.duration), sampleRate);
+    const data = buffer.getChannelData(0);
+    let lp = 0;
+    for (let i = 0; i < buffer.length; i++) {
+      const t = i / sampleRate;
+      const p = t / o.duration;
+      // Pitch contour: `bend` > 0 rises (alert), < 0 falls (death).
+      const f = o.f0 * (1 + o.bend * p);
+      // Square-ish buzz via saturation = the vocal cord.
+      const buzz = Math.tanh(Math.sin(2 * Math.PI * f * t) * 3.2);
+      // Second formant an odd ratio up — inharmonic, so it reads metallic.
+      const form = Math.sin(2 * Math.PI * f * 2.4 * t) * 0.35;
+      // Servo whine — a fast high sweep layered on top.
+      const servo = Math.sin(2 * Math.PI * (1500 + 900 * p) * t) * o.servo * Math.exp(-p * 2.2);
+      const raw = Math.random() * 2 - 1;
+      lp += (raw - lp) * 0.35;
+      const grit = lp * o.grit;
+      // Attack/decay envelope — quick in, tapering out.
+      const env = Math.min(1, p * 14) * Math.pow(1 - p, 1.4);
+      data[i] = Math.tanh((buzz * o.growl + form + servo + grit) * 1.25) * env * 0.4;
     }
     return buffer;
   }
@@ -841,6 +1030,173 @@ class SoundManager {
     source.start(0);
   }
 
+  // ── POSITIONAL AUDIO ───────────────────────────────────────────────────
+  //
+  // Retrofitted at the Web Audio level rather than via THREE.AudioListener /
+  // THREE.PositionalAudio: those want THREE.Audio objects parented into the
+  // scene graph and an AudioLoader, whereas this class owns raw AudioBuffers
+  // and its own node graph — and has zero three.js imports, which is worth
+  // keeping. Coordinates are passed as plain numbers for the same reason.
+  //
+  // Graph: source → gain → panner → masterBus → lowpass → destination.
+  // Routing through masterBus is REQUIRED so the slow-mo muffle, master volume
+  // and stopAll() all keep working on positional voices.
+  //
+  // `play()` is deliberately left untouched — hundreds of existing call sites
+  // keep their current 2D behaviour, and several SHOULD stay 2D (your own
+  // weapon, your own reload, UI). Migrate deliberately, not wholesale.
+
+  /** Distance at which a positional sound plays at full volume. */
+  private static readonly REF_DISTANCE = 8;
+  /** Beyond this, attenuation stops getting quieter. */
+  private static readonly MAX_DISTANCE = 120;
+
+  /**
+   * Point the Web Audio listener at the camera. Cheap — call once per frame.
+   * Vectors are (position, forward, up); forward/up must be orthonormal.
+   */
+  setListener(
+    px: number, py: number, pz: number,
+    fx: number, fy: number, fz: number,
+    ux: number, uy: number, uz: number,
+  ): void {
+    const ctx = this.audioContext;
+    if (!ctx) return;
+    const l = ctx.listener;
+    // Modern browsers expose AudioParams; Safari still only has the deprecated
+    // setPosition/setOrientation pair.
+    if (l.positionX) {
+      l.positionX.value = px; l.positionY.value = py; l.positionZ.value = pz;
+      l.forwardX.value = fx; l.forwardY.value = fy; l.forwardZ.value = fz;
+      l.upX.value = ux; l.upY.value = uy; l.upZ.value = uz;
+    } else {
+      const legacy = l as unknown as {
+        setPosition?: (x: number, y: number, z: number) => void;
+        setOrientation?: (fx: number, fy: number, fz: number, ux: number, uy: number, uz: number) => void;
+      };
+      legacy.setPosition?.(px, py, pz);
+      legacy.setOrientation?.(fx, fy, fz, ux, uy, uz);
+    }
+  }
+
+  /** Build a configured panner at a world position, or null if unavailable. */
+  private makePanner(x: number, y: number, z: number, refDistance?: number, maxDistance?: number): PannerNode | null {
+    const ctx = this.audioContext;
+    if (!ctx || typeof ctx.createPanner !== 'function') return null;
+    const p = ctx.createPanner();
+    // 'equalpower' over 'HRTF': HRTF costs roughly an order of magnitude more
+    // CPU, and this game routinely has dozens of concurrent voices in a fight.
+    p.panningModel = 'equalpower';
+    p.distanceModel = 'inverse';
+    p.refDistance = refDistance ?? SoundManager.REF_DISTANCE;
+    p.maxDistance = maxDistance ?? SoundManager.MAX_DISTANCE;
+    p.rolloffFactor = 1;
+    if (p.positionX) {
+      p.positionX.value = x; p.positionY.value = y; p.positionZ.value = z;
+    } else {
+      (p as unknown as { setPosition?: (x: number, y: number, z: number) => void }).setPosition?.(x, y, z);
+    }
+    return p;
+  }
+
+  /**
+   * Positional one-shot. Same semantics as play(), plus a world position.
+   * Falls back to a flat 2D play() wherever PannerNode isn't available, so
+   * behaviour degrades to today's mix instead of going silent.
+   */
+  playAt(
+    soundName: string,
+    x: number, y: number, z: number,
+    volume: number = 1.0,
+    rate: number = 1.0,
+    opts?: { refDistance?: number; maxDistance?: number },
+  ): void {
+    if (this.muted) return;
+    if (!this.initialized || !this.audioContext) {
+      this.initialize();
+      if (!this.audioContext) return;
+    }
+    const buffer = this.sounds.get(soundName);
+    if (!buffer) return;
+
+    const panner = this.makePanner(x, y, z, opts?.refDistance, opts?.maxDistance);
+    if (!panner) { this.play(soundName, volume, false, rate); return; }
+
+    const source = this.audioContext.createBufferSource();
+    const gainNode = this.audioContext.createGain();
+    source.buffer = buffer;
+    if (rate !== 1.0) source.playbackRate.value = rate;
+    gainNode.gain.value = this.masterVolume * volume;
+
+    source.connect(gainNode);
+    gainNode.connect(panner);
+    panner.connect(this.masterBus ?? this.audioContext.destination);
+
+    this.activeSources.add(source);
+    source.onended = () => {
+      this.activeSources.delete(source);
+      // Explicit disconnect so the panner can't linger in the graph.
+      try { panner.disconnect(); } catch { /* already torn down */ }
+    };
+    source.start(0);
+  }
+
+  /**
+   * Looping positional emitter (hazard fields, ambience, beacons). Returns a
+   * handle so the caller can move it, fade it, and — importantly — stop it.
+   * The caller OWNS the handle: leaking one leaks a voice for the whole run.
+   */
+  playLoopAt(
+    soundName: string,
+    x: number, y: number, z: number,
+    volume: number = 1.0,
+    opts?: { refDistance?: number; maxDistance?: number },
+  ): PositionalVoice | null {
+    if (this.muted) return null;
+    if (!this.initialized || !this.audioContext) {
+      this.initialize();
+      if (!this.audioContext) return null;
+    }
+    const buffer = this.sounds.get(soundName);
+    if (!buffer) return null;
+    const panner = this.makePanner(x, y, z, opts?.refDistance, opts?.maxDistance);
+    if (!panner) return null;
+
+    const ctx = this.audioContext;
+    const source = ctx.createBufferSource();
+    const gainNode = ctx.createGain();
+    source.buffer = buffer;
+    source.loop = true;
+    gainNode.gain.value = this.masterVolume * volume;
+    source.connect(gainNode);
+    gainNode.connect(panner);
+    panner.connect(this.masterBus ?? ctx.destination);
+
+    this.activeSources.add(source);
+    let stopped = false;
+    source.onended = () => { this.activeSources.delete(source); };
+    source.start(0);
+
+    return {
+      setPosition: (nx, ny, nz) => {
+        if (stopped) return;
+        if (panner.positionX) {
+          panner.positionX.value = nx; panner.positionY.value = ny; panner.positionZ.value = nz;
+        } else {
+          (panner as unknown as { setPosition?: (x: number, y: number, z: number) => void }).setPosition?.(nx, ny, nz);
+        }
+      },
+      setVolume: (v) => { if (!stopped) gainNode.gain.value = this.masterVolume * v; },
+      stop: () => {
+        if (stopped) return;
+        stopped = true;
+        try { source.stop(); } catch { /* already stopped */ }
+        this.activeSources.delete(source);
+        try { panner.disconnect(); } catch { /* already torn down */ }
+      },
+    };
+  }
+
   setVolume(volume: number): void {
     this.masterVolume = Math.max(0, Math.min(1, volume));
   }
@@ -878,6 +1234,13 @@ class SoundManager {
     this.stopAll();
     this.muted = false;
   }
+}
+
+/** Handle to a looping positional voice. The creator must call stop(). */
+export interface PositionalVoice {
+  setPosition(x: number, y: number, z: number): void;
+  setVolume(v: number): void;
+  stop(): void;
 }
 
 export const soundManager = new SoundManager();

@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import { AIBehaviorSystem, type AIDecision } from '../utils/AIBehaviorSystem';
 import { EnemyPerception, type PerceptionResult } from '../utils/EnemyPerception';
 import { AttackSystem } from '../utils/AttackSystem';
-import { ObstacleAvoidance } from '../utils/ObstacleAvoidance';
 import { BulletDodging, type DodgeResult } from '../utils/BulletDodging';
+import type { EnemyType } from '../utils/SmartEnemyManager';
 
 export interface Weapon {
   name: string;
@@ -172,7 +172,10 @@ export interface Enemy {
   maxHealth: number;
   speed: number;
   dead: boolean;
-  type: 'normal' | 'fast' | 'tank' | 'boss' | 'ranged' | 'revenant';
+  // Aliased, NOT re-spelled: a hardcoded copy of the union here (and in
+  // App.tsx) is what let four new archetypes compile cleanly while silently
+  // missing every per-type table. Keep this pointing at the single source.
+  type: EnemyType;
   damage: number;
   scoreValue: number;
   // Recomputed each frame: is the enemy on-screen-within-draw-distance OR close
@@ -231,7 +234,6 @@ export interface Enemy {
   aiBehavior?: AIBehaviorSystem;
   perception?: EnemyPerception;
   attackSystem?: AttackSystem;
-  obstacleAvoidance?: ObstacleAvoidance;
   bulletDodging?: BulletDodging;
   playerVelocity?: THREE.Vector3; // Track player velocity for prediction
   isDodging?: boolean;
@@ -388,6 +390,79 @@ export interface Enemy {
   // (the flying head gib carries its own matching wires). Attached to the
   // pooled mesh, so it MUST be detached when the corpse is recycled.
   neckWires?: THREE.Group;
+
+  // ══ TACTICAL ARCHETYPES ═════════════════════════════════════════════════
+  //
+  // ⚠ POOL DISPOSAL: every Object3D attached to a pooled enemy mesh below is
+  // tagged with a `userData.isX` flag and MUST be detached in createEnemy's
+  // acquire path, or the next enemy to occupy that pool slot inherits it. The
+  // shared geometry/material is owned by the builder, never by the enemy — so
+  // these are DETACH-only, never dispose.
+
+  /**
+   * BULWARK — the frontal energy shield mesh. Damage from within ±SHIELD_ARC
+   * of the enemy's facing is almost entirely absorbed; flank or rear shots
+   * land in full. This is what turns a stand-and-shoot fight into a
+   * reposition-first fight.
+   */
+  bulwarkShield?: THREE.Mesh;
+  /** Flashes when the shield eats a hit, so blocked damage reads as blocked. */
+  bulwarkFlash?: number;
+
+  /**
+   * HOWLER — the aura ring mesh, plus the next-pulse timestamp. While alive it
+   * grants nearby allies an overshield; ignoring it makes the whole swarm
+   * durable, which is the pressure that forces target prioritisation.
+   */
+  howlerAura?: THREE.Mesh;
+  howlerNextPulseAt?: number;
+
+  /**
+   * Overshield granted BY a Howler (absorbs damage before health). Lives on
+   * the recipient, not the caster, and decays once the Howler dies.
+   */
+  overshield?: number;
+  overshieldUntil?: number;
+  /**
+   * Direct handle to the marker ring worn while shielded.
+   *
+   * Stored rather than re-discovered with `mesh.children.find(...)`: that ran
+   * in the bullet-hit path and once per frame per shielded enemy, allocating a
+   * closure and walking the child array each time. Shared geo+mat — detach
+   * only, and clear this field alongside it.
+   */
+  overshieldRing?: THREE.Mesh;
+
+  /**
+   * LEAPER — pounce state machine.
+   * `leapState`: idle → crouching (the telegraph) → airborne → recovering.
+   * The crouch is deliberately long enough (and loud enough, see enemy_attack)
+   * to be reacted to; the payoff is that it clears cover the player is using.
+   */
+  leapState?: 'idle' | 'crouch' | 'air' | 'recover';
+  leapUntil?: number;
+  leapNextAt?: number;
+  leapVel?: THREE.Vector3;
+
+  /**
+   * SPLITTER — whether this unit spawns children on death. Children are
+   * flagged false so a split can never cascade.
+   */
+  canSplit?: boolean;
+
+  /**
+   * Forces HIGH LOD regardless of distance.
+   *
+   * ⚠ LOAD-BEARING. Only HIGH-LOD enemies are damageable (see isDetailReady in
+   * SmartEnemyManager — the 45 m floor is deliberate and only ever scales UP).
+   * A support archetype that hangs at the BACK of the pack would therefore be
+   * literally invulnerable on low graphics presets. Rather than lowering that
+   * floor for everything, a handful of must-be-killable elites opt out here.
+   */
+  alwaysDamageable?: boolean;
+
+  /** Next allowed hazard-pool damage tick (ms) — throttles the lava/sludge burn. */
+  nextHazardTickAt?: number;
 }
 
 export interface Bullet {
@@ -431,6 +506,19 @@ export interface Tree {
   z: number;
 }
 
+/**
+ * What standing in this pool actually DOES.
+ *
+ * Lava, toxic sludge and frozen ponds were `type: 'water', collidable: false`
+ * — i.e. painted decoration. They did no damage, applied no slow, blocked
+ * nothing. Combined with `MapConfig` being ~36 visual fields to ~5 gameplay
+ * ones, that's most of why the eight maps differed only by colour grade.
+ *
+ * Tagging them here lets the same scattered props finally carry a rule, so a
+ * map's terrain is something the player has to fight around.
+ */
+export type HazardKind = 'lava' | 'toxic' | 'ice';
+
 export interface TerrainObject {
   mesh: THREE.Group | THREE.Mesh;
   x: number;
@@ -439,6 +527,8 @@ export interface TerrainObject {
   collidable: boolean;
   radius: number;
   height?: number; // Collidable height — player can jump over if above this Y
+  /** Set on pools that damage/slow whatever stands in them. */
+  hazard?: HazardKind;
 }
 
 export interface Keys {

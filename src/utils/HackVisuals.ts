@@ -166,7 +166,6 @@ export function buildHackVisuals(): THREE.Group {
   const ring = new THREE.Mesh(ringGeo(), ringMat);
   ring.position.y = 0.9;
   ring.rotation.x = Math.PI / 2;
-  ring.userData.cannotReceiveAO = true;
   group.add(ring);
 
   // A second, smaller ring tilted off-axis and counter-rotating — gives the
@@ -178,7 +177,6 @@ export function buildHackVisuals(): THREE.Group {
   const ring2 = new THREE.Mesh(ring2Geo(), ring2Mat);
   ring2.position.y = 0.95;
   ring2.rotation.x = Math.PI / 2.6;
-  ring2.userData.cannotReceiveAO = true;
   group.add(ring2);
 
   // ── Glitch scanline band ──
@@ -188,7 +186,6 @@ export function buildHackVisuals(): THREE.Group {
   });
   const scan = new THREE.Mesh(scanGeo(), scanMat);
   scan.position.y = 0.9;
-  scan.userData.cannotReceiveAO = true;
   group.add(scan);
 
   // ── HACKED indicator hovering over the head ──
@@ -350,8 +347,6 @@ export class HackBeam {
     });
     this.core = new THREE.Mesh(this.variants[0].core, this.coreMat);
     this.glow = new THREE.Mesh(this.variants[0].glow, this.glowMat);
-    this.core.userData.cannotReceiveAO = true;
-    this.glow.userData.cannotReceiveAO = true;
     this.group.add(this.glow, this.core);
 
     // Branching forks — short dead-end arcs that split off the main bolt.
@@ -371,7 +366,6 @@ export class HackBeam {
       const forkCurve = new THREE.CatmullRomCurve3(forkPts);
       const forkGeo = new THREE.TubeGeometry(forkCurve, 6, 0.03, 5, false);
       const fork = new THREE.Mesh(forkGeo, this.coreMat);
-      fork.userData.cannotReceiveAO = true;
       this.group.add(fork);
     }
 
@@ -383,7 +377,6 @@ export class HackBeam {
     const packetGeo = new THREE.OctahedronGeometry(0.13, 0);
     for (let i = 0; i < 4; i++) {
       const m = new THREE.Mesh(packetGeo, this.packetMat);
-      m.userData.cannotReceiveAO = true;
       m.userData.phase = i / 4;
       this.packets.push(m);
       this.group.add(m);

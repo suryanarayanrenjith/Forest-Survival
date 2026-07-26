@@ -11,7 +11,7 @@
 
 ---
 
-Survive endless, escalating enemy waves across **eight distinct biome maps**. Fight through **6 enemy types** with **8 unlockable weapons**, choose from **8 character classes**, and push your score as high as you can. Features roguelike wave perks, daily challenges, mutators, persistent account progression, and P2P multiplayer — built with React, Three.js, Rapier physics, and Convex entirely through conversational AI coding.
+Survive endless, escalating enemy waves across **eight distinct biome maps**. Fight through **10 enemy types** with **8 unlockable weapons**, choose from **8 character classes**, and push your score as high as you can. Features roguelike wave perks, daily challenges, mutators, persistent account progression, and P2P multiplayer — built with React, Three.js, Rapier physics, and Convex entirely through conversational AI coding.
 
 ---
 
@@ -65,9 +65,38 @@ Eight selectable classes, each with a **signature active ability** (Q) and a mec
 | Fast | Blue | 30 | Agile, dodges bullets |
 | Tank | Green | 150 | Slow, heavy hitter |
 | Sniper | Cyan | 40 | Kites at range, fires telegraphed energy bolts |
-| Boss (Overlord) | Violet | 300 | Apex summoner — calls reinforcements, immune to Subverter |
+| Revenant | Gold | 46 | Rare apex trickster — shields, blinks, self-heals |
+| Boss (Overlord) | Violet | 900 | Apex summoner — calls reinforcements, immune to Subverter |
 
-Boss wave timing, enrage phases, mini-boss crowns, and environmental threats are detailed in the **[FAQ →](https://github.com/suryanarayanrenjith/Forest-Survival/wiki/FAQ)**
+### Tactical archetypes
+
+Four solo-only enemies that each force a **different** response, rather than just being tougher:
+
+| Type | Color | Base HP | Forces you to |
+|------|-------|---------|---------------|
+| Bulwark | Slate/cyan | 120 | **Flank.** A frontal shield eats all but 12% of anything hitting its front arc — and it turns slowly enough that getting around it actually works |
+| Leaper | Orange | 42 | **React.** Crouches with a loud tell, then pounces over your cover. Wide open when it lands |
+| Howler | Violet | 55 | **Prioritise.** Never really fights — it shields everything near it. Ignore it and the swarm stops dying |
+| Splitter | Green | 95 | **Choose your weapon.** Bursts into three runners on death. Don't pop it in your face |
+
+The Overlord also caps how much damage a single bullet can do to it (14% of max HP), so no build one-shots it — explosives are exempt.
+
+Boss wave timing, enrage phases, mini-boss crowns, and environmental threats are detailed in the **[Enemies →](https://github.com/suryanarayanrenjith/Forest-Survival/wiki/Enemies)** wiki page.
+
+---
+
+## The World Fights Back
+
+Terrain isn't scenery. **Lava** burns, **toxic sludge** corrodes, and **frozen ponds** are slick — and all of it hurts enemies on exactly the same terms, so kiting a pack through a lava field is a real play. Weather has teeth too: a sandstorm or blizzard genuinely hides you by cutting how far enemies can pick you out, deep snow drags, and heavy rain masks your footsteps.
+
+Waves have **shapes**. From wave 4, roughly half of all solo waves are dealt one of four characters that change the mix, the spawn distance and the pacing — the rest stay standard so the specials keep their identity:
+
+| Shape | What arrives | What it asks |
+|-------|-------------|--------------|
+| **Horde** | Half again as many, light and fast, spawning close | Back off, funnel them, keep feeding the magazine |
+| **Elite** | Half as many, heavily armoured, mostly at once | Focus fire and make shots count |
+| **Siege** | Sniper-heavy, at long range | Keep moving, break line of sight |
+| **Ambush** | Very close, on every bearing, with no warning | Spin up fast and check behind you |
 
 ---
 
@@ -115,6 +144,9 @@ Full setup — Convex provisioning, auth keys, environment variables, and troubl
 
 | Wiki Page | What it covers |
 |-----------|---------------|
+| [Gameplay](https://github.com/suryanarayanrenjith/Forest-Survival/wiki/Gameplay) | Core loop, modes, wave shapes, boss schedule, difficulty scaling, scoring |
+| [Enemies](https://github.com/suryanarayanrenjith/Forest-Survival/wiki/Enemies) | Full roster, tactical archetypes, boss mechanics and damage cap, Sentinels |
+| [World](https://github.com/suryanarayanrenjith/Forest-Survival/wiki/World) | Maps, terrain streaming, hazard pools, weather effects, day/night cycle |
 | [Technical Overview](https://github.com/suryanarayanrenjith/Forest-Survival/wiki/Technical-Overview) | Stack, runtime architecture, gameplay modules, networking, data model, deployment |
 | [Installation](https://github.com/suryanarayanrenjith/Forest-Survival/wiki/Installation) | Requirements, Convex setup, local dev, production build, multiplayer notes, troubleshooting |
 | [Configuration](https://github.com/suryanarayanrenjith/Forest-Survival/wiki/Configuration) | Environment variables, game settings, graphics presets, key bindings, build config |

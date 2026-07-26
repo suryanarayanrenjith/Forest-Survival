@@ -369,7 +369,6 @@ export class UplinkNetwork {
     fieldWall.position.y = 4;
     group.add(fieldWall);
 
-    group.traverse((o) => { o.userData.cannotReceiveAO = true; });
     scene.add(group);
 
     const spire: SpireParts = {

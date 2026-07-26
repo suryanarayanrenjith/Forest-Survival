@@ -8,18 +8,50 @@ import * as THREE from 'three';
 let sharedFlashTexture: THREE.CanvasTexture | null = null;
 function getFlashTexture(): THREE.CanvasTexture {
   if (sharedFlashTexture) return sharedFlashTexture;
+  const S = 256; // 128 → 256: the star points were mushy at the old size
   const canvas = document.createElement('canvas');
-  canvas.width = 128;
-  canvas.height = 128;
+  canvas.width = canvas.height = S;
   const context = canvas.getContext('2d')!;
-  const gradient = context.createRadialGradient(64, 64, 0, 64, 64, 64);
-  gradient.addColorStop(0, 'rgba(255, 255, 200, 1)');
-  gradient.addColorStop(0.3, 'rgba(255, 200, 50, 0.9)');
-  gradient.addColorStop(0.6, 'rgba(255, 140, 0, 0.6)');
-  gradient.addColorStop(0.85, 'rgba(255, 80, 0, 0.3)');
+  const c = S / 2;
+
+  // A real muzzle flash is a burning STAR of expanding gas, not a round glow.
+  // The old texture was a pure radial gradient, which is why every shot read as
+  // a soft orange blob. Spikes first (under the core), then the hot core on top.
+  context.save();
+  context.translate(c, c);
+  const POINTS = 7;
+  for (let i = 0; i < POINTS; i++) {
+    // Irregular lengths — a symmetric star reads as a decal, not an explosion.
+    const len = c * (0.55 + (i % 3) * 0.16);
+    const halfWidth = 0.10 + (i % 2) * 0.05;
+    const a = (i / POINTS) * Math.PI * 2;
+    context.save();
+    context.rotate(a);
+    const g = context.createLinearGradient(0, 0, len, 0);
+    g.addColorStop(0, 'rgba(255, 230, 140, 0.95)');
+    g.addColorStop(0.45, 'rgba(255, 170, 30, 0.55)');
+    g.addColorStop(1, 'rgba(255, 90, 0, 0)');
+    context.fillStyle = g;
+    context.beginPath();
+    context.moveTo(0, 0);
+    context.lineTo(len, -len * halfWidth);
+    context.lineTo(len, len * halfWidth);
+    context.closePath();
+    context.fill();
+    context.restore();
+  }
+  context.restore();
+
+  // Hot core — tight and near-white, so the centre still blows out under bloom.
+  const gradient = context.createRadialGradient(c, c, 0, c, c, c * 0.62);
+  gradient.addColorStop(0, 'rgba(255, 255, 225, 1)');
+  gradient.addColorStop(0.22, 'rgba(255, 210, 90, 0.92)');
+  gradient.addColorStop(0.5, 'rgba(255, 140, 0, 0.5)');
+  gradient.addColorStop(0.78, 'rgba(255, 80, 0, 0.18)');
   gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
   context.fillStyle = gradient;
-  context.fillRect(0, 0, 128, 128);
+  context.fillRect(0, 0, S, S);
+
   sharedFlashTexture = new THREE.CanvasTexture(canvas);
   return sharedFlashTexture;
 }
@@ -62,7 +94,6 @@ function acquireFlashSprite(): THREE.Sprite {
   });
   const sprite = new THREE.Sprite(mat);
   sprite.scale.set(0.8, 0.8, 0.8); // Larger, more visible flash
-  sprite.userData.cannotReceiveAO = true;
   return sprite;
 }
 
@@ -73,6 +104,9 @@ export function clearFlashSpritePool(): void {
 }
 
 export class MuzzleFlash {
+  /** Single source of truth for spawn + fade curve — they must not drift. */
+  private static readonly LIFETIME = 0.10;
+
   light: THREE.PointLight | null;
   sprite: THREE.Sprite;
   lifetime: number = 0;
@@ -108,9 +142,18 @@ export class MuzzleFlash {
     // acquire); the flash texture is shared across all flashes.
     this.sprite = acquireFlashSprite();
     this.sprite.position.copy(position);
+    // Per-shot ROLL + SIZE jitter. The texture is shared, so without this every
+    // flash is the identical stamp in the identical orientation — which is what
+    // made sustained fire read as one flickering decal. Each pooled sprite owns
+    // its own SpriteMaterial, so rotating one never touches another in flight.
+    (this.sprite.material as THREE.SpriteMaterial).rotation = Math.random() * Math.PI * 2;
+    const size = 0.78 + Math.random() * 0.30;
+    this.sprite.scale.set(size, size, size);
     scene.add(this.sprite);
 
-    this.lifetime = 0.08; // Shorter, snappier flash
+    // 0.08 → 0.10s. Still snappy (six frames at 60fps), but the old value was
+    // brief enough that the bloom pass barely had a frame to bleed it.
+    this.lifetime = MuzzleFlash.LIFETIME;
   }
 
   update(delta: number): boolean {
@@ -121,7 +164,7 @@ export class MuzzleFlash {
     }
 
     // Fast fade out for snappy feel
-    const opacity = Math.pow(this.lifetime / 0.08, 0.5);
+    const opacity = Math.pow(this.lifetime / MuzzleFlash.LIFETIME, 0.5);
     if (this.light) this.light.intensity = this._initialIntensity * opacity;
     if (this.sprite.material instanceof THREE.SpriteMaterial) {
       this.sprite.material.opacity = opacity;
@@ -210,7 +253,6 @@ function acquireSmokeSprite(color: number): THREE.Sprite {
     fog: true,
   });
   const sprite = new THREE.Sprite(mat);
-  sprite.userData.cannotReceiveAO = true;
   return sprite;
 }
 
@@ -353,7 +395,6 @@ export class BulletTracer {
   constructor(scene: THREE.Scene, start: THREE.Vector3, end: THREE.Vector3, _color: number) {
     this.geometry = acquireTracerGeometry(start, end);
     this.line = new THREE.Line(this.geometry, sharedTracerMaterial);
-    this.line.userData.cannotReceiveAO = true;
     // Pooled geometry carries a stale boundingSphere; a tracer is a one-frame
     // flash fired straight down the player's aim (always on-screen), so skip
     // the frustum test rather than recompute a sphere each shot.
@@ -527,7 +568,6 @@ export class ImpactEffect {
     this.geometry.getAttribute('color').needsUpdate = true;
 
     this.particles = new THREE.Points(this.geometry, sharedImpactMaterial);
-    this.particles.userData.cannotReceiveAO = true;
     // A pooled geometry keeps the previous user's boundingSphere, so per-object
     // frustum culling would test against a stale bounds. These are tiny,
     // sub-second bursts that only ever spawn at the point of combat (always
@@ -636,7 +676,6 @@ function buildExplosionRig(): ExplosionRig {
     blending: THREE.AdditiveBlending, depthWrite: false,
   });
   const fireball = new THREE.Mesh(EXPLO_FIREBALL_GEO, fireMat);
-  fireball.userData.cannotReceiveAO = true;
   fireball.renderOrder = 992;
   group.add(fireball);
 
@@ -645,7 +684,6 @@ function buildExplosionRig(): ExplosionRig {
     blending: THREE.AdditiveBlending, depthWrite: false,
   });
   const flash = new THREE.Mesh(EXPLO_FLASH_GEO, flashMat);
-  flash.userData.cannotReceiveAO = true;
   flash.renderOrder = 994;
   group.add(flash);
 
@@ -654,7 +692,6 @@ function buildExplosionRig(): ExplosionRig {
     blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
   });
   const shock = new THREE.Mesh(EXPLO_SHOCK_GEO, shockMat);
-  shock.userData.cannotReceiveAO = true;
   shock.renderOrder = 991;
   group.add(shock);
 
@@ -814,7 +851,6 @@ export class FireNovaEffect {
     this.ringFront = new THREE.Mesh(NOVA_RING_GEO, this.ringFrontMat);
     this.ringFront.position.y = 0.14;
     this.ringFront.renderOrder = 991;
-    this.ringFront.userData.cannotReceiveAO = true;
     this.group.add(this.ringFront);
 
     // Trailing ring — deeper red, lags behind for a double-pulse front.
@@ -825,7 +861,6 @@ export class FireNovaEffect {
     this.ringBack = new THREE.Mesh(NOVA_RING_GEO, this.ringBackMat);
     this.ringBack.position.y = 0.1;
     this.ringBack.renderOrder = 990;
-    this.ringBack.userData.cannotReceiveAO = true;
     this.group.add(this.ringBack);
 
     // Flame dome — the heart of the cast bursts upward then fades.
@@ -836,7 +871,6 @@ export class FireNovaEffect {
     this.dome = new THREE.Mesh(NOVA_DOME_GEO, this.domeMat);
     this.dome.position.y = radius * 0.12;
     this.dome.renderOrder = 993;
-    this.dome.userData.cannotReceiveAO = true;
     this.group.add(this.dome);
 
     // Ember burst — thrown outward + up, arcing back down under gravity.
@@ -865,7 +899,6 @@ export class FireNovaEffect {
       blending: THREE.AdditiveBlending, depthWrite: false,
     });
     this.embers = new THREE.Points(this.emberGeo, this.emberMat);
-    this.embers.userData.cannotReceiveAO = true;
     this.group.add(this.embers);
 
     scene.add(this.group);
@@ -1008,7 +1041,6 @@ export class NukeEffect {
     });
     this.flash = new THREE.Mesh(NUKE_CAP_GEO, this.flashMat);
     this.flash.position.y = radius * 0.32;
-    this.flash.userData.cannotReceiveAO = true;
     this.flash.renderOrder = 996;
     this.group.add(this.flash);
 
@@ -1019,7 +1051,6 @@ export class NukeEffect {
     });
     this.fireball = new THREE.Mesh(NUKE_CAP_GEO, this.fireMat);
     this.fireball.position.y = radius * 0.22;
-    this.fireball.userData.cannotReceiveAO = true;
     this.fireball.renderOrder = 994;
     this.group.add(this.fireball);
 
@@ -1029,7 +1060,6 @@ export class NukeEffect {
       blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
     });
     this.stem = new THREE.Mesh(NUKE_STEM_GEO, this.stemMat);
-    this.stem.userData.cannotReceiveAO = true;
     this.stem.renderOrder = 992;
     this.group.add(this.stem);
 
@@ -1039,7 +1069,6 @@ export class NukeEffect {
       blending: THREE.NormalBlending, depthWrite: false,
     });
     this.cap = new THREE.Mesh(NUKE_CAP_GEO, this.capMat);
-    this.cap.userData.cannotReceiveAO = true;
     this.cap.renderOrder = 993;
     this.group.add(this.cap);
 
@@ -1049,7 +1078,6 @@ export class NukeEffect {
     });
     this.collar = new THREE.Mesh(NUKE_COLLAR_GEO, this.collarMat);
     this.collar.rotation.x = Math.PI / 2; // lie flat (ring axis up)
-    this.collar.userData.cannotReceiveAO = true;
     this.collar.renderOrder = 992;
     this.group.add(this.collar);
 
@@ -1060,7 +1088,6 @@ export class NukeEffect {
     });
     this.shock = new THREE.Mesh(NUKE_RING_GEO, this.shockMat);
     this.shock.position.y = 0.16;
-    this.shock.userData.cannotReceiveAO = true;
     this.shock.renderOrder = 991;
     this.group.add(this.shock);
 
@@ -1071,7 +1098,6 @@ export class NukeEffect {
     });
     this.dust = new THREE.Mesh(NUKE_RING_GEO, this.dustMat);
     this.dust.position.y = 0.1;
-    this.dust.userData.cannotReceiveAO = true;
     this.dust.renderOrder = 990;
     this.group.add(this.dust);
 
@@ -1101,7 +1127,6 @@ export class NukeEffect {
       blending: THREE.AdditiveBlending, depthWrite: false,
     });
     this.debris = new THREE.Points(this.debrisGeo, this.debrisMat);
-    this.debris.userData.cannotReceiveAO = true;
     this.group.add(this.debris);
 
     scene.add(this.group);
@@ -1275,7 +1300,6 @@ function buildCastRig(): CastRig {
   const ring = new THREE.Mesh(NOVA_RING_GEO, ringMat);
   ring.position.y = 0.12;
   ring.renderOrder = 990;
-  ring.userData.cannotReceiveAO = true;
   group.add(ring);
 
   const pillarMat = new THREE.MeshBasicMaterial({
@@ -1285,7 +1309,6 @@ function buildCastRig(): CastRig {
   const pillar = new THREE.Mesh(CAST_PILLAR_GEO, pillarMat);
   pillar.position.y = 2.2;
   pillar.renderOrder = 991;
-  pillar.userData.cannotReceiveAO = true;
   group.add(pillar);
 
   const coreMat = new THREE.MeshBasicMaterial({
@@ -1295,7 +1318,6 @@ function buildCastRig(): CastRig {
   const core = new THREE.Mesh(NOVA_DOME_GEO, coreMat);
   core.position.y = 1.1;
   core.renderOrder = 992;
-  core.userData.cannotReceiveAO = true;
   group.add(core);
 
   const sparkGeo = new THREE.BufferGeometry();
@@ -1306,7 +1328,6 @@ function buildCastRig(): CastRig {
     blending: THREE.AdditiveBlending, depthWrite: false,
   });
   const sparks = new THREE.Points(sparkGeo, sparkMat);
-  sparks.userData.cannotReceiveAO = true;
   // Spark positions are rewritten per cast, so a pooled rig would carry a stale
   // boundingSphere; the burst always plays at the point of action (on-screen).
   sparks.frustumCulled = false;
@@ -1499,7 +1520,6 @@ export class RobotHitSparks {
     this.geometry.getAttribute('color').needsUpdate = true;
 
     this.particles = new THREE.Points(this.geometry, sharedSparkMaterial);
-    this.particles.userData.cannotReceiveAO = true;
     // Pooled geometry → stale boundingSphere; skip frustum culling (tiny,
     // sub-second bursts always at the point of combat). See ImpactEffect.
     this.particles.frustumCulled = false;
@@ -1607,7 +1627,6 @@ function buildBurstPair(): BurstPair {
   });
   const core = new THREE.Sprite(coreMat);
   core.renderOrder = 997;
-  core.userData.cannotReceiveAO = true;
 
   const ringMat = new THREE.SpriteMaterial({
     map: getImpactRingTexture(),
@@ -1618,7 +1637,6 @@ function buildBurstPair(): BurstPair {
   });
   const ring = new THREE.Sprite(ringMat);
   ring.renderOrder = 996;
-  ring.userData.cannotReceiveAO = true;
 
   return { core, ring };
 }

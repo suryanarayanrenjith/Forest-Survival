@@ -15,7 +15,6 @@ import { SpatialGrid } from './utils/SpatialGrid';
 import { AIBehaviorSystem } from './utils/AIBehaviorSystem';
 import { EnemyPerception } from './utils/EnemyPerception';
 import { AttackSystem } from './utils/AttackSystem';
-import { ObstacleAvoidance } from './utils/ObstacleAvoidance';
 import { BulletDodging } from './utils/BulletDodging';
 import { WeatherSystem } from './utils/WeatherSystem';
 import { BiomeSystem } from './utils/BiomeSystem';
@@ -58,21 +57,27 @@ import HitMarkers, { addHitMarker, clearHitMarkers } from './components/HitMarke
 import DamageDirectionIndicator, { triggerDamageDirection, clearDamageDirections } from './components/DamageDirectionIndicator';
 import ScreenEffects, { triggerDamageFlash, triggerScreenShake, triggerKillFlash, triggerHeadshotFlash, triggerAbilityFlash, setWaveEventOverlay, setInterferenceOverlay } from './components/ScreenEffects';
 import ComboDisplay from './components/ComboDisplay';
-import { WEAPONS, type Enemy, type Bullet, type PowerUp, type Particle, type TerrainObject, type Keys, type GameState } from './types/game';
+import { WEAPONS, type Enemy, type Bullet, type PowerUp, type Particle, type TerrainObject, type HazardKind, type Keys, type GameState } from './types/game';
 import { AdaptiveDifficultySystem } from './utils/AdaptiveDifficultySystem';
 import { TacticalDirector } from './utils/TacticalDirector';
-import { ProceduralMissionSystem, type Mission } from './utils/ProceduralMissionSystem';
-import { CombatCoachSystem, type Tip as CoachTip } from './utils/CombatCoachSystem';
-import { PredictiveSpawnSystem } from './utils/PredictiveSpawnSystem';
 import { SmartSkillTreeSystem, type Skill, type PlayStyle } from './utils/SmartSkillTreeSystem';
 import { TutorialSystem, type TutorialStep } from './utils/TutorialSystem';
-import { smartEnemyManager, type EnemyType as PooledEnemyType } from './utils/SmartEnemyManager';
+import { smartEnemyManager, ENEMY_SCALE, ENEMY_SPAWN_CLEARANCE, type EnemyType as PooledEnemyType } from './utils/SmartEnemyManager';
+import { RunEventQueue, type RunContext } from './utils/RunContext';
+import {
+  buildBulwarkShield, buildHowlerAura, buildOvershieldRing, disposeArchetypeAssets,
+  isBlockedByBulwark, BULWARK_FRONT_DAMAGE, TURN_RATE_MULT,
+  HOWLER_AURA_RADIUS, HOWLER_SHIELD_AMOUNT, HOWLER_PULSE_MS, HOWLER_SHIELD_LINGER_MS,
+  LEAP_CROUCH_MS, LEAP_AIR_MAX_MS, LEAP_RECOVER_MS, LEAP_COOLDOWN_MS,
+  LEAP_MIN_RANGE, LEAP_MAX_RANGE, LEAP_IMPACT_DAMAGE, LEAP_ROOT_MS,
+  SPLITTER_CHILDREN,
+} from './utils/EnemyArchetypes';
 import { RagdollSystem } from './utils/RagdollSystem';
 import { BattleDamageSystem } from './utils/BattleDamage';
-import { MissionDisplay } from './components/MissionDisplay';
 import { SkillTreeMenu } from './components/SkillTreeMenu';
-import { TutorialOverlay, CoachTipsDisplay } from './components/TutorialOverlay';
+import { TutorialOverlay } from './components/TutorialOverlay';
 import EnemyIntroBanner from './components/EnemyIntroBanner';
+import BossHealthBar, { setBossHealth } from './components/BossHealthBar';
 import WavePerkPicker from './components/WavePerkPicker';
 import { aggregatePerkBonuses, NEUTRAL_PERK_BONUSES, rollMysteryBox, isPerkPoolExhausted, WAVE_PERKS, type WavePerkId, type PerkBonuses } from './utils/WavePerkRegistry';
 import RunModifierPicker from './components/RunModifierPicker';
@@ -532,8 +537,6 @@ const ForestSurvivalGame = () => {
   const orientationBlockedRef = useRef(false);
 
   // AI SYSTEMS STATE
-  const [activeMissions, setActiveMissions] = useState<Mission[]>([]);
-  const [coachTips, setCoachTips] = useState<CoachTip[]>([]);
   const [showSkillTree, setShowSkillTree] = useState(false);
   const [showTutorial, setShowTutorial] = useState(false);
 
@@ -1198,12 +1201,27 @@ const ForestSurvivalGame = () => {
     // Wire encoding for the host→guest enemy snapshot. APPEND-ONLY — older
     // clients will fall back to 'normal' on an unknown code via the
     // ENEMY_TYPE_FROM_CODE bounds check at the read site.
-    const ENEMY_TYPE_CODE: Record<'normal' | 'fast' | 'tank' | 'boss' | 'ranged' | 'revenant', number> = {
-      normal: 0, fast: 1, tank: 2, boss: 3, ranged: 4, revenant: 5,
+    // Which base steering profile the AI behaviour tree should use for each
+    // archetype. Record-typed so a new archetype must declare one.
+    const STEER_ARCHETYPE: Record<PooledEnemyType, 'normal' | 'fast' | 'tank' | 'boss' | 'ranged'> = {
+      normal: 'normal', fast: 'fast', tank: 'tank', boss: 'boss', ranged: 'ranged',
+      revenant: 'fast', leaper: 'fast', bulwark: 'tank', splitter: 'tank', howler: 'ranged',
     };
-    // (Revenant is solo-only — code 5 exists for type-soundness; it never
-    // actually streams over the MP wire.)
-    const ENEMY_TYPE_FROM_CODE: Array<'normal' | 'fast' | 'tank' | 'boss' | 'ranged' | 'revenant'> = ['normal', 'fast', 'tank', 'boss', 'ranged', 'revenant'];
+    // Typed as Record<PooledEnemyType, …> so adding an archetype to the union
+    // is a COMPILE ERROR here rather than a silently-unencodable enemy.
+    const ENEMY_TYPE_CODE: Record<PooledEnemyType, number> = {
+      normal: 0, fast: 1, tank: 2, boss: 3, ranged: 4, revenant: 5,
+      // Codes 6-9 appended for the tactical archetypes. Like the Revenant
+      // these are solo-only and never actually cross the wire, but the codes
+      // exist so the encoder is total and the ordering stays append-only.
+      bulwark: 6, howler: 7, leaper: 8, splitter: 9,
+    };
+    // (Revenant + the tactical archetypes are solo-only — their codes exist for
+    // type-soundness; they never actually stream over the MP wire.)
+    const ENEMY_TYPE_FROM_CODE: PooledEnemyType[] = [
+      'normal', 'fast', 'tank', 'boss', 'ranged', 'revenant',
+      'bulwark', 'howler', 'leaper', 'splitter',
+    ];
     // Guest-side lookup from netId → mirrored enemy. Host fills netId on spawn.
     const enemyByNetId = new Map<number, Enemy>();
     let nextEnemyNetId = 1;
@@ -1311,6 +1329,8 @@ const ForestSurvivalGame = () => {
       achievementSystem.onUnlock((achievement) => {
         const achievementWithId: QueuedAchievement = { ...achievement, queueId: Date.now() + Math.random() };
         setAchievementQueue((prev) => [...prev, achievementWithId]);
+        // Its own cue — an achievement used to share the generic pickup ping.
+        soundManager.play('cue_achievement', 0.85);
         // Sync the FULL unlocked mask (an idempotent bitwise OR server-side)
         // rather than a single bit, so if one sync is rate-limited the next
         // successful one backfills every achievement earned so far.
@@ -1394,16 +1414,7 @@ const ForestSurvivalGame = () => {
     let lastTacticalStance = tacticalDirector.getStance();
     let nextTacticalCalloutAt = 0; // ms gate so the "swarm adapts" note stays rare
 
-    // 2. Procedural Mission System - Generates unique missions
-    const missionSystem = new ProceduralMissionSystem();
-
-    // 3. Combat Coach System - Provides real-time tips
-    const combatCoach = new CombatCoachSystem();
-
-    // 4. Predictive Spawn System - Smart enemy spawning
-    const spawnSystem = new PredictiveSpawnSystem();
-
-    // 5. Smart Skill Tree - Personalized progression.
+    // 2. Smart Skill Tree - Personalized progression.
     // Authenticated players hydrate persisted skills + points so unlocked
     // skills apply from the first frame (bonuses are computed below at init).
     const skillTree = new SmartSkillTreeSystem();
@@ -2396,6 +2407,11 @@ const ForestSurvivalGame = () => {
     if (ambientMusicEnabled) ambientMusic.start(selectedMap, weatherSystem.getStormKind());
     // Live modifiers, refreshed at the top of every frame.
     let weatherMods = weatherSystem.update(0, camera.position, !atmosphericSettings.sunVisible);
+    // Gameplay consequences derived from the live weather each frame (see the
+    // block in animate). 1 = no effect, which is what a clear sky produces.
+    let weatherAggroMult = 1;     // scales enemy aggro range (storms hide you)
+    let weatherMoveMult = 1;      // deep snow / loose sand drag
+    let weatherFootstepMult = 1;  // heavy rain masks footstep audio
 
     // === BIOME SYSTEM ===
     const biomeSystem = new BiomeSystem(scene, graphicsPreset.terrainDetail);
@@ -2484,6 +2500,13 @@ const ForestSurvivalGame = () => {
     // O(near) instead of scanning every loaded prop. Maintained on add/remove.
     const bushGrid = new SpatialGrid<TerrainObject>(8);
     let maxBushRadius = 0;
+    // ── Hazard-pool index (lava / toxic sludge / ice) ──────────────────────
+    // Same reasoning as the bush grid: these are walk-THROUGH props that need a
+    // per-frame "am I standing in one?" test, so they get their own O(near)
+    // index rather than scanning every loaded prop. They were pure decoration
+    // until now (see HazardKind).
+    const hazardGrid = new SpatialGrid<TerrainObject>(8);
+    let maxHazardRadius = 0;
     const addTerrainObject = (obj: TerrainObject) => {
       if (!terrainInstancer.add(obj.mesh)) scene.add(obj.mesh);
       terrainObjects.push(obj);
@@ -2494,6 +2517,10 @@ const ForestSurvivalGame = () => {
         if (obj.radius > maxBushRadius) maxBushRadius = obj.radius;
         bushGrid.insert(obj, obj.x, obj.z);
       }
+      if (obj.hazard) {
+        if (obj.radius > maxHazardRadius) maxHazardRadius = obj.radius;
+        hazardGrid.insert(obj, obj.x, obj.z);
+      }
       terrainVersion++;
     };
     const removeTerrainObjectAt = (index: number) => {
@@ -2501,9 +2528,49 @@ const ForestSurvivalGame = () => {
       if (!terrainInstancer.remove(obj.mesh)) scene.remove(obj.mesh);
       if (obj.collidable) collidableGrid.remove(obj, obj.x, obj.z);
       else if (obj.type === 'bush') bushGrid.remove(obj, obj.x, obj.z);
+      if (obj.hazard) hazardGrid.remove(obj, obj.x, obj.z);
       terrainObjects.splice(index, 1);
       terrainVersion++;
     };
+
+    // ── HAZARD POOLS ───────────────────────────────────────────────────────
+    // Which hazard (if any) is at this world position, and how deep in it we
+    // are (0 at the rim → 1 dead centre). Returns null off any pool, so the
+    // common case is one grid query and an early out.
+    const HAZARD_BODY_RADIUS = 0.7;
+    const hazardAt = (x: number, z: number): { kind: HazardKind; depth: number } | null => {
+      if (maxHazardRadius === 0) return null;
+      const cands = hazardGrid.queryRadius(x, z, HAZARD_BODY_RADIUS + maxHazardRadius);
+      let best: HazardKind | null = null;
+      let bestDepth = 0;
+      for (let i = 0; i < cands.length; i++) {
+        const h = cands[i];
+        if (!h.hazard) continue;
+        const dx = h.x - x, dz = h.z - z;
+        // Slightly INSIDE the visual rim so the edge of the mesh is safe —
+        // brushing past a pool shouldn't punish you.
+        const reach = h.radius * 0.9;
+        const d2 = dx * dx + dz * dz;
+        if (d2 >= reach * reach) continue;
+        const pen = 1 - Math.sqrt(d2) / reach;
+        if (pen > bestDepth) { bestDepth = pen; best = h.hazard; }
+      }
+      return best ? { kind: best, depth: bestDepth } : null;
+    };
+    /** Per-hazard tuning. Damage is per SECOND, applied on a tick. */
+    const HAZARD_RULES: Record<HazardKind, { dps: number; slow: number; tickMs: number }> = {
+      // Lava: severe and immediate. Crossing costs real HP; camping in it kills.
+      lava: { dps: 26, slow: 0.55, tickMs: 400 },
+      // Toxic: a slow bleed you can cross safely but shouldn't fight in.
+      toxic: { dps: 9, slow: 0.78, tickMs: 600 },
+      // Ice: no damage — it's a MOBILITY hazard. Faster, but see the reduced
+      // control in the movement block.
+      ice: { dps: 0, slow: 1.15, tickMs: 0 },
+    };
+    let nextHazardTickAt = 0;
+    // Live hazard state, recomputed each frame in the movement block and read
+    // by the movement multiplier + the footstep/VFX code.
+    let playerHazard: { kind: HazardKind; depth: number } | null = null;
 
     // ── BUSH WADE SLOWDOWN ──────────────────────────────────────────────────
     // Returns a movement multiplier ≤1 while the player is pushing through
@@ -2918,6 +2985,8 @@ const ForestSurvivalGame = () => {
     let rangedEnemyIntroFired = false;
     let bossIntroFired = false; // First full-boss encounter banner.
     let revenantIntroFired = false; // First Revenant (rare apex trickster) banner.
+    // Which tactical archetypes have already shown their teaching banner.
+    const archetypeIntroFired = new Set<PooledEnemyType>();
     // ── BOSS ERA START WAVE (difficulty-scaled) ──────────────────────────────
     // The pink boss (and the Revenant, which appears in the same window) shows
     // up EARLIER on harder difficulties — only Easy waits until wave 10. From
@@ -3103,6 +3172,28 @@ const ForestSurvivalGame = () => {
     const playerBallisticsMult = (): number =>
       netWaveEvent === 'glitch' ? 1 - 0.25 * Math.min(1, netWaveEventIntensity) : 1;
 
+    // ── BOSS PER-HIT DAMAGE CAP ──────────────────────────────────────────
+    //
+    // A single BULLET can never remove more than this fraction of a boss's max
+    // HP, so the Overlord always takes at least ~7 well-placed rounds to bring
+    // down no matter how hard the player's build hits.
+    //
+    // Why a cap and not just more HP: player damage is MULTIPLICATIVE (Heavy
+    // Hitter × Skull Splitter × damage perks × Glass Cannon × the 2× headshot),
+    // so it grows far faster over a run than any flat HP figure can chase. With
+    // HP alone the boss is either unkillable early or a one-shot late; the cap
+    // makes the fight take a similar number of hits at every point in the run,
+    // which is what "requires effort" actually means.
+    //
+    // Deliberately BULLETS ONLY. Explosives, the nuke and ability bursts are
+    // uncapped — the launcher landing a real chunk on a boss is the reward for
+    // choosing it, and a Tactical Nuke should still be a nuke.
+    const BOSS_MAX_HIT_FRACTION = 0.14; // ⇒ minimum 8 rounds
+    const capBossHit = (enemy: Enemy, dmg: number): number => {
+      if (enemy.type !== 'boss' && !enemy.isMiniBoss) return dmg;
+      return Math.min(dmg, enemy.maxHealth * BOSS_MAX_HIT_FRACTION);
+    };
+
     // Gun Model - CRITICAL FIX
     const gunModel = new GunModel('pistol');
     camera.add(gunModel.group);
@@ -3199,7 +3290,7 @@ const ForestSurvivalGame = () => {
       const led = new THREE.Mesh(reg(new THREE.SphereGeometry(0.05, 10, 8)), regM(new THREE.MeshBasicMaterial({ color: 0xff3324, toneMapped: false })));
       led.position.set(0.2, 0.5, -0.22);
       group.add(led);
-      group.traverse((o) => { o.userData.cannotReceiveAO = true; if (o instanceof THREE.Mesh) o.castShadow = false; });
+      group.traverse((o) => { if (o instanceof THREE.Mesh) o.castShadow = false; });
       return { group, plunger, led };
     };
     const detonatorVM = buildDetonatorViewmodel();
@@ -3346,7 +3437,6 @@ const ForestSurvivalGame = () => {
       shieldMesh.rotation.set(0.06, 0.36, 0.05);
       shieldMesh.visible = false;
       shieldMesh.renderOrder = 5;
-      shieldMesh.traverse((o) => { o.userData.cannotReceiveAO = true; });
       camera.add(shieldMesh);
     }
 
@@ -3418,7 +3508,6 @@ const ForestSurvivalGame = () => {
 
       ambientParticles = new THREE.Points(particleGeo, particleMat);
       ambientParticles.frustumCulled = false;
-      ambientParticles.userData.cannotReceiveAO = true;
       scene.add(ambientParticles);
     }
 
@@ -3646,10 +3735,15 @@ const ForestSurvivalGame = () => {
     let killsSinceLastDrop = 0;
     let isGameOver = false;
     let paused = false;
+    // ── RUN CONTEXT ──────────────────────────────────────────────────────
+    // The read/write boundary for gameplay systems that live outside this
+    // effect (see utils/RunContext.ts for the full rationale). Allocated ONCE
+    // and mutated in place by refreshRunContext() each frame; systems read it
+    // and emit() intents that drainRunEvents() applies at a single safe point.
+    const runEvents = new RunEventQueue();
     let combo = 0;
     let killStreak = 0;
     let lastKillTime = 0;
-    const startTime = Date.now(); // Track game start time
     let currentWeapon = 'pistol';
     // Fire-rate gate — timestamp of the next allowed trigger pull. Replaces the
     // old `canShoot` flag + per-shot setTimeout pair: exact rate gating with
@@ -3854,14 +3948,12 @@ const ForestSurvivalGame = () => {
         );
         wire.scale.y = 0.45 + Math.random() * 0.55; // ragged, uneven tear
         wire.castShadow = false;
-        wire.userData.cannotReceiveAO = true;
         // Scorched connector glowing at the torn end (counter-scaled so the
         // parent's length stretch doesn't egg the sphere).
         const tip = new THREE.Mesh(wireTipGeo, wireTipMat);
         tip.position.y = -1;
         tip.scale.set(1, 1 / wire.scale.y, 1);
         tip.castShadow = false;
-        tip.userData.cannotReceiveAO = true;
         wire.add(tip);
         bundle.add(wire);
       }
@@ -3875,6 +3967,39 @@ const ForestSurvivalGame = () => {
 
     // Game objects
     const enemies: Enemy[] = [];
+
+    // The live RunContext handed to external gameplay systems. Allocated ONCE
+    // here; refreshRunContext() (in animate) overwrites the per-frame fields in
+    // place, so no system ever causes a per-frame allocation. Everything a
+    // system is allowed to touch is on this object — see utils/RunContext.ts.
+    const runCtx: RunContext = {
+      scene,
+      camera,
+      preset: graphicsPreset,
+      solo: !isMultiplayer,
+      difficulty: classicDifficulty,
+      dt: 0,
+      rawDt: 0,
+      frameScale: 1,
+      nowMs: Date.now(),
+      tSec: 0,
+      playerPos: camera.position,
+      playerHp: health,
+      playerMaxHp: playerMaxHealth,
+      wave,
+      paused: false,
+      gameOver: false,
+      enemies,
+      groundY: visualGroundY,
+      queryObstacles: (x, z, r) => {
+        // The grid is rebuilt lazily as terrain streams in; every other caller
+        // in this file does the same before querying.
+        rebuildTerrainGridIfStale();
+        return terrainGrid.queryRadius(x, z, r);
+      },
+      emit: runEvents.emit,
+    };
+
     const bullets: Bullet[] = [];
     // Enemy projectiles — fired by ranged "sniper" enemies. Distinct from
     // player bullets so the bullet-vs-enemy collision path can't accidentally
@@ -3922,7 +4047,10 @@ const ForestSurvivalGame = () => {
     interface ShellCasing { mesh: THREE.Mesh; vel: THREE.Vector3; spin: THREE.Vector3; life: number; bounced?: boolean; }
     const shellCasings: ShellCasing[] = [];
     const MAX_CASINGS = 40;
-    const casingGeo = new THREE.CylinderGeometry(0.022, 0.026, 0.12, 6);
+    // 6 → 12 segments: casings land right in front of the player and a hexagon
+    // silhouette was clearly readable at that range. Still trivial geometry, and
+    // it's ONE shared buffer for every casing in the game.
+    const casingGeo = new THREE.CylinderGeometry(0.022, 0.026, 0.12, 12);
     const casingMat = new THREE.MeshStandardMaterial({
       color: 0xd9a441, metalness: 0.95, roughness: 0.3, emissive: 0x2a1a00, emissiveIntensity: 0.35,
     });
@@ -4181,49 +4309,101 @@ const ForestSurvivalGame = () => {
     //   • OUTER GLOW — wider, low-opacity additive sphere for the tracer
     //                  haze. Both glows are toneMapped so bloom catches
     //                  them as a clean halo, not a city-block blob.
-    const sharedBulletCoreGeo = new THREE.SphereGeometry(0.11, 12, 10);
-    const sharedBulletInnerGlowGeo = new THREE.SphereGeometry(0.20, 12, 10);
-    const sharedBulletOuterGlowGeo = new THREE.SphereGeometry(0.36, 12, 10);
-    const projectileCoreColor = 0xfff2a6;
-    const projectileGlowColor = 0xffc247;
+    // ── TRACER ROUND ────────────────────────────────────────────────────
+    // The previous projectile was three CONCENTRIC YELLOW SPHERES (r=0.11 /
+    // 0.20 / 0.36) — 0.72 units across, uniformly amber, with no orientation.
+    // At any distance that reads as a floating yellow blob, not a bullet.
+    //
+    // A real tracer is not a ball of light. It is a very small, very hot
+    // projectile with an INCANDESCENT TAIL streaming behind it, and the eye
+    // reads the ELONGATION as speed. So:
+    //
+    //   • HEAD  — a tiny, near-white capsule. Small enough to read as a round.
+    //   • TAIL  — a cone tapering BACKWARD along the flight axis, amber at the
+    //             head fading to deep orange. This is what sells the motion.
+    //   • HAZE  — one slim additive sleeve for the bloom to catch, so the
+    //             tracer glows without becoming a blob again.
+    //
+    // A previous attempt at an elongated round was reverted because it looked
+    // like it "curved" in flight — but that was an ORIENTATION bug, not a
+    // shape problem: the group was never aimed along its velocity, so the long
+    // axis pointed a fixed direction while the round flew somewhere else. Now
+    // buildBullet's caller aims it once at spawn (bullets travel in a straight
+    // line, so once is exact and costs nothing per frame).
+    //
+    // Geometry is built along -Z (the flight axis) to match the shoot path's
+    // `setFromUnitVectors(_NEG_Z, direction)` convention used by rockets.
+    const sharedBulletCoreGeo = (() => {
+      // Slim capsule: a bullet is ~4× longer than it is wide.
+      const g = new THREE.CapsuleGeometry(0.035, 0.11, 4, 8);
+      g.rotateX(Math.PI / 2); // +Y → -Z
+      return g;
+    })();
+    const sharedBulletInnerGlowGeo = (() => {
+      // The hot tail — widest at the round, tapering to nothing behind it.
+      const g = new THREE.ConeGeometry(0.075, 0.95, 10, 1, true);
+      g.rotateX(-Math.PI / 2);   // apex toward -Z…
+      g.translate(0, 0, 0.48);   // …then push the body BEHIND the head
+      return g;
+    })();
+    const sharedBulletOuterGlowGeo = (() => {
+      // Wider, fainter sleeve around the tail purely for bloom pickup.
+      const g = new THREE.ConeGeometry(0.15, 1.35, 10, 1, true);
+      g.rotateX(-Math.PI / 2);
+      g.translate(0, 0, 0.66);
+      return g;
+    })();
+    // White-hot at the round, cooling to orange down the tail — the colour
+    // gradient of something actually burning, rather than one flat yellow.
+    const projectileCoreColor = 0xfff6e2;
+    const projectileTailColor = 0xffb347;
+    const projectileGlowColor = 0xff7a1e;
     const bulletCoreMatCache = new Map<number, THREE.MeshBasicMaterial>();
     const bulletInnerGlowMatCache = new Map<number, THREE.MeshBasicMaterial>();
     const bulletOuterGlowMatCache = new Map<number, THREE.MeshBasicMaterial>();
 
     const buildBullet = (_color: number): THREE.Group => {
       const cacheKey = projectileCoreColor;
-      // Bright core — LDR-bounded so bloom is a halo, not a flare blob.
+      // The round itself — near-white and slightly over-driven so it stays the
+      // brightest point of the tracer and bloom blooms from THERE, not from
+      // the whole silhouette.
       let coreMat = bulletCoreMatCache.get(cacheKey);
       if (!coreMat) {
         coreMat = new THREE.MeshBasicMaterial({
-          color: new THREE.Color(projectileCoreColor).multiplyScalar(1.35),
+          color: new THREE.Color(projectileCoreColor).multiplyScalar(1.6),
           toneMapped: true,
           fog: false,
         });
         bulletCoreMatCache.set(cacheKey, coreMat);
       }
-      // Inner halo — additive, soft warm orange.
+      // Burning tail — amber, additive, DoubleSide so the open cone reads as
+      // solid flame from any viewing angle (BackSide alone vanishes head-on).
       let innerGlowMat = bulletInnerGlowMatCache.get(cacheKey);
       if (!innerGlowMat) {
         innerGlowMat = new THREE.MeshBasicMaterial({
-          color: new THREE.Color(projectileCoreColor),
+          color: new THREE.Color(projectileTailColor),
           transparent: true,
-          opacity: 0.55,
+          opacity: 0.62,
           blending: THREE.AdditiveBlending,
           depthWrite: false,
           toneMapped: true,
           fog: false,
-          side: THREE.BackSide,
+          side: THREE.DoubleSide,
         });
         bulletInnerGlowMatCache.set(cacheKey, innerGlowMat);
       }
-      // Outer halo — wider tracer haze.
+      // Outer haze — deep orange, faint. Just enough for the bloom pass.
+      // BackSide, not DoubleSide: this is the widest mesh of the three and so
+      // the most expensive to shade, and on a faint additive sleeve the far
+      // wall alone is visually indistinguishable from both walls. The minigun
+      // can put 20+ tracers on screen at once, so halving the fragment cost
+      // here is worth more than the difference is worth looking at.
       let outerGlowMat = bulletOuterGlowMatCache.get(cacheKey);
       if (!outerGlowMat) {
         outerGlowMat = new THREE.MeshBasicMaterial({
           color: new THREE.Color(projectileGlowColor),
           transparent: true,
-          opacity: 0.28,
+          opacity: 0.20,
           blending: THREE.AdditiveBlending,
           depthWrite: false,
           toneMapped: true,
@@ -4243,13 +4423,9 @@ const ForestSurvivalGame = () => {
       outerGlow.renderOrder = 994;
       innerGlow.renderOrder = 995;
       core.renderOrder = 996;
-      outerGlow.userData.cannotReceiveAO = true;
-      innerGlow.userData.cannotReceiveAO = true;
-      core.userData.cannotReceiveAO = true;
       group.add(outerGlow);
       group.add(innerGlow);
       group.add(core);
-      group.userData.cannotReceiveAO = true;
       return group;
     };
     // Free-list of retired bullet visuals (geo/materials all shared, so a
@@ -4301,7 +4477,6 @@ const ForestSurvivalGame = () => {
         emissive: 0x3a2606, emissiveIntensity: 0.5, flatShading: true,
       }));
       plate.castShadow = true;
-      plate.userData.cannotReceiveAO = true;
       g.add(plate);
       // Glowing energy-rim outline (bright gold edges).
       const rim = new THREE.LineSegments(
@@ -4317,14 +4492,12 @@ const ForestSurvivalGame = () => {
       );
       boss.position.z = 0.12;
       boss.castShadow = true;
-      boss.userData.cannotReceiveAO = true;
       g.add(boss);
       const emblem = new THREE.Mesh(
         new THREE.OctahedronGeometry(0.13, 0),
         new THREE.MeshBasicMaterial({ color: 0xffe8a0, toneMapped: false, fog: false }),
       );
       emblem.position.z = 0.2;
-      emblem.userData.cannotReceiveAO = true;
       g.add(emblem);
       // Rivet studs down the spine + across the shoulders.
       const studMat = new THREE.MeshStandardMaterial({ color: 0xffe08a, metalness: 1, roughness: 0.25 });
@@ -4332,7 +4505,6 @@ const ForestSurvivalGame = () => {
       [[-0.55, 0.6], [0.55, 0.6], [-0.5, -0.2], [0.5, -0.2], [0, -0.7]].forEach(([sx, sy]) => {
         const stud = new THREE.Mesh(studGeo, studMat);
         stud.position.set(sx, sy, 0.09);
-        stud.userData.cannotReceiveAO = true;
         g.add(stud);
       });
       // Braced in front of the torso, angled slightly across the body (left-arm
@@ -4376,7 +4548,6 @@ const ForestSurvivalGame = () => {
     const buildMiniBossCrown = (): THREE.Group => {
       const g = new THREE.Group();
       const band = new THREE.Mesh(_crownBandGeo, _crownGoldMat);
-      band.userData.cannotReceiveAO = true;
       g.add(band);
       const SPIKES = 6;
       for (let i = 0; i < SPIKES; i++) {
@@ -4384,12 +4555,10 @@ const ForestSurvivalGame = () => {
         const spike = new THREE.Mesh(_crownSpikeGeo, _crownGoldMat);
         spike.position.set(Math.cos(ang) * 0.31, 0.24, Math.sin(ang) * 0.31);
         spike.rotation.y = -ang; // keep the 4-sided pyramid faces aligned outward
-        spike.userData.cannotReceiveAO = true;
         g.add(spike);
       }
       const jewel = new THREE.Mesh(_crownJewelGeo, _crownJewelMat);
       jewel.position.y = 0.3;
-      jewel.userData.cannotReceiveAO = true;
       g.add(jewel);
       g.userData.jewel = jewel; // counter-spun in the enemy loop for sparkle
       return g;
@@ -4397,12 +4566,12 @@ const ForestSurvivalGame = () => {
 
 // Create enemy with OPTIMIZED pooled meshes from SmartEnemyManager
     // Returns null if enemy limit reached (adaptive performance management)
-    const createEnemy = (x: number, z: number, type: 'normal' | 'fast' | 'tank' | 'boss' | 'ranged' | 'revenant' = 'normal'): Enemy | null => {
+    const createEnemy = (x: number, z: number, type: PooledEnemyType = 'normal'): Enemy | null => {
       // === SMART ENEMY MANAGER: Acquire pooled mesh ===
       // This uses shared geometries/materials and object pooling for optimal performance
 
-      // Get the scale for this enemy type (must match SmartEnemyManager ENEMY_CONFIGS)
-      const bodyScale = type === 'fast' ? 0.7 : type === 'tank' ? 1.5 : type === 'boss' ? 2.0 : type === 'ranged' ? 1.05 : type === 'revenant' ? 0.85 : 1.0;
+      // Get the scale for this enemy type (single source of truth: ENEMY_CONFIGS)
+      const bodyScale = ENEMY_SCALE[type];
       const position = new THREE.Vector3(x, 1.0 * bodyScale, z);
       const acquiredMesh = smartEnemyManager.acquireMeshForEnemy(type as PooledEnemyType, position);
 
@@ -4429,6 +4598,15 @@ const ForestSurvivalGame = () => {
         } else if (ch.userData?.isRevShield) {
           enemyGroup.remove(ch);
           disposeRevShield(ch);
+        } else if (
+          ch.userData?.isBulwarkShield
+          || ch.userData?.isHowlerAura
+          || ch.userData?.isOvershieldRing
+        ) {
+          // Tactical-archetype attachments. Shared geo+mat (see
+          // EnemyArchetypes' pool contract) — detach only, NEVER dispose, or
+          // the next enemy of that type draws freed buffers.
+          enemyGroup.remove(ch);
         }
       }
       // Clean slate for the recycled pooled mesh — return any battle-damage
@@ -4461,7 +4639,15 @@ const ForestSurvivalGame = () => {
           enemyScore = 30;
           break;
         case 'boss':
-          enemyHealth = 300;
+          // 300 → 900. The Overlord is the apex threat and the wave's whole
+          // event, but at 300 base a stacked sniper build deleted it with a
+          // single headshot: on Easy it lands at only ~375 HP once the wave
+          // ramp and the easyElite halving are applied, and a headshot is
+          // 100 × 2 BEFORE Heavy Hitter, Skull Splitter and the damage perks
+          // multiply it past 450. Tripling the base is the floor of the fix —
+          // the per-hit cap below is what actually stops the one-shot, because
+          // perk stacking scales faster than any flat HP number can.
+          enemyHealth = 900;
           enemySpeed = 0.05;
           enemyDamage = 25;
           enemyScore = 100;
@@ -4486,6 +4672,42 @@ const ForestSurvivalGame = () => {
           enemyDamage = 16;   // per gold bolt
           enemyScore = 65;
           break;
+        case 'bulwark':
+          // A walking wall. HP is only moderately high because its real defence
+          // is the FRONTAL SHIELD — the player is meant to beat it by moving,
+          // not by out-damaging it. Slow enough that flanking is always
+          // achievable; hits hard enough that ignoring it is not.
+          enemyHealth = 120;
+          enemySpeed = 0.045;
+          enemyDamage = 18;
+          enemyScore = 55;
+          break;
+        case 'howler':
+          // Support caster. Deliberately FRAGILE — it dies to a moment's
+          // attention, which is exactly the trade being asked for: spend that
+          // moment, or fight a swarm that keeps healing.
+          enemyHealth = 55;
+          enemySpeed = 0.07;
+          enemyDamage = 5;    // barely fights; the aura is the threat
+          enemyScore = 60;
+          break;
+        case 'leaper':
+          // Glass ambusher. Low HP, quick, and its damage is concentrated in
+          // the pounce rather than its melee, so reacting to the tell is worth
+          // far more than trading hits with it.
+          enemyHealth = 42;
+          enemySpeed = 0.115;
+          enemyDamage = 10;   // melee; the pounce impact is separate
+          enemyScore = 45;
+          break;
+        case 'splitter':
+          // Bloated host. The parent is slow and unthreatening on its own —
+          // the danger is entirely in WHERE and HOW you kill it.
+          enemyHealth = 95;
+          enemySpeed = 0.05;
+          enemyDamage = 11;
+          enemyScore = 50;
+          break;
       }
 
       // ── EASY-MODE ELITE TONE-DOWN ────────────────────────────────────────
@@ -4494,7 +4716,12 @@ const ForestSurvivalGame = () => {
       // bite, so newcomers still get the spectacle without the wall. (Their
       // shield/summon/teleport behaviour is also eased in their AI blocks.)
       const easyElite = classicDifficulty === 'easy' && (type === 'boss' || type === 'revenant');
-      const easyEliteHpMult = easyElite ? 0.5 : 1;
+      // 0.5 → 0.7 for the boss. Halving its HP on top of Easy's already-low
+      // healthMult was what made the Overlord a paper apex there. Its DAMAGE
+      // stays heavily reduced (0.55), which is the part that actually protects
+      // a newcomer — a boss that dies instantly isn't gentler, it's just not a
+      // boss. The Revenant keeps the original halving; it's a duel, not a slog.
+      const easyEliteHpMult = easyElite ? (type === 'boss' ? 0.7 : 0.5) : 1;
       const easyEliteDmgMult = easyElite ? 0.55 : 1;
 
       // Wave-based AI advancement. Reaction & dodge scaled by difficulty —
@@ -4515,6 +4742,10 @@ const ForestSurvivalGame = () => {
       else if (type === 'boss') personality = 'aggressive';
       else if (type === 'ranged') personality = 'support'; // hangs back, kites
       else if (type === 'revenant') personality = 'tactical'; // mobile flanker
+      else if (type === 'bulwark') personality = 'defensive'; // advances behind the shield
+      else if (type === 'howler') personality = 'support';    // stays with the pack, not the player
+      else if (type === 'leaper') personality = 'tactical';   // circles, then commits
+      else if (type === 'splitter') personality = 'defensive';
 
       // Create AI systems
       const aiBehavior = new AIBehaviorSystem(personality);
@@ -4531,14 +4762,17 @@ const ForestSurvivalGame = () => {
       // Ranged + Revenant are SHOOTERS (no melee), but the AttackSystem is still
       // constructed for them — map both onto 'normal' so the config type checks;
       // the runtime melee call sites skip both archetypes anyway.
-      const attackArchetype: 'normal' | 'fast' | 'tank' | 'boss' = (type === 'ranged' || type === 'revenant') ? 'normal' : type;
+      // Tactical archetypes map onto the closest melee profile: Bulwark and
+      // Splitter swing like a tank (slow, heavy), Leaper and Howler like a
+      // normal (the Leaper's real damage comes from its pounce, and the Howler
+      // barely fights at all).
+      const attackArchetype: 'normal' | 'fast' | 'tank' | 'boss' =
+        (type === 'ranged' || type === 'revenant' || type === 'howler' || type === 'leaper') ? 'normal'
+        : (type === 'bulwark' || type === 'splitter') ? 'tank'
+        : type;
       const attackSystemInstance = new AttackSystem(
         AttackSystem.createConfigForType(attackArchetype, enemyDamage * diffSettings.damageMult * waveDamageRamp * easyEliteDmgMult * (runMods.enemyDamageMult ?? 1))
       );
-
-      // NEW: Obstacle avoidance system - prevents getting stuck in trees
-      const obstacleAvoidance = new ObstacleAvoidance();
-      obstacleAvoidance.setPersonalSpace(type === 'boss' ? 5.0 : 3.0);
 
       // NEW: Bullet dodging system - makes enemies dodge bullets dynamically
       const bulletDodging = new BulletDodging(dodgeSkill, reactionTime);
@@ -4628,7 +4862,6 @@ const ForestSurvivalGame = () => {
         aiBehavior,
         perception,
         attackSystem: attackSystemInstance,
-        obstacleAvoidance,
         bulletDodging,
         playerVelocity: new THREE.Vector3(0, 0, 0),
         isDodging: false,
@@ -4662,6 +4895,36 @@ const ForestSurvivalGame = () => {
         // Rare self-heal — later + gentler on Easy (handled in the AI block).
         enemy.revRegenNextAt = Date.now() + (easyRev ? 16000 : 9000);
       }
+
+      // ── TACTICAL ARCHETYPE SETUP ─────────────────────────────────────────
+      // Each attachment uses shared geo+mat and is tagged for the pool-acquire
+      // detach above. No per-spawn material is created, so no new shader
+      // program is introduced and the warmup guarantee holds.
+      if (type === 'bulwark') {
+        const shield = buildBulwarkShield();
+        enemyGroup.add(shield);
+        enemy.bulwarkShield = shield;
+        enemy.bulwarkFlash = 0;
+      } else if (type === 'howler') {
+        const aura = buildHowlerAura();
+        enemyGroup.add(aura);
+        enemy.howlerAura = aura;
+        enemy.howlerNextPulseAt = Date.now() + 1200;
+        // MUST be killable at any range — see the note on alwaysDamageable.
+        // A back-line healer behind the LOD damage floor would be invincible.
+        enemy.alwaysDamageable = true;
+      } else if (type === 'leaper') {
+        enemy.leapState = 'idle';
+        enemy.leapNextAt = Date.now() + 2000 + Math.random() * 2000;
+        enemy.leapVel = new THREE.Vector3();
+      } else if (type === 'splitter') {
+        // Only the PARENT splits — children are spawned with canSplit false so
+        // a single kill can never cascade into an unbounded chain.
+        enemy.canSplit = true;
+      }
+      // The pooled mesh's own overshield ring (if any) was detached above, so
+      // the fresh occupant must not inherit a handle to it.
+      enemy.overshieldRing = undefined;
 
       return enemy;
     };
@@ -5017,29 +5280,24 @@ const ForestSurvivalGame = () => {
       const shell = new THREE.Mesh(shellGeo, getShellMat(color, coreColor));
       shell.castShadow = false;
       shell.receiveShadow = true;
-      shell.userData.cannotReceiveAO = true;
       group.add(shell);
 
       // INNER GEM — bright unlit core (shared by color).
       const inner = new THREE.Mesh(innerGeo, getInnerMat(coreColor));
-      inner.userData.cannotReceiveAO = true;
       group.add(inner);
 
       // TWIN ADDITIVE GLOW SPHERES (shared geometry + per-color material)
       const glowInner = new THREE.Mesh(glowInnerGeoShared, getGlowInnerMat(coreColor));
-      glowInner.userData.cannotReceiveAO = true;
       glowInner.renderOrder = 989;
       group.add(glowInner);
 
       const glowOuter = new THREE.Mesh(glowOuterGeoShared, getGlowOuterMat(coreColor));
-      glowOuter.userData.cannotReceiveAO = true;
       glowOuter.renderOrder = 988;
       group.add(glowOuter);
 
       // ROTATING RING (shared geometry + per-color material)
       const ring = new THREE.Mesh(ringGeoShared, getRingMat(coreColor));
       ring.rotation.x = Math.PI / 2;
-      ring.userData.cannotReceiveAO = true;
       ring.renderOrder = 988;
       group.add(ring);
 
@@ -5049,7 +5307,6 @@ const ForestSurvivalGame = () => {
       const ring2 = new THREE.Mesh(ringGeoShared, getRingMat(coreColor));
       ring2.rotation.x = Math.PI / 2 + 0.85;
       ring2.scale.setScalar(1.18);
-      ring2.userData.cannotReceiveAO = true;
       ring2.renderOrder = 988;
       group.add(ring2);
 
@@ -5057,7 +5314,6 @@ const ForestSurvivalGame = () => {
       const halo = new THREE.Mesh(haloGeoShared, getHaloMat(coreColor));
       halo.rotation.x = -Math.PI / 2;
       halo.position.y = -1.95; // ~ground level (group bobs around y=2)
-      halo.userData.cannotReceiveAO = true;
       halo.renderOrder = 986;
       group.add(halo);
 
@@ -5090,7 +5346,6 @@ const ForestSurvivalGame = () => {
       // cleanup). Aliasing the group keeps `core.position` / `core.userData`
       // calls below working without further changes.
       const core = group as unknown as THREE.Mesh;
-      core.userData.cannotReceiveAO = true;
       core.renderOrder = 990;
       scene.add(group);
 
@@ -5289,7 +5544,7 @@ const ForestSurvivalGame = () => {
 
     const spawnEnemyBatch = (
       count: number,
-      typeOverride?: 'normal' | 'fast' | 'tank' | 'boss' | 'ranged' | 'revenant',
+      typeOverride?: PooledEnemyType,
       miniBoss = false,
       // Staging overrides — used by the guided tutorial to place a drill target
       // close and in front instead of 45m out on a random bearing. Both default
@@ -5306,7 +5561,7 @@ const ForestSurvivalGame = () => {
       let spawned = 0;
       for (let i = 0; i < count; i++) {
         if (enemies.length >= adaptiveMax || !smartEnemyManager.canSpawnMore()) break;
-        let type: 'normal' | 'fast' | 'tank' | 'boss' | 'ranged' | 'revenant' = typeOverride ?? 'normal';
+        let type: PooledEnemyType = typeOverride ?? 'normal';
         if (!typeOverride) {
           if (isTutorialMode) {
             // Tutorial draws from the director's progressively-unlocked roster.
@@ -5319,9 +5574,13 @@ const ForestSurvivalGame = () => {
             // the basic foes. (The Revenant itself is spawned per-wave in
             // spawnWave, not rolled here.)
             const waveHardBump = Math.min(0.2, Math.max(0, wave - 2) * 0.007);
+            // This wave's SHAPE re-weights the mix (see WAVE_SHAPES). Clamped
+            // so a bias can never drive a probability negative or past 1.
+            const sb = waveShapeDef.bias;
+            const bias = (base: number, b: number) => Math.max(0, Math.min(0.95, base + b));
             // Ranged sniper joins from wave 4. Probability ramps with wave so the
             // long-range threat is felt even when tanks/bosses are in the mix.
-            if (wave >= 4 && rand < (hardish ? 0.20 : 0.14) + waveHardBump) {
+            if (wave >= 4 && rand < bias((hardish ? 0.20 : 0.14) + waveHardBump, sb.ranged)) {
               type = 'ranged';
               if (!rangedEnemyIntroFired && !isTutorialMode) {
                 rangedEnemyIntroFired = true;
@@ -5337,13 +5596,17 @@ const ForestSurvivalGame = () => {
               }
             }
             else if (wave >= bossStartWave && rand < (hardish ? 0.12 : 0.08)) type = 'boss';
-            else if (wave >= 3 && rand < (hardish ? 0.32 : 0.24) + waveHardBump) type = 'tank';
-            else if (wave >= 2 && rand < (hardish ? 0.5 : 0.42)) type = 'fast';
+            else if (wave >= 3 && rand < bias((hardish ? 0.32 : 0.24) + waveHardBump, sb.tank)) type = 'tank';
+            else if (wave >= 2 && rand < bias(hardish ? 0.5 : 0.42, sb.fast)) type = 'fast';
           }
         }
         // Bosses are bigger (scale 2.0) so they need a wider clearance.
-        const enemyRadius = type === 'boss' ? 2.0 : type === 'tank' ? 1.6 : 1.2;
-        const baseDist = spawnDist ?? (42 + Math.random() * 26) * mapSpawnReach;
+        const enemyRadius = ENEMY_SPAWN_CLEARANCE[type];
+        // Shape scales engagement range: Ambush spawns in close, Siege holds
+        // the long lines. Floored so nothing ever materialises on top of the
+        // player even on the most aggressive shape.
+        const baseDist = spawnDist
+          ?? Math.max(22, (42 + Math.random() * 26) * mapSpawnReach * waveShapeDef.distMult);
         // Each enemy in the batch gets its own evenly-spaced bearing slot.
         const preferredAngle = spreadBase + (i / Math.max(1, count)) * Math.PI * 2;
         const spot = findEnemySpawnSpot(baseDist, enemyRadius, preferredAngle);
@@ -5616,6 +5879,98 @@ const ForestSurvivalGame = () => {
       wavePowerupDrops++;
     };
 
+    // ── WAVE SHAPES ──────────────────────────────────────────────────────
+    //
+    // Every wave used to have the identical structure: a 5-enemy opening
+    // burst, then the same trickle of the same weighted mix from the same
+    // distance. Wave 30 was wave 8 with bigger numbers, so the run had no
+    // texture — only escalation.
+    //
+    // A shape re-weights the archetype roll, the spawn distance and the
+    // trickle pacing, so waves feel categorically different and ask for
+    // different play: back off and funnel a HORDE, focus fire an ELITE wave,
+    // keep moving and break line-of-sight in a SIEGE, spin up fast for an
+    // AMBUSH. It reuses the existing spawn machinery entirely — no new
+    // enemy types, no new systems, no shader or pool implications.
+    type WaveShape = 'standard' | 'horde' | 'elite' | 'siege' | 'ambush';
+    interface WaveShapeDef {
+      /** Multiplies the wave's total enemy budget. */
+      countMult: number;
+      /** Multiplies the continuous-spawn interval (lower = faster trickle). */
+      intervalMult: number;
+      /** Multiplies spawn distance from the player. */
+      distMult: number;
+      /** Fraction of the wave budget released in the opening burst. */
+      openingFrac: number;
+      /** Additive bias on the archetype roll. */
+      bias: { fast: number; tank: number; ranged: number };
+      intro?: { name: string; tag: string; blurb: string; accent: string };
+    }
+    const WAVE_SHAPES: Record<WaveShape, WaveShapeDef> = {
+      standard: {
+        countMult: 1, intervalMult: 1, distMult: 1, openingFrac: 0.18,
+        bias: { fast: 0, tank: 0, ranged: 0 },
+      },
+      horde: {
+        // Many weak bodies, fast and close. Punishes standing still.
+        countMult: 1.55, intervalMult: 0.6, distMult: 0.85, openingFrac: 0.3,
+        bias: { fast: 0.22, tank: -0.14, ranged: -0.08 },
+        intro: {
+          name: 'Horde', tag: 'WAVE · OVERWHELM',
+          blurb: 'A flood of light units, close and fast. Back off, funnel them, and keep the magazine fed.',
+          accent: '#f87171',
+        },
+      },
+      elite: {
+        // Few, heavy, all at once. Rewards focus fire and burst damage.
+        countMult: 0.55, intervalMult: 1.8, distMult: 1.0, openingFrac: 0.7,
+        bias: { fast: -0.2, tank: 0.34, ranged: 0.04 },
+        intro: {
+          name: 'Elite Guard', tag: 'WAVE · HEAVY',
+          blurb: 'Fewer enemies, far more armour. Focus fire and make every shot count.',
+          accent: '#4ade80',
+        },
+      },
+      siege: {
+        // Ranged-heavy and distant. Forces movement and cover.
+        countMult: 0.9, intervalMult: 1.15, distMult: 1.3, openingFrac: 0.25,
+        bias: { fast: -0.06, tank: -0.06, ranged: 0.3 },
+        intro: {
+          name: 'Siege', tag: 'WAVE · RANGED',
+          blurb: 'Snipers holding the long lines. Keep moving and break their line of sight.',
+          accent: '#6effff',
+        },
+      },
+      ambush: {
+        // Spawns in close on every bearing with almost no warning.
+        countMult: 0.85, intervalMult: 1.3, distMult: 0.55, openingFrac: 0.65,
+        bias: { fast: 0.16, tank: 0.04, ranged: -0.1 },
+        intro: {
+          name: 'Ambush', tag: 'WAVE · CLOSE CONTACT',
+          blurb: 'They are already inside the treeline. Spin up fast and check your back.',
+          accent: '#fbbf24',
+        },
+      },
+    };
+    let waveShape: WaveShape = 'standard';
+    let waveShapeDef: WaveShapeDef = WAVE_SHAPES.standard;
+    // Don't repeat a special shape back-to-back — the variety is the point.
+    let lastSpecialShape: WaveShape | null = null;
+
+    /** Pick this wave's shape. Early waves stay standard so the player learns
+     *  the baseline before it starts getting bent. */
+    const rollWaveShape = (): WaveShape => {
+      if (isTutorialMode || wave < 4) return 'standard';
+      // ~45% of waves from wave 4 get a shape; the rest stay standard so the
+      // specials keep their identity.
+      if (Math.random() > 0.45) return 'standard';
+      const pool: WaveShape[] = ['horde', 'elite', 'ambush'];
+      // Siege needs the ranged archetype to exist (it unlocks at wave 4).
+      if (wave >= 5) pool.push('siege');
+      const choices = pool.filter((s) => s !== lastSpecialShape);
+      return choices[Math.floor(Math.random() * choices.length)];
+    };
+
     const spawnWave = () => {
       // Reset the per-wave power-up budget. Wave 1: a single drop (significantly
       // less). Wave 2: two. Wave 3+: three, occasionally four. Tutorial: a steady
@@ -5649,8 +6004,35 @@ const ForestSurvivalGame = () => {
       // burst spawns now; continuousSpawn() trickles in the rest.
       // Wave size: 7 + wave*3 (was 10 + wave*5) — smaller waves so the
       // pace stays manageable, especially on Easy.
-      waveEnemiesRemaining = Math.max(4, Math.floor((7 + wave * 3) * diffSettings.spawnMult * (runMods.enemySpawnMult ?? 1)));
-      const opening = Math.min(5, waveEnemiesRemaining);
+      // Roll this wave's SHAPE before sizing it — the shape scales the budget,
+      // the opening burst, the spawn distance and the archetype mix.
+      waveShape = rollWaveShape();
+      waveShapeDef = WAVE_SHAPES[waveShape];
+      if (waveShape !== 'standard') {
+        lastSpecialShape = waveShape;
+        const intro = waveShapeDef.intro;
+        if (intro) {
+          setEnemyIntro({
+            id: Date.now(),
+            name: intro.name,
+            tag: intro.tag,
+            blurb: intro.blurb,
+            accent: intro.accent,
+            icon: 'crosshair',
+          });
+          soundManager.play('powerUp', 0.7, false, 0.95);
+        }
+      }
+      waveEnemiesRemaining = Math.max(4, Math.floor(
+        (7 + wave * 3) * diffSettings.spawnMult * (runMods.enemySpawnMult ?? 1) * waveShapeDef.countMult,
+      ));
+      // Elite/Ambush waves front-load most of the budget; Horde keeps a long
+      // pressure trickle. Still capped so no shape can blow the pool cap.
+      const opening = Math.min(
+        Math.max(3, Math.round(waveEnemiesRemaining * waveShapeDef.openingFrac)),
+        waveEnemiesRemaining,
+        8,
+      );
       waveEnemiesRemaining -= spawnEnemyBatch(opening);
       // ── BOSS ERA (difficulty-scaled start) ────────────────────────────
       // From `bossStartWave` (Hard 5 / Medium 7 / Adaptive 8 / Easy 10) the pink
@@ -5660,9 +6042,22 @@ const ForestSurvivalGame = () => {
       // createEnemy) so each round is harder than the last — true even on Easy.
       // The 5-wave milestones drop a SECOND boss for a spike. Before the boss
       // era, the 5-wave milestone is a crowned mini-boss tank, easing the player in.
-      if (wave >= bossStartWave) {
+      // Spaced to every SECOND wave (and every wave from 20, where the player
+      // is expected to be geared for it). Appearing on literally every wave
+      // from wave 5-10 onward meant the apex threat stopped being an event by
+      // wave 8 — there was no escalation beat left to spend. Milestone waves
+      // still double up for a genuine spike.
+      const bossThisWave = wave >= bossStartWave
+        && (wave >= 20 || (wave - bossStartWave) % 2 === 0 || wave % 5 === 0);
+      if (bossThisWave) {
         spawnEnemyBatch(1, 'boss');
         if (wave % 5 === 0) spawnEnemyBatch(1, 'boss');
+        // Non-positional on purpose: the roar announces the boss's ARRIVAL
+        // before the player has any idea where it is. Slight delay so it lands
+        // after the wave banner rather than under it.
+        window.setTimeout(() => {
+          if (!isSceneDisposed && !isGameOver) soundManager.play('boss_roar', 0.85, false, 0.95);
+        }, 450);
       } else if (wave > 0 && wave % 5 === 0) {
         const spawned = spawnEnemyBatch(1, 'tank', true);
         if (spawned > 0) {
@@ -5708,6 +6103,70 @@ const ForestSurvivalGame = () => {
           }
         }
       }
+      // ── TACTICAL ARCHETYPES (solo only) ───────────────────────────────
+      // Introduced one at a time on a ladder so the player learns each
+      // lesson in isolation before they start combining. Each fires its
+      // intro banner once (the same teaching pattern every other archetype
+      // in the game uses), and all of them respect the pool cap.
+      if (!isMultiplayer && !isTutorialMode) {
+        const archetypeGate: Array<{
+          type: PooledEnemyType; startWave: number; chance: number; maxAlive: number;
+          intro: { name: string; tag: string; blurb: string; accent: string };
+        }> = [
+          {
+            type: 'bulwark', startWave: 5, chance: 0.5, maxAlive: 2,
+            intro: {
+              name: 'Bulwark', tag: 'ARMOURED · FRONTAL SHIELD',
+              blurb: 'Its shield eats anything hitting the front arc. Flank it — shots from the side or behind land in full.',
+              accent: '#5fd8ff',
+            },
+          },
+          {
+            type: 'leaper', startWave: 7, chance: 0.45, maxAlive: 3,
+            intro: {
+              name: 'Leaper', tag: 'AMBUSHER · POUNCE',
+              blurb: 'It crouches and howls before it springs — and it clears cover. Move the moment you hear it; it is wide open when it lands.',
+              accent: '#ff8c2e',
+            },
+          },
+          {
+            type: 'howler', startWave: 9, chance: 0.4, maxAlive: 2,
+            intro: {
+              name: 'Howler', tag: 'SUPPORT · OVERSHIELD',
+              blurb: 'It never attacks — it shields everything around it. Kill it first or nothing else will die.',
+              accent: '#d08cff',
+            },
+          },
+          {
+            type: 'splitter', startWave: 11, chance: 0.4, maxAlive: 2,
+            intro: {
+              name: 'Splitter', tag: 'HOST · SPLITS ON DEATH',
+              blurb: 'Bursts into three runners when it dies. Do not pop it in your face — kill it at range, ideally with splash.',
+              accent: '#b6ff5a',
+            },
+          },
+        ];
+        for (const gate of archetypeGate) {
+          if (wave < gate.startWave) continue;
+          if (Math.random() >= gate.chance) continue;
+          const alive = enemies.reduce((n, e) => n + (e.type === gate.type && !e.dead ? 1 : 0), 0);
+          if (alive >= gate.maxAlive) continue;
+          const got = spawnEnemyBatch(1, gate.type);
+          if (got > 0 && !archetypeIntroFired.has(gate.type)) {
+            archetypeIntroFired.add(gate.type);
+            setEnemyIntro({
+              id: Date.now(),
+              name: gate.intro.name,
+              tag: gate.intro.tag,
+              blurb: gate.intro.blurb,
+              accent: gate.intro.accent,
+              icon: 'crosshair',
+            });
+            soundManager.play('powerUp', 0.8, false, 1.2);
+          }
+        }
+      }
+
       // Slowed wave spawn frequency from every 2nd wave → every 3rd wave.
       // Combined with the per-spawn count cut (2 → 1) and the reduced
       // enemy-kill drop rate, powerups are now a real reward rather than
@@ -5771,7 +6230,9 @@ const ForestSurvivalGame = () => {
         return;
       }
 
-      const spawnInterval = spawnSettings.interval;
+      // Shape sets the trickle pace: a Horde keeps constant pressure, an Elite
+      // wave arrives almost entirely up front and then goes quiet.
+      const spawnInterval = spawnSettings.interval * waveShapeDef.intervalMult;
       if (currentTime - lastSpawnTime <= spawnInterval) return;
       if (enemies.length >= smartEnemyManager.getCurrentMaxEnemies() || !smartEnemyManager.canSpawnMore()) return;
 
@@ -5807,8 +6268,14 @@ const ForestSurvivalGame = () => {
     // does, the four direction keys read as "not pressed". Photo Mode drives
     // its free camera through the same helper and is never part of the drill,
     // so it always sees the raw keys.
+    // Timestamp (ms) until which the player is ROOTED in place — currently set
+    // only by a Leaper's landed pounce. Deliberately short: it punishes missing
+    // the tell without ever taking control away long enough to feel unfair, and
+    // it never blocks looking or shooting, only stepping.
+    let playerRootedUntil = 0;
     const moving = (action: keyof KeyBindings): boolean => {
       if (tutorialLocks.move && !photoModeRef.current) return false;
+      if (playerRootedUntil > 0 && Date.now() < playerRootedUntil && !photoModeRef.current) return false;
       return movingRaw(action);
     };
     const moveSpeed = 0.3;
@@ -7106,8 +7573,6 @@ const ForestSurvivalGame = () => {
       body.add(core);
 
       // Legacy AO-opt-out userData kept for forward-compat with any future AO pass.
-      body.userData.cannotReceiveAO = true;
-      body.traverse((o) => { o.userData.cannotReceiveAO = true; });
 
       return body;
     };
@@ -7344,7 +7809,6 @@ const ForestSurvivalGame = () => {
           scene.remove(sentinel.mesh);
           const sentinelReward = Math.round(150 * scoreDiffMult * runModifierScoreMult);
           score += sentinelReward;
-          missionSystem.updateProgress('elimination', 1);
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry(`Sentinel Down · +${sentinelReward}`, 'kill');
           triggerKillFlash();
           updateGameState();
@@ -7389,6 +7853,9 @@ const ForestSurvivalGame = () => {
     // is the per-pellet aim direction (copied into the pooled record's velocity)
     // and _NEG_Z the rocket's rest axis — both hoisted out of the pellet loop.
     const _shotTracerEnd = new THREE.Vector3();
+    // Scratch for the per-frame Web Audio listener orientation update.
+    const _audioFwd = new THREE.Vector3();
+    const _audioUp = new THREE.Vector3();
     const _shotMuzzlePos = new THREE.Vector3();
     const _shotSmokeDir = new THREE.Vector3();
     const _shotDir = new THREE.Vector3();
@@ -7463,7 +7930,6 @@ const ForestSurvivalGame = () => {
         // 🤖 Record shot for AI systems (will check for hit later). One per
         // trigger-pull (not per shotgun pellet) so the adaptive accuracy metric
         // — hits / triggers — stays honest; landed hits call recordHit().
-        combatCoach.recordShot(false, false); // Updated when bullet hits
         adaptiveDifficulty.recordShot(false);
         if (tacticalActive) tacticalDirector.noteShot(performance.now());
         tutorial.recordAction('shoot', 1);
@@ -7506,6 +7972,14 @@ const ForestSurvivalGame = () => {
             // Shared geometry + cached material — no per-shot allocation.
             bullet = buildBullet(weapon.bulletColor);
             bullet.position.copy(camera.position);
+            // Aim the round along its flight path. This is what the earlier
+            // elongated-bullet attempt was missing: without it the capsule and
+            // tail point in a fixed direction while the round travels
+            // elsewhere, which is exactly the "bullet curves in flight" look
+            // that got it reverted to spheres. A non-rocket bullet's velocity
+            // never changes, so orienting ONCE here is exact and costs nothing
+            // per frame. Same -Z convention the rocket above uses.
+            bullet.quaternion.setFromUnitVectors(_NEG_Z, direction);
           }
           scene.add(bullet);
 
@@ -7562,8 +8036,13 @@ const ForestSurvivalGame = () => {
           }
         }
 
-        // Muzzle flash at gun position (scratch — MuzzleFlash copies it)
-        gunModel.group.getWorldPosition(_shotMuzzlePos);
+        // Muzzle flash at the weapon's actual BORE EXIT (scratch — MuzzleFlash
+        // copies it). This used to read gunModel.group, which is the viewmodel
+        // ROOT at basePosition {0.3,-0.3,-0.5} — not the muzzle of any weapon.
+        // On the sniper the flash and its smoke detonated ~1.7 units behind the
+        // barrel tip. The anchor is parented into the rig, so it tracks recoil,
+        // sway and ADS for free. Fixes the smoke origin below at the same time.
+        gunModel.getMuzzleWorldPosition(_shotMuzzlePos);
         const flash = new MuzzleFlash(scene, _shotMuzzlePos, weapon.bulletColor);
         muzzleFlashes.push(flash);
 
@@ -7956,6 +8435,11 @@ const ForestSurvivalGame = () => {
     let lastCappedFrameMs = 0;
     const clock = new THREE.Clock();
     let frameCount = 0;
+    // Delta accumulators for the periodic AI/mission/coach systems. These
+    // replaced `frameCount % N` gates that could never fire (frameCount is
+    // clamped at 3), and are framerate-independent by construction.
+    let aiAdaptiveAccum = 0;
+    let aiTacticalAccum = 0;
     let fpsFrameCount = 0;
     let fpsLastTime = performance.now();
 
@@ -8121,7 +8605,7 @@ const ForestSurvivalGame = () => {
       gib.position.copy(_gibPos);
       gib.quaternion.copy(_gibQuat);
       gib.scale.copy(_gibScale);
-      gib.traverse((o) => { o.castShadow = false; o.userData.cannotReceiveAO = true; });
+      gib.traverse((o) => { o.castShadow = false; });
       // Severed cable bundle torn out WITH the head — dangles from the neck
       // underside and whips around as the gib tumbles.
       const gibWires = buildWireBundle(false, 1);
@@ -8211,8 +8695,49 @@ const ForestSurvivalGame = () => {
       // ── WORLD state (authoritative): the enemy is dead for everyone. ──
       enemy.dead = true;
       enemy.deathTime = 1.0;
-      soundManager.play('enemyDeath', 0.6);
+      // POSITIONAL death: the existing chassis blip plus a mechanical death
+      // cry whose pitch tracks the enemy's mass, so a tank dying behind you
+      // sounds different from a stalker dying in front of you.
+      {
+        const dp = enemy.mesh.position;
+        soundManager.playAt('enemyDeath', dp.x, dp.y, dp.z, 0.6);
+        const heavy = enemy.type === 'tank' || enemy.type === 'boss' || enemy.isMiniBoss === true;
+        soundManager.playAt('enemy_die', dp.x, dp.y, dp.z, heavy ? 0.7 : 0.5,
+          heavy ? 0.62 : enemy.type === 'fast' ? 1.32 : 1.0);
+      }
       createParticles(enemy.mesh.position, 0x00ff00, 8);
+
+      // ── SPLITTER BURST ───────────────────────────────────────────────────
+      // The parent bursts into fast children. Killing one in a corridor or at
+      // your feet is a mistake; killing it at range with splash is correct —
+      // that's the decision the archetype exists to create.
+      //
+      // ⚠ Every spawn goes through canSpawnMore()/the adaptive cap. On the
+      // ultralow preset maxEnemies is 10, so an uncapped burst would eat a
+      // third of the budget and could starve the wave's own spawns (and stall
+      // waveEnemiesRemaining). Children are flagged canSplit:false so a burst
+      // can never cascade.
+      if (enemy.canSplit && !isMpGuest && !isTutorialMode) {
+        const ex = enemy.mesh.position.x;
+        const ez = enemy.mesh.position.z;
+        for (let sc = 0; sc < SPLITTER_CHILDREN; sc++) {
+          if (!smartEnemyManager.canSpawnMore()) break;
+          if (enemies.length >= smartEnemyManager.getCurrentMaxEnemies()) break;
+          const a = (sc / SPLITTER_CHILDREN) * Math.PI * 2 + Math.random() * 0.6;
+          const child = createEnemy(ex + Math.cos(a) * 2.2, ez + Math.sin(a) * 2.2, 'fast');
+          if (!child) break;
+          child.canSplit = false;
+          // Children are smaller and weaker than a stock runner — the threat is
+          // the sudden three-way spread, not three full-strength enemies.
+          child.health = Math.max(1, Math.round(child.maxHealth * 0.45));
+          child.maxHealth = child.health;
+          child.scoreValue = Math.round(child.scoreValue * 0.5);
+          if (isMpHost) { child.netId = nextEnemyNetId++; enemyByNetId.set(child.netId, child); }
+          enemies.push(child);
+        }
+        createParticles(enemy.mesh.position, 0xb6ff5a, 18);
+        soundManager.playAt('enemy_alert', ex, enemy.mesh.position.y, ez, 0.6, 0.75);
+      }
 
       // ── Ragdoll launch (lightweight physics, toggleable in Settings) ──
       // Fling the corpse along the shot direction (or away from the player when
@@ -8246,8 +8771,7 @@ const ForestSurvivalGame = () => {
         // host-mirrored simple topple). spawn() returns -1 until the physics
         // WASM is ready (or if it failed to load), in which case we fall back to
         // the lightweight gravity-integrated launcher — identical impulse + feel.
-        const ragBaseScale = enemy.type === 'fast' ? 0.7 : enemy.type === 'tank' ? 1.5
-          : enemy.type === 'boss' ? 2.0 : enemy.type === 'revenant' ? 0.85 : 1.0;
+        const ragBaseScale = ENEMY_SCALE[enemy.type];
         const ragId = isMultiplayer ? -1 : ragdollSystem.spawn(
           enemy.mesh.position.x, enemy.mesh.position.y, enemy.mesh.position.z,
           velX, velY, velZ, spinX, spinY, spinZ, ragBaseScale,
@@ -8411,12 +8935,7 @@ const ForestSurvivalGame = () => {
         }
         lastKillTime = currentTime;
         adaptiveDifficulty.recordKill(killTime);
-        spawnSystem.recordKill(enemy.mesh.position, enemy.type);
-        combatCoach.recordShot(true, isCritical);
-        missionSystem.updateProgress('elimination', 1);
-        if (enemy.type === 'boss') missionSystem.updateProgress('boss_hunt', 1);
-        if (killStreak >= 3) missionSystem.updateProgress('streak', 1);
-        if (combo >= 3) { missionSystem.updateProgress('combo', 1); tutorial.recordAction('combo_3x', 1); }
+        if (combo >= 3) tutorial.recordAction('combo_3x', 1);
         tutorial.recordAction('kill', 1);
         // Tutorial — grow the enemy roster as the player proves themselves,
         // announcing each new species the moment it's earned.
@@ -8611,6 +9130,7 @@ const ForestSurvivalGame = () => {
           // picker. MP keeps the loop running (network heartbeats / remote
           // player updates can't pause), and uses the auto-pick countdown.
           if (!isMultiplayer) wavePerkActiveRef.current = true;
+
           wavePerkResolverRef.current = (picked: WavePerkId | null) => {
             if (picked) {
               runPerks.push(picked);
@@ -8800,7 +9320,6 @@ const ForestSurvivalGame = () => {
         // Feed the Tactical Director the pressure the player is under (raises
         // the intensity read that lightly biases how hard the squad presses).
         if (tacticalActive) tacticalDirector.noteDamageTaken(damage);
-        missionSystem.updateProgress('survival', 1);
         soundManager.play('playerHurt', 0.5);
         cameraShakeIntensity = Math.min(cameraShakeIntensity + 0.2, 0.25);
         triggerDamageFlash();
@@ -9042,7 +9561,9 @@ const ForestSurvivalGame = () => {
         if (!e || e.dead) return;
         // NULL WAVE ballistics compromise — scaled here (the single
         // authoritative write for guest fire) so it's never double-applied.
-        e.health -= m.damage * playerBallisticsMult();
+        // Same boss clamp the local bullet path applies, so a guest's reported
+        // hit can't bypass it and one-shot the Overlord.
+        e.health -= capBossHit(e, m.damage * playerBallisticsMult());
         e.damageFlashTime = m.isCritical ? 0.5 : 0.3;
         if (e.health <= 0) handleEnemyKilled(e, m.isCritical, m.shooterId);
       }));
@@ -9143,9 +9664,7 @@ const ForestSurvivalGame = () => {
     // ── BATTLE-DAMAGE STAMPING ───────────────────────────────────────────
     // Per-type body scale (matches SmartEnemyManager's ENEMY_CONFIGS) — used to
     // size dents to the chassis and place reconstructed contact points.
-    const enemyTypeScale = (t: Enemy['type']) =>
-      t === 'fast' ? 0.7 : t === 'tank' ? 1.5 : t === 'boss' ? 2.0
-      : t === 'revenant' ? 0.85 : t === 'ranged' ? 1.05 : 1.0;
+    const enemyTypeScale = (t: Enemy['type']) => ENEMY_SCALE[t];
 
     // Dedicated scratch so a stamp never clobbers a hot-loop temp vector.
     const _dentNrm = new THREE.Vector3();
@@ -9306,7 +9825,9 @@ const ForestSurvivalGame = () => {
       const epos = barrel.mesh.position.clone();
       spawnExplosionFX(epos, barrel.blastRadius);
       if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
-      soundManager.play('powerUp', 0.9, false, 0.7); // dirty low-pitched boom
+      // Real, POSITIONAL detonation. This used to be a pitched-down 'powerUp'
+      // ping — the same cue as picking up a health pack.
+      soundManager.playAt('explosion_small', epos.x, epos.y, epos.z, 0.95, 0.94 + Math.random() * 0.12);
       // Enemies
       for (let j = enemies.length - 1; j >= 0; j--) {
         const e = enemies[j];
@@ -9459,13 +9980,13 @@ const ForestSurvivalGame = () => {
       nukeEffects.push(new NukeEffect(scene, new THREE.Vector3(center.x, 0.5, center.z), radius * 0.62));
       // A nuke throws corpses far — a big radius + strong kick (solo Rapier only).
       ragdollSystem.applyRadialImpulse(center.x, 0.5, center.z, radius * 0.62, 2.4);
-      // Screen feedback — blinding flash, heavy shake, wide FOV punch + a deep
-      // low-pitched boom (no dedicated explosion sample; reuse the barrel boom).
+      // Screen feedback — blinding flash, heavy shake, wide FOV punch and the
+      // heaviest blast in the game. Deliberately NON-positional: a tactical
+      // nuke is an everywhere-at-once event, not a thing happening over there.
       triggerKillFlash();
       if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
       fovPunch = Math.min(fovPunch + 13, 18);
-      soundManager.play('powerUp', 1.0, false, 0.5);
-      soundManager.play('hit', 0.8, false, 0.5);
+      soundManager.play('explosion_huge', 1.0, false, 0.92);
       // Shield the player from their own nuke — also covers the barrel chain it
       // ignites, so deploying it next to cover never suicides the player.
       invincibleActive = true;
@@ -9551,7 +10072,6 @@ const ForestSurvivalGame = () => {
       if (!enemy.frostShell) {
         const shell = new THREE.Mesh(_frostShellGeo, _frostShellMat);
         shell.position.y = 1.0;
-        shell.userData.cannotReceiveAO = true;
         shell.userData.isFrostShell = true;
         enemy.mesh.add(shell);
         enemy.frostShell = shell;
@@ -9797,7 +10317,6 @@ const ForestSurvivalGame = () => {
     const _bombBandGeo = new THREE.TorusGeometry(0.6, 0.045, 6, 24);
     const buildBombKit = (): { group: THREE.Group; led: THREE.Mesh; tip: THREE.Mesh; band: THREE.Mesh } => {
       const group = new THREE.Group();
-      group.userData.cannotReceiveAO = true;
       // Detonator box clamped on top of the barrel (barrel top ≈ local y +0.65).
       const det = new THREE.Mesh(_bombDetGeo, new THREE.MeshStandardMaterial({ color: 0x23272e, metalness: 0.7, roughness: 0.4 }));
       det.position.set(0, 0.82, 0);
@@ -9881,6 +10400,8 @@ const ForestSurvivalGame = () => {
     const explodeRocket = (pos: THREE.Vector3, baseDamage: number) => {
       const RADIUS = 9;
       spawnExplosionFX(pos);
+      // The launcher does 150 damage and, until now, made no sound whatsoever.
+      soundManager.playAt('explosion', pos.x, pos.y, pos.z, 1.0, 0.95 + Math.random() * 0.1);
       for (let j = enemies.length - 1; j >= 0; j--) {
         const e = enemies[j];
         if (e.dead) continue;
@@ -10038,6 +10559,22 @@ const ForestSurvivalGame = () => {
       // while the world slows — exactly as it behaves today.
       const frameScale = Math.min(rawDelta * 60, 2);
 
+      // ── RUN CONTEXT REFRESH ──────────────────────────────────────────────
+      // Overwrite the per-frame fields in place (no allocation) so any system
+      // ticked later this frame reads a coherent snapshot. Placed here because
+      // delta / rawDelta / frameScale are all resolved by this point, and
+      // nothing has consumed them yet.
+      runCtx.dt = delta;
+      runCtx.rawDt = rawDelta;
+      runCtx.frameScale = frameScale;
+      runCtx.nowMs = Date.now();
+      runCtx.tSec = clock.getElapsedTime();
+      runCtx.playerHp = health;
+      runCtx.playerMaxHp = playerMaxHealth;
+      runCtx.wave = wave;
+      runCtx.paused = paused;
+      runCtx.gameOver = isGameOver || playerEliminated;
+
       // Flush any pending HUD update at a capped rate (see flushGameState) so
       // sustained fire can't trigger a React re-render per shot/hit/kill.
       if (hudDirty) {
@@ -10071,6 +10608,34 @@ const ForestSurvivalGame = () => {
         camera.position,
         !atmosphericSettings.sunVisible,
       );
+
+      // ── WEATHER GETS GAMEPLAY TEETH ──────────────────────────────────────
+      // The whole weather system (500 lines, six storm species, a director,
+      // per-map climates) was consumed for SKY, FOG, LIGHT, SATURATION, BLOOM
+      // and WETNESS only — it looked superb and changed nothing. A storm the
+      // player can see but never has to account for is set dressing.
+      //
+      // Derived here rather than added to WeatherMods so WeatherSystem stays a
+      // pure presentation layer, and cheap: a couple of multiplies per frame.
+      // Deliberately SMALL numbers — weather should colour a fight, not decide
+      // it, and the player has no way to opt out of the roll.
+      {
+        const stormK = weatherSystem.getStormKind();
+        const heavy = Math.max(weatherMods.rainAmount, weatherMods.tintStrength);
+        // Thick air cuts how far enemies can pick the player out. A sandstorm
+        // or blizzard now genuinely hides you — which is the first time in the
+        // game that a weather roll is ever an ADVANTAGE.
+        weatherAggroMult = (stormK === 'sandstorm' || stormK === 'blizzard')
+          ? 1 - 0.32 * heavy
+          : 1 - 0.12 * heavy;
+        // Deep snow and loose sand drag; wet ground barely does.
+        weatherMoveMult = stormK === 'blizzard' ? 1 - 0.10 * heavy
+          : stormK === 'sandstorm' ? 1 - 0.06 * heavy
+          : 1;
+        // Heavy rain masks footsteps — both yours and theirs.
+        weatherFootstepMult = 1 - 0.5 * weatherMods.rainAmount;
+      }
+
       if (weatherMods.skyDarken > 0.005) {
         renderAtmosphere.skyColor = darkenHexColor(renderAtmosphere.skyColor, 1 - weatherMods.skyDarken * 0.5);
         renderAtmosphere.fogColor = darkenHexColor(renderAtmosphere.fogColor, 1 - weatherMods.skyDarken * 0.4);
@@ -10343,7 +10908,7 @@ const ForestSurvivalGame = () => {
         skillBonuses = skillTree.calculateStatBonuses();
         // Combine skill maxHealth + Iron Lung perk's maxHpBonus + the Run
         // Modifier's multiplier (Berserker / Glass Cannon) + MP character
-        // passive (Heavy +20%) — single source-of-truth cap.
+        // passive (Heavy → +20%) — single source-of-truth cap.
         const newMax = Math.max(
           10,
           Math.floor((100 + (skillBonuses['maxHealth'] || 0)) * (runMods.playerMaxHpMult ?? 1) * (mpMods.maxHpMult ?? 1)) + perkBonuses.maxHpBonus,
@@ -10530,7 +11095,12 @@ const ForestSurvivalGame = () => {
                 camera.position.clone(),
                 0xff3322,
               ));
-              soundManager.play('shoot_pistol', 0.55, false, 0.6);
+              // Positional: a turret firing from behind you now sounds like it.
+              soundManager.playAt(
+                'shoot_pistol',
+                sentinel.mesh.position.x, sentinel.mesh.position.y + 1.6, sentinel.mesh.position.z,
+                0.6, 0.6,
+              );
               sentinel.isCharging = false;
               sentinel.chargeMs = 0;
               sentinel.cooldownMs = sentinel.cooldownDurationMs;
@@ -10572,10 +11142,24 @@ const ForestSurvivalGame = () => {
       }
 
       // === UPDATE AI SYSTEMS ===
-      // Poll the adaptive system ~every 2s; it internally re-evaluates on its own
-      // 3.5s cadence (so it stays responsive without thrashing).
-      if (frameCount % 120 === 0 && (RUNTIME_PREFS.adaptiveDifficulty || isAdaptiveMode)) {
-        adaptiveDifficulty.update(delta * 120);
+      //
+      // ⚠ These four periodic systems used to be gated on `frameCount % N`, but
+      // frameCount is CLAMPED at 3 a few lines up (`if (frameCount < 3)`), so
+      // after the third frame it never changes and none of those modulo tests
+      // could ever be true again — in fact none of them fired even once, since
+      // the counter is incremented before the checks and 1/2/3 are not
+      // divisible by 30/120/900/1800. Adaptive difficulty never re-evaluated,
+      // the Tactical Director never issued a directive, the combat coach never
+      // spoke, and NOT ONE mission was ever generated.
+      //
+      // They're on real delta accumulators now, which also makes their cadence
+      // framerate-independent (the old modulo would have run twice as often on
+      // a 120 Hz panel even if the counter had worked).
+      aiAdaptiveAccum += rawDelta;
+      if (aiAdaptiveAccum >= 2.0 && (RUNTIME_PREFS.adaptiveDifficulty || isAdaptiveMode)) {
+        const dtA = aiAdaptiveAccum;
+        aiAdaptiveAccum = 0;
+        adaptiveDifficulty.update(dtA);
         // ADAPTIVE MODE: push the freshly-computed performance profile onto the
         // live enemy tuning. Health/damage/spawn apply to future spawns; the
         // speed target is smoothed onto existing enemies each frame below.
@@ -10598,7 +11182,9 @@ const ForestSurvivalGame = () => {
       // range EMAs, folds them into one directive every enemy reads, and fires a
       // rare, legible HUD callout whenever the squad's dominant tactic shifts so
       // the player can FEEL the adaptation instead of just being countered.
-      if (tacticalActive && frameCount % 30 === 0) {
+      aiTacticalAccum += rawDelta;
+      if (tacticalActive && aiTacticalAccum >= 0.5) {
+        aiTacticalAccum = 0;
         const nowT = performance.now();
         const dtT = (nowT - lastTacticalUpdateMs) / 1000;
         lastTacticalUpdateMs = nowT;
@@ -10621,52 +11207,11 @@ const ForestSurvivalGame = () => {
         }
       }
 
-      // Generate missions periodically (every 30 seconds)
-      if (frameCount % 1800 === 0) {
-        const mission = missionSystem.generateMission({
-          playerSkillLevel: adaptiveDifficulty.getSkillLevel().overallScore,
-          currentWave: wave,
-          killCount: enemiesKilled,
-          accuracy: adaptiveDifficulty.getMetrics().accuracyRate,
-          currentWeapon,
-          availableWeapons: Object.keys(WEAPONS).filter(w => unlockedWeapons.includes(w)),
-          availableAbilities: [],
-          difficulty: classicDifficulty,
-          timeOfDay: actualTimeOfDay,
-          biome: biomeSystem.getBiomeAt(camera.position.x, camera.position.z)
-        });
-
-        if (mission) {
-          setActiveMissions(prev => [...prev, mission]);
-        }
-      }
-
-      // Get coach tips every 15 seconds. Silenced during the guided tutorial —
-      // a second, unrelated advice popup competing with the step card is
-      // exactly the noise the drill is trying to avoid.
-      if (frameCount % 900 === 0 && RUNTIME_PREFS.showHints && !tutorialGuidedOn) {
-        const tip = combatCoach.analyzeAndCoach({
-          playerHealth: health,
-          maxHealth: playerMaxHealth,
-          currentWeapon,
-          ammo,
-          maxAmmo: effectiveMaxAmmo(currentWeapon),
-          enemiesNearby: enemies.filter(e => !e.dead && e.mesh.position.distanceTo(camera.position) < 20).length,
-          enemyTypes: enemies.filter(e => !e.dead).map(e => e.type),
-          powerupsNearby: powerUps.length,
-          position: {x: camera.position.x, z: camera.position.z},
-          abilitiesOnCooldown: [false, false, false],
-          recentShots: [],
-          timeInGame: (Date.now() - startTime) / 1000
-        });
-
-        if (tip) {
-          setCoachTips(prev => [...prev, tip]);
-          setTimeout(() => {
-            setCoachTips(prev => prev.filter(t => t.id !== tip.id));
-          }, tip.duration);
-        }
-      }
+      // NOTE: no procedural missions and no combat-coach hints in gameplay.
+      // Both were gated on `frameCount % N`, which could never fire (frameCount
+      // is clamped at 3), so neither had ever actually run. Removed by request
+      // rather than switched on: the mystery box is the wave-end beat, and
+      // teaching belongs in the tutorial, not as pop-ups mid-fight.
 
       // ── GUIDED TUTORIAL ───────────────────────────────────────────────────
       // The single owner of every step transition. React state is pushed only
@@ -11357,11 +11902,42 @@ const ForestSurvivalGame = () => {
       // Recomputed here and reused by the footstep rustle. No-op off foliage.
       bushSlowMul = bushWadeAt(camera.position.x, camera.position.z);
 
+      // ── HAZARD POOLS ───────────────────────────────────────────────────
+      // Lava burns, sludge corrodes, ice is slick. Until now all three were
+      // painted decoration, which is a large part of why the eight maps only
+      // differed by colour grade — the terrain never had a rule attached.
+      playerHazard = hazardAt(camera.position.x, camera.position.z);
+      if (playerHazard) {
+        const rule = HAZARD_RULES[playerHazard.kind];
+        // runCtx.nowMs is the frame's single cached Date.now() (set in the
+        // RunContext refresh near the top of animate) — the movement block runs
+        // before the enemy loop declares its own `frameNowMs`.
+        const hzNow = runCtx.nowMs;
+        if (rule.dps > 0 && hzNow >= nextHazardTickAt && !isGameOver) {
+          nextHazardTickAt = hzNow + rule.tickMs;
+          // Scaled by how deep in the pool the player is, so skirting the rim
+          // is a real (and rewarded) option.
+          const dmg = rule.dps * (rule.tickMs / 1000) * (0.45 + 0.55 * playerHazard.depth);
+          takeEnemyDamage(dmg, playerHazard.kind === 'lava' ? 'Lava' : 'Toxic Sludge', null);
+          if (playerHazard.kind === 'lava') {
+            createParticles(camera.position, 0xff5522, 4);
+            soundManager.play('playerHurt', 0.28, false, 1.35);
+          } else {
+            createParticles(camera.position, 0x9bd94a, 3);
+          }
+        }
+      }
+
       // `frameScale` (see the 60 FPS normaliser above) is what keeps walk /
       // sprint / dash identical on a 60 Hz desktop and a 120 Hz phone. It is
       // folded in HERE so all three read it — currentSpeed and the dash below
       // are both derived from baseSpeed.
-      const baseSpeed = moveSpeed * frameScale * weightSpeedMultiplier * abilityEffects.speedMultiplier * powerupSpeedMult * crouchMult * bushSlowMul * (1 + skillBonus('moveSpeed')) * (mpMods.speedMult ?? 1) * perkBonuses.moveSpeedMult;
+      // Hazard movement multiplier — lava and sludge drag, ice is slick and
+      // slightly FASTER (its danger is the loss of precise control, not speed).
+      const hazardSlowMul = playerHazard
+        ? 1 - (1 - HAZARD_RULES[playerHazard.kind].slow) * playerHazard.depth
+        : 1;
+      const baseSpeed = moveSpeed * frameScale * weightSpeedMultiplier * abilityEffects.speedMultiplier * powerupSpeedMult * crouchMult * bushSlowMul * hazardSlowMul * weatherMoveMult * (1 + skillBonus('moveSpeed')) * (mpMods.speedMult ?? 1) * perkBonuses.moveSpeedMult;
       let currentSpeed = isRunning ? baseSpeed * sprintMultiplier : baseSpeed;
 
       // Apply dash speed if dashing
@@ -11745,6 +12321,20 @@ const ForestSurvivalGame = () => {
       }
       lastPlayerPosition.copy(camera.position);
 
+      // ── AUDIO LISTENER ───────────────────────────────────────────────────
+      // Placed here deliberately: the camera has finished being mutated for
+      // this frame (look, recoil, crouch height, weapon inertia are all above)
+      // and footsteps — immediately below — are the frame's first positional
+      // sound. Cheap enough to run every frame; scratch vectors are module
+      // scope so this allocates nothing.
+      camera.getWorldDirection(_audioFwd);
+      _audioUp.set(0, 1, 0).applyQuaternion(camera.quaternion);
+      soundManager.setListener(
+        camera.position.x, camera.position.y, camera.position.z,
+        _audioFwd.x, _audioFwd.y, _audioFwd.z,
+        _audioUp.x, _audioUp.y, _audioUp.z,
+      );
+
       // ── FOOTSTEPS ────────────────────────────────────────────────────────
       // Emit a step each stride of real ground travel — stops naturally at
       // walls and while airborne, and speeds up when sprinting. Crouch steps
@@ -11754,7 +12344,8 @@ const ForestSurvivalGame = () => {
         const stride = isCrouching ? 6 : 9; // world units per step
         if (footstepAccum >= stride) {
           footstepAccum = 0;
-          const vol = isCrouching ? 0.1 : isRunning ? 0.26 : 0.18;
+          // Heavy rain masks footfalls — the drumming drowns them out.
+          const vol = (isCrouching ? 0.1 : isRunning ? 0.26 : 0.18) * weatherFootstepMult;
           soundManager.play('footstep', vol, false, 0.9 + Math.random() * 0.16);
           // Pushing through brush adds a soft high-pitched leaf rustle on the
           // footfall, so the slowdown is felt as well as seen.
@@ -12227,7 +12818,15 @@ const ForestSurvivalGame = () => {
         // single-box (LOW) NOR the simplified "half texture" mesh (MEDIUM) — the
         // enemy's FULL model must have streamed in (HIGH LOD, ≤45 m) first.
         // Pooled enemies only; anything without a pool slot stays hittable.
-        e.detailReady = e.poolId === undefined ? true : smartEnemyManager.isDetailReady(e.poolId);
+        // `alwaysDamageable` opts a handful of elites OUT of that gate. The
+        // Howler is the reason it exists: it deliberately hangs at the BACK of
+        // the pack, and on a low preset (viewDistance 72 m → a tight LOD ladder)
+        // it would sit permanently outside the HIGH-LOD band and be literally
+        // invulnerable — an unkillable healer. The 45 m floor stays untouched
+        // for everything else; this is the narrow exception, not a loosening.
+        e.detailReady = e.alwaysDamageable === true || e.poolId === undefined
+          ? true
+          : smartEnemyManager.isDetailReady(e.poolId);
       }
 
       // === ENEMY BULLET UPDATE (ranged sniper bolts) ===
@@ -12326,6 +12925,7 @@ const ForestSurvivalGame = () => {
           if (dxS * dxS + dzS * dzS < sentinel.hitRadius * sentinel.hitRadius && Math.abs(dyS) < 1.2) {
             sentinel.hp -= bullet.damage;
             createParticles(bullet.mesh.position, 0xff6633, 8);
+            soundManager.playAt('impact_metal', bullet.mesh.position.x, bullet.mesh.position.y, bullet.mesh.position.z, 0.55, 0.95 + Math.random() * 0.12);
             if (sentinel.hp <= 0) {
               sentinel.destroyed = true;
               spawnExplosionFX(sentinel.mesh.position.clone());
@@ -12333,7 +12933,6 @@ const ForestSurvivalGame = () => {
               // Reward — meaningful score bump + advance elimination mission.
               const sentinelReward = Math.round(150 * scoreDiffMult * runModifierScoreMult);
               score += sentinelReward;
-              missionSystem.updateProgress('elimination', 1);
               if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry(`Sentinel Down · +${sentinelReward}`, 'kill');
               triggerKillFlash();
               updateGameState();
@@ -12364,6 +12963,7 @@ const ForestSurvivalGame = () => {
             } else {
               // Glancing hit — sparks + the bullet stops here either way.
               createParticles(bullet.mesh.position, 0xffaa33, 6);
+              soundManager.playAt('impact_metal', bullet.mesh.position.x, bullet.mesh.position.y, bullet.mesh.position.z, 0.5, 0.88 + Math.random() * 0.12);
             }
             // Rockets still trigger their own AOE in addition to the barrel
             // detonation (a rocket landing on a barrel should feel huge).
@@ -12521,12 +13121,7 @@ const ForestSurvivalGame = () => {
           // a modest radius bonus for thumb imprecision; the old path gave it
           // a 2m cylinder with NO height test at all, which is what made mobile
           // play like an aimbot.
-          const eScale = enemy.type === 'fast' ? 0.7
-            : enemy.type === 'tank' ? 1.5
-            : enemy.type === 'boss' ? 2.0
-            : enemy.type === 'ranged' ? 1.05
-            : enemy.type === 'revenant' ? 0.85
-            : 1.0;
+          const eScale = ENEMY_SCALE[enemy.type];
           const bodyR = Math.max(1.1, 1.1 * eScale) * (aimAssist ? 1.3 : 1);
           const contactY = _bulletPrev.y + (bullet.mesh.position.y - _bulletPrev.y) * tHit;
           const footY = enemy.mesh.position.y - 0.4;
@@ -12559,12 +13154,7 @@ const ForestSurvivalGame = () => {
             // scaled by its type scale, so the head's true world height is
             // position.y + 1.9 * scale. Using a flat +1.0 made the crit zone
             // land on the chest and miss the visible head entirely.
-            const hsScale = enemy.type === 'fast' ? 0.7
-              : enemy.type === 'tank' ? 1.5
-              : enemy.type === 'boss' ? 2.0
-              : enemy.type === 'ranged' ? 1.05
-              : enemy.type === 'revenant' ? 0.85
-              : 1.0;
+            const hsScale = ENEMY_SCALE[enemy.type];
             _tempVec3.set(
               enemy.mesh.position.x,
               enemy.mesh.position.y + 1.9 * hsScale,
@@ -12593,6 +13183,26 @@ const ForestSurvivalGame = () => {
               if (runMods.headshotsOnly) damage *= 0.1;
               soundManager.play('hit', 0.4);
               createParticles(enemy.mesh.position, 0xff9933, 3); // orange sparks (robot), not red blood
+            }
+
+            // ── BULWARK FRONTAL SHIELD ──────────────────────────────────
+            // Shots landing inside its facing arc are almost entirely absorbed.
+            // This is the archetype's whole point: the answer is to MOVE, not
+            // to keep firing. The flare + ping make "blocked" unmistakable so
+            // it reads as a puzzle rather than as the gun being broken.
+            if (enemy.type === 'bulwark' && isBlockedByBulwark(
+              enemy.mesh.rotation.y,
+              enemy.mesh.position.x, enemy.mesh.position.z,
+              bullet.mesh.position.x, bullet.mesh.position.z,
+            )) {
+              damage *= BULWARK_FRONT_DAMAGE;
+              enemy.bulwarkFlash = 1;
+              soundManager.playAt(
+                'impact_metal',
+                bullet.mesh.position.x, bullet.mesh.position.y, bullet.mesh.position.z,
+                0.6, 1.35,
+              );
+              createParticles(bullet.mesh.position, 0x5fd8ff, 5);
             }
 
             // ── WAVE-PERK DAMAGE MODIFIERS (solo only — neutral in MP) ──
@@ -12630,7 +13240,26 @@ const ForestSurvivalGame = () => {
               // units shrug off a slice of every round. Applied only at this
               // authoritative write (guests' reported hits are scaled once,
               // in the host's enemy_hit handler — never both).
-              enemy.health -= damage * playerBallisticsMult();
+              // ── HOWLER OVERSHIELD ────────────────────────────────────
+              // Absorbs damage BEFORE health. An unattended Howler keeps
+              // topping this up, so the swarm visibly stops dying — which is
+              // the pressure that makes the player go and deal with it.
+              // (The bullet pass runs BEFORE the enemy loop caches frameNowMs.)
+              // Bosses clamp a single round's damage — see BOSS_MAX_HIT_FRACTION.
+              let dmgToApply = capBossHit(enemy, damage * playerBallisticsMult());
+              if ((enemy.overshield ?? 0) > 0 && Date.now() < (enemy.overshieldUntil ?? 0)) {
+                const absorbed = Math.min(enemy.overshield!, dmgToApply);
+                enemy.overshield! -= absorbed;
+                dmgToApply -= absorbed;
+                createParticles(bullet.mesh.position, 0xd08cff, 4);
+                if (enemy.overshield! <= 0 && enemy.overshieldRing) {
+                  // Shield popped — strip the marker ring so the player sees it
+                  // is now vulnerable. Shared asset: detach only.
+                  enemy.mesh.remove(enemy.overshieldRing);
+                  enemy.overshieldRing = undefined;
+                }
+              }
+              enemy.health -= dmgToApply;
               // Landing an open-window shot tells the Revenant it's being shot
               // at → it blinks to evade (player-sourced evade only).
               if (enemy.type === 'revenant') enemy.revEvadeUntil = Date.now() + 500;
@@ -12684,11 +13313,9 @@ const ForestSurvivalGame = () => {
             // trigger-pull already counted the shot fired in shoot()).
             adaptiveDifficulty.recordHit(isCritical);
             adaptiveDifficulty.recordDamage(damage, true);
-            combatCoach.recordShot(true, isCritical);
 
             // Record for missions
             if (isCritical) {
-              missionSystem.updateProgress('headshot', 1);
               tutorial.recordAction('headshot', 1);
             }
 
@@ -12824,6 +13451,11 @@ const ForestSurvivalGame = () => {
           // one facing radially outward (back toward the shooter) with a slight
           // upward tilt so it reads correctly on vertical trunks/walls. Marks
           // are pooled + capped + auto-disposed (lifetime + distance cull).
+          // Material-matched, POSITIONAL impact audio. The decal system already
+          // classifies the surface here, so the sound comes for free — rounds
+          // used to land on the world in total silence (one generic 'hit' blip,
+          // unpanned), which is why missing felt like nothing happened.
+          let impactSound = 'impact_dirt';
           if (hitGround) {
             _decalNormal.set(0, 1, 0);
             bulletDecals.addDecal(_tempVec3, _decalNormal, currentWeapon, 'ground');
@@ -12833,11 +13465,14 @@ const ForestSurvivalGame = () => {
             _decalNormal.y = 0.18; // slight upward tilt so the crater lip catches light on trunks
             // 'tree'/'cactus' = the map's TALL structural cover (bark, concrete
             // wall, stone pillar…); everything else collidable = rock/debris.
-            const decalSurface = (terrainHitObj.type === 'tree' || terrainHitObj.type === 'cactus')
-              ? 'cover' : 'rock';
-            bulletDecals.addDecal(_tempVec3, _decalNormal, currentWeapon, decalSurface);
+            const isCover = terrainHitObj.type === 'tree' || terrainHitObj.type === 'cactus';
+            bulletDecals.addDecal(_tempVec3, _decalNormal, currentWeapon, isCover ? 'cover' : 'rock');
+            impactSound = isCover ? 'impact_wood' : 'impact_stone';
           }
-          soundManager.play('hit', 0.3);
+          soundManager.playAt(
+            impactSound, _tempVec3.x, _tempVec3.y, _tempVec3.z,
+            0.5, 0.92 + Math.random() * 0.16,
+          );
           retireBulletMesh(bullet);
           bullets.splice(i, 1);
         }
@@ -12858,9 +13493,16 @@ const ForestSurvivalGame = () => {
       // hard enemies keep their AI brain online (and continue attacking)
       // from much further out, so the player can't out-snipe them by
       // running outside the previous 100m cap.
+      // `weatherAggroMult` folds a live storm into the engagement range: thick
+      // air genuinely hides the player, so a sandstorm or blizzard shortens how
+      // far out enemies keep hunting. Floored at 0.6 so weather can NEVER make
+      // the swarm passive enough to trivialise a wave — it colours the fight,
+      // it doesn't decide it. (aggroRange on the Enemy struct is vestigial: it
+      // is assigned at spawn and never read; THIS is the real gate.)
       const MAX_AI_UPDATE_DISTANCE = Math.min(
         220,
-        graphicsPreset.viewDistance * 0.85 * diffSettings.chaseMult * mapVisibilityReach,
+        graphicsPreset.viewDistance * 0.85 * diffSettings.chaseMult * mapVisibilityReach
+          * Math.max(0.6, weatherAggroMult),
       );
       // ── Per-frame Date.now() cache + throttle intervals (milliseconds) ──
       // Heavy systems run on a slow tick and cache their result; steering and
@@ -12913,7 +13555,7 @@ const ForestSurvivalGame = () => {
           enemy.deathTime -= delta;
 
           // Base scale for this enemy type (pooled enemies use type-based scaling)
-          const baseScale = enemy.type === 'fast' ? 0.7 : enemy.type === 'tank' ? 1.5 : enemy.type === 'boss' ? 2.0 : enemy.type === 'revenant' ? 0.85 : 1.0;
+          const baseScale = ENEMY_SCALE[enemy.type];
 
           if (enemy.ragdollBodyId !== undefined) {
             // ── RAGDOLL (Rapier-driven) ── the corpse transform comes straight
@@ -13039,7 +13681,7 @@ const ForestSurvivalGame = () => {
         if (enemy.dead) continue;
 
         // Compute baseScale for ALL living enemies (needed for grounding).
-        const baseScale = enemy.type === 'fast' ? 0.7 : enemy.type === 'tank' ? 1.5 : enemy.type === 'boss' ? 2.0 : enemy.type === 'revenant' ? 0.85 : 1.0;
+        const baseScale = ENEMY_SCALE[enemy.type];
         // groundY rides the VISUAL terrain surface: beyond the player-relative
         // flat zone the GPU displaces the ground upward, and an enemy pinned
         // to the y=0 gameplay plane there reads as buried to the knees. The
@@ -13062,7 +13704,6 @@ const ForestSurvivalGame = () => {
             halo.rotation.x = Math.PI / 2;
             halo.position.y = 3.35;
             halo.userData.isSurgeHalo = true;
-            halo.userData.cannotReceiveAO = true;
             enemy.mesh.add(halo);
             enemy.surgeHalo = halo;
           }
@@ -13090,7 +13731,6 @@ const ForestSurvivalGame = () => {
             const shell = new THREE.Mesh(_frostShellGeo, _radShellMat);
             shell.position.y = 1.0;
             shell.userData.isRadShell = true;
-            shell.userData.cannotReceiveAO = true;
             enemy.mesh.add(shell);
             enemy.radShell = shell;
           } else if (enemy.radShell && charge < 0.06) {
@@ -13272,7 +13912,7 @@ const ForestSurvivalGame = () => {
           // findEnemySpawnSpot so recycled enemies don't reappear inside
           // a tree trunk.
           const baseRad = (38 + Math.random() * (22 * diffSettings.chaseMult)) * mapSpawnReach;
-          const enemyRadius = enemy.type === 'boss' ? 2.0 : enemy.type === 'tank' ? 1.6 : 1.2;
+          const enemyRadius = ENEMY_SPAWN_CLEARANCE[enemy.type];
           const spot = findEnemySpawnSpot(baseRad, enemyRadius);
           enemy.mesh.position.x = spot.x;
           enemy.mesh.position.z = spot.z;
@@ -13357,10 +13997,16 @@ const ForestSurvivalGame = () => {
               distanceToPlayer: distance,
               health: enemy.health,
               maxHealth: enemy.maxHealth,
-              // The Revenant has no AI archetype of its own in the behaviour tree
-              // — steer it like a 'fast' flanker (its real behaviour comes from
-              // the dedicated revenant block: blink + shoot + shield).
-              type: enemy.type === 'revenant' ? 'fast' : enemy.type,
+              // The behaviour tree only knows the five base archetypes; the
+              // specialists' real behaviour lives in their own per-frame blocks
+              // (revenant blink/shield, and ENEMY_BEHAVIORS for the tactical
+              // four). Map each onto the base steering that suits it:
+              //   revenant → fast   (flanker)
+              //   leaper   → fast   (closes aggressively between pounces)
+              //   bulwark  → tank   (slow advance, holds its facing)
+              //   splitter → tank   (slow, bulky)
+              //   howler   → ranged (hangs back with the pack)
+              type: STEER_ARCHETYPE[enemy.type],
               allEnemies: enemies,
               terrainObjects: terrainObjects,
               canSeePlayer,
@@ -13696,7 +14342,7 @@ const ForestSurvivalGame = () => {
             let angleDiff = targetAngle - enemy.mesh.rotation.y;
             while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
             while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
-            enemy.mesh.rotation.y += angleDiff * Math.min(1, delta * 9);
+            enemy.mesh.rotation.y += angleDiff * Math.min(1, delta * 9 * (TURN_RATE_MULT[enemy.type] ?? 1));
 
             // Walk animation driven by how far the enemy ACTUALLY moved this
             // frame — the stride stays planted to the ground (no gliding) and
@@ -13773,7 +14419,7 @@ const ForestSurvivalGame = () => {
               let idleAngleDiff = idleTargetAngle - enemy.mesh.rotation.y;
               while (idleAngleDiff > Math.PI) idleAngleDiff -= Math.PI * 2;
               while (idleAngleDiff < -Math.PI) idleAngleDiff += Math.PI * 2;
-              enemy.mesh.rotation.y += idleAngleDiff * Math.min(1, delta * 7);
+              enemy.mesh.rotation.y += idleAngleDiff * Math.min(1, delta * 7 * (TURN_RATE_MULT[enemy.type] ?? 1));
             }
           }
 
@@ -13809,6 +14455,162 @@ const ForestSurvivalGame = () => {
           } else {
             // Ensure scale is correct when not staggering
             enemy.mesh.scale.setScalar(baseScale);
+          }
+        }
+
+        // ── HAZARD POOLS BURN ENEMIES TOO ──────────────────────────────────
+        // Critical for the feature to read as a WORLD rule rather than a player
+        // tax: kiting a pack of runners through a lava field has to be a real,
+        // rewarding play.
+        //
+        // Cost control is the per-enemy `nextHazardTickAt` backoff: an enemy
+        // standing in nothing re-queries only every 250 ms, and those timers
+        // stagger themselves apart after the first frame. Deliberately NOT
+        // distance-gated — a pool has to behave the same everywhere, or an
+        // enemy would wade through lava unharmed simply because the player was
+        // far away, and the rule would stop being a rule.
+        if (!isMpGuest && !enemy.dead && maxHazardRadius > 0 && frameNowMs >= (enemy.nextHazardTickAt ?? 0)) {
+          const eh = hazardAt(enemy.mesh.position.x, enemy.mesh.position.z);
+          if (eh && HAZARD_RULES[eh.kind].dps > 0) {
+            const rule = HAZARD_RULES[eh.kind];
+            enemy.nextHazardTickAt = frameNowMs + rule.tickMs;
+            enemy.health -= rule.dps * (rule.tickMs / 1000) * (0.45 + 0.55 * eh.depth);
+            enemy.damageFlashTime = Math.max(enemy.damageFlashTime, 0.15);
+            if (Math.random() < 0.4) {
+              createParticles(enemy.mesh.position, eh.kind === 'lava' ? 0xff5522 : 0x9bd94a, 3);
+            }
+            if (enemy.health <= 0) { handleEnemyKilled(enemy, false); continue; }
+          } else {
+            // Not in a pool — back off the check so it's not re-queried every frame.
+            enemy.nextHazardTickAt = frameNowMs + 250;
+          }
+        }
+
+        // Overshield expiry (any archetype can be wearing one). Applies to the
+        // linger timeout as well as the popped case handled in the bullet pass,
+        // so a shield that simply runs out also drops its marker ring. Shared
+        // asset — detach only.
+        if ((enemy.overshield ?? 0) > 0 && frameNowMs >= (enemy.overshieldUntil ?? 0)) {
+          enemy.overshield = 0;
+          if (enemy.overshieldRing) {
+            enemy.mesh.remove(enemy.overshieldRing);
+            enemy.overshieldRing = undefined;
+          }
+        }
+
+        // ══ TACTICAL ARCHETYPE BEHAVIOUR ═══════════════════════════════════
+        // Solo-only (these never spawn in MP), so no host/guest arbitration is
+        // needed. Each block is a small state machine on the enemy itself; none
+        // of them allocate per frame.
+        if (enemy.type === 'bulwark' && enemy.bulwarkShield) {
+          // The shield pulses subtly and flares white when it eats a hit, so
+          // "your shots are doing nothing" is legible rather than confusing.
+          const flash = enemy.bulwarkFlash ?? 0;
+          if (flash > 0) enemy.bulwarkFlash = Math.max(0, flash - delta * 3.5);
+          const pulse = 0.20 + Math.sin(frameNowMs * 0.004) * 0.04 + (enemy.bulwarkFlash ?? 0) * 0.5;
+          // Per-instance opacity would need a per-instance material (a new
+          // shader program); instead scale the shield slightly — same read,
+          // zero material cost.
+          enemy.bulwarkShield.scale.setScalar(1 + (enemy.bulwarkFlash ?? 0) * 0.12);
+          enemy.bulwarkShield.visible = pulse > 0;
+        } else if (enemy.type === 'howler') {
+          // Pulse an overshield onto nearby allies. This is the whole reason
+          // the archetype exists: left alone, the swarm stops dying.
+          enemy.howlerAura?.rotateZ(delta * 0.9);
+          if (frameNowMs >= (enemy.howlerNextPulseAt ?? 0)) {
+            enemy.howlerNextPulseAt = frameNowMs + HOWLER_PULSE_MS;
+            const hx = enemy.mesh.position.x;
+            const hz = enemy.mesh.position.z;
+            let buffed = 0;
+            for (let hi = 0; hi < enemies.length; hi++) {
+              const ally = enemies[hi];
+              if (ally === enemy || ally.dead || ally.health <= 0) continue;
+              if (ally.type === 'howler') continue; // no mutual-heal lock
+              const ddx = ally.mesh.position.x - hx;
+              const ddz = ally.mesh.position.z - hz;
+              if (ddx * ddx + ddz * ddz > HOWLER_AURA_RADIUS * HOWLER_AURA_RADIUS) continue;
+              ally.overshield = Math.min(HOWLER_SHIELD_AMOUNT, (ally.overshield ?? 0) + HOWLER_SHIELD_AMOUNT);
+              ally.overshieldUntil = frameNowMs + HOWLER_SHIELD_LINGER_MS;
+              buffed++;
+              // Visual marker so the player can SEE which enemies are buffed
+              // (and therefore why they aren't dying).
+              if (!ally.overshieldRing) {
+                const ring = buildOvershieldRing();
+                ally.mesh.add(ring);
+                ally.overshieldRing = ring;
+              }
+            }
+            if (buffed > 0) {
+              soundManager.playAt('enemy_alert', hx, enemy.mesh.position.y, hz, 0.4, 1.45);
+            }
+          }
+        } else if (enemy.type === 'leaper' && enemy.leapVel) {
+          const st = enemy.leapState ?? 'idle';
+          if (st === 'idle') {
+            // Commit to a pounce when in the band and off cooldown. The band
+            // matters: too close and there's no reaction window, too far and it
+            // reads as random.
+            if (
+              frameNowMs >= (enemy.leapNextAt ?? 0)
+              && distance > LEAP_MIN_RANGE && distance < LEAP_MAX_RANGE
+              && !phantomActive
+            ) {
+              enemy.leapState = 'crouch';
+              enemy.leapUntil = frameNowMs + LEAP_CROUCH_MS;
+              // The tell — loud, positional, and distinct. Without this the
+              // pounce is unfair rather than reactive.
+              soundManager.playAt(
+                'enemy_attack',
+                enemy.mesh.position.x, enemy.mesh.position.y, enemy.mesh.position.z,
+                0.75, 0.8,
+              );
+            }
+          } else if (st === 'crouch') {
+            // Visibly compress before the spring.
+            const k = 1 - (enemy.leapUntil! - frameNowMs) / LEAP_CROUCH_MS;
+            enemy.mesh.scale.set(baseScale * (1 + k * 0.18), baseScale * (1 - k * 0.28), baseScale * (1 + k * 0.18));
+            if (frameNowMs >= (enemy.leapUntil ?? 0)) {
+              // Launch on a ballistic arc toward where the player is NOW.
+              const lx = focusPos.x - enemy.mesh.position.x;
+              const lz = focusPos.z - enemy.mesh.position.z;
+              const ld = Math.hypot(lx, lz) || 1;
+              const speed = Math.min(22, 9 + ld * 0.75);
+              enemy.leapVel.set((lx / ld) * speed, 11.5, (lz / ld) * speed);
+              enemy.leapState = 'air';
+              enemy.leapUntil = frameNowMs + LEAP_AIR_MAX_MS;
+              enemy.mesh.scale.setScalar(baseScale);
+            }
+          } else if (st === 'air') {
+            // Same ballistic integration the death-ragdoll launcher uses.
+            enemy.leapVel.y -= 26 * delta;
+            enemy.mesh.position.x += enemy.leapVel.x * delta;
+            enemy.mesh.position.y += enemy.leapVel.y * delta;
+            enemy.mesh.position.z += enemy.leapVel.z * delta;
+            const landY = visualGroundY(enemy.mesh.position.x, enemy.mesh.position.z) + 1.0 * baseScale;
+            if (enemy.mesh.position.y <= landY || frameNowMs >= (enemy.leapUntil ?? 0)) {
+              enemy.mesh.position.y = landY;
+              enemy.leapState = 'recover';
+              enemy.leapUntil = frameNowMs + LEAP_RECOVER_MS;
+              enemy.leapNextAt = frameNowMs + LEAP_COOLDOWN_MS;
+              // Impact: damage + a brief root if the player is still in the
+              // landing zone. Dodging the tell avoids all of it.
+              const idx2 = camera.position.x - enemy.mesh.position.x;
+              const idz2 = camera.position.z - enemy.mesh.position.z;
+              if (idx2 * idx2 + idz2 * idz2 < 9) {
+                takeEnemyDamage(LEAP_IMPACT_DAMAGE * enemyDamageMult(enemy), 'Leaper', enemy.mesh.position);
+                playerRootedUntil = frameNowMs + LEAP_ROOT_MS;
+              }
+              createParticles(enemy.mesh.position, 0xff8c2e, 10);
+              soundManager.playAt(
+                'impact_dirt',
+                enemy.mesh.position.x, enemy.mesh.position.y, enemy.mesh.position.z,
+                0.7, 0.7,
+              );
+              if (gameSettingsManager.getSetting('screenShake') && idx2 * idx2 + idz2 * idz2 < 64) triggerScreenShake();
+            }
+          } else if (st === 'recover') {
+            // Wide-open window — the reward for having read the tell.
+            if (frameNowMs >= (enemy.leapUntil ?? 0)) enemy.leapState = 'idle';
           }
         }
 
@@ -13884,7 +14686,14 @@ const ForestSurvivalGame = () => {
                   damage: enemy.damage * enemyDamageMult(enemy),
                   life: 240,
                 });
-                soundManager.play('shoot_pistol', 0.55, false, 1.3);
+                // Positional — a sniper bolt from off-screen is the single most
+                // valuable directional cue in the game, and it used to play at
+                // a flat volume with no panning regardless of where it came from.
+                soundManager.playAt(
+                  'shoot_pistol',
+                  enemy.mesh.position.x, enemy.mesh.position.y + 1.4, enemy.mesh.position.z,
+                  0.6, 1.3,
+                );
                 enemy.rangedChargeMs = 0;
                 enemy.rangedNextShotAt = frameNowMs + COOLDOWN_MS;
               }
@@ -14158,10 +14967,20 @@ const ForestSurvivalGame = () => {
           // makes the cloak read as "they lost me", not "they swing through me".
           const shouldAttack = distance < 7.0 && !phantomActive && frameNowMs >= (enemy.ccUntil ?? 0);
           if (shouldAttack) {
-            enemy.attackSystem.tryAttack(
+            // tryAttack returns true only on the frame a NEW swing starts, so
+            // this is the windup telegraph — a positional cue that gives the
+            // player a directional warning before the blow lands. Enemies were
+            // previously completely silent while attacking.
+            const swung = enemy.attackSystem.tryAttack(
               enemy.mesh.position,
               focusPos
             );
+            if (swung) {
+              const ap = enemy.mesh.position;
+              const heavy = enemy.type === 'tank' || enemy.type === 'boss' || enemy.isMiniBoss === true;
+              soundManager.playAt('enemy_attack', ap.x, ap.y, ap.z,
+                heavy ? 0.55 : 0.38, heavy ? 0.68 : enemy.type === 'fast' ? 1.3 : 1.0);
+            }
           }
 
           // Check for hit during attack animation
@@ -14443,6 +15262,79 @@ const ForestSurvivalGame = () => {
             }
           } else {
             radExposureS = Math.max(0, radExposureS - delta * 2);
+          }
+        }
+      }
+
+      // ── BOSS HEALTH BAR ──────────────────────────────────────────────────
+      // Track the most-wounded living boss (or crowned mini-boss) so the bar
+      // follows the one the player is actually fighting rather than flickering
+      // between two. Pushed every frame; the component throttles itself.
+      {
+        let tracked: Enemy | null = null;
+        for (let bi = 0; bi < enemies.length; bi++) {
+          const e = enemies[bi];
+          if (e.dead || e.health <= 0) continue;
+          if (e.type !== 'boss' && !e.isMiniBoss) continue;
+          if (!tracked || e.health / e.maxHealth < tracked.health / tracked.maxHealth) tracked = e;
+        }
+        if (tracked) {
+          setBossHealth(
+            tracked.type === 'boss' ? 'Overlord' : 'Crowned Elite',
+            tracked.health, tracked.maxHealth, tracked.bossPhase ?? 1,
+          );
+        } else {
+          setBossHealth(null);
+        }
+      }
+
+      // === DRAIN RUN EVENTS ===
+      // The single point where intents emitted by external gameplay systems
+      // become real state changes.
+      //
+      // The position is LOAD-BEARING, not cosmetic. The enemy loop above walks
+      // BACKWARDS and splices as it goes; applying a spawn/kill from inside it
+      // would shift indices under the walk. Draining here — after that loop has
+      // fully closed, before the MP snapshot serialises enemy state — means a
+      // system can never corrupt the iteration, and guests still see the
+      // results in the same frame they happened.
+      //
+      // Each case delegates to the existing pipeline rather than reimplementing
+      // it, so perks / shields / achievements / MP sync all keep working.
+      {
+        const evs = runEvents.take();
+        for (let ei = 0; ei < evs.length; ei++) {
+          const ev = evs[ei];
+          switch (ev.k) {
+            case 'damagePlayer':
+              takeEnemyDamage(ev.amount, ev.source, ev.at ?? null);
+              break;
+            case 'healPlayer':
+              health = Math.min(playerMaxHealth, health + ev.amount);
+              if (isMultiplayer && multiplayerManager) multiplayerManager.updatePlayerHealth(health);
+              hudDirty = true;
+              break;
+            case 'damageEnemy': {
+              const en = ev.enemy;
+              if (en.dead || en.health <= 0) break;
+              en.health -= ev.amount;
+              en.damageFlashTime = 0.3;
+              // Guests never resolve deaths locally — the host is authoritative.
+              if (!isMpGuest && en.health <= 0) handleEnemyKilled(en, false);
+              break;
+            }
+            case 'sound':
+              soundManager.play(ev.name, ev.volume ?? 1, false, ev.rate ?? 1);
+              break;
+            case 'banner':
+              showPowerMessage(ev.text, ev.ms ?? 2000);
+              break;
+            case 'killFeed':
+              if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry(ev.text, ev.kind);
+              break;
+            case 'screenShake':
+              if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
+              break;
           }
         }
       }
@@ -14954,7 +15846,13 @@ const ForestSurvivalGame = () => {
       // teardown but keep their type-built meshes for instant, allocation-free
       // reuse on the first real spawn of that archetype.
       await stage('Enemies', false, () => {
-        const warmEnemyTypes: PooledEnemyType[] = ['normal', 'fast', 'tank', 'boss', 'ranged', 'revenant'];
+        // ⚠ EVERY archetype must appear here. Omitting one means its shared
+        // materials link on its FIRST SPAWN mid-wave, which is exactly the
+        // stutter this whole stage exists to prevent.
+        const warmEnemyTypes: PooledEnemyType[] = [
+          'normal', 'fast', 'tank', 'boss', 'ranged', 'revenant',
+          'bulwark', 'howler', 'leaper', 'splitter',
+        ];
         prewarmEnemyIds = smartEnemyManager.prewarmEnemyTypes(warmEnemyTypes, wp);
       });
       await yieldFrame();
@@ -15261,6 +16159,9 @@ const ForestSurvivalGame = () => {
     return () => {
       isSceneDisposed = true;
       cancelAnimationFrame(warmupFrame);
+      // Drop any intents queued on the final frame — they reference enemies and
+      // meshes that are about to be disposed, and nothing will drain them.
+      runEvents.clear();
       window.removeEventListener('resize', handleResize);
       document.removeEventListener('keydown', onKeyDown);
       document.removeEventListener('keyup', onKeyUp);
@@ -15402,6 +16303,11 @@ const ForestSurvivalGame = () => {
       // Free every cached weapon rig (the session-long build-once cache that
       // makes weapon switches attach/detach instead of rebuild).
       gunModel.disposeAllRigs();
+
+      // Free the shared tactical-archetype geo/mats (Bulwark shield, Howler
+      // aura, overshield ring). Safe here and ONLY here: individual enemies
+      // only ever detach these, never dispose them.
+      disposeArchetypeAssets();
 
       // Cleanup BiomeSystem (releases shared geometry/material pools)
       biomeSystem.dispose();
@@ -15794,8 +16700,6 @@ const ForestSurvivalGame = () => {
     setPowerUpMessage('');
     setAbilityHud([]);
     setAchievementQueue([]);
-    setActiveMissions([]);
-    setCoachTips([]);
     soundManager.unmute();
     setShowShaderProcessing(true);
     setGameRestartKey(k => k + 1);
@@ -16691,28 +17595,12 @@ const ForestSurvivalGame = () => {
         </div>
       )}
 
-      {/* 🤖 NEW AI-POWERED UI COMPONENTS */}
-
-      {/* Mission Display — hidden in the tutorial (no waves/missions there) */}
-      {gameStarted && !gameState.isGameOver && !photoMode && gameMode !== 'tutorial' && activeMissions.length > 0 && (
-        <MissionDisplay
-          missions={activeMissions}
-          isTouch={isTouch}
-          onDismiss={(missionId) => {
-            setActiveMissions(prev => prev.filter(m => m.id !== missionId));
-          }}
-        />
+      {/* Boss health bar — mounted for the whole run; it renders nothing until
+          the loop reports a living boss via setBossHealth(). */}
+      {gameStarted && !gameState.isGameOver && !photoMode && (
+        <BossHealthBar isTouch={isTouch} />
       )}
 
-      {/* Combat Coach Tips */}
-      {gameStarted && !gameState.isGameOver && !photoMode && coachTips.length > 0 && (
-        <CoachTipsDisplay
-          tips={coachTips}
-          onDismissTip={(tipId) => {
-            setCoachTips(prev => prev.filter(t => t.id !== tipId));
-          }}
-        />
-      )}
 
       {/* Tutorial Overlay — wired to real tutorial state. These handlers only
           poke the system / pointer lock: the render loop is the single owner of

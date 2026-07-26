@@ -423,7 +423,6 @@ export class WeatherSystem {
     this.field = new THREE.Points(geometry, this.fieldMaterial);
     this.field.frustumCulled = false;
     this.field.visible = false;
-    this.field.userData.cannotReceiveAO = true;
     this.fieldVelY = velY;
     this.scene.add(this.field);
   }

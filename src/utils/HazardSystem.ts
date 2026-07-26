@@ -60,7 +60,6 @@ export function buildExplosiveBarrel(): ExplosiveBarrel {
   group.castShadow = true;
   group.receiveShadow = true;
   group.position.y = 0.65; // barrel is 1.3 tall, centre at 0.65
-  group.userData.cannotReceiveAO = true;
 
   // Two metal rings around the barrel for silhouette readability.
   const topRib = new THREE.Mesh(RIB_GEOMETRY, RIB_MATERIAL);
