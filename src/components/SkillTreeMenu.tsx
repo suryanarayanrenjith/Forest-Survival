@@ -118,7 +118,6 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
       })),
     );
 
-  // Headline counts for the "lattice" summary chips.
   const unlockedCount = skills.filter((s) => s.currentLevel > 0).length;
   const masteredCount = skills.filter((s) => s.currentLevel >= s.maxLevel).length;
 
@@ -143,10 +142,7 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
           '--hud-bracket': 'rgba(46,232,180,0.5)',
         } as React.CSSProperties}
       >
-        {/* ===== DECORATIVE ATMOSPHERE (behind content) ===== */}
         <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden>
-          {/* Drifting aurora blooms — the bioluminescent glow that ties the
-              panel to the forest's night palette. */}
           <div
             className="panel-drift absolute -top-28 -left-20 w-[26rem] h-[26rem] rounded-full"
             style={{ background: 'radial-gradient(circle, rgba(46,232,180,0.15), transparent 68%)', filter: 'blur(14px)' }}
@@ -155,8 +151,6 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
             className="panel-drift absolute -bottom-32 -right-16 w-[30rem] h-[30rem] rounded-full"
             style={{ background: 'radial-gradient(circle, rgba(57,208,230,0.11), transparent 70%)', filter: 'blur(18px)', animationDelay: '-5.5s' }}
           />
-          {/* Skill-lattice grid — a faint node mesh, masked to fade toward the
-              edges so it sits under the content like circuitry. */}
           <div
             className="absolute inset-0 opacity-60"
             style={{
@@ -167,14 +161,12 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
               WebkitMaskImage: 'radial-gradient(ellipse at 50% 8%, black 5%, transparent 78%)',
             }}
           />
-          {/* Top emerald→aurora hairline */}
           <div
             className="absolute top-0 left-0 right-0 h-px"
             style={{ background: 'linear-gradient(90deg, transparent, rgba(46,232,180,0.65), rgba(57,208,230,0.5), transparent)' }}
           />
         </div>
 
-        {/* ===== HEADER ===== */}
         <div className={`relative z-10 flex flex-none items-center justify-between border-b border-white/[0.07] bg-gradient-to-b from-white/[0.025] to-transparent ${isTouch ? 'gap-2 px-3 py-1.5' : 'gap-3 px-5 sm:px-6 py-4'}`}>
           <div className={`flex items-center min-w-0 ${isTouch ? 'gap-2' : 'gap-3.5'}`}>
             <div

@@ -55,7 +55,6 @@ const AchievementNotification = ({ achievement, index, onClose, isTouch = false 
         className={`rounded-xl border bg-[#0b0f15]/95 overflow-hidden ${isTouch ? 'w-[min(90vw,340px)]' : 'w-[330px]'}`}
         style={{ borderColor: `${accent}55`, boxShadow: `0 10px 30px -10px ${accent}55` }}
       >
-        {/* accent edge */}
         <div className="h-0.5 w-full" style={{ background: accent }} />
 
         <div className="p-4">

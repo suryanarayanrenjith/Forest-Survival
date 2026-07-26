@@ -48,7 +48,6 @@ const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMe
         className="relative m-auto w-full max-w-sm"
         style={{ animation: 'pmFade 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards' }}
       >
-        {/* Header */}
         <div className="text-center mb-7">
           <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl border border-white/10 bg-white/[0.04] mb-4">
             <Pause className="w-7 h-7 text-white" strokeWidth={2} fill="currentColor" />
@@ -64,7 +63,6 @@ const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMe
           </p>
         </div>
 
-        {/* Stats card */}
         <div
           className="hud-frame rounded-2xl border border-emerald-400/15 bg-white/[0.03] backdrop-blur-md overflow-hidden mb-5"
           style={{ '--hud-bracket': 'rgba(46,232,180,0.4)' } as CSSProperties}
@@ -86,7 +84,6 @@ const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMe
               );
             })}
           </div>
-          {/* Score row */}
           <div className="flex items-center justify-between px-4 py-3 border-t border-white/[0.07] bg-white/[0.02]">
             <div className="flex items-center gap-2.5">
               <Trophy className="w-4 h-4 text-cyan-400" strokeWidth={2.25} />
@@ -96,7 +93,6 @@ const PauseMenu = ({ health, ammo, maxAmmo, enemiesKilled, score, wave, onMainMe
           </div>
         </div>
 
-        {/* Actions */}
         <div className="flex flex-col gap-2.5">
           {/* Resume — touch only (desktop resumes with ESC). */}
           {isTouch && onResume && (

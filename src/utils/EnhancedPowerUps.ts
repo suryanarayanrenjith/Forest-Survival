@@ -525,7 +525,6 @@ export class EnhancedPowerUpSystem {
     z: number,
     powerUpType?: PowerUpType
   ): Airdrop {
-    // Select random power-up if not specified
     if (!powerUpType) {
       const random = Math.random();
       let cumulative = 0;
@@ -621,7 +620,6 @@ export class EnhancedPowerUpSystem {
     // the SHARED `glowLight` (see setGlowLight) driven in updateAirdrops — NOT a
     // per-crate PointLight, which would recompile every scene material on spawn.
 
-    // Starting position (high in the air)
     const startY = 100;
     group.position.set(x, startY, z);
 
@@ -641,7 +639,6 @@ export class EnhancedPowerUpSystem {
       swayPhase: Math.random() * Math.PI * 2,
     };
 
-    // Create smoke effect when landed
     this.createSmokeEffect(scene, airdrop);
 
     this.airdrops.push(airdrop);
@@ -724,7 +721,6 @@ export class EnhancedPowerUpSystem {
       }
 
       if (!airdrop.landed) {
-        // Descend
         const descendSpeed = airdrop.parachuteOpen ? 0.3 : 1.0;
         airdrop.mesh.position.y -= descendSpeed * deltaTime * 60;
 
@@ -741,7 +737,6 @@ export class EnhancedPowerUpSystem {
           airdrop.chute.scale.set(breathe, 1, breathe);
         }
 
-        // Check if landed
         if (airdrop.mesh.position.y <= 1) {
           airdrop.mesh.position.y = 1;
           airdrop.landed = true;
@@ -750,7 +745,6 @@ export class EnhancedPowerUpSystem {
           airdrop.mesh.rotation.x = 0;
           airdrop.mesh.rotation.z = 0;
 
-          // Add smoke
           if (airdrop.smoke) {
             airdrop.smoke.position.copy(airdrop.mesh.position);
             scene.add(airdrop.smoke);
@@ -882,7 +876,7 @@ export class EnhancedPowerUpSystem {
           } else {
             const positions = airdrop.smoke.geometry.attributes.position.array as Float32Array;
             for (let j = 0; j < positions.length; j += 3) {
-              positions[j + 1] += 0.05; // Rise
+              positions[j + 1] += 0.05;
               if (positions[j + 1] > 3) {
                 positions[j] = (Math.random() - 0.5) * 2;
                 positions[j + 1] = 0;
@@ -956,7 +950,6 @@ export class EnhancedPowerUpSystem {
 
     const config = POWER_UP_CONFIGS[airdrop.powerUpType];
 
-    // Track active power-ups with duration
     if (config.duration) {
       this.activePowerUps.set(airdrop.powerUpType, {
         expiresAt: Date.now() + config.duration

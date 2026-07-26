@@ -184,34 +184,29 @@ const HUD = ({
         <div className="touch-safe-pad absolute left-0 top-0 select-none">
           <div className="m-2 rounded-xl border border-white/10 bg-black/75 px-2.5 py-1.5">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-              {/* Health */}
               <div className="flex items-center gap-1.5">
                 <Heart className="h-3.5 w-3.5" style={{ color: healthColor }} strokeWidth={2.25} fill={isLowHealth ? healthColor : 'none'} />
                 <span className="text-sm font-bold tabular-nums" style={{ color: healthColor }}>
                   {unlimitedHealth ? '∞' : Math.max(0, Math.floor(health))}
                 </span>
               </div>
-              {/* Ammo */}
               <div className="flex items-baseline gap-1">
                 <Crosshair className="h-3.5 w-3.5 self-center text-gray-300" strokeWidth={2.25} />
                 <span className={`text-sm font-bold tabular-nums ${isLowAmmo ? 'text-red-400' : 'text-white'}`}>{ammo}</span>
                 <span className="text-[10px] font-medium text-gray-500">/ {maxAmmo}</span>
               </div>
-              {/* Score */}
               {!hideStatsPanel && (
                 <div className="flex items-baseline gap-1">
                   <span className="text-[9px] font-semibold uppercase tracking-wider text-gray-500">Score</span>
                   <span className="text-sm font-bold tabular-nums text-white">{score.toLocaleString()}</span>
                 </div>
               )}
-              {/* Kills */}
               {!hideStatsPanel && (
                 <div className="flex items-center gap-1">
                   <Skull className="h-3 w-3 text-gray-500" strokeWidth={2.25} />
                   <span className="text-xs font-semibold tabular-nums text-gray-200">{enemiesKilled}</span>
                 </div>
               )}
-              {/* Wave */}
               {!hideWave && !hideStatsPanel && (
                 <div className="flex items-center gap-1">
                   <Waves className="h-3 w-3 text-emerald-500" strokeWidth={2.25} />
@@ -225,7 +220,6 @@ const HUD = ({
                 </div>
               )}
             </div>
-            {/* Health + stamina bars */}
             <div className="mt-1.5 flex items-center gap-2">
               <div className="h-1 flex-1 overflow-hidden rounded-full bg-white/10">
                 <div className="h-full rounded-full transition-all duration-300" style={{ width: `${healthPct}%`, backgroundColor: healthColor }} />
@@ -237,7 +231,6 @@ const HUD = ({
                 </div>
               </div>
             </div>
-            {/* ARK-07 network-event warning chips (compact). */}
             <WaveEventChip waveEvent={waveEvent} compact />
           </div>
         </div>
@@ -253,7 +246,6 @@ const HUD = ({
       {/* ===== Top Left — Vitals ===== */}
       <div className="absolute top-4 left-4 select-none">
         <div className="rounded-2xl border border-white/10 bg-black/75 px-4 py-3 w-60">
-          {/* Health */}
           <div className="flex items-center justify-between mb-1.5">
             <div className="flex items-center gap-2">
               <Heart className="w-4 h-4" style={{ color: healthColor }} strokeWidth={2.25} fill={isLowHealth ? healthColor : 'none'} />
@@ -270,10 +262,8 @@ const HUD = ({
             />
           </div>
 
-          {/* Divider */}
           <div className="my-2.5 h-px bg-white/10" />
 
-          {/* Ammo */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 min-w-0">
               <Crosshair className="w-4 h-4 text-gray-300 flex-shrink-0" strokeWidth={2.25} />
@@ -571,7 +561,6 @@ const StaminaPie = ({ ratio, exhausted, unlimited = false }: { ratio: number; ex
   return (
     <div className="absolute bottom-4 left-4 select-none">
       <div className="rounded-2xl border border-white/10 bg-black/75 px-3 py-2.5 flex items-center gap-3">
-        {/* Pie ring */}
         <div className="relative w-12 h-12">
           {/* Outer ring (track) */}
           <div
@@ -592,7 +581,6 @@ const StaminaPie = ({ ratio, exhausted, unlimited = false }: { ratio: number; ex
           </div>
         </div>
 
-        {/* Side text — small numeric + label */}
         <div className="flex flex-col leading-tight pr-1">
           <span className="text-[9px] font-semibold tracking-[0.18em] text-gray-400 uppercase">
             {unlimited ? 'Sprint' : exhausted ? 'Exhausted' : 'Stamina'}

@@ -28,7 +28,23 @@ export type WavePerkId =
   | 'move_speed_15'
   | 'reload_30'
   | 'armor_20'
-  | 'glass_cannon';
+  | 'glass_cannon'
+  // ── EXPANDED POOL — bigger, game-changing powers ──
+  | 'fire_rate_50'
+  | 'damage_50'
+  | 'move_speed_30'
+  | 'crit_chance_25'
+  | 'lifesteal_6'
+  | 'max_hp_50'
+  | 'regen_3hps'
+  | 'frost_rounds'
+  | 'executioner'
+  | 'berserker_rage'
+  | 'thorns'
+  | 'second_wind'
+  | 'chain_lightning'
+  | 'scavenger'
+  | 'railgun_rounds';
 
 export interface WavePerk {
   id: WavePerkId;
@@ -60,6 +76,24 @@ export const WAVE_PERKS: Record<WavePerkId, WavePerk> = {
   reload_30:        { id: 'reload_30',        name: 'Fast Hands',           blurb: '−30% reload time',                      rarity: 'common', weight: 4 },
   armor_20:         { id: 'armor_20',         name: 'Bulletproof',          blurb: '−20% damage taken',                     rarity: 'rare',   weight: 3 },
   glass_cannon:     { id: 'glass_cannon',     name: 'Glass Cannon',         blurb: '+45% bullet damage · +30% damage taken', rarity: 'epic',   weight: 1 },
+
+  // ── EXPANDED POOL — heavier stat spikes + build-defining game-changers.
+  //    The epics are the "chase" cards: one can reshape an entire run.
+  fire_rate_50:     { id: 'fire_rate_50',     name: 'Overclocked Trigger',  blurb: '+50% fire rate',                         rarity: 'epic',   weight: 1 },
+  damage_50:        { id: 'damage_50',        name: 'Hollow Points',        blurb: '+50% bullet damage',                     rarity: 'epic',   weight: 1 },
+  move_speed_30:    { id: 'move_speed_30',    name: 'Track Star',           blurb: '+30% movement speed',                    rarity: 'rare',   weight: 2 },
+  crit_chance_25:   { id: 'crit_chance_25',   name: "Marksman's Focus",     blurb: '+25% crit chance on body hits',          rarity: 'rare',   weight: 2 },
+  lifesteal_6:      { id: 'lifesteal_6',      name: 'Sanguine',             blurb: 'Heal 6 HP on every kill',                rarity: 'rare',   weight: 2 },
+  max_hp_50:        { id: 'max_hp_50',        name: 'Titan Plating',        blurb: '+50 max HP (and heal that much now)',    rarity: 'rare',   weight: 2 },
+  regen_3hps:       { id: 'regen_3hps',       name: 'Nanite Cloud',         blurb: 'Regenerate 3 HP per second',             rarity: 'epic',   weight: 1 },
+  frost_rounds:     { id: 'frost_rounds',     name: 'Cryo Rounds',          blurb: 'Hits can flash-freeze the target solid',  rarity: 'epic',   weight: 1 },
+  executioner:      { id: 'executioner',      name: 'Executioner',          blurb: 'Finish off low-HP enemies instantly',    rarity: 'epic',   weight: 1 },
+  berserker_rage:   { id: 'berserker_rage',   name: "Berserker's Rage",     blurb: '+60% damage while below 40% HP',         rarity: 'epic',   weight: 1 },
+  thorns:           { id: 'thorns',           name: 'Retribution',          blurb: 'Melee attackers take 60% of the hit back', rarity: 'rare', weight: 2 },
+  second_wind:      { id: 'second_wind',      name: 'Second Wind',          blurb: 'Cheat death once — revive at 40% HP',     rarity: 'epic',   weight: 1 },
+  chain_lightning:  { id: 'chain_lightning',  name: 'Arc Reactor',          blurb: 'Kills arc lightning to nearby enemies',   rarity: 'epic',   weight: 1 },
+  scavenger:        { id: 'scavenger',        name: 'Scavenger',            blurb: 'Far more power-ups drop each wave',        rarity: 'rare',   weight: 2 },
+  railgun_rounds:   { id: 'railgun_rounds',   name: 'Railgun Rounds',       blurb: 'Every bullet punches through +2 enemies', rarity: 'epic',   weight: 1 },
 };
 
 /**
@@ -88,6 +122,25 @@ export interface PerkBonuses {
   damageTakenMult: number;    // 1.0 baseline (lower = tankier; >1 = glass cannon)
   explosiveBullets: boolean;
   streakKeeper: boolean;
+  // ── EXPANDED game-changer effects ──
+  /** Cryo Rounds — bullet hits get a chance to flash-freeze the enemy. */
+  frostRounds: boolean;
+  /** Executioner — non-boss enemies at/below this HP fraction are finished
+   *  outright (0 = disabled). */
+  executionThreshold: number;
+  /** Berserker's Rage — bullet damage multiplier applied while the player is
+   *  critically wounded (<40% HP); 1 = disabled. */
+  berserkerLowHpMult: number;
+  /** Retribution — fraction of a melee blow reflected back to the attacker. */
+  thornsReflect: number;
+  /** Second Wind — cheat death once per run (revive at 40% HP). */
+  secondWind: boolean;
+  /** Arc Reactor — a kill arcs chain lightning to nearby enemies. */
+  chainLightning: boolean;
+  /** Scavenger — multiplies the per-wave power-up budget (1 = baseline). */
+  powerupLuckMult: number;
+  /** Railgun Rounds — extra over-penetrations granted to every weapon. */
+  bulletPierce: number;
 }
 
 export const NEUTRAL_PERK_BONUSES: PerkBonuses = {
@@ -107,6 +160,14 @@ export const NEUTRAL_PERK_BONUSES: PerkBonuses = {
   damageTakenMult: 1,
   explosiveBullets: false,
   streakKeeper: false,
+  frostRounds: false,
+  executionThreshold: 0,
+  berserkerLowHpMult: 1,
+  thornsReflect: 0,
+  secondWind: false,
+  chainLightning: false,
+  powerupLuckMult: 1,
+  bulletPierce: 0,
 };
 
 /** Recompute the bonus snapshot from a flat list of picked perk IDs. */
@@ -133,6 +194,22 @@ export function aggregatePerkBonuses(picks: WavePerkId[]): PerkBonuses {
       case 'reload_30':         out.reloadTimeMult *= 0.70; break;
       case 'armor_20':          out.damageTakenMult *= 0.80; break;
       case 'glass_cannon':      out.damageMult *= 1.45; out.damageTakenMult *= 1.30; break;
+      // ── EXPANDED POOL ──
+      case 'fire_rate_50':      out.fireRateMult *= 1.50; break;
+      case 'damage_50':         out.damageMult *= 1.50; break;
+      case 'move_speed_30':     out.moveSpeedMult *= 1.30; break;
+      case 'crit_chance_25':    out.critChanceBonus += 0.25; break;
+      case 'lifesteal_6':       out.lifestealPerKill += 6; break;
+      case 'max_hp_50':         out.maxHpBonus += 50; break;
+      case 'regen_3hps':        out.regenPerSec += 3; break;
+      case 'frost_rounds':      out.frostRounds = true; break;
+      case 'executioner':       out.executionThreshold = Math.max(out.executionThreshold, 0.15); break;
+      case 'berserker_rage':    out.berserkerLowHpMult *= 1.60; break;
+      case 'thorns':            out.thornsReflect += 0.60; break;
+      case 'second_wind':       out.secondWind = true; break;
+      case 'chain_lightning':   out.chainLightning = true; break;
+      case 'scavenger':         out.powerupLuckMult *= 1.60; break;
+      case 'railgun_rounds':    out.bulletPierce += 2; break;
     }
   }
   return out;
@@ -143,8 +220,9 @@ export function aggregatePerkBonuses(picks: WavePerkId[]): PerkBonuses {
  *
  * The player is shown 3 face-down boxes; ONE hides a perk pulled from the
  * weighted pool, the other two are empty. They pick blind — the gamble is
- * the gameplay. Every previously-picked perk is removed from the pool, so a
- * 15-wave run rolls each perk at most once (the registry has 15 entries).
+ * the gameplay. Every previously-picked perk is removed from the pool, so each
+ * perk can be won at most once per run (the registry is deep enough — 30+
+ * entries — that the pool is effectively never exhausted in a normal run).
  *
  * Returns the slot array (3 entries, one non-null) plus the prize index for
  * the picker UI to track.
@@ -173,7 +251,6 @@ export function rollMysteryBox(currentPicks: WavePerkId[]): MysteryBoxRoll {
     roll -= WAVE_PERKS[id].weight;
     if (roll <= 0) { prize = id; break; }
   }
-  // Randomise which box hides the prize.
   const prizeSlotIndex = Math.floor(Math.random() * 3);
   const slots: (WavePerkId | null)[] = [null, null, null];
   slots[prizeSlotIndex] = prize;

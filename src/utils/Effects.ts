@@ -80,7 +80,7 @@ export class MuzzleFlash {
 
   constructor(scene: THREE.Scene, position: THREE.Vector3, _color: number) {
     // Force realistic gun fire colors - yellow/orange (ignore passed color)
-    const fireColor = 0xffaa00; // Bright yellow-orange fire color
+    const fireColor = 0xffaa00;
 
     // Borrow a PointLight from the host's pool if one is available. Pool
     // lights live in world space (scene-parented) and are toggled via
@@ -303,7 +303,6 @@ export class MuzzleSmoke {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Shared tracer material. Every BulletTracer used to allocate its own
 // LineBasicMaterial — even though every tracer is the same bright-yellow,
 // linewidth-2 additive line. One shared material across the whole game.
@@ -313,7 +312,6 @@ export class MuzzleSmoke {
 // fade identically over 0.04s so they're effectively in sync, but to keep
 // this clean we instead toggle visibility — fade is just visibility on/off
 // over the short 40ms window, which reads identically to the old fade.
-// ─────────────────────────────────────────────────────────────────────────────
 const sharedTracerMaterial = new THREE.LineBasicMaterial({
   color: 0xffffaa,
   transparent: true,
@@ -381,7 +379,6 @@ export class BulletTracer {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Shared SOFT-SPARK sprite texture for every point-particle system.
 //
 // An untextured THREE.PointsMaterial rasterises each particle as a hard-edged
@@ -391,7 +388,6 @@ export class BulletTracer {
 // a soft, hot-cored glowing spark that bloom can catch — the AAA read — for the
 // cost of a single tiny texture fetch per particle fragment. Built once,
 // shared by every points material below, never disposed.
-// ─────────────────────────────────────────────────────────────────────────────
 let _softSparkTex: THREE.CanvasTexture | null = null;
 export function getSoftSparkTexture(): THREE.CanvasTexture {
   if (_softSparkTex) return _softSparkTex;
@@ -413,13 +409,11 @@ export function getSoftSparkTexture(): THREE.CanvasTexture {
   return _softSparkTex;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Shared particle materials & a small pool of reusable buffer geometries for
 // ImpactEffect and RobotHitSparks. Building a fresh BufferGeometry +
 // Float32Arrays + PointsMaterial for every bullet hit is wasteful on
 // autofire weapons. We share the material (one per effect type) and reuse
 // a pool of geometry slots.
-// ─────────────────────────────────────────────────────────────────────────────
 const sharedImpactMaterial = new THREE.PointsMaterial({
   size: 0.17,
   map: getSoftSparkTexture(),
@@ -441,7 +435,6 @@ const sharedSparkMaterial = new THREE.PointsMaterial({
   depthWrite: false,
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Pooled particle geometries for ImpactEffect + RobotHitSparks.
 //
 // Every bullet hit (ImpactEffect) and every armour spark (RobotHitSparks) used
@@ -458,7 +451,6 @@ const sharedSparkMaterial = new THREE.PointsMaterial({
 //
 // Bursts larger than the cap (rare — only the 50-particle boss-enrage pop) fall
 // back to a dedicated, non-pooled geometry so behaviour is never clamped.
-// ─────────────────────────────────────────────────────────────────────────────
 const POOLED_PARTICLE_CAP = 64;
 const _impactGeoPool: THREE.BufferGeometry[] = [];
 const _sparkGeoPool: THREE.BufferGeometry[] = [];
@@ -585,7 +577,6 @@ export class ImpactEffect {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Explosion FX (rocket launcher + barrel blast).
 //
 // The old explosion `scene.add()`-ed a fresh THREE.PointLight every blast, which
@@ -602,7 +593,6 @@ export class ImpactEffect {
 // runs allocation-light AND reads as a punchier, expanding fireball.
 //
 // Reference: https://discourse.threejs.org/t/scene-freezes-when-adding-dynamically-pointlight/28281
-// ─────────────────────────────────────────────────────────────────────────────
 
 let _explosionLightAcquire: MuzzleLightAcquire | null = null;
 let _explosionLightRelease: MuzzleLightRelease | null = null;
@@ -774,7 +764,6 @@ export class ExplosionEffect {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Fire Nova — the Pyro's "Firestorm" ultimate. A single, self-contained,
 // allocation-light effect that reads as a fire shockwave SWEEPING the arena:
 //   • two expanding ground fire-rings (a leading front + a trailing one) for a
@@ -786,7 +775,6 @@ export class ExplosionEffect {
 //
 // Refs: expanding-ring shockwave VFX —
 //   https://discourse.threejs.org/t/explosion-shockwave-vfx/54742
-// ─────────────────────────────────────────────────────────────────────────────
 const NOVA_RING_GEO = (() => {
   const g = new THREE.RingGeometry(0.8, 1.0, 64);
   g.rotateX(-Math.PI / 2); // lie flat on the XZ plane
@@ -952,7 +940,6 @@ export class FireNovaEffect {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Tactical Nuke — a full, self-contained nuclear-detonation set-piece for the
 // nuke power-up. Built to read as the real thing in stages:
 //   1. a blinding white-hot flash that snaps out instantly,
@@ -967,7 +954,6 @@ export class FireNovaEffect {
 //
 // Refs: mushroom-cloud + shockwave layering — the same expanding-ring approach
 // as the fire nova above, extended with a rising stem/cap pair.
-// ─────────────────────────────────────────────────────────────────────────────
 const NUKE_STEM_GEO = new THREE.CylinderGeometry(0.42, 0.62, 1, 18, 1, true);
 const NUKE_CAP_GEO = new THREE.IcosahedronGeometry(1, 3);
 const NUKE_COLLAR_GEO = new THREE.TorusGeometry(1, 0.42, 12, 28);
@@ -1248,14 +1234,12 @@ export class NukeEffect {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Ability Cast — a generic, tinted "signature move" burst played at the caster
 // the instant ANY character ability fires. It reads as a surge of the
 // ability's accent colour erupting from the player: an expanding ground energy
 // ring, a brief rising pillar of light, a hot core flash and a ring of rising
 // sparks. One reusable effect (recoloured per ability) gives every class a
 // distinct, readable activation without bespoke geometry per power.
-// ─────────────────────────────────────────────────────────────────────────────
 const CAST_PILLAR_GEO = new THREE.CylinderGeometry(0.7, 1.25, 4.4, 24, 1, true);
 
 // Pooled cast rigs. Every ability/boss/power cast used to allocate 4 fresh
@@ -1558,7 +1542,6 @@ export class RobotHitSparks {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Impact Burst — the premium, AAA-grade "hit confirm" played in WORLD SPACE at
 // the exact point a round connects (enemy armour, or in front of the camera
 // when the player is struck). It's a quick two-part flash:
@@ -1569,7 +1552,6 @@ export class RobotHitSparks {
 // only the two tiny per-instance SpriteMaterials are allocated per hit, so it
 // stays cheap enough to fire on full-auto. Pairs with the existing spark burst
 // for a layered, weighty impact rather than a flat particle puff.
-// ─────────────────────────────────────────────────────────────────────────────
 let _impactCoreTex: THREE.CanvasTexture | null = null;
 function getImpactCoreTexture(): THREE.CanvasTexture {
   if (_impactCoreTex) return _impactCoreTex;

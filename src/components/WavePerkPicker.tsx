@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   Sparkles, Zap, Crosshair, Heart, Footprints, Star, Bomb, Gift,
-  HelpCircle, Skull, GraduationCap, type LucideIcon,
+  HelpCircle, Skull, GraduationCap, Snowflake, Flame, Swords, HeartPulse,
+  Package, type LucideIcon,
 } from 'lucide-react';
 import { WAVE_PERKS, type WavePerkId } from '../utils/WavePerkRegistry';
 import { soundManager } from '../utils/SoundManager';
@@ -55,6 +56,22 @@ const ICON_FOR: Record<string, LucideIcon> = {
   explosive_bullets: Bomb,
   vampiric_kill: Heart,
   streak_keeper: Star,
+  // ── Expanded pool ──
+  fire_rate_50: Zap,
+  damage_50: Crosshair,
+  move_speed_30: Footprints,
+  crit_chance_25: Crosshair,
+  lifesteal_6: Heart,
+  max_hp_50: Heart,
+  regen_3hps: HeartPulse,
+  frost_rounds: Snowflake,
+  executioner: Skull,
+  berserker_rage: Flame,
+  thorns: Swords,
+  second_wind: HeartPulse,
+  chain_lightning: Zap,
+  scavenger: Package,
+  railgun_rounds: Crosshair,
 };
 
 const RARITY_STYLES: Record<'common' | 'rare' | 'epic', { border: string; bg: string; text: string; accent: string; glow: string; ring: string }> = {
@@ -171,7 +188,6 @@ const WavePerkPicker = ({
           (instead of clipping the boxes / footer) on short landscape phones. */}
       <div className="relative flex min-h-full w-full items-center justify-center py-5">
       <div className="relative w-full max-w-3xl px-4 sm:px-6">
-        {/* Header */}
         <div className="mb-6 text-center">
           <p className="text-[10px] font-bold uppercase tracking-[0.45em] text-emerald-300/80">
             Wave {waveCleared} Cleared
@@ -184,7 +200,6 @@ const WavePerkPicker = ({
           </p>
         </div>
 
-        {/* Three boxes */}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           {[0, 1, 2].map((idx) => {
             const isPicked = pickedIdx === idx;

@@ -27,6 +27,14 @@ export const ACHIEVEMENT_ORDER = [
   'centurion', 'high_roller',
   'blitz', 'flawless_master',
   'annihilator', 'immortal',
+  // ── MOBILE / TOUCH-DEVICE achievements (indices 28-30) ──
+  // Only ever unlocked in SOLO play on a touch device (see App.tsx — each
+  // is gated on `touchControls.enabled`). Appended last, taking bits 28/29/30.
+  // ⚠️ The persisted `achievements` field is a single 32-bit-safe integer, so
+  // bit 30 is the LAST safe slot (`1 << 31` overflows to negative in JS). Do
+  // NOT append a 32nd achievement without widening the storage representation —
+  // convex/gameLimits.ts throws at deploy time if this list exceeds 31 entries.
+  'touch_trooper', 'pocket_operator', 'thumb_warrior',
 ] as const;
 
 export type AchievementId = (typeof ACHIEVEMENT_ORDER)[number];
@@ -65,6 +73,9 @@ export const TITLE_FOR_ACHIEVEMENT: Partial<Record<string, string>> = {
   arsenal: 'Arsenal',
   frenzy: 'Frenzied',
   berserker: 'Berserker',
+  touch_trooper: 'Touch Trooper',
+  pocket_operator: 'Pocket Operator',
+  thumb_warrior: 'Thumb Warrior',
 };
 
 /** title → the achievement bit that unlocks it. Built once from the map above. */

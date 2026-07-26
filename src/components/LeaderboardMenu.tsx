@@ -165,7 +165,6 @@ const LeaderboardMenu = ({ onClose }: LeaderboardMenuProps) => {
           : 'relative z-10 flex max-h-[94dvh] w-full max-w-2xl flex-col overflow-hidden rounded-[24px] border border-white/10 bg-[#0b0f15] shadow-[0_30px_120px_rgba(0,0,0,0.58)]'}
         style={isTouch ? undefined : { animation: 'authFade 0.32s cubic-bezier(0.16,1,0.3,1) forwards' }}
       >
-        {/* Header */}
         <div className={`flex flex-none items-center justify-between border-b border-white/[0.07] ${isTouch ? 'gap-2 px-3 py-1.5' : 'items-start gap-4 px-5 py-4'}`}>
           <div className={`flex items-center ${isTouch ? 'gap-2' : 'gap-3'}`}>
             <div className={`relative flex items-center justify-center rounded-lg border border-amber-400/30 bg-amber-500/12 ${isTouch ? 'h-7 w-7' : 'h-10 w-10 rounded-xl'}`}>

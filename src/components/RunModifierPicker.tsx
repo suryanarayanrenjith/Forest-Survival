@@ -105,7 +105,6 @@ const RunModifierPicker = ({ options: initialOptions, onChoose, onBack }: RunMod
       {/* m-auto: centred when it fits, scrolls from the top on short landscape
           phones instead of clipping the header (flex-centred overflow bug). */}
       <div className="relative z-20 m-auto w-full max-w-3xl">
-        {/* Header */}
         <div className={`text-center ${IS_TOUCH ? 'mb-4' : 'mb-7'}`}>
           <p className="font-hud text-[10px] font-bold uppercase tracking-[0.5em] text-rose-300/85">
             Randomized Stakes · roll the dice
@@ -119,7 +118,6 @@ const RunModifierPicker = ({ options: initialOptions, onChoose, onBack }: RunMod
           </p>
         </div>
 
-        {/* Three modifier cards */}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           {options.map((mod, idx) => {
             const Icon = ICON_FOR[mod.category] ?? Skull;
@@ -186,7 +184,6 @@ const RunModifierPicker = ({ options: initialOptions, onChoose, onBack }: RunMod
           })}
         </div>
 
-        {/* Action row — re-roll / skip / back */}
         <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-2">
             <button

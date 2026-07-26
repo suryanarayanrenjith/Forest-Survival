@@ -71,7 +71,6 @@ const MissionCard: React.FC<MissionCardProps> = ({ mission, onDismiss, compact =
 
   return (
     <div className={`pointer-events-auto rounded-2xl border border-white/10 bg-black/75 shadow-2xl transition-colors hover:border-cyan-400/40 ${compact ? 'p-2.5' : 'p-3.5'}`}>
-      {/* Header */}
       <div className="flex items-start justify-between mb-2">
         <div className="flex-1">
           <div className="flex items-center gap-2 mb-1">

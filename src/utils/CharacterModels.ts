@@ -66,8 +66,6 @@ export interface HumanoidBody {
   rightHip: THREE.Group;
 }
 
-// ─── MATERIALS ──────────────────────────────────────────────────────────────
-
 interface MatOpts {
   rough?: number;
   metal?: number;
@@ -93,8 +91,6 @@ export function mat(
   if (store) store.push(m);
   return m;
 }
-
-// ─── GEOMETRY HELPERS ───────────────────────────────────────────────────────
 
 /**
  * Chamfered box — ExtrudeGeometry with bevels for the low-poly look.
@@ -168,8 +164,6 @@ export function group(name?: string): THREE.Group {
   return g;
 }
 
-// ─── RIG PROPORTIONS ────────────────────────────────────────────────────────
-
 interface Rig {
   bootW: number; bootH: number; bootD: number;
   thighW: number; thighH: number; thighD: number;
@@ -212,8 +206,6 @@ _R.hipY      = _R.thighTopY!;
 _R.headJointY = _R.neckTopY!;
 export const RIG = _R as Rig;
 
-// ─── LIMB BUILDERS ──────────────────────────────────────────────────────────
-
 function buildArm(side: -1 | 1, palette: Palette, materials: THREE.Material[]) {
   const joint = group(side === -1 ? 'leftShoulder' : 'rightShoulder');
   joint.position.set(
@@ -254,25 +246,20 @@ function buildLeg(side: -1 | 1, palette: Palette, materials: THREE.Material[]) {
   return { joint, thigh, boot };
 }
 
-// ─── BASE HUMANOID ──────────────────────────────────────────────────────────
-
 export function buildHumanoid(palette: Palette): HumanoidBody {
   const root = group('Body');
   const materials: THREE.Material[] = [];
 
-  // Torso
   const torsoMat = mat(palette.base, { rough: 0.7 }, materials);
   const torsoY = RIG.beltTopY + RIG.torsoH / 2;
   const torso = chamfer(RIG.torsoW, RIG.torsoH, RIG.torsoD, torsoMat, 0.1, 0, torsoY, 0);
   root.add(torso);
 
-  // Belt
   const beltMat = mat(palette.belt ?? new THREE.Color(0x1a1c20), { rough: 0.7, metal: 0.15 }, materials);
   const belt = chamfer(RIG.torsoW + 0.06, RIG.beltH, RIG.torsoD + 0.06, beltMat, 0.04,
     0, RIG.thighTopY + RIG.beltH / 2, 0);
   root.add(belt);
 
-  // Belt buckle
   const buckleMat = mat(palette.buckle ?? new THREE.Color(0xb89058), { rough: 0.4, metal: 0.7 }, materials);
   const buckle = box(0.24, 0.16, 0.05, buckleMat,
     0, RIG.thighTopY + RIG.beltH / 2, RIG.torsoD / 2 + 0.06);
@@ -295,17 +282,14 @@ export function buildHumanoid(palette: Palette): HumanoidBody {
   emblem.rotation.z = Math.PI / 4;
   root.add(emblem);
 
-  // Arms
   const leftArm = buildArm(-1, palette, materials);
   const rightArm = buildArm(+1, palette, materials);
   root.add(leftArm.joint, rightArm.joint);
 
-  // Legs
   const leftLeg = buildLeg(-1, palette, materials);
   const rightLeg = buildLeg(+1, palette, materials);
   root.add(leftLeg.joint, rightLeg.joint);
 
-  // Neck
   const neckMat = mat(palette.neck ?? palette.dark, { rough: 0.85 }, materials);
   const neck = chamfer(RIG.neckW, RIG.neckH, RIG.neckD, neckMat, 0.04,
     0, RIG.torsoTopY + RIG.neckH / 2, 0);
@@ -316,14 +300,12 @@ export function buildHumanoid(palette: Palette): HumanoidBody {
   headJoint.position.set(0, RIG.neckTopY, 0);
   root.add(headJoint);
 
-  // Default head
   const headMat = mat(palette.head ?? palette.skin, { rough: 0.78 }, materials);
   const head = chamfer(RIG.headW, RIG.headH, RIG.headD, headMat, 0.1,
     0, RIG.headH / 2, 0);
   head.name = 'defaultHead';
   headJoint.add(head);
 
-  // Default eyes
   const eyeMat = mat(0xf2f4f8, { rough: 0.6 }, materials);
   const pupilMat = mat(0x14181d, { rough: 0.85 }, materials);
   const eyeY = RIG.headH * 0.62;
@@ -400,8 +382,6 @@ export function setChestEmblem(body: HumanoidBody, shape: EmblemShape, materials
   body.emblem = mesh as THREE.Mesh;
   return mesh;
 }
-
-// ─── PALETTE ────────────────────────────────────────────────────────────────
 
 /**
  * Per-class palette presets. The player's network color is folded into the
@@ -541,8 +521,6 @@ export function derivePalette(playerColor: number, classId: ClassId): Palette {
   return p;
 }
 
-// ─── 1. RANGER ──────────────────────────────────────────────────────────────
-
 export function buildRanger(palette: Palette, materials: THREE.Material[]): THREE.Group {
   const body = buildHumanoid(palette);
   body.materials.forEach((m) => materials.push(m));
@@ -555,7 +533,6 @@ export function buildRanger(palette: Palette, materials: THREE.Material[]): THRE
     0, RIG.headH / 2 + 0.06, -0.02);
   body.headJoint.add(hood);
 
-  // Inner face shadow + glowing eye band
   const shadowMat = mat(0x05060a, { rough: 1 }, materials);
   const inner = box(RIG.headW - 0.1, RIG.headH - 0.4, 0.04, shadowMat,
     0, RIG.headH * 0.5, RIG.headD / 2 + 0.08);
@@ -567,7 +544,6 @@ export function buildRanger(palette: Palette, materials: THREE.Material[]): THRE
     0, RIG.headH * 0.55, RIG.headD / 2 + 0.105);
   body.headJoint.add(eyeBand);
 
-  // Hood point + plume tip
   const plumeMat = mat(palette.base.clone().multiplyScalar(0.5), {}, materials);
   const plume = chamfer(0.42, 0.45, 0.42, plumeMat, 0.1,
     0, RIG.headH + 0.5, -0.02);
@@ -578,7 +554,6 @@ export function buildRanger(palette: Palette, materials: THREE.Material[]): THRE
 
   setChestEmblem(body, 'triangle', materials);
 
-  // Quiver
   const quiverMat = mat(palette.accent.clone().multiplyScalar(0.7), { rough: 0.9 }, materials);
   const quiver = chamfer(0.55, 1.2, 0.4, quiverMat, 0.07,
     0.32, RIG.beltTopY + RIG.torsoH * 0.55, -RIG.torsoD / 2 - 0.22);
@@ -596,7 +571,6 @@ export function buildRanger(palette: Palette, materials: THREE.Material[]): THRE
     root.add(fletch);
   }
 
-  // X-strap harness on chest
   const harnessMat = mat(palette.accent, { rough: 0.85 }, materials);
   [-1, 1].forEach((side) => {
     const strap = box(0.14, 1.5, 0.05, harnessMat,

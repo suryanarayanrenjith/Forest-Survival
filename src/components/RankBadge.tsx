@@ -11,12 +11,6 @@ interface RankBadgeProps {
   rank: RankInfo;
 }
 
-/**
- * Premium rank emblem — a layered hexagonal crest tinted by the tier colour
- * (rotating conic sheen + shimmer sweep + inner bevel), beside the tier name, an
- * account-level chip, an 8-tier progression ladder and an XP bar that points at
- * the next tier's crest icon.
- */
 const RankBadge = ({ rank }: RankBadgeProps) => {
   const Icon = TIER_ICON[rank.tierIndex] ?? Shield;
   const NextIcon = TIER_ICON[rank.tierIndex + 1] ?? Trophy;
@@ -27,12 +21,9 @@ const RankBadge = ({ rank }: RankBadgeProps) => {
 
   return (
     <div className="flex items-center gap-4 sm:gap-5">
-      {/* ===== Emblem ===== */}
       <div className="relative flex-shrink-0" style={{ width: 96, height: 96 }}>
-        {/* Soft outer bloom */}
         <div className="absolute inset-1 rounded-[30%]" style={{ background: color, filter: 'blur(17px)', opacity: 0.4 }} />
 
-        {/* Hexagon crest */}
         <div
           className="absolute inset-0 overflow-hidden"
           style={{
@@ -42,23 +33,18 @@ const RankBadge = ({ rank }: RankBadgeProps) => {
             boxShadow: `inset 0 2px 12px ${color}99, inset 0 -8px 16px rgba(0,0,0,0.6)`,
           }}
         >
-          {/* Rotating conic "living metal" sheen, clipped to the hexagon */}
           <div
             className="rb-spin absolute -inset-1/4"
             style={{ background: `conic-gradient(from 0deg, transparent, ${color}88 12%, transparent 30%, transparent 62%, rgba(255,255,255,0.18) 76%, transparent 92%)` }}
           />
-          {/* Diagonal shimmer sweep */}
           <div className="rb-shimmer absolute inset-0" />
-          {/* Inner hairline hexagon for a crisp bevel */}
           <div className="absolute inset-[6px]" style={{ clipPath: HEX_CLIP, boxShadow: `inset 0 0 0 1px ${color}3a` }} />
         </div>
 
-        {/* Tier icon */}
         <div className="absolute inset-0 flex items-center justify-center">
           <Icon width={36} height={36} strokeWidth={2.1} className="text-white drop-shadow-[0_2px_5px_rgba(0,0,0,0.7)]" />
         </div>
 
-        {/* Level coin */}
         <div
           className="absolute -bottom-1.5 left-1/2 flex h-6 -translate-x-1/2 items-center justify-center rounded-full border-2 px-2 text-[11px] font-black leading-none tabular-nums shadow-[0_4px_12px_rgba(0,0,0,0.5)]"
           style={{ color: '#0b0f15', background: `linear-gradient(180deg, #fff, ${color})`, borderColor: '#0b0f15' }}
@@ -68,7 +54,6 @@ const RankBadge = ({ rank }: RankBadgeProps) => {
         </div>
       </div>
 
-      {/* ===== Details ===== */}
       <div className="flex min-w-0 flex-1 flex-col justify-center">
         <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
           <span
@@ -85,7 +70,6 @@ const RankBadge = ({ rank }: RankBadgeProps) => {
           </span>
         </div>
 
-        {/* 8-tier progression ladder */}
         <div className="mt-3 flex items-center gap-1" aria-hidden>
           {RANK_TIERS.map((t, i) => {
             const reached = i <= rank.tierIndex;
@@ -105,7 +89,6 @@ const RankBadge = ({ rank }: RankBadgeProps) => {
           })}
         </div>
 
-        {/* XP bar with a glowing head */}
         <div className="relative mt-2.5 h-2 w-full overflow-hidden rounded-full bg-white/[0.06]">
           <div
             className="rb-fill h-full rounded-full"

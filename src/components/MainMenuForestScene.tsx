@@ -22,7 +22,6 @@ type MainMenuForestSceneProps = {
   onReady?: () => void;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
 // SUNLIT CLEARING — menu backdrop.
 //
 // The old scene fought a losing battle against its own darkness: the forest
@@ -71,7 +70,6 @@ type MainMenuForestSceneProps = {
 // jitter) and the camera eases over. All rigs share near-identical pitch so
 // the horizon stays low and steady — the invariant that keeps the lower
 // frame luminous survives every vantage.
-// ─────────────────────────────────────────────────────────────────────────────
 
 const PALETTE = {
   // The ONE haze color everything converges to. Deep sunlit sage — luminous

@@ -19,6 +19,30 @@ import * as THREE from 'three';
 export type AIState = 'idle' | 'patrol' | 'hunt' | 'attack' | 'retreat' | 'coordinate' | 'ambush' | 'investigate';
 export type AIPersonality = 'aggressive' | 'tactical' | 'defensive' | 'support';
 
+/**
+ * A single, swarm-wide set of tactical directives produced by the
+ * TacticalDirector from its read of the PLAYER'S current strategy (camping,
+ * kiting, sniping at range, brawling…). Every enemy's makeDecision() reads the
+ * SAME directive struct each tick, so the whole squad shifts its behaviour to
+ * counter the player for free — one cheap computation, no per-enemy planning.
+ *
+ * All fields are 0..1 "how strongly" knobs except `predictionLead` (a ≥1
+ * multiplier on aim lead). A `undefined` directive (e.g. multiplayer) makes
+ * every read fall back to neutral, so behaviour is byte-identical to before.
+ */
+export interface TacticalDirective {
+  /** Arc in from the sides instead of charging head-on (↑ vs campers/snipers). */
+  flankBias: number;
+  /** Spread around the player to surround them (↑ vs a stationary camper). */
+  encircle: number;
+  /** Commit hard + fast to close the gap (↑ vs long-range / kiting players). */
+  rushBias: number;
+  /** Aim-lead multiplier for moving targets (↑ vs fast-kiting players). */
+  predictionLead: number;
+  /** Ranged units hold a bigger standoff (↑ when the player brawls up close). */
+  holdRange: number;
+}
+
 export interface AIBehaviorContext {
   enemyPosition: THREE.Vector3;
   enemyRotation: number;
@@ -34,6 +58,8 @@ export interface AIBehaviorContext {
   hearPlayerShooting: boolean;
   timeSinceLastSawPlayer: number;
   isInCover: boolean;
+  /** Swarm-wide adaptive directive (see TacticalDirective). Omitted → neutral. */
+  directive?: TacticalDirective;
 }
 
 export interface AIDecision {
@@ -183,7 +209,10 @@ export class AIBehaviorSystem {
       context.playerPosition.z + context.playerVelocity.z * lead,
     );
     this._decision.shouldAttack = context.distanceToPlayer <= 3.4;
-    this._decision.moveSpeed = (this.personality === 'aggressive' ? 1.5 : 1.28) * this.speedTrim;
+    // Rush directive makes an enemy in the kill pocket POUNCE — it commits the
+    // last metres faster when the player has been keeping the swarm at bay.
+    const rush = context.directive ? context.directive.rushBias : 0;
+    this._decision.moveSpeed = (this.personality === 'aggressive' ? 1.5 : 1.28) * this.speedTrim * (1 + rush * 0.3);
     this._decision.priority = 100;
   }
 
@@ -196,29 +225,43 @@ export class AIBehaviorSystem {
    */
   private buildHunt(context: AIBehaviorContext) {
     const dist = context.distanceToPlayer;
+    const dv = context.directive;
+    const flankBias = dv ? dv.flankBias : 0;
+    const encircle = dv ? dv.encircle : 0;
+    const rush = dv ? dv.rushBias : 0;
+    const predictionLead = dv ? dv.predictionLead : 1;
+    const holdRange = dv ? dv.holdRange : 0;
+
     // Lead the runner — but clamped so a player charging AT this enemy can't
     // push the led point past/behind it (see clampLeadScale). At full sprint
     // the raw lead (speed × up-to-2s) easily exceeded the actual gap, which
     // made the enemy briefly turn and walk AWAY from an approaching player.
-    const rawLead = Math.min(dist * 0.05, 2.0);
+    // predictionLead (>1) extends the lead against a fast-kiting player, so the
+    // swarm aims where they're GOING and cuts them off — the clamp still stops
+    // the led point overshooting behind the enemy, so the anti-turn-away fix
+    // (clampLeadScale) is fully preserved.
+    const rawLead = Math.min(dist * 0.05, 2.0) * predictionLead;
     const lead = rawLead * this.clampLeadScale(context, rawLead, 2.5);
     const px = context.playerPosition.x + context.playerVelocity.x * lead;
     const pz = context.playerPosition.z + context.playerVelocity.z * lead;
 
     // RANGED / support — kite: hold a big standoff ring and circle it, never
-    // diving into melee.
+    // diving into melee. holdRange (↑ when the player is brawling up close)
+    // pushes the ring OUT so the sniper keeps its distance and refuses the
+    // trade; a high rush read pulls it in a touch to keep the pressure on.
     if (this.personality === 'support') {
       const bearing = Math.atan2(
         context.enemyPosition.z - context.playerPosition.z,
         context.enemyPosition.x - context.playerPosition.x,
       );
       const lane = bearing + this.flankSign * 0.5;
+      const standoff = this.standoff * (1 + holdRange * 0.6) * (1 - rush * 0.15);
       this._target.set(
-        context.playerPosition.x + Math.cos(lane) * this.standoff, 0,
-        context.playerPosition.z + Math.sin(lane) * this.standoff,
+        context.playerPosition.x + Math.cos(lane) * standoff, 0,
+        context.playerPosition.z + Math.sin(lane) * standoff,
       );
       this._decision.shouldAttack = false;
-      this._decision.moveSpeed = 1.0 * this.speedTrim;
+      this._decision.moveSpeed = 1.0 * this.speedTrim * (1 + rush * 0.2);
       this._decision.priority = 80;
       return;
     }
@@ -234,13 +277,18 @@ export class AIBehaviorSystem {
     const len = Math.hypot(dx, dz) || 1;
     dx /= len; dz /= len; // unit toward the led player
     const flankFade = Math.max(0, Math.min(1, (dist - 5) / 7)); // 0 within 5 m, full past 12 m
-    const lateral = this.flankStrength * Math.min(dist * 0.45, 6) * flankFade * this.flankSign;
+    // flankBias/encircle widen and strengthen the arc so the squad sweeps
+    // around a camping/sniping player from the sides; rush pulls the line
+    // straighter so once told to close, they COMMIT rather than orbit.
+    const flankScale = (1 + flankBias * 1.3 + encircle * 0.5) * (1 - rush * 0.45);
+    const reach = Math.min(dist * 0.45, 6) * (1 + encircle * 0.4);
+    const lateral = this.flankStrength * reach * flankFade * this.flankSign * flankScale;
     // Offset perpendicular to the toward-player direction (left/right per sign).
     this._target.set(px - dz * lateral, 0, pz + dx * lateral);
     this._decision.shouldAttack = dist < 3.6 && context.canSeePlayer;
     this._decision.moveSpeed = (this.personality === 'tactical' ? 1.22
       : this.personality === 'aggressive' ? 1.12
-      : 1.04) * this.speedTrim;
+      : 1.04) * this.speedTrim * (1 + rush * 0.35);
     this._decision.priority = 80;
   }
 

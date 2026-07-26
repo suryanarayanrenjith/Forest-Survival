@@ -109,7 +109,6 @@ export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
           assertValid(checkPassword(password));
           assertValid(checkPasswordAgainstUsername(password, normalizedUsername));
 
-          // Onboarding fields collected interactively during sign-up.
           const displayName = normalizeDisplayName(
             readStringParam(credentials, "name") || displayUsername,
           );

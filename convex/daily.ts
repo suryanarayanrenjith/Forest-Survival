@@ -212,7 +212,6 @@ export const claim = mutation({
       throw new ConvexError("Not eligible to claim");
     }
 
-    // Grant +1 skill point on playerStats, bounded by the global cap.
     const stats = await ctx.db
       .query("playerStats")
       .withIndex("by_user", (q) => q.eq("userId", userId))

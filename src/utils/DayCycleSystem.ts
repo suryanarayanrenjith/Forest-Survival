@@ -350,7 +350,6 @@ export class DayCycleSystem {
     return this.getTimeOfDayFromHour(this.currentTime);
   }
 
-  // Get formatted time string for UI
   getTimeString(): string {
     const hours = Math.floor(this.currentTime);
     const minutes = Math.floor((this.currentTime - hours) * 60);

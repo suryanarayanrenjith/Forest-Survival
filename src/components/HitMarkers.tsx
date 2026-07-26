@@ -90,7 +90,6 @@ const HitMarkers = () => {
 
   return (
     <>
-      {/* Centered Hit Markers */}
       <div className="fixed inset-0 pointer-events-none z-50 flex items-center justify-center">
         {hitMarkers.map((marker) => {
           // A kill confirm reads red + bigger with a sweeping ring; a headshot
@@ -115,14 +114,12 @@ const HitMarkers = () => {
               }}
             >
               <div className={`relative ${size}`}>
-                {/* Expanding confirm ring on a kill */}
                 {marker.isKill && (
                   <div
                     className="absolute inset-0 rounded-full border-2 border-red-500"
                     style={{ animation: 'killRing 0.46s ease-out forwards' }}
                   />
                 )}
-                {/* Cross hair hit marker */}
                 <div className={`absolute top-0 left-1/2 ${armThick} ${armLong} ${armColor} -translate-x-1/2`}></div>
                 <div className={`absolute bottom-0 left-1/2 ${armThick} ${armLong} ${armColor} -translate-x-1/2`}></div>
                 <div className={`absolute left-0 top-1/2 ${armWide} ${armThickH} ${armColor} -translate-y-1/2`}></div>

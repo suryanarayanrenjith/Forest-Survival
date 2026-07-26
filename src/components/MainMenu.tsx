@@ -460,13 +460,10 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode, onSkillTre
         </div>
       )}
 
-      {/* Settings Menu */}
       {showSettings && <SettingsMenu onClose={() => setShowSettings(false)} />}
 
-      {/* Credits Menu */}
       {showCredits && <CreditsMenu onClose={() => setShowCredits(false)} />}
 
-      {/* Authentication Menu */}
       {showAuth && <AuthMenu onClose={closeAuth} onSignedIn={() => setShowAuth(false)} initialMode={authMode} />}
 
       {/* Profile Menu — the skill tree lives inside here now (Overview tab). */}

@@ -63,9 +63,7 @@ const EnemyIntroBanner = ({ intro, onDone }: EnemyIntroBannerProps) => {
           animation: 'enemyIntroIn 0.45s cubic-bezier(0.16,1,0.3,1) forwards',
         }}
       >
-        {/* Accent top bar */}
         <div className="h-1 w-full" style={{ background: accent }} />
-        {/* Sweeping shimmer */}
         <div
           className="pointer-events-none absolute inset-0 opacity-50"
           style={{

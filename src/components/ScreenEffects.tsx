@@ -262,7 +262,6 @@ const ScreenEffects = ({ health, maxHealth = 100, isVisible }: ScreenEffectsProp
         </div>
       )}
 
-      {/* Ability cast flash — tinted edge pulse in the ability's accent hue. */}
       {abilityFlash && (
         <div
           key={abilityFlash.key}

@@ -1,20 +1,3 @@
-/**
- * PROCEDURAL MISSION GENERATOR
- *
- * This AI-powered system generates unique, dynamic missions and objectives
- * that adapt to player skill level, game state, and play style. Uses
- * procedural generation algorithms to create endless variety and keep
- * gameplay fresh and engaging.
- *
- * Features:
- * - Context-aware mission generation
- * - Difficulty-scaled objectives
- * - Multi-objective missions
- * - Dynamic rewards
- * - Story elements
- * - Achievement integration
- */
-
 // THREE is imported for potential future use with position-based missions
 // @ts-expect-error - Reserved for future use
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -94,7 +77,6 @@ export class ProceduralMissionSystem {
   private lastMissionTime: number = 0;
   private missionCooldown: number = 30000; // 30 seconds between missions
 
-  // Story templates for narrative generation
   private readonly storyTemplates = {
     elimination: [
       "The forest is overrun. Clear the immediate threat.",
@@ -196,13 +178,9 @@ export class ProceduralMissionSystem {
     ]
   };
 
-  /**
-   * Generate a contextual mission based on current game state
-   */
   public generateMission(context: MissionGenerationContext): Mission | null {
     const now = Date.now();
 
-    // Cooldown check
     if (now - this.lastMissionTime < this.missionCooldown) {
       return null;
     }
@@ -214,7 +192,6 @@ export class ProceduralMissionSystem {
 
     this.lastMissionTime = now;
 
-    // Select mission type based on context
     const missionType = this.selectMissionType(context);
     const difficulty = this.calculateMissionDifficulty(context);
     const objectives = this.generateObjectives(missionType, difficulty, context);
@@ -243,9 +220,6 @@ export class ProceduralMissionSystem {
     return mission;
   }
 
-  /**
-   * AI-based mission type selection
-   */
   private selectMissionType(context: MissionGenerationContext): MissionType {
     const types: MissionType[] = [
       'elimination', 'survival', 'accuracy', 'streak', 'protection',
@@ -253,7 +227,6 @@ export class ProceduralMissionSystem {
       'ability_challenge', 'boss_hunt', 'combo', 'exploration', 'efficiency'
     ];
 
-    // Weight mission types based on context
     const weights: Record<MissionType, number> = {
       elimination: 1.0,
       survival: 1.0,
@@ -271,7 +244,6 @@ export class ProceduralMissionSystem {
       efficiency: context.accuracy > 0.5 ? 1.2 : 0.6
     };
 
-    // Apply difficulty scaling
     if (context.difficulty === 'hard') {
       weights.boss_hunt *= 1.5;
       weights.survival *= 1.3;
@@ -291,9 +263,6 @@ export class ProceduralMissionSystem {
     return 'elimination'; // Fallback
   }
 
-  /**
-   * Calculate mission difficulty based on player skill
-   */
   private calculateMissionDifficulty(context: MissionGenerationContext): MissionDifficulty {
     const skill = context.playerSkillLevel;
 
@@ -309,9 +278,6 @@ export class ProceduralMissionSystem {
     return 'legendary';
   }
 
-  /**
-   * Generate objectives for the mission
-   */
   private generateObjectives(
     type: MissionType,
     difficulty: MissionDifficulty,
@@ -320,11 +286,9 @@ export class ProceduralMissionSystem {
     const objectives: MissionObjective[] = [];
     const difficultyMultiplier = this.getDifficultyMultiplier(difficulty);
 
-    // Main objective
     const mainObjective = this.createObjective(type, difficultyMultiplier, context, false);
     objectives.push(mainObjective);
 
-    // Add bonus objectives for higher difficulties
     if (difficulty === 'hard' || difficulty === 'extreme' || difficulty === 'legendary') {
       const bonusType = this.selectBonusObjective(type);
       const bonusObjective = this.createObjective(bonusType, difficultyMultiplier * 0.7, context, true);
@@ -460,7 +424,6 @@ export class ProceduralMissionSystem {
   }
 
   private selectBonusObjective(mainType: MissionType): MissionType {
-    // Select complementary bonus objectives
     const bonusMap: Record<MissionType, MissionType[]> = {
       elimination: ['headshot', 'efficiency', 'accuracy'],
       survival: ['collection', 'protection', 'exploration'],
@@ -587,7 +550,6 @@ export class ProceduralMissionSystem {
       description: `${Math.ceil(basePoints * multiplier)} points`
     };
 
-    // Higher difficulties get bonus rewards
     let bonus: MissionReward | undefined;
     if (difficulty === 'extreme' || difficulty === 'legendary') {
       const bonusTypes: MissionReward['type'][] = ['multiplier', 'powerup', 'ability'];
@@ -604,9 +566,6 @@ export class ProceduralMissionSystem {
     return { primary, bonus };
   }
 
-  /**
-   * Update mission progress
-   */
   public updateProgress(type: MissionType, amount: number = 1, metadata?: Record<string, unknown>): void {
     for (const mission of this.activeMissions) {
       if (mission.completed || mission.failed) continue;
@@ -614,7 +573,6 @@ export class ProceduralMissionSystem {
       for (const objective of mission.objectives) {
         if (objective.completed) continue;
 
-        // Check if this update applies to this objective
         if (objective.type === type) {
           // Special case for weapon mastery
           if (type === 'weapon_mastery' && typeof metadata?.weapon === 'string') {
@@ -631,7 +589,6 @@ export class ProceduralMissionSystem {
         }
       }
 
-      // Check if mission is complete
       const requiredObjectives = mission.objectives.filter(obj => !obj.optional);
       const allRequiredComplete = requiredObjectives.every(obj => obj.completed);
 
@@ -639,7 +596,6 @@ export class ProceduralMissionSystem {
         this.completeMission(mission.id);
       }
 
-      // Update time-based missions
       if (mission.timeRemaining !== undefined) {
         mission.timeRemaining = Math.max(0, mission.timeRemaining - (1 / 60)); // Assumes 60fps
 
@@ -650,9 +606,6 @@ export class ProceduralMissionSystem {
     }
   }
 
-  /**
-   * Complete a mission
-   */
   private completeMission(missionId: string): void {
     const mission = this.activeMissions.find(m => m.id === missionId);
     if (!mission) return;
@@ -665,9 +618,6 @@ export class ProceduralMissionSystem {
 
   }
 
-  /**
-   * Fail a mission
-   */
   private failMission(missionId: string): void {
     const mission = this.activeMissions.find(m => m.id === missionId);
     if (!mission) return;
@@ -679,23 +629,14 @@ export class ProceduralMissionSystem {
 
   }
 
-  /**
-   * Get active missions
-   */
   public getActiveMissions(): Mission[] {
     return [...this.activeMissions];
   }
 
-  /**
-   * Get completed missions
-   */
   public getCompletedMissions(): Mission[] {
     return [...this.completedMissions];
   }
 
-  /**
-   * Get mission statistics
-   */
   public getStatistics(): {
     totalCompleted: number;
     totalFailed: number;
@@ -706,7 +647,6 @@ export class ProceduralMissionSystem {
     const failed = this.completedMissions.filter(m => m.failed).length;
     const total = completed + failed;
 
-    // Count mission types
     const typeCounts: Partial<Record<MissionType, number>> = {};
     for (const mission of this.completedMissions.filter(m => m.completed)) {
       const mainObjective = mission.objectives.find(obj => !obj.optional);
@@ -715,7 +655,6 @@ export class ProceduralMissionSystem {
       }
     }
 
-    // Find favorite type
     let favoriteType: MissionType | null = null;
     let maxCount = 0;
     for (const [type, count] of Object.entries(typeCounts)) {
@@ -733,9 +672,6 @@ export class ProceduralMissionSystem {
     };
   }
 
-  /**
-   * Reset system
-   */
   public reset(): void {
     this.activeMissions = [];
     this.lastMissionTime = 0;

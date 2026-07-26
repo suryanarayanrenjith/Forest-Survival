@@ -1,12 +1,3 @@
-// Smart Enemy Manager - Advanced enemy pooling, LOD, and optimization system
-// Reduces lag by intelligently managing enemy resources through:
-// - Object pooling (reuse meshes instead of creating/destroying)
-// - Shared geometries and materials (single instances reused across all enemies)
-// - LOD (Level of Detail) - simpler meshes for distant enemies
-// - Frustum culling - hide enemies outside camera view
-// - Adaptive enemy limits - reduce max enemies when FPS drops
-// - Spatial partitioning - efficient proximity queries
-
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { type GraphicsPreset } from './GameSettingsManager';
@@ -24,10 +15,9 @@ export interface AcquiredMesh {
   leftLeg: THREE.Mesh;
   rightLeg: THREE.Mesh;
   head: THREE.Mesh;
-  poolId: number; // ID for returning to pool
+  poolId: number;
 }
 
-// LOD levels for enemies based on distance
 export const LODLevel = {
   HIGH: 0,    // Full detail - close range (0-30 units)
   MEDIUM: 1,  // Reduced detail - medium range (30-60 units)
@@ -37,7 +27,6 @@ export const LODLevel = {
 
 export type LODLevel = typeof LODLevel[keyof typeof LODLevel];
 
-// Enemy visual configuration
 interface EnemyVisualConfig {
   baseColor: number;   // torso / main shell
   accentColor: number; // limbs
@@ -127,7 +116,6 @@ const ENEMY_CONFIGS: Record<EnemyType, EnemyVisualConfig> = {
 
 // Shared geometry cache - created once, reused for all enemies
 interface SharedGeometries {
-  // High detail
   bodyHigh: THREE.BoxGeometry;
   armHigh: THREE.BoxGeometry;
   legHigh: THREE.BoxGeometry;
@@ -156,16 +144,13 @@ interface SharedGeometries {
   jetGlowHigh: THREE.BoxGeometry;     // glow stripe on the backpack vent
   muzzleGlowHigh: THREE.SphereGeometry; // ranged rifle's glowing muzzle tip
 
-  // Medium detail - simplified
   bodyMedium: THREE.BoxGeometry;
   limbMedium: THREE.BoxGeometry; // Single geometry for arms/legs
   headMedium: THREE.BoxGeometry;
 
-  // Low detail - minimal (single box representation)
   bodyLow: THREE.BoxGeometry;
 }
 
-// Pooled enemy mesh structure
 interface PooledEnemyMesh {
   group: THREE.Group;
   lodGroups: {
@@ -194,7 +179,6 @@ interface PooledEnemyMesh {
   castsShadow?: boolean;
 }
 
-// Performance metrics for adaptive optimization
 interface PerformanceMetrics {
   frameCount: number;
   totalFrameTime: number;
@@ -230,7 +214,6 @@ const LOD_REFERENCE_VIEW_DISTANCE = 150;
 // enemies keep their full, crisp shadows and only distant ones are dropped.
 const SHADOW_CAST_DISTANCE = 40;
 
-// Performance thresholds
 const PERFORMANCE_THRESHOLDS = {
   TARGET_FPS: 55,
   LOW_FPS: 40,
@@ -244,7 +227,6 @@ class SmartEnemyManager {
   private camera: THREE.Camera | null = null;
   private graphicsPreset: GraphicsPreset | null = null;
 
-  // Shared resources
   private sharedGeometries: SharedGeometries | null = null;
   private sharedMaterials: Map<string, THREE.MeshStandardMaterial> = new Map();
   private eyeMaterial: THREE.MeshBasicMaterial | null = null;
@@ -253,15 +235,12 @@ class SmartEnemyManager {
   // enemy's HIGH-LOD draw calls nearly in half with pixel-identical output.
   private mergedGeoCache: Map<string, THREE.BufferGeometry> = new Map();
 
-  // Object pool
   private enemyPool: PooledEnemyMesh[] = [];
   private poolSize: number = 0;
   private maxPoolSize: number = 50;
 
-  // Active tracking
   private activeEnemies: Set<PooledEnemyMesh> = new Set();
 
-  // Performance monitoring
   private metrics: PerformanceMetrics = {
     frameCount: 0,
     totalFrameTime: 0,
@@ -271,7 +250,6 @@ class SmartEnemyManager {
     consecutiveHighFPSFrames: 0,
   };
 
-  // Adaptive limits
   private currentMaxEnemies: number = 40;
   private baseMaxEnemies: number = 40;
   // Continuous day→night blend for the enemy "powered" glow (0 = full daylight,
@@ -287,32 +265,24 @@ class SmartEnemyManager {
   private readonly _surgeTmpColor = new THREE.Color();
   private static readonly SURGE_RED = new THREE.Color(0xff2012);
 
-  // Frustum culling
   private frustum: THREE.Frustum = new THREE.Frustum();
   private frustumMatrix: THREE.Matrix4 = new THREE.Matrix4();
 
-  // Spatial partitioning for efficient queries
   private spatialGrid: Map<string, Set<PooledEnemyMesh>> = new Map();
   private gridCellSize: number = 20;
 
-  // LOD update throttling
   private lastLODUpdateTime: number = 0;
   private lodUpdateInterval: number = 100; // Update LOD every 100ms
 
-  /**
-   * Initialize the enemy manager with scene and graphics preset
-   */
   initialize(scene: THREE.Scene, camera: THREE.Camera, graphicsPreset: GraphicsPreset): void {
     this.scene = scene;
     this.camera = camera;
     this.graphicsPreset = graphicsPreset;
 
-    // Set max enemies based on graphics preset
     this.baseMaxEnemies = graphicsPreset.maxEnemies;
     this.currentMaxEnemies = this.baseMaxEnemies;
     this.maxPoolSize = Math.ceil(this.baseMaxEnemies * 1.5); // Pool 50% extra for smooth spawning
 
-    // Initialize shared resources
     this.createSharedGeometries();
     this.createSharedMaterials();
     // Fresh materials → re-seed both blend factors so the first
@@ -321,7 +291,6 @@ class SmartEnemyManager {
     this.nightFactor = -1;
     this.surgeFactor = -1;
 
-    // Pre-populate pool based on graphics preset
     const initialPoolSize = Math.ceil(this.baseMaxEnemies * 0.75);
     this.warmupPool(initialPoolSize);
 
@@ -389,18 +358,13 @@ class SmartEnemyManager {
     });
   }
 
-  /**
-   * Create all shared geometries (called once)
-   */
   private createSharedGeometries(): void {
     this.sharedGeometries = {
-      // High detail geometries
       bodyHigh: new THREE.BoxGeometry(1, 1.5, 0.6),
       armHigh: new THREE.BoxGeometry(0.3, 1.2, 0.3),
       legHigh: new THREE.BoxGeometry(0.35, 1, 0.35),
       headHigh: new THREE.BoxGeometry(0.8, 0.8, 0.8),
       eyeHigh: new THREE.BoxGeometry(0.52, 0.1, 0.06),
-      // Accent pieces
       chestHigh: new THREE.BoxGeometry(0.74, 0.78, 0.16),
       coreHigh: new THREE.OctahedronGeometry(0.16, 0),
       shoulderHigh: new THREE.BoxGeometry(0.42, 0.34, 0.5),
@@ -409,33 +373,25 @@ class SmartEnemyManager {
       handHigh: new THREE.BoxGeometry(0.34, 0.34, 0.34),
       crestHigh: new THREE.ConeGeometry(0.16, 0.55, 4),
       hipHigh: new THREE.BoxGeometry(0.92, 0.4, 0.56),
-      // Dressing pieces (NEW)
       beltHigh:      new THREE.BoxGeometry(1.06, 0.12, 0.62),
       kneePadHigh:   new THREE.BoxGeometry(0.42, 0.18, 0.42),
       elbowPadHigh:  new THREE.BoxGeometry(0.36, 0.16, 0.36),
       antennaHigh:   new THREE.ConeGeometry(0.04, 0.42, 6),
       jetVentHigh:   new THREE.BoxGeometry(0.62, 0.6, 0.14),
-      // Ranged-archetype rifle pieces
       rifleBarrelHigh: new THREE.BoxGeometry(0.08, 0.08, 1.4),
       rifleStockHigh:  new THREE.BoxGeometry(0.18, 0.22, 0.46),
       jetGlowHigh:     new THREE.BoxGeometry(0.46, 0.08, 0.04),
       muzzleGlowHigh:  new THREE.SphereGeometry(0.08, 10, 8),
 
-      // Medium detail - simplified (fewer segments)
       bodyMedium: new THREE.BoxGeometry(1, 1.5, 0.6, 1, 1, 1),
       limbMedium: new THREE.BoxGeometry(0.4, 1.5, 0.4, 1, 1, 1),
       headMedium: new THREE.BoxGeometry(0.8, 0.8, 0.8, 1, 1, 1),
 
-      // Low detail - single box
       bodyLow: new THREE.BoxGeometry(1.2, 2.5, 0.8, 1, 1, 1),
     };
   }
 
-  /**
-   * Create shared materials for each enemy type
-   */
   private createSharedMaterials(): void {
-    // Create eye material (shared across all enemies)
     // MeshBasicMaterial is unlit and appears at full brightness
     this.eyeMaterial = new THREE.MeshBasicMaterial({
       color: 0xffff00,
@@ -492,7 +448,6 @@ class SmartEnemyManager {
         flatShading: true,
       }), 1.12);
 
-      // Accent material (arms/legs)
       registerMaterial(`${type}_accent`, new THREE.MeshStandardMaterial({
         color: config.accentColor,
         emissive: config.accentColor,
@@ -502,7 +457,6 @@ class SmartEnemyManager {
         flatShading: true,
       }), 1.1);
 
-      // Bright material (head)
       registerMaterial(`${type}_bright`, new THREE.MeshStandardMaterial({
         color: config.brightColor,
         emissive: config.brightColor,
@@ -512,7 +466,6 @@ class SmartEnemyManager {
         flatShading: true,
       }), 1.15);
 
-      // Low LOD material (single color, simplified)
       registerMaterial(`${type}_low`, new THREE.MeshStandardMaterial({
         color: config.baseColor,
         emissive: config.baseColor,

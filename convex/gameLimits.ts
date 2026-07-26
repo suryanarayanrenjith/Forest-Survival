@@ -55,7 +55,7 @@ export const DIFFICULTY_CODE: Record<DifficultyName, number> = {
  *  adaptive(3) is treated as ~hard(2)-ish so switching to it still rewards. */
 const CODE_HARDNESS: Record<number, number> = { 0: 0, 1: 1, 2: 2, 3: 1.7 };
 
-export const MAX_RANK_XP_PER_RUN = 3000; // bounds a single run's rank payout
+export const MAX_RANK_XP_PER_RUN = 3000;
 export const MAX_TOTAL_RANK_XP = 5_000_000; // defense-in-depth ceiling
 
 /** Resolve a (possibly untrusted) difficulty string to a known name. */
@@ -151,7 +151,21 @@ export const MAX_MP_DEATHS = 100;
 // never leave the server mask stale (a stale mask would silently drop the new
 // achievement's bit in mergeAchievements).
 export const ACHIEVEMENT_COUNT = ACHIEVEMENT_ORDER.length;
-export const ACHIEVEMENT_MASK = (1 << ACHIEVEMENT_COUNT) - 1;
+// The persisted `achievements` field is a SINGLE integer used as a bitmask, and
+// every mask op in the game (client `1 << index`, server `& ACHIEVEMENT_MASK`)
+// is a 32-bit signed bitwise operation. Bit 30 is therefore the last SAFE slot
+// (`1 << 31` overflows to a negative int32 and corrupts the mask). Fail the
+// DEPLOY loudly if the registry ever grows past that, so a 32nd achievement is
+// a deliberate migration to a wider representation rather than a silent bug.
+if (ACHIEVEMENT_COUNT > 31) {
+  throw new Error(
+    `Achievement registry has ${ACHIEVEMENT_COUNT} entries but the persisted ` +
+    `bitmask only supports 31 (bits 0-30). Widen the representation before adding more.`,
+  );
+}
+// `2 ** n - 1` (not `(1 << n) - 1`) so the constant stays a clean positive
+// integer even at n = 31, where a left-shift would wrap negative.
+export const ACHIEVEMENT_MASK = (2 ** ACHIEVEMENT_COUNT) - 1;
 export const AVATAR_COUNT = 12;
 
 // Bit positions for the two multiplayer achievements. These are awarded

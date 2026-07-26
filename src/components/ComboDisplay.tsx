@@ -18,7 +18,6 @@ const ComboDisplay = ({ combo, killStreak, visible, fpsVisible = false }: ComboD
   const [fadeOut, setFadeOut] = useState(false);
   const hideTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Auto-hide notification after 3 seconds of no changes
   useEffect(() => {
     if (combo > 0 || killStreak > 0) {
       setShowNotification(true);
@@ -82,7 +81,6 @@ const ComboDisplay = ({ combo, killStreak, visible, fpsVisible = false }: ComboD
       className={`fixed ${fpsVisible ? 'top-12' : 'top-3'} left-1/2 -translate-x-1/2 z-40 pointer-events-none flex flex-col items-center gap-1.5
         transition-all duration-400 ${fadeOut ? 'opacity-0 -translate-y-2' : 'opacity-100'}`}
     >
-      {/* Combo counter */}
       {combo > 0 && (
         <div
           className={`flex items-center gap-2 rounded-full border bg-black/75 px-4 py-1.5
@@ -97,7 +95,6 @@ const ComboDisplay = ({ combo, killStreak, visible, fpsVisible = false }: ComboD
         </div>
       )}
 
-      {/* Kill streak */}
       {killStreak >= 5 && streakLabel && (
         <div className="flex items-center gap-2 rounded-full border border-orange-400/40 bg-orange-950/75 px-3.5 py-1">
           <Zap className="w-3.5 h-3.5 text-orange-400" strokeWidth={2.25} fill="currentColor" />

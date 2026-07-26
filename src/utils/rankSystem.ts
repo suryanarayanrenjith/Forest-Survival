@@ -64,11 +64,9 @@ export function computeXp(stats: RankStatsInput): number {
   // rank, while merely *playing* a match is worth only a token amount.
   const xp =
     soloRankXp +
-    // ── Multiplayer ──
     mp.wins * 350 +           // winning is the headline achievement
     mp.totalKills * 12 +      // kills heavily prioritized
     mp.gamesPlayed * 4 +      // participation only
-    // ── Meta progression ──
     achievementsCount * 120 +
     skillsCount * 30;
   return Math.max(0, Math.floor(xp));

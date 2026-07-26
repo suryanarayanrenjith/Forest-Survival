@@ -659,7 +659,18 @@ canvas {
    alongside `.is-touch` when a touch device is detected. */
 
 /* Notch-safe insets for a full-bleed mobile sheet. Applied to the fixed
-   outer container; the header / body / footer own their own inner padding. */
+   outer container; the header / body / footer own their own inner padding.
+
+   ⚠ NEVER put `.m-safe` on the same element as a Tailwind padding utility
+   (`p-*`, `px-*`, `pt-*`, `pb-*`, …). This rule sets all four `padding-*`
+   longhands, it is a single-class selector just like the utilities, and it is
+   emitted AFTER the `@tailwind utilities` layer — so equal specificity plus
+   later source order means `.m-safe` WINS and the utility is silently dropped.
+   On desktop every `env(safe-area-inset-*)` is 0px, so the element ends up with
+   NO padding at all and nothing in the markup hints at why. This is exactly how
+   Classic/Tutorial menus lost their page padding and left the Map section stuck
+   under the fixed Start bar with no way to scroll it clear.
+   Put `.m-safe` on a parent (or child) — the two must never share an element. */
 .m-safe {
   padding-top: env(safe-area-inset-top, 0px);
   padding-right: env(safe-area-inset-right, 0px);

@@ -10,7 +10,26 @@ export const MELEE_CAPABLE_WEAPONS: ReadonlySet<WeaponType> = new Set([
   'pistol', 'rifle', 'shotgun', 'smg', 'subverter',
 ]);
 
-// ─────────────────────────────────────────────────────────────────────────────
+// MAGNIFIED OPTICS
+//
+// A tube optic physically CANNOT work as a viewmodel you look through. The
+// sight line has to pass the scope's own bore, and a tube's aperture is bounded
+// by bore-radius ÷ length: the sniper's scope admits a ~7° cone while the ADS
+// frame spans ~83°, so the player was looking at the world through a keyhole
+// surrounded on all sides by scope metal. Scaling the model does not help —
+// the ratio is scale-invariant, and even an infinitely large scope of the same
+// proportions caps out near 5°.
+//
+// So once the player is genuinely sighted, the 3D optic stops being what they
+// look through: the viewmodel is swapped for a full-screen scope picture (see
+// the scope overlay in App), which draws the world at full width inside a
+// proper aperture. This is what every shooter does with a magnified optic.
+//
+// SCOPE_TAKEOVER is the aimProgress at which the handover happens; App fades
+// its dark veil to full BEFORE this point so the swap is never visible.
+export const SCOPED_WEAPONS: ReadonlySet<WeaponType> = new Set(['sniper']);
+export const SCOPE_TAKEOVER = 0.58;
+
 // SHARED MATERIAL CACHE
 //
 // Switching weapons used to allocate ~40-60 fresh THREE.MeshStandardMaterial
@@ -28,10 +47,8 @@ export const MELEE_CAPABLE_WEAPONS: ReadonlySet<WeaponType> = new Set([
 // Materials are tagged `userData.cached = true` so the switchWeapon dispose
 // loop knows to skip them (disposing a cached material would corrupt the
 // cache and break the next switch).
-// ─────────────────────────────────────────────────────────────────────────────
 const _gunMaterialCache = new Map<string, THREE.MeshStandardMaterial>();
 
-// ─────────────────────────────────────────────────────────────────────────────
 // PROCEDURAL SURFACE FINISHES
 //
 // Flat-colour PBR reads as plastic toy at viewmodel distance. These are tiny
@@ -42,7 +59,6 @@ const _gunMaterialCache = new Map<string, THREE.MeshStandardMaterial>();
 // shader-variant count tiny (one textured-standard variant, pre-compiled by
 // warmup stage 4 which cycles every weapon). Anisotropy comes free from
 // textureDefaults (imported first in main.tsx).
-// ─────────────────────────────────────────────────────────────────────────────
 interface FinishMaps { albedo: THREE.CanvasTexture; rough: THREE.CanvasTexture; bump: THREE.CanvasTexture }
 let _metalFinish: FinishMaps | null = null;
 let _polymerFinish: FinishMaps | null = null;
@@ -171,6 +187,97 @@ function _matKey(color: number, metalness: number, roughness: number, extra: Par
   ].join(':');
 }
 
+// RELOAD CHOREOGRAPHY
+//
+// Every weapon reloads with its OWN hand-authored sequence of mechanical beats
+// (see the animate*Reload methods). Each beat emits a cue at the exact frame
+// the part it describes makes contact, so the audio is locked to the animation
+// by construction rather than by a single sound fired at reload start.
+//
+// App maps these to synthesized mechanism sounds (see SoundManager) — the
+// GunModel itself stays audio-agnostic.
+export type ReloadCue =
+  // Detachable-magazine weapons (pistol / rifle / SMG / sniper)
+  | 'mag_release'   // the catch is pressed
+  | 'mag_out'       // the empty magazine breaks free of the well
+  | 'mag_drop'      // ...and lands on the ground a moment later
+  | 'mag_in'        // the fresh magazine seats and the catch snaps over it
+  | 'mag_tug'       // the tug-test that confirms it's locked
+  | 'slide_release' // pistol slide stop thumbed off; the slide runs forward
+  | 'bolt_rack'     // charging handle pulled and released into battery
+  // Bolt-action (sniper) — the handle is worked in four distinct motions
+  | 'bolt_lift' | 'bolt_back' | 'bolt_forward' | 'bolt_lock'
+  // Shell-fed (shotgun)
+  | 'shell_insert'  // one shell thumbed past the loading gate (index = which)
+  | 'pump_rack'     // the forend cycled at the end
+  // Belt-fed (minigun)
+  | 'cover_open' | 'belt_feed' | 'cover_close' | 'spin_up'
+  // Muzzle-loaded (launcher)
+  | 'rocket_lift' | 'rocket_slide' | 'rocket_seat' | 'pin_pull'
+  // Chip cartridge (subverter)
+  | 'cartridge_out' | 'cartridge_in' | 'chip_seat' | 'deck_boot'
+  // Tactical reload only — the partial magazine is pouched, not dumped
+  | 'mag_stow';
+
+/**
+ * Which reload a weapon plays. Real shooters do not reload the same way twice:
+ * running a weapon completely dry locks the action open and forces a slower,
+ * uglier drill, while topping up with rounds still in the gun is a smooth
+ * exchange that keeps the chambered round.
+ *
+ *  • `dry`      — fired to empty. The action is locked back, the empty magazine
+ *                 is DUMPED on the ground, and the bolt/slide has to be
+ *                 released at the end to chamber a round. Slowest and loudest.
+ *  • `tactical` — rounds still in the magazine. The chamber is still loaded, so
+ *                 there is NO action cycling at all; the partial magazine is
+ *                 stripped and RETAINED (stowed in a pouch, not thrown away).
+ *                 Noticeably quicker — reloading early is rewarded.
+ *
+ * `panic` is a separate 0..1 intensity layered on TOP of either, so a hurt
+ * player fumbling an empty reload and a hurt player topping up are both
+ * expressible. It adds tremor and a hitch mid-insert.
+ */
+export type ReloadStyle = 'dry' | 'tactical';
+
+/**
+ * Physical props that only exist during a reload. They're built ONCE with the
+ * weapon's rig (hidden at rest) rather than allocated per reload — a reload is
+ * a hot, frequent action and spawning meshes mid-fight would both churn the GC
+ * and risk a first-use shader stall. Every prop material comes from the shared
+ * `mat()` cache, so they add no new shader program to compile.
+ */
+interface ReloadProps {
+  spentMag: THREE.Object3D | null;     // stripped magazine, falls under gravity
+  freshMag: THREE.Object3D | null;     // replacement carried up into the well
+  shell: THREE.Object3D | null;        // shotgun: shell on its way to the port
+  ejectedShell: THREE.Object3D | null; // shotgun: hull kicked clear by the pump
+  loadRocket: THREE.Object3D | null;   // launcher: rocket rammed down the tube
+  seatedRocket: THREE.Object3D | null; // launcher: the rocket once it's loaded
+  feedCover: THREE.Object3D | null;    // minigun: hinged cover over the feed
+  belt: THREE.Object3D | null;         // minigun: the belt of linked rounds
+  beltLinks: THREE.Object3D[];         // minigun: each link, fed in one by one
+  drum: THREE.Object3D | null;         // minigun: ammo drum (unlatches + rocks)
+  spentCart: THREE.Object3D | null;    // subverter: ejected chip cartridge
+  freshCart: THREE.Object3D | null;    // subverter: replacement cartridge
+  /** Model-space point the magazine seats into (drives both mag props). */
+  well: { x: number; y: number; z: number };
+  /**
+   * Where a carried item sits in the support hand while that hand is down at
+   * the pouch. Derived from the weapon's support grip at build time — the live
+   * `supportGrip` field belongs to whichever rig was built LAST, so it can't be
+   * read during animation.
+   */
+  hold: { x: number; y: number; z: number };
+}
+
+const emptyReloadProps = (): ReloadProps => ({
+  spentMag: null, freshMag: null, shell: null, ejectedShell: null,
+  loadRocket: null, seatedRocket: null, feedCover: null, belt: null,
+  beltLinks: [], drum: null, spentCart: null, freshCart: null,
+  well: { x: 0, y: 0, z: 0 },
+  hold: { x: 0, y: -4, z: 0 },
+});
+
 /** One intrusion chip on the Subverter deck (see subChips below). */
 interface SubChip {
   group: THREE.Group;
@@ -196,7 +303,10 @@ interface WeaponRig {
   root: THREE.Group;
   magazine: THREE.Mesh | null;
   slide: THREE.Mesh | null;
-  bolt: THREE.Mesh | null;
+  // An Object3D, not a Mesh: the sniper's bolt is a pivot GROUP so its handle
+  // can rotate about the bore axis (lift / lock) as well as translate.
+  bolt: THREE.Object3D | null;
+  reload: ReloadProps;
   spinningPart: THREE.Group | null;
   triggerHandGroup: THREE.Group | null;
   supportHandGroup: THREE.Group | null;
@@ -229,8 +339,15 @@ export class GunModel {
   magazine: THREE.Mesh | null = null;
   currentWeaponType: WeaponType = 'pistol';
   slide: THREE.Mesh | null = null;
-  bolt: THREE.Mesh | null = null;
-  ejectedMag: THREE.Mesh | null = null;
+  bolt: THREE.Object3D | null = null;
+
+  /**
+   * Fired at the exact frame each mechanical beat of a reload makes contact
+   * (see ReloadCue). App wires this to the SoundManager so every clack, scrape
+   * and slam is locked to the part that produced it. `index` disambiguates
+   * repeated beats — which shell, which chip.
+   */
+  onReloadCue: ((cue: ReloadCue, index: number) => void) | null = null;
 
   // Rest positions for animated parts (set per weapon)
   private slideRest: number = -1.5;
@@ -257,6 +374,9 @@ export class GunModel {
   private subScreenTex: THREE.CanvasTexture | null = null;
   private subScreenCtx: CanvasRenderingContext2D | null = null;
   private subScreenScroll = 0;
+  // Build-time only: the tilted deck group, so addReloadProps can hang the
+  // chip cartridge off it. Never read after the rig is built.
+  private subDeck: THREE.Group | null = null;
   // Per-chip rig: each intrusion chip can eject (fired → flies into the emitter
   // and vanishes) and re-insert (reload → slams back into its slot). `offset`
   // 0 = fully seated, 1 = gone; `target` is what it eases toward; `flash` is a
@@ -281,13 +401,36 @@ export class GunModel {
   private triggerHandRest = { x: 0, y: 0, z: 0, rx: 0, ry: 0 };
   private supportHandRest = { x: 0, y: 0, z: 0, rx: 0, ry: 0 };
 
-  // Reload pacing — the whole animation now fills the *actual* reload time so
-  // the hands work the weapon for the entire window instead of snapping done in
+  // Reload pacing — the whole animation fills the *actual* reload time so the
+  // hands work the weapon for the entire window instead of snapping done in
   // ~0.5s. reloadDuration is the wall-clock length (seconds) handed in by the
   // caller; reloadShells is how many discrete "load" beats a shell-fed reload
   // (shotgun) plays across that window.
   private reloadDuration = 0.5;
   private reloadShells = 8;
+  // Which drill this reload is running, and how rattled the operator is.
+  // See ReloadStyle — `dry` dumps the magazine and cycles the action, while
+  // `tactical` retains it and skips the action entirely.
+  private reloadStyle: ReloadStyle = 'dry';
+  private reloadPanic = 0;
+  private panicTime = 0;
+
+  // ── Per-weapon reload state ──────────────────────────────────────────────
+  // Props (spare magazines, shells, rockets, belts) built with the rig and
+  // driven along authored paths by the per-weapon choreographies.
+  private rp: ReloadProps = emptyReloadProps();
+  // Cues already emitted this reload, so each beat sounds exactly once even
+  // when an active-reload fast-forward skips the playhead past several at once.
+  private firedCues = new Set<string>();
+  // Free-falling discarded magazine — integrated in model space so it tumbles
+  // out of frame with real weight instead of blinking out of existence.
+  private magFall = {
+    active: false, landed: false,
+    y: 0, z: 0, vy: 0, vz: 0, spinX: 0, spinZ: 0,
+  };
+  // Minigun only: overrides the barrel-cluster spin rate while reloading
+  // (spin down to a dead stop for the feed job, then wind back up). <0 = off.
+  private reloadSpin = -1;
 
   // Phantom (stealth) cloak state — fades the whole held weapon while active.
   private phantomActive = false;
@@ -315,8 +458,28 @@ export class GunModel {
   private recoilFlick = 0;
   private swayOffset = { rotX: 0, rotY: 0 };
   private walkOffset = { x: 0, y: 0, rotZ: 0, rotX: 0 };
-  private reloadRotZ: number = 0;
-  private reloadDip: number = 0; // whole-gun dip during a reload (0..1)
+  // Full 6-DOF working posture for the reload. Each weapon writes its own here
+  // every frame (a pistol rolls the well up to the hand, a shotgun turns its
+  // loading port skyward, a launcher tips the tube mouth into reach) instead of
+  // every gun sharing one canned dip + roll.
+  private reloadPose = { x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0 };
+  private reloadDip: number = 0; // master ease-in/hold/ease-out envelope (0..1)
+
+  // ── WEAPON INERTIA (the thing that makes a gun feel like it has mass) ──
+  // The weapon is modelled as a mass on a spring anchored to the camera. When
+  // the view turns, the gun does NOT turn with it — it keeps pointing where it
+  // was and the spring hauls it back, overshooting slightly before it settles.
+  // That lag-and-settle is the single strongest weight cue in a first-person
+  // weapon, and without it even a well-modelled gun reads as a prop welded to
+  // the camera. `swing` is the angular offset (radians) still owed to the
+  // camera; `swingVel` its velocity.
+  private swing = { yaw: 0, pitch: 0 };
+  private swingVel = { yaw: 0, pitch: 0 };
+  // Live mass of the equipped weapon, mirrored from WEAPONS[].weight by App
+  // (single source of truth). Drives spring stiffness, sway/bob amplitude,
+  // how fast the weapon comes up to the shoulder, and landing recovery —
+  // everything that separates a 1kg sidearm from a 30kg rotary cannon.
+  private weaponMass = 1;
 
   // Jump / fall weapon inertia + landing dip
   private jumpOffset = { y: 0, rotX: 0 };
@@ -362,6 +525,51 @@ export class GunModel {
     this.group = new THREE.Group();
     this.currentWeaponType = type;
     this.createGunModel(type);
+  }
+
+  /**
+   * A CHAMFERED box — the single biggest fix for "blocky".
+   *
+   * Every part of every weapon used to be a raw BoxGeometry: perfectly sharp
+   * 90° edges that catch no light. That is exactly what makes a model read as
+   * a stack of toy bricks rather than machined hardware — real receivers,
+   * frames and grips all have broken edges, and the thin bright chamfer line
+   * running along them is most of what the eye reads as "metal".
+   *
+   * Extruded so the corners round within the extrusion plane and the bevel
+   * breaks the edges front and back, giving every silhouette a soft highlight
+   * instead of a hard corner. Falls back to a plain box for parts too small
+   * for a chamfer to survive.
+   *
+   * Geometry is deliberately NOT shared between rigs: disposeAllRigs frees
+   * each rig's buffers, so a cache would free geometry another rig still draws.
+   */
+  private cbox(w: number, h: number, d: number, chamfer = 0.05): THREE.BufferGeometry {
+    const b = Math.min(chamfer, w * 0.3, h * 0.3, d * 0.3);
+    if (b <= 0.005) return new THREE.BoxGeometry(w, h, d);
+    // Extrude inflates the shape by bevelSize on every side, so the profile is
+    // inset by the bevel to land on the requested outer dimensions.
+    const W = w - 2 * b, H = h - 2 * b, D = d - 2 * b;
+    const r = Math.max(0.002, Math.min(b * 1.7, W * 0.45, H * 0.45));
+    const s = new THREE.Shape();
+    const x0 = -W / 2, y0 = -H / 2;
+    s.moveTo(x0 + r, y0);
+    s.lineTo(x0 + W - r, y0);
+    s.quadraticCurveTo(x0 + W, y0, x0 + W, y0 + r);
+    s.lineTo(x0 + W, y0 + H - r);
+    s.quadraticCurveTo(x0 + W, y0 + H, x0 + W - r, y0 + H);
+    s.lineTo(x0 + r, y0 + H);
+    s.quadraticCurveTo(x0, y0 + H, x0, y0 + H - r);
+    s.lineTo(x0, y0 + r);
+    s.quadraticCurveTo(x0, y0, x0 + r, y0);
+    const geo = new THREE.ExtrudeGeometry(s, {
+      depth: D,
+      bevelEnabled: true, bevelSize: b, bevelThickness: b, bevelSegments: 1,
+      curveSegments: 2, steps: 1,
+    });
+    // Extrude runs 0..depth along +Z; recentre it on the part's own origin.
+    geo.translate(0, 0, -D / 2);
+    return geo;
   }
 
   /** Helper — create a mesh, position it, enable shadows, add to group. */
@@ -445,6 +653,62 @@ export class GunModel {
     return fresh;
   }
 
+  /**
+   * A see-through optic body with REAL wall thickness.
+   *
+   * The scopes used to be bare `openEnded` cylinders. An open-ended cylinder
+   * only has outward-facing triangles, so with normal front-face culling the
+   * far wall is thrown away and you look straight through the side of the
+   * tube — which is exactly why the optics read as "cut off". A single-surface
+   * tube also has no rim, so a lens capping it appeared to float on nothing.
+   *
+   * This builds a proper shell: an outer wall, an inner bore you actually see
+   * down the side, and annular rims closing the wall at both ends — while
+   * leaving the optical path clear so the weapon can still be aimed through it.
+   *
+   * The bore runs along Z, `frontR` is the −Z (muzzle-ward) radius and `rearR`
+   * the +Z one, so tapering a bell the right way round is explicit. Returned
+   * centred on its own origin; `mat` must be double-sided.
+   */
+  private opticShell(
+    mat: THREE.Material,
+    frontR: number, rearR: number, wall: number, len: number, seg = 20,
+  ): THREE.Group {
+    const g = new THREE.Group();
+    const bore = (r: number) => Math.max(0.02, r - wall);
+    // CylinderGeometry's radiusTop sits at local +Y, which this X-rotation puts
+    // at +Z — the REAR. Passing rear first is what keeps bells flaring correctly.
+    const shell = (rf: number, rr: number) => {
+      const m = new THREE.Mesh(new THREE.CylinderGeometry(rr, rf, len, seg, 1, true), mat);
+      m.rotation.x = Math.PI / 2;
+      m.castShadow = true;
+      m.receiveShadow = true;
+      g.add(m);
+    };
+    shell(frontR, rearR);
+    shell(bore(frontR), bore(rearR));
+    // Rims close the gap between the two walls so the tube has visible edge
+    // thickness — a ring already faces ±Z, so no rotation is needed.
+    const rimF = new THREE.Mesh(new THREE.RingGeometry(bore(frontR), frontR, seg), mat);
+    rimF.position.z = -len / 2;
+    g.add(rimF);
+    const rimR = new THREE.Mesh(new THREE.RingGeometry(bore(rearR), rearR, seg), mat);
+    rimR.position.z = len / 2;
+    g.add(rimR);
+    return g;
+  }
+
+  /** Place an optic shell at `y`, spanning `zFront`..`zRear`, on the model. */
+  private addOptic(
+    mat: THREE.Material, y: number, zFront: number, zRear: number,
+    frontR: number, rearR: number, wall: number, seg = 20,
+  ): THREE.Group {
+    const g = this.opticShell(mat, frontR, rearR, wall, zRear - zFront, seg);
+    g.position.set(0, y, (zFront + zRear) / 2);
+    this.group.add(g);
+    return g;
+  }
+
   private createGunModel(type: WeaponType) {
     // Stow whatever is currently equipped (parts snapped back to rest, root
     // detached). Nothing is disposed — every built rig is cached for the
@@ -470,7 +734,6 @@ export class GunModel {
     this.magazine = null;
     this.slide = null;
     this.bolt = null;
-    this.ejectedMag = null;
     this.spinningPart = null;
     this.subScreenMat = null;
     this.subEmitterMat = null;
@@ -484,8 +747,10 @@ export class GunModel {
     this.subReloadGlow = 0;
     this.subEmitterCharge = 0;
     this.subReloadGrace = 0;
+    this.subDeck = null;
     this.triggerHandGroup = null;
     this.supportHandGroup = null;
+    this.rp = emptyReloadProps();
     this.slideRest = -1.5;
     this.boltRest = 0.5;
     this.magRestY = -1;
@@ -507,6 +772,10 @@ export class GunModel {
       case 'subverter': this.createSubverter(); break;
     }
 
+    // Reload hardware (spare mags, shells, rockets, belts) — built with the
+    // rig and parked hidden, so a reload never allocates.
+    this.addReloadProps(type);
+
     // Attach the first-person arms last, so they sit on top of the weapon.
     this.addArms();
 
@@ -517,6 +786,7 @@ export class GunModel {
       magazine: this.magazine,
       slide: this.slide,
       bolt: this.bolt,
+      reload: this.rp,
       spinningPart: this.spinningPart,
       triggerHandGroup: this.triggerHandGroup,
       supportHandGroup: this.supportHandGroup,
@@ -556,7 +826,13 @@ export class GunModel {
       rig.magazine.visible = true;
     }
     if (rig.slide) rig.slide.position.z = rig.slideRest;
-    if (rig.bolt) rig.bolt.position.z = rig.boltRest;
+    if (rig.bolt) {
+      rig.bolt.position.z = rig.boltRest;
+      rig.bolt.rotation.set(0, 0, 0);
+    }
+    // Park every reload prop back out of sight. finishReload() above already
+    // did this for the LIVE refs; this covers a rig stowed while idle.
+    this.parkReloadProps(rig.reload);
     if (rig.triggerHandGroup) {
       rig.triggerHandGroup.position.set(0, 0, 0);
       rig.triggerHandGroup.rotation.set(0, 0, 0);
@@ -567,6 +843,7 @@ export class GunModel {
     }
     for (const chip of rig.subChips) chip.flash = 0;
     rig.subLoaded = this.subLoaded;
+    rig.root.visible = true; // never stow a rig in its scoped-away state
     this.group.remove(rig.root);
     this.activeRig = null;
   }
@@ -574,10 +851,13 @@ export class GunModel {
   /** Attach a cached rig and restore every per-weapon ref the animators drive. */
   private attachRig(rig: WeaponRig) {
     this.activeRig = rig;
+    // A rig stowed while the player was scoped would come back invisible.
+    rig.root.visible = true;
     this.group.add(rig.root);
     this.magazine = rig.magazine;
     this.slide = rig.slide;
     this.bolt = rig.bolt;
+    this.rp = rig.reload;
     this.spinningPart = rig.spinningPart;
     this.triggerHandGroup = rig.triggerHandGroup;
     this.supportHandGroup = rig.supportHandGroup;
@@ -598,6 +878,13 @@ export class GunModel {
     this.subReloadGlow = 0;
     this.subEmitterCharge = 0;
     this.subReloadGrace = 0;
+    // No reload can be in flight across a swap (App gates switching on
+    // !isReloading and stowActiveRig force-finishes anyway) — clear the
+    // working posture so a fresh weapon never inherits the last one's cant.
+    this.reloadPose = { x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0 };
+    this.reloadDip = 0;
+    this.reloadSpin = -1;
+    this.magFall.active = false;
     // Arm wrappers rest at the origin (see addArms).
     this.triggerHandRest = { x: 0, y: 0, z: 0, rx: 0, ry: 0 };
     this.supportHandRest = { x: 0, y: 0, z: 0, rx: 0, ry: 0 };
@@ -694,9 +981,7 @@ export class GunModel {
     });
   }
 
-  // ====================================================================
   // PISTOL — compact tactical sidearm
-  // ====================================================================
   private createPistol() {
     this.slideRest = -1.5;
     this.magRestY = -1;
@@ -706,18 +991,31 @@ export class GunModel {
     const polymer = this.mat(0x0c0d10, 0.25, 0.85, { envMapIntensity: 0.5 });
     const accent = this.mat(0x111317, 0.85, 0.3);
 
-    // Slide (animated)
-    this.slide = this.p(new THREE.BoxGeometry(1, 0.72, 4.5), gunmetal, 0, 0.8, this.slideRest);
+    // Slide (animated). Its bevel and serrations are PARENTED to it so they
+    // reciprocate with it — the reload holds the slide locked to the rear for
+    // most of its window, which would otherwise leave the slide sliding out
+    // from under its own serrations in plain view.
+    const slide = this.p(this.cbox(1, 0.72, 4.5, 0.09), gunmetal, 0, 0.8, this.slideRest);
+    this.slide = slide;
+    // Re-parent a part built in model space onto the slide, converting its
+    // position into slide-local coordinates. Shadow flags are already set by p().
+    const onSlide = (m: THREE.Mesh): THREE.Mesh => {
+      this.group.remove(m);
+      m.position.y -= 0.8;
+      m.position.z -= this.slideRest;
+      slide.add(m);
+      return m;
+    };
     // Slide top bevel
-    this.p(new THREE.BoxGeometry(0.62, 0.18, 4.2), metal, 0, 1.18, this.slideRest);
+    onSlide(this.p(new THREE.BoxGeometry(0.62, 0.18, 4.2), metal, 0, 1.18, this.slideRest));
 
     // Rear slide serrations
     for (let i = 0; i < 7; i++) {
-      this.p(new THREE.BoxGeometry(1.04, 0.5, 0.12), metal, 0, 0.85, 0.2 - i * 0.22, false);
+      onSlide(this.p(new THREE.BoxGeometry(1.04, 0.5, 0.12), metal, 0, 0.85, 0.2 - i * 0.22, false));
     }
     // Front slide serrations
     for (let i = 0; i < 5; i++) {
-      this.p(new THREE.BoxGeometry(1.04, 0.46, 0.1), metal, 0, 0.85, -2.7 - i * 0.22, false);
+      onSlide(this.p(new THREE.BoxGeometry(1.04, 0.46, 0.1), metal, 0, 0.85, -2.7 - i * 0.22, false));
     }
 
     // Barrel + chamber
@@ -729,12 +1027,12 @@ export class GunModel {
     bore.rotation.x = Math.PI / 2;
 
     // Frame / dust cover
-    this.p(new THREE.BoxGeometry(0.92, 0.55, 4.4), polymer, 0, 0.28, -1.4);
+    this.p(this.cbox(0.92, 0.55, 4.4, 0.07), polymer, 0, 0.28, -1.4);
     // Accessory rail under dust cover
     this.p(new THREE.BoxGeometry(0.7, 0.22, 1.4), accent, 0, -0.02, -2.9);
 
     // Grip — angled
-    const grip = this.p(new THREE.BoxGeometry(1.06, 2.5, 1.3), polymer, 0, -0.6, 0.35);
+    const grip = this.p(this.cbox(1.06, 2.5, 1.3, 0.11), polymer, 0, -0.6, 0.35);
     grip.rotation.x = 0.18;
     // Grip texture panels
     for (let i = 0; i < 5; i++) {
@@ -742,10 +1040,10 @@ export class GunModel {
       this.p(new THREE.BoxGeometry(1.1, 0.16, 0.16), accent, 0, -0.1 - i * 0.42, -0.25, false);
     }
     // Magazine baseplate
-    this.p(new THREE.BoxGeometry(1.16, 0.3, 1.4), accent, 0, -1.95, 0.5);
+    this.p(this.cbox(1.16, 0.3, 1.4, 0.07), accent, 0, -1.95, 0.5);
 
     // Magazine (animated)
-    this.magazine = this.p(new THREE.BoxGeometry(0.8, 2, 0.95), this.mat(0x1a1c20, 0.6, 0.4), 0, this.magRestY, 0.3);
+    this.magazine = this.p(this.cbox(0.8, 2, 0.95, 0.07), this.mat(0x1a1c20, 0.6, 0.4), 0, this.magRestY, 0.3);
 
     // Trigger guard + trigger
     const guard = this.p(new THREE.TorusGeometry(0.5, 0.09, 8, 12, Math.PI), this.mat(0x14161a, 0.8, 0.3), 0, -0.3, -0.3, false);
@@ -768,9 +1066,7 @@ export class GunModel {
     this.supportGrip = { x: -0.1, y: -1.1, z: 0.55 };
   }
 
-  // ====================================================================
   // RIFLE — modern assault carbine
-  // ====================================================================
   private createRifle() {
     this.boltRest = 0.5;
     this.magRestY = -1.8;
@@ -783,8 +1079,8 @@ export class GunModel {
     const rail = this.mat(0x141519, 0.8, 0.3);
 
     // Upper + lower receiver
-    this.p(new THREE.BoxGeometry(1.25, 0.88, 5.4), receiver, 0, 0.5, -1.4);
-    this.p(new THREE.BoxGeometry(1.1, 1.15, 2.6), receiver, 0, -0.32, 0.55);
+    this.p(this.cbox(1.25, 0.88, 5.4, 0.08), receiver, 0, 0.5, -1.4);
+    this.p(this.cbox(1.1, 1.15, 2.6, 0.08), receiver, 0, -0.32, 0.55);
 
     // Ejection port + forward assist
     this.p(new THREE.BoxGeometry(0.16, 0.34, 1), black, 0.66, 0.62, -0.55, false);
@@ -811,7 +1107,7 @@ export class GunModel {
     }
 
     // Handguard with M-LOK slots
-    this.p(new THREE.BoxGeometry(0.95, 0.85, 3.6), polymer, 0, 0.05, -3);
+    this.p(this.cbox(0.95, 0.85, 3.6, 0.08), polymer, 0, 0.05, -3);
     for (let i = 0; i < 5; i++) {
       this.p(new THREE.BoxGeometry(0.5, 0.12, 0.16), rail, 0.5, 0.05, -4 + i * 0.5, false);
       this.p(new THREE.BoxGeometry(0.5, 0.12, 0.16), rail, -0.5, 0.05, -4 + i * 0.5, false);
@@ -824,51 +1120,82 @@ export class GunModel {
     }
 
     // Magazine (animated, slightly curved look)
-    this.magazine = this.p(new THREE.BoxGeometry(0.72, 2.05, 0.95), polymer, 0, this.magRestY, 0.5);
+    this.magazine = this.p(this.cbox(0.72, 2.05, 0.95, 0.07), polymer, 0, this.magRestY, 0.5);
     this.p(new THREE.BoxGeometry(0.76, 0.18, 1), black, 0, -2.7, 0.55, false); // floorplate
 
     // Pistol grip
-    const grip = this.p(new THREE.BoxGeometry(0.78, 1.7, 1), polymer, 0, -1.05, 1.5);
+    const grip = this.p(this.cbox(0.78, 1.7, 1, 0.09), polymer, 0, -1.05, 1.5);
     grip.rotation.x = 0.32;
 
     // Collapsible stock — buffer tube + cheek piece + buttpad
     const tube = this.p(new THREE.CylinderGeometry(0.26, 0.26, 2.6, 12), black, 0, 0.35, 2.4);
     tube.rotation.x = Math.PI / 2;
-    this.p(new THREE.BoxGeometry(0.95, 1.05, 1.5), polymer, 0, 0.3, 3.1);
-    this.p(new THREE.BoxGeometry(1, 1.3, 0.35), black, 0, 0.25, 3.95, false); // buttpad
+    this.p(this.cbox(0.95, 1.05, 1.5, 0.09), polymer, 0, 0.3, 3.1);
+    this.p(this.cbox(1, 1.3, 0.35, 0.07), black, 0, 0.25, 3.95, false); // buttpad
 
-    // Red-dot optic — mount, housing, lens, glowing dot
-    this.p(new THREE.BoxGeometry(0.5, 0.55, 0.9), black, 0, 1.45, -1, false);
-    // openEnded so you can see straight through the optic when aiming
-    const optic = this.p(new THREE.CylinderGeometry(0.4, 0.4, 0.95, 16, 1, true), black, 0, 1.95, -1);
-    optic.rotation.x = Math.PI / 2;
+    // ── Red-dot optic ──
+    // A proper tube sight: riser mount, hooded housing with real wall
+    // thickness, adjustment turrets, battery cap and a rubber eyecup. The
+    // optical path stays open so the weapon still aims through it.
+    const OPTIC_Y = 1.95;
+    const opticBody = this.mat(0x0b0c0f, 0.9, 0.22, { side: THREE.DoubleSide });
+    // Riser mount + quick-detach throw lever
+    this.p(this.cbox(0.62, 0.62, 1.0, 0.07), black, 0, 1.44, -1, false);
+    this.p(new THREE.BoxGeometry(0.72, 0.16, 1.1), rail, 0, 1.16, -1, false);
+    this.p(new THREE.BoxGeometry(0.2, 0.3, 0.44), black, 0.42, 1.3, -1, false);
+    // Housing, front kill-flash hood and rear eyecup
+    this.addOptic(opticBody, OPTIC_Y, -1.60, -0.50, 0.42, 0.42, 0.06);
+    this.addOptic(opticBody, OPTIC_Y, -1.94, -1.60, 0.46, 0.46, 0.05);
+    this.addOptic(opticBody, OPTIC_Y, -0.50, -0.26, 0.44, 0.44, 0.05);
+    // Turrets: elevation on top, windage right, battery cap left
+    this.p(new THREE.CylinderGeometry(0.15, 0.15, 0.32, 12), black, 0, OPTIC_Y + 0.4, -0.86, false);
+    this.p(new THREE.CylinderGeometry(0.17, 0.17, 0.06, 12), rail, 0, OPTIC_Y + 0.57, -0.86, false);
+    this.p(new THREE.CylinderGeometry(0.15, 0.15, 0.32, 12), black, 0.4, OPTIC_Y, -0.86, false)
+      .rotation.z = Math.PI / 2;
+    this.p(new THREE.CylinderGeometry(0.16, 0.16, 0.3, 12), rail, -0.4, OPTIC_Y, -0.86, false)
+      .rotation.z = Math.PI / 2;
+    // Lens sits INSIDE the bore (housing 0.42 − 0.06 wall = 0.36) rather than
+    // overhanging the metal as a floating disc.
     const lens = this.p(
-      new THREE.CircleGeometry(0.33, 16),
+      new THREE.CircleGeometry(0.34, 18),
       this.glassMat(0x2a3a44),
-      0, 1.95, -1.46, false,
+      0, OPTIC_Y, -1.55, false,
     );
     lens.rotation.y = Math.PI;
     // Bright red dot floats on the clear glass — the actual aiming reticle
     this.p(
       new THREE.CircleGeometry(0.06, 12),
       new THREE.MeshBasicMaterial({ color: 0xff2222, toneMapped: false }),
-      0, 1.95, -1.44, false,
+      0, OPTIC_Y, -1.52, false,
     );
 
     // Flip-up backup sights
     this.p(new THREE.BoxGeometry(0.32, 0.4, 0.12), black, 0, 1.42, -4.6, false);
+
+    // ── Angled foregrip at the support hand ──
+    // The support hand used to close on bare air under the handguard; this
+    // gives it something to actually hold, which is most of what makes a
+    // first-person weapon read as gripped rather than floated.
+    const fgrip = this.p(this.cbox(0.44, 0.95, 0.55, 0.08), polymer, 0, -0.72, -3.05);
+    fgrip.rotation.x = -0.42;
+    for (let i = 0; i < 3; i++) {
+      this.p(new THREE.BoxGeometry(0.48, 0.09, 0.1), black, 0, -0.5 - i * 0.24, -3.15 - i * 0.1, false);
+    }
+    // Hand stop ahead of it so the grip reads as a deliberate hold position
+    this.p(new THREE.BoxGeometry(0.5, 0.26, 0.3), black, 0, -0.4, -4.05, false);
 
     // Trigger hand on the pistol grip, support hand on the handguard
     this.triggerGrip = { x: 0.05, y: -0.7, z: 1.45 };
     this.supportGrip = { x: 0, y: -0.5, z: -3 };
   }
 
-  // ====================================================================
   // SHOTGUN — pump-action with wood furniture
-  // ====================================================================
   private createShotgun() {
     this.slideRest = -2.7; // pump rest Z (animated by updateRecoil)
-    this.magRestY = -1;
+    // The shotgun maps `magazine` to its shell carrier, which sits at y=-0.55 —
+    // magRestY has to match, or every reset (reload end, weapon stow) yanks the
+    // carrier down to a position it was never built at.
+    this.magRestY = -0.55;
 
     const steel = this.mat(0x202227, 0.85, 0.3);
     const black = this.mat(0x0d0e11, 0.9, 0.22);
@@ -878,7 +1205,7 @@ export class GunModel {
     const woodDark = this.mat(0x35210f, 0.15, 0.68, { envMapIntensity: 1.0 }, 'wood');
 
     // Receiver
-    this.p(new THREE.BoxGeometry(1.4, 1.5, 3), steel, 0, 0.1, 0.4);
+    this.p(this.cbox(1.4, 1.5, 3, 0.09), steel, 0, 0.1, 0.4);
     this.p(new THREE.BoxGeometry(0.18, 0.42, 1), black, 0.72, 0.35, -0.2, false); // ejection port
 
     // Barrel
@@ -915,7 +1242,7 @@ export class GunModel {
     }
 
     // Loading port / shell carrier
-    this.magazine = this.p(new THREE.BoxGeometry(0.7, 0.4, 1.2), this.mat(0x6b3410, 0.3, 0.5, {}, 'wood'), 0, -0.55, 0.6);
+    this.magazine = this.p(this.cbox(0.7, 0.4, 1.2, 0.07), this.mat(0x6b3410, 0.3, 0.5, {}, 'wood'), 0, this.magRestY, 0.6);
 
     // Trigger guard + trigger
     const guard = this.p(new THREE.TorusGeometry(0.52, 0.08, 8, 12, Math.PI), black, 0, -0.7, 0.3, false);
@@ -923,10 +1250,10 @@ export class GunModel {
     this.p(new THREE.BoxGeometry(0.2, 0.6, 0.16), black, 0, -0.85, 0.1, false);
 
     // Wood stock + grip
-    const grip = this.p(new THREE.BoxGeometry(1, 1.7, 1.4), wood, 0, -0.7, 1.8);
+    const grip = this.p(this.cbox(1, 1.7, 1.4, 0.11), wood, 0, -0.7, 1.8);
     grip.rotation.x = 0.4;
-    this.p(new THREE.BoxGeometry(1.2, 1.6, 2.6), wood, 0, 0.05, 3.2);
-    this.p(new THREE.BoxGeometry(1.25, 1.7, 0.4), woodDark, 0, 0.05, 4.5, false); // buttpad
+    this.p(this.cbox(1.2, 1.6, 2.6, 0.11), wood, 0, 0.05, 3.2);
+    this.p(this.cbox(1.25, 1.7, 0.4, 0.08), woodDark, 0, 0.05, 4.5, false); // buttpad
 
     // Bead front sight
     this.p(new THREE.SphereGeometry(0.12, 8, 8), this.mat(0xffcc33, 0.3, 0.4, { emissive: 0x553300, emissiveIntensity: 0.4 }), 0, 1.05, -5.6, false);
@@ -936,9 +1263,7 @@ export class GunModel {
     this.supportGrip = { x: 0, y: -0.75, z: -2.7 };
   }
 
-  // ====================================================================
   // SMG — compact submachine gun
-  // ====================================================================
   private createSMG() {
     this.boltRest = 0.7;
     this.magRestY = -2;
@@ -949,7 +1274,7 @@ export class GunModel {
     const accent = this.mat(0x2a3f5c, 0.6, 0.4, { emissive: 0x0a1830, emissiveIntensity: 0.3 });
 
     // Main receiver
-    this.p(new THREE.BoxGeometry(1.15, 1.5, 3.6), body, 0, 0.2, -0.4);
+    this.p(this.cbox(1.15, 1.5, 3.6, 0.09), body, 0, 0.2, -0.4);
     // Upper rounded shroud
     const shroud = this.p(new THREE.CylinderGeometry(0.45, 0.45, 3.4, 12), black, 0, 0.7, -1.7);
     shroud.rotation.x = Math.PI / 2;
@@ -976,7 +1301,7 @@ export class GunModel {
     this.p(new THREE.BoxGeometry(0.42, 0.3, 0.12), black, 0, 1.36, 0.3, false);
 
     // Magazine (animated, long)
-    this.magazine = this.p(new THREE.BoxGeometry(0.62, 2.4, 0.85), polymer, 0, this.magRestY, -0.2);
+    this.magazine = this.p(this.cbox(0.62, 2.4, 0.85, 0.06), polymer, 0, this.magRestY, -0.2);
     this.p(new THREE.BoxGeometry(0.66, 0.2, 0.9), black, 0, this.magRestY - 1.3, -0.2, false);
 
     // Vertical foregrip
@@ -984,7 +1309,7 @@ export class GunModel {
     fg.rotation.x = 0.12;
 
     // Pistol grip
-    const grip = this.p(new THREE.BoxGeometry(0.72, 1.55, 0.95), polymer, 0, -0.95, 1);
+    const grip = this.p(this.cbox(0.72, 1.55, 0.95, 0.08), polymer, 0, -0.95, 1);
     grip.rotation.x = 0.34;
 
     // Folding stock — side struts + pad
@@ -992,16 +1317,14 @@ export class GunModel {
     strutL.rotation.x = Math.PI / 2;
     const strutR = this.p(new THREE.CylinderGeometry(0.1, 0.1, 2.4, 8), black, 0.35, 0.45, 2.3, false);
     strutR.rotation.x = Math.PI / 2;
-    this.p(new THREE.BoxGeometry(0.95, 1.1, 0.4), polymer, 0, 0.4, 3.4, false);
+    this.p(this.cbox(0.95, 1.1, 0.4, 0.08), polymer, 0, 0.4, 3.4, false);
 
     // Trigger hand on the grip, support hand on the vertical foregrip
     this.triggerGrip = { x: 0.05, y: -0.6, z: 0.95 };
     this.supportGrip = { x: 0, y: -1.15, z: -1.9 };
   }
 
-  // ====================================================================
   // SNIPER — bolt-action precision rifle with scope
-  // ====================================================================
   private createSniper() {
     this.boltRest = 1.4;
     this.magRestY = -1.4;
@@ -1014,31 +1337,61 @@ export class GunModel {
     const glass = this.glassMat(0x2c3c46); // see-through scope lenses
 
     // Receiver
-    this.p(new THREE.BoxGeometry(1.5, 1.15, 4.2), steel, 0, 0.15, 0);
-    // Bolt body + handle + knob (all animated together as one group)
-    this.bolt = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 2, 12), black);
-    this.bolt.rotation.x = Math.PI / 2;
-    this.bolt.position.set(0, 0.5, this.boltRest);
-    this.bolt.castShadow = true;
+    this.p(this.cbox(1.5, 1.15, 4.2, 0.09), steel, 0, 0.15, 0);
+    // Bolt body + handle + knob, hung off a PIVOT group centred on the bore
+    // axis. The pivot is what the animator drives: rotating it about Z turns
+    // the handle around the receiver (the lift/lock of a real bolt throw) while
+    // translating it along Z runs the bolt back and forward. `this.bolt` is the
+    // pivot, so updateRecoil's existing position.z reciprocation still applies.
+    const boltPivot = new THREE.Group();
+    boltPivot.position.set(0, 0.5, this.boltRest);
+    const boltBody = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 2, 12), black);
+    boltBody.rotation.x = Math.PI / 2;
+    boltBody.castShadow = true;
+    boltPivot.add(boltBody);
+    // Handle + knob sit BELOW and right of the axis at rest — a locked bolt
+    // carries its handle down. The reload's `bolt_lift` beat rotates them up.
+    // Positions are local to the X-rotated body, where local (x,y,z) lands at
+    // (x, −z, y) relative to the pivot.
     const boltHandle = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 1, 8), black);
-    boltHandle.position.set(0.55, 0, -0.4); // local to the rotated cylinder
+    boltHandle.position.set(0.55, 0.5, 0.42);
     boltHandle.rotation.x = Math.PI / 2;
     boltHandle.rotation.z = Math.PI / 2;
-    this.bolt.add(boltHandle);
+    boltBody.add(boltHandle);
     const boltKnob = new THREE.Mesh(new THREE.SphereGeometry(0.2, 10, 10), black);
-    boltKnob.position.set(1, 0, -0.4);
-    this.bolt.add(boltKnob);
-    this.group.add(this.bolt);
+    boltKnob.position.set(1, 0.5, 0.42);
+    boltBody.add(boltKnob);
+    this.bolt = boltPivot;
+    this.group.add(boltPivot);
 
     // Long fluted barrel
     const barrel = this.p(new THREE.CylinderGeometry(0.26, 0.28, 11, 18), black, 0, 0.18, -5.5);
     barrel.rotation.x = Math.PI / 2;
-    // Barrel flutes
+    // Barrel flutes — kept forward of the fore-end added below, so they run
+    // along the EXPOSED length of barrel instead of being buried in furniture.
     for (let i = 0; i < 6; i++) {
-      const flute = this.p(new THREE.BoxGeometry(0.05, 0.05, 6), steel, 0, 0.18, -4.5, false);
+      const flute = this.p(new THREE.BoxGeometry(0.05, 0.05, 4.2), steel, 0, 0.18, -7.6, false);
       const a = (i / 6) * Math.PI * 2;
       flute.position.x = Math.cos(a) * 0.27;
       flute.position.y = 0.18 + Math.sin(a) * 0.27;
+    }
+
+    // ── Chassis fore-end ──
+    // The support hand sits at z = −2.9, where there was previously nothing but
+    // bare barrel — the hand closed on air half a unit below it. This is the
+    // handguard it actually holds, wrapping the barrel and carrying the bipod
+    // rail underneath.
+    this.p(this.cbox(0.95, 0.66, 4.2, 0.08), olive, 0, -0.16, -3.0);
+    this.p(new THREE.BoxGeometry(0.72, 0.2, 4.0), black, 0, 0.2, -3.0, false); // barrel channel cap
+    for (let i = 0; i < 5; i++) {
+      // M-LOK cutouts down both flanks
+      this.p(new THREE.BoxGeometry(0.5, 0.11, 0.17), black, 0.48, -0.16, -4.3 + i * 0.62, false);
+      this.p(new THREE.BoxGeometry(0.5, 0.11, 0.17), black, -0.48, -0.16, -4.3 + i * 0.62, false);
+    }
+    // Bottom rail the bipod clamps to
+    this.p(new THREE.BoxGeometry(0.44, 0.18, 2.2), black, 0, -0.55, -3.7, false);
+    for (let i = 0; i < 5; i++) {
+      this.p(new THREE.BoxGeometry(0.5, 0.1, 0.11), steel, 0, -0.64, -4.5 + i * 0.42, false);
     }
     // Muzzle brake
     const brake = this.p(new THREE.CylinderGeometry(0.4, 0.36, 1.8, 14), black, 0, 0.18, -11.4);
@@ -1047,47 +1400,76 @@ export class GunModel {
       this.p(new THREE.BoxGeometry(0.86, 0.12, 0.5), this.mat(0, 1, 0.5), 0, 0.18, -11 - i * 0.35, false);
     }
 
-    // Tactical scope — tube, bells, rings, lenses, turrets
+    // ── Tactical scope ──
+    // Rebuilt: every section is a real walled shell (see opticShell) instead of
+    // a single-surface open cylinder, both bells flare the correct way round
+    // (objective widens toward the MUZZLE, ocular toward the eye — they were
+    // inverted, which is most of why the optic looked wrong), and both lenses
+    // now sit inside their bore instead of overhanging the metal.
+    const SCOPE_Y = 1.55;
     const scopeMount = this.mat(0x0a0a0a, 0.8, 0.3);
-    // All scope tubes are openEnded — closed caps would block the sight line
-    const scope = this.p(new THREE.CylinderGeometry(0.42, 0.42, 4.4, 18, 1, true), black, 0, 1.55, -1.4);
-    scope.rotation.x = Math.PI / 2;
-    const frontBell = this.p(new THREE.CylinderGeometry(0.56, 0.42, 0.9, 18, 1, true), black, 0, 1.55, -3.7);
-    frontBell.rotation.x = Math.PI / 2;
-    const rearBell = this.p(new THREE.CylinderGeometry(0.42, 0.52, 0.8, 18, 1, true), black, 0, 1.55, 1.1);
-    rearBell.rotation.x = Math.PI / 2;
-    // Lenses
-    const frontLens = this.p(new THREE.CircleGeometry(0.5, 18), glass, 0, 1.55, -4.18, false);
+    const scopeBody = this.mat(0x090a0c, 0.92, 0.14, { side: THREE.DoubleSide });
+    // Sunshade → objective housing → objective bell → main tube → ocular bell
+    // → eyepiece, front to back.
+    this.addOptic(scopeBody, SCOPE_Y, -5.55, -4.65, 0.60, 0.60, 0.05, 22);
+    this.addOptic(scopeBody, SCOPE_Y, -4.65, -4.05, 0.58, 0.58, 0.06, 22);
+    this.addOptic(scopeBody, SCOPE_Y, -4.05, -3.35, 0.58, 0.43, 0.06, 22);
+    this.addOptic(scopeBody, SCOPE_Y, -3.35, 0.75, 0.42, 0.42, 0.05, 22);
+    this.addOptic(scopeBody, SCOPE_Y, 0.75, 1.35, 0.42, 0.54, 0.05, 22);
+    this.addOptic(scopeBody, SCOPE_Y, 1.35, 1.64, 0.56, 0.56, 0.06, 22);
+    // Knurled ocular focus band
+    this.p(new THREE.TorusGeometry(0.57, 0.05, 8, 20), scopeMount, 0, SCOPE_Y, 1.42, false);
+    // Magnification ring on the main tube
+    this.p(new THREE.TorusGeometry(0.45, 0.06, 8, 20), scopeMount, 0, SCOPE_Y, 0.55, false);
+
+    // Lenses — both comfortably inside their bore (objective 0.58−0.06 = 0.52,
+    // ocular 0.56−0.06 = 0.50).
+    const frontLens = this.p(new THREE.CircleGeometry(0.50, 20), glass, 0, SCOPE_Y, -4.55, false);
     frontLens.rotation.y = Math.PI;
-    this.p(new THREE.CircleGeometry(0.46, 18), glass, 0, 1.55, 1.52, false);
+    this.p(new THREE.CircleGeometry(0.48, 20), glass, 0, SCOPE_Y, 1.58, false);
     this.p(
       new THREE.CircleGeometry(0.05, 10),
       new THREE.MeshBasicMaterial({ color: 0x33ff66, toneMapped: false }),
-      0, 1.55, 1.49, false,
+      0, SCOPE_Y, 1.55, false,
     );
-    // Elevation + windage turrets
-    this.p(new THREE.CylinderGeometry(0.2, 0.2, 0.35, 12), scopeMount, 0, 2.1, -1, false);
-    const wind = this.p(new THREE.CylinderGeometry(0.2, 0.2, 0.35, 12), scopeMount, 0.55, 1.55, -1, false);
+
+    // Elevation + windage + parallax turrets, each with a knurled cap
+    this.p(new THREE.CylinderGeometry(0.2, 0.2, 0.38, 12), scopeMount, 0, SCOPE_Y + 0.55, -1, false);
+    this.p(new THREE.CylinderGeometry(0.23, 0.23, 0.07, 12), black, 0, SCOPE_Y + 0.77, -1, false);
+    const wind = this.p(new THREE.CylinderGeometry(0.2, 0.2, 0.38, 12), scopeMount, 0.6, SCOPE_Y, -1, false);
     wind.rotation.z = Math.PI / 2;
-    // Mount rings
-    for (const z of [-0.2, -2.5]) {
-      const ring = this.p(new THREE.TorusGeometry(0.46, 0.12, 8, 16), scopeMount, 0, 1.55, z, false);
-      ring.rotation.y = Math.PI / 2;
-      this.p(new THREE.BoxGeometry(0.5, 0.5, 0.4), scopeMount, 0, 1.05, z, false);
+    const para = this.p(new THREE.CylinderGeometry(0.19, 0.19, 0.34, 12), scopeMount, -0.58, SCOPE_Y, -1, false);
+    para.rotation.z = Math.PI / 2;
+
+    // Picatinny rail on the receiver for the rings to clamp to
+    this.p(new THREE.BoxGeometry(0.5, 0.2, 4.0), scopeMount, 0, 0.82, -0.2, false);
+    for (let i = 0; i < 8; i++) {
+      this.p(new THREE.BoxGeometry(0.55, 0.1, 0.12), black, 0, 0.94, -1.9 + i * 0.5, false);
+    }
+    // Mount rings — a torus already encircles the Z axis, so the old
+    // `rotation.y = π/2` turned each ring edge-on THROUGH the scope tube.
+    for (const z of [-0.1, -2.6]) {
+      this.p(new THREE.TorusGeometry(0.47, 0.11, 8, 20), scopeMount, 0, SCOPE_Y, z, false);
+      this.p(this.cbox(0.52, 0.62, 0.42, 0.05), scopeMount, 0, 1.08, z, false);
+      // Clamp screw heads either side of the ring
+      for (const sx of [-0.28, 0.28]) {
+        this.p(new THREE.CylinderGeometry(0.06, 0.06, 0.1, 8), black, sx, 1.2, z, false)
+          .rotation.x = Math.PI / 2;
+      }
     }
 
     // Magazine (animated)
-    this.magazine = this.p(new THREE.BoxGeometry(0.78, 1.7, 1.1), black, 0, this.magRestY, 0.2);
+    this.magazine = this.p(this.cbox(0.78, 1.7, 1.1, 0.07), black, 0, this.magRestY, 0.2);
 
     // Skeletonized stock with cheek riser
-    this.p(new THREE.BoxGeometry(1.1, 0.7, 3.4), olive, 0, 0.05, 3.1);
-    this.p(new THREE.BoxGeometry(1.05, 0.55, 1.6), olive, 0, 0.7, 2.6); // cheek riser
-    this.p(new THREE.BoxGeometry(1.15, 1.5, 0.4), black, 0, -0.1, 4.85, false); // buttpad
+    this.p(this.cbox(1.1, 0.7, 3.4, 0.09), olive, 0, 0.05, 3.1);
+    this.p(this.cbox(1.05, 0.55, 1.6, 0.09), olive, 0, 0.7, 2.6); // cheek riser
+    this.p(this.cbox(1.15, 1.5, 0.4, 0.08), black, 0, -0.1, 4.85, false); // buttpad
     // Stock cut-out strut
     this.p(new THREE.BoxGeometry(0.4, 0.4, 1.6), olive, 0, -0.3, 3.6, false);
 
     // Pistol grip
-    const grip = this.p(new THREE.BoxGeometry(0.8, 1.7, 1), olive, 0, -1, 1.4);
+    const grip = this.p(this.cbox(0.8, 1.7, 1, 0.09), olive, 0, -1, 1.4);
     grip.rotation.x = 0.3;
 
     // Folding bipod
@@ -1105,9 +1487,7 @@ export class GunModel {
     this.supportGrip = { x: 0, y: -0.55, z: -2.9 };
   }
 
-  // ====================================================================
   // MINIGUN — rotary cannon
-  // ====================================================================
   private createMinigun() {
     // The minigun is a huge weapon — a centred ADS would shove the barrel
     // cluster into the player's face. Keep its aim pose low and slightly to the
@@ -1163,17 +1543,34 @@ export class GunModel {
     }
 
     // Ammo feed neck
-    this.p(new THREE.BoxGeometry(1.1, 1.3, 1.4), housing, 0, 1.3, 1.2);
+    this.p(this.cbox(1.1, 1.3, 1.4, 0.09), housing, 0, 1.3, 1.2);
 
-    // Ammo drum
-    const drum = this.p(new THREE.CylinderGeometry(1.5, 1.5, 1.6, 20), this.mat(0x33363d, 0.7, 0.4), 0, 0.4, 3.4);
-    drum.rotation.z = Math.PI / 2;
-    this.p(new THREE.CircleGeometry(1.5, 20), black, 0.81, 0.4, 3.4, false).rotation.y = Math.PI / 2;
+    // Ammo drum — grouped so the reload can unlatch it, rock it and reseat it
+    // as one unit (its outer face plate has to travel with the body).
+    const drumGroup = new THREE.Group();
+    drumGroup.position.set(0, 0.4, 3.4);
+    const drumBody = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.5, 1.6, 20), this.mat(0x33363d, 0.7, 0.4));
+    drumBody.rotation.z = Math.PI / 2;
+    drumBody.castShadow = true; drumBody.receiveShadow = true;
+    drumGroup.add(drumBody);
+    const drumFace = new THREE.Mesh(new THREE.CircleGeometry(1.5, 20), black);
+    drumFace.position.set(0.81, 0, 0);
+    drumFace.rotation.y = Math.PI / 2;
+    drumGroup.add(drumFace);
+    this.group.add(drumGroup);
+    this.rp.drum = drumGroup;
 
-    // Ammo belt feeding into the gun
+    // Ammo belt feeding into the gun — each link is tracked so the reload can
+    // strip the spent belt out and drag a fresh one in link by link.
+    const beltGroup = new THREE.Group();
+    this.group.add(beltGroup);
     for (let i = 0; i < 6; i++) {
-      this.p(new THREE.BoxGeometry(0.34, 0.5, 0.2), brass, 0.2, 1.0 - i * 0.18, 2.1 + i * 0.05, false);
+      const link = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.5, 0.2), brass);
+      link.position.set(0.2, 1.0 - i * 0.18, 2.1 + i * 0.05);
+      beltGroup.add(link);
+      this.rp.beltLinks.push(link);
     }
+    this.rp.belt = beltGroup;
 
     // Spade grips (twin handles at rear)
     for (const sx of [-0.85, 0.85]) {
@@ -1182,16 +1579,14 @@ export class GunModel {
       this.p(new THREE.SphereGeometry(0.24, 10, 10), this.mat(0x111317, 0.3, 0.7), sx, -1.5, 2.6, false);
     }
     // Cross brace between handles
-    this.p(new THREE.BoxGeometry(2, 0.3, 0.4), black, 0, 0.2, 2.9, false);
+    this.p(this.cbox(2, 0.3, 0.4, 0.07), black, 0, 0.2, 2.9, false);
 
     // Both hands grip the twin spade handles
     this.triggerGrip = { x: 0.85, y: -0.5, z: 2.6 };
     this.supportGrip = { x: -0.85, y: -0.5, z: 2.6 };
   }
 
-  // ====================================================================
   // LAUNCHER — shoulder-fired rocket launcher
-  // ====================================================================
   private createLauncher() {
     const olive = this.mat(0x33381f, 0.45, 0.6);
     const black = this.mat(0x0c0d10, 0.85, 0.25);
@@ -1213,56 +1608,52 @@ export class GunModel {
     const venturi = this.p(new THREE.CylinderGeometry(0.62, 0.95, 1.6, 18), steel, 0, 0.3, 2.7);
     venturi.rotation.x = Math.PI / 2;
 
-    // Loaded rocket — body + warhead tip + fins protruding from front
-    const rocketBody = this.p(new THREE.CylinderGeometry(0.34, 0.34, 1.6, 14), this.mat(0x2a2a2a, 0.6, 0.4), 0, 0.3, -6.4);
-    rocketBody.rotation.x = Math.PI / 2;
-    const tip = this.p(new THREE.ConeGeometry(0.36, 1.3, 14), warhead, 0, 0.3, -7.8);
-    tip.rotation.x = -Math.PI / 2;
-    for (let i = 0; i < 4; i++) {
-      const fin = this.p(new THREE.BoxGeometry(0.05, 0.5, 0.5), black, 0, 0.3, -5.9, false);
-      fin.rotation.z = (i / 4) * Math.PI * 2;
-      const a = (i / 4) * Math.PI * 2;
-      fin.position.x = Math.cos(a) * 0.4;
-      fin.position.y = 0.3 + Math.sin(a) * 0.4;
-    }
+    // Loaded rocket — body + warhead tip + fins protruding from the front.
+    // Built as a GROUP centred on the round itself so the reload can hide it
+    // (an empty tube while reloading) and reveal it the instant a fresh round
+    // bottoms out. `buildRocket` is shared with the round the hands carry in.
+    const seated = this.buildRocket(this.mat(0x2a2a2a, 0.6, 0.4), warhead, black);
+    seated.position.set(0, 0.3, -6.4);
+    this.group.add(seated);
+    this.rp.seatedRocket = seated;
 
-    // Optical sight unit on top
-    this.p(new THREE.BoxGeometry(0.5, 0.6, 0.5), black, 0, 1, -2.2, false);
-    const optic = this.p(new THREE.CylinderGeometry(0.3, 0.3, 1.4, 14, 1, true), black, 0, 1.45, -2.2);
-    optic.rotation.x = Math.PI / 2;
+    // Optical sight unit on top — a walled shell with a rubber eyecup, so the
+    // sight reads as a machined body rather than a see-through half-pipe.
+    const opticBody = this.mat(0x0c0d10, 0.86, 0.24, { side: THREE.DoubleSide });
+    this.p(this.cbox(0.5, 0.6, 0.5, 0.06), black, 0, 1, -2.2, false);
+    this.addOptic(opticBody, 1.45, -2.9, -1.6, 0.32, 0.32, 0.05, 16);
+    this.addOptic(opticBody, 1.45, -1.6, -1.36, 0.35, 0.35, 0.05, 16);
     const lens = this.p(
-      new THREE.CircleGeometry(0.24, 14),
+      new THREE.CircleGeometry(0.25, 16),
       this.glassMat(0x2a3a44),
-      0, 1.45, -2.92, false,
+      0, 1.45, -2.82, false,
     );
     lens.rotation.y = Math.PI;
     // Iron backup blade
     this.p(new THREE.BoxGeometry(0.1, 0.5, 0.12), black, 0, 1, -4.5, false);
 
     // Pistol grip + trigger
-    const grip = this.p(new THREE.BoxGeometry(0.8, 1.7, 1), black, 0, -0.85, 0.3);
+    const grip = this.p(this.cbox(0.8, 1.7, 1, 0.09), black, 0, -0.85, 0.3);
     grip.rotation.x = 0.3;
     const guard = this.p(new THREE.TorusGeometry(0.5, 0.08, 8, 12, Math.PI), black, 0, -0.2, -0.1, false);
     guard.rotation.x = Math.PI / 2;
 
     // Front support grip
-    const frontGrip = this.p(new THREE.BoxGeometry(0.7, 1.4, 0.85), black, 0, -0.6, -3.4);
+    const frontGrip = this.p(this.cbox(0.7, 1.4, 0.85, 0.09), black, 0, -0.6, -3.4);
     frontGrip.rotation.x = -0.15;
 
     // Shoulder rest pad
-    this.p(new THREE.BoxGeometry(1, 1.5, 0.6), this.mat(0x14160c, 0.2, 0.85), 0, -0.4, 3.4, false);
+    this.p(this.cbox(1, 1.5, 0.6, 0.12), this.mat(0x14160c, 0.2, 0.85), 0, -0.4, 3.4, false);
 
     // Trigger hand on the grip, support hand on the front support grip
     this.triggerGrip = { x: 0.05, y: -0.5, z: 0.25 };
     this.supportGrip = { x: 0, y: -1, z: -3.4 };
   }
 
-  // ====================================================================
   // SUBVERTER — rugged robot-hacking deck (a combat tablet + intrusion chips)
   // Held flat, screen tilted up toward the player; an emitter prong on the
   // front fires the intrusion beam. The screen scrolls "code" and surges on
   // each chip deploy. Not a gun — there's no barrel or magazine.
-  // ====================================================================
   private createSubverter() {
     const frameMat   = this.mat(0x14171d, 0.7, 0.42, { envMapIntensity: 1.1 }); // dark composite chassis
     const frameLit   = this.mat(0x20242d, 0.82, 0.32);             // raised brushed panels
@@ -1280,14 +1671,16 @@ export class GunModel {
     deck.rotation.x = -0.5;
     deck.position.set(0, -0.1, -0.4);
     this.group.add(deck);
+    // Handed to addReloadProps so the chip cartridge inherits the same tilt.
+    this.subDeck = deck;
     const add = (m: THREE.Mesh, parent: THREE.Object3D = deck): THREE.Mesh => {
       m.castShadow = true; m.receiveShadow = true; parent.add(m); return m;
     };
 
     // ── Chassis: a chunky slab with a raised bezel + machined detail ──
-    add(new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.42, 4.7), frameMat));
+    add(new THREE.Mesh(this.cbox(3.4, 0.42, 4.7, 0.11), frameMat));
     // Carbon-fibre underbelly + bevelled front lip read as a milled chassis.
-    add(new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.2, 4.5), carbon)).position.set(0, -0.22, 0);
+    add(new THREE.Mesh(this.cbox(3.2, 0.2, 4.5, 0.06), carbon)).position.set(0, -0.22, 0);
     add(new THREE.Mesh(new THREE.BoxGeometry(3.0, 0.34, 0.5), frameLit)).position.set(0, 0.02, -2.3);
     // Glowing accent piping down both long edges of the chassis.
     add(new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.07, 4.2), accentMat)).position.set(-1.62, 0.16, 0);
@@ -1299,7 +1692,7 @@ export class GunModel {
     // Rubberized corner bumpers (rugged "field" look)
     for (const cx of [-1.6, 1.6]) {
       for (const cz of [-2.2, 2.2]) {
-        add(new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.6, 0.5), rubber)).position.set(cx, 0, cz);
+        add(new THREE.Mesh(this.cbox(0.5, 0.6, 0.5, 0.06), rubber)).position.set(cx, 0, cz);
       }
     }
     // Raised bezel frame around the screen
@@ -1418,8 +1811,8 @@ export class GunModel {
     add(new THREE.Mesh(new THREE.SphereGeometry(0.2, 14, 14), this.subEmitterMat)).position.set(0, 0.35, -4.0);
 
     // ── Side grips the hands hold + a blinking status antenna ──
-    add(new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.85, 2.2), rubber)).position.set(-1.85, -0.05, 0.6);
-    add(new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.85, 2.2), rubber)).position.set( 1.85, -0.05, 0.6);
+    add(new THREE.Mesh(this.cbox(0.55, 0.85, 2.2, 0.09), rubber)).position.set(-1.85, -0.05, 0.6);
+    add(new THREE.Mesh(this.cbox(0.55, 0.85, 2.2, 0.09), rubber)).position.set( 1.85, -0.05, 0.6);
     // ridged grip texture
     for (let i = 0; i < 5; i++) {
       add(new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.1, 0.14), trim)).position.set(-1.85, 0.18, -0.1 + i * 0.34);
@@ -1514,9 +1907,224 @@ export class GunModel {
     this.subScreenTex.needsUpdate = true;
   }
 
-  // ====================================================================
+  // RELOAD HARDWARE
+  //
+  // The props a reload physically handles: the magazine that gets stripped
+  // out, the fresh one carried up from a pouch, shotgun shells, rockets,
+  // belts, chip cartridges. All built with the rig and parked hidden.
+  //
+  // Every material here is fetched through `mat()` with the SAME arguments
+  // the weapon's own parts use, so these reuse the cached instances rather
+  // than introducing a new shader variant. That matters: props are hidden at
+  // build time and `renderer.compile` only traverses VISIBLE objects, so a
+  // prop with a novel material would link its program mid-fight on the first
+  // reload — exactly the stutter the warmup exists to prevent.
+
+  /** Add a shadow-casting mesh to `parent` at a local offset. */
+  private prop(
+    geo: THREE.BufferGeometry, mat: THREE.Material, parent: THREE.Object3D,
+    x = 0, y = 0, z = 0,
+  ): THREE.Mesh {
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y, z);
+    m.castShadow = true;
+    m.receiveShadow = true;
+    parent.add(m);
+    return m;
+  }
+
+  /**
+   * A detachable box magazine: body plus floorplate, sized to match the
+   * weapon's own seated magazine so the swap reads as like-for-like. Returned
+   * centred on its own body, hidden, ready to be flown along a path.
+   */
+  private buildMagProp(
+    w: number, h: number, d: number, body: THREE.Material,
+    plate: THREE.Material, plateY: number,
+  ): THREE.Group {
+    // Chamfered: the spare magazine passes within a few centimetres of the
+    // camera during the swap, so it is one of the most closely-inspected
+    // objects in the game.
+    const g = new THREE.Group();
+    this.prop(this.cbox(w, h, d, 0.06), body, g);
+    this.prop(this.cbox(w * 1.08, 0.2, d * 1.06, 0.05), plate, g, 0, plateY, 0.04);
+    // Witness slots down the spine — the giveaway detail that reads "magazine"
+    // even as it tumbles past the camera.
+    for (let i = 0; i < 3; i++) {
+      this.prop(new THREE.BoxGeometry(w * 0.34, 0.07, 0.05), plate, g, 0, h * 0.24 - i * h * 0.24, d / 2);
+    }
+    g.visible = false;
+    return g;
+  }
+
+  /** A rocket round: motor body, warhead cone and tail fins, centred on the body. */
+  private buildRocket(
+    bodyMat: THREE.Material, warheadMat: THREE.Material, finMat: THREE.Material,
+  ): THREE.Group {
+    const g = new THREE.Group();
+    this.prop(new THREE.CylinderGeometry(0.34, 0.34, 1.6, 14), bodyMat, g).rotation.x = Math.PI / 2;
+    this.prop(new THREE.ConeGeometry(0.36, 1.3, 14), warheadMat, g, 0, 0, -1.4).rotation.x = -Math.PI / 2;
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2;
+      const fin = this.prop(new THREE.BoxGeometry(0.05, 0.5, 0.5), finMat, g,
+        Math.cos(a) * 0.4, Math.sin(a) * 0.4, 0.5);
+      fin.rotation.z = a;
+    }
+    return g;
+  }
+
+  /** A 12-gauge round: plastic hull with a brass head. */
+  private buildShell(hull: THREE.Material, brass: THREE.Material): THREE.Group {
+    const g = new THREE.Group();
+    this.prop(new THREE.CylinderGeometry(0.17, 0.17, 0.62, 10), hull, g).rotation.x = Math.PI / 2;
+    this.prop(new THREE.CylinderGeometry(0.185, 0.185, 0.22, 10), brass, g, 0, 0, 0.33).rotation.x = Math.PI / 2;
+    this.prop(new THREE.CylinderGeometry(0.06, 0.06, 0.04, 8), brass, g, 0, 0, 0.45).rotation.x = Math.PI / 2;
+    g.visible = false;
+    return g;
+  }
+
+  /**
+   * Build the per-weapon reload props and record where the magazine seats.
+   * Called once per rig, straight after the weapon's create* method (so the
+   * material cache is already warm with that weapon's palette) and before the
+   * arms go on top.
+   */
+  private addReloadProps(type: WeaponType) {
+    const rp = this.rp;
+    // Where the support hand holds a fresh item while it's down at the pouch —
+    // captured now, because `supportGrip` only describes the rig being built.
+    // Kept shallow (matched to setSwapHand's dive of 2.0) so the fresh
+    // magazine spends most of its travel ON SCREEN rather than being fetched
+    // from somewhere far below the frame.
+    const g = this.supportGrip ?? this.triggerGrip;
+    rp.hold = { x: g.x + 0.3, y: g.y - 2.25, z: g.z + 0.95 };
+    // Two identical magazines: the one being thrown away and the one coming in.
+    const pair = (w: number, h: number, d: number, body: THREE.Material, plate: THREE.Material, plateY: number) => {
+      rp.spentMag = this.buildMagProp(w, h, d, body, plate, plateY);
+      rp.freshMag = this.buildMagProp(w, h, d, body, plate, plateY);
+      this.group.add(rp.spentMag, rp.freshMag);
+    };
+
+    switch (type) {
+      case 'pistol': {
+        rp.well = { x: 0, y: this.magRestY, z: 0.3 };
+        pair(0.8, 2, 0.95, this.mat(0x1a1c20, 0.6, 0.4), this.mat(0x111317, 0.85, 0.3), -1.05);
+        break;
+      }
+      case 'rifle': {
+        rp.well = { x: 0, y: this.magRestY, z: 0.5 };
+        pair(0.72, 2.05, 0.95, this.mat(0x33352b, 0.25, 0.78), this.mat(0x0c0d10, 0.9, 0.16), -0.92);
+        break;
+      }
+      case 'smg': {
+        rp.well = { x: 0, y: this.magRestY, z: -0.2 };
+        pair(0.62, 2.4, 0.85, this.mat(0x101218, 0.3, 0.7), this.mat(0x0a0b0e, 0.92, 0.16), -1.3);
+        break;
+      }
+      case 'sniper': {
+        rp.well = { x: 0, y: this.magRestY, z: 0.2 };
+        pair(0.78, 1.7, 1.1, this.mat(0x090a0c, 0.95, 0.1), this.mat(0x090a0c, 0.95, 0.1), -0.93);
+        break;
+      }
+      case 'shotgun': {
+        // Red plastic hull, brass head — the same brass the minigun's belt uses.
+        const hull = this.mat(0x8e1b16, 0.2, 0.6);
+        const brass = this.mat(0xc8962e, 0.85, 0.3, { emissive: 0x3a2a05, emissiveIntensity: 0.25 });
+        rp.shell = this.buildShell(hull, brass);
+        rp.ejectedShell = this.buildShell(hull, brass);
+        this.group.add(rp.shell, rp.ejectedShell);
+        break;
+      }
+      case 'launcher': {
+        const rocket = this.buildRocket(
+          this.mat(0x2a2a2a, 0.6, 0.4),
+          this.mat(0xb43018, 0.5, 0.4, { emissive: 0x4a1005, emissiveIntensity: 0.4 }),
+          this.mat(0x0c0d10, 0.85, 0.25),
+        );
+        rocket.visible = false;
+        this.group.add(rocket);
+        rp.loadRocket = rocket;
+        break;
+      }
+      case 'minigun': {
+        // Hinged feed cover over the ammo throat. The pivot sits at the cover's
+        // REAR edge so raising rotation.x swings its nose up and open.
+        const housing = this.mat(0x2c2f36, 0.8, 0.35);
+        const steel = this.mat(0x202228, 0.9, 0.25);
+        const black = this.mat(0x0b0c0f, 0.95, 0.14);
+        const cover = new THREE.Group();
+        cover.position.set(0, 1.98, 1.9);
+        this.prop(new THREE.BoxGeometry(1.16, 0.14, 1.5), housing, cover, 0, 0, -0.75);
+        for (let i = 0; i < 3; i++) {
+          this.prop(new THREE.BoxGeometry(1.2, 0.07, 0.1), steel, cover, 0, 0.09, -0.35 - i * 0.44);
+        }
+        this.prop(new THREE.BoxGeometry(0.3, 0.24, 0.18), black, cover, 0, -0.06, -1.52); // latch
+        this.group.add(cover);
+        rp.feedCover = cover;
+        break;
+      }
+      case 'subverter': {
+        // The chip cartridge lives on the DECK group so it inherits the deck's
+        // baked-in tilt (see createSubverter) and stays flush with the bay.
+        const deck = this.subDeck;
+        if (!deck) break;
+        const trim = this.mat(0x2a2f3a, 0.88, 0.26);
+        const gold = this.mat(0xd8b24a, 0.95, 0.22, { emissive: 0x4a3608, emissiveIntensity: 0.4 });
+        const accent = this.mat(0x062a16, 0.3, 0.4, { emissive: 0x18e0a0, emissiveIntensity: 1.1 });
+        const makeCart = (): THREE.Group => {
+          const g = new THREE.Group();
+          this.prop(new THREE.BoxGeometry(2.2, 0.34, 0.6), trim, g);
+          this.prop(new THREE.BoxGeometry(2.0, 0.08, 0.1), gold, g, 0, -0.16, -0.28); // contacts
+          this.prop(new THREE.BoxGeometry(1.5, 0.07, 0.09), accent, g, 0, 0.2, 0.06); // status bar
+          g.visible = false;
+          return g;
+        };
+        rp.spentCart = makeCart();
+        rp.freshCart = makeCart();
+        deck.add(rp.spentCart, rp.freshCart);
+        break;
+      }
+    }
+  }
+
+  /**
+   * Return every reload prop to its hidden rest state. `keepFallingMag` leaves
+   * a discarded magazine alone so it can finish its arc after a reload ends —
+   * clearing it would snap a mag out of mid-air (and reset its tumble).
+   */
+  private parkReloadProps(rp: ReloadProps, keepFallingMag = false) {
+    const hide = (o: THREE.Object3D | null) => {
+      if (!o) return;
+      o.visible = false;
+      o.rotation.set(0, 0, 0);
+      o.scale.setScalar(1);
+    };
+    if (!keepFallingMag) hide(rp.spentMag);
+    hide(rp.freshMag);
+    hide(rp.shell);
+    hide(rp.ejectedShell);
+    hide(rp.loadRocket);
+    hide(rp.spentCart);
+    hide(rp.freshCart);
+    // The seated rocket is part of the weapon's rest silhouette — it's only
+    // hidden mid-reload (empty tube), so it comes BACK rather than parking away.
+    if (rp.seatedRocket) {
+      rp.seatedRocket.visible = true;
+      rp.seatedRocket.position.set(0, 0.3, -6.4);
+    }
+    if (rp.feedCover) rp.feedCover.rotation.set(0, 0, 0);
+    if (rp.drum) {
+      // Keep the accumulated spin on X (a cylinder has no readable start
+      // angle, and zeroing it would jerk the belt links attached to it);
+      // clear only the swing-out axes.
+      rp.drum.rotation.set(rp.drum.rotation.x, 0, 0);
+      rp.drum.position.set(0, 0.4, 3.4);
+    }
+    for (const link of rp.beltLinks) { link.visible = true; link.scale.setScalar(1); }
+    if (rp.belt) rp.belt.position.set(0, 0, 0);
+  }
+
   // FIRST-PERSON ARMS — gloved hands + forearms holding the weapon
-  // ====================================================================
   private addArms() {
     const sleeve = this.mat(0x2b2e26, 0.12, 0.84, { envMapIntensity: 0.5 });
     const glove = this.mat(0x15171b, 0.28, 0.55, { envMapIntensity: 1.0 });
@@ -1592,27 +2200,48 @@ export class GunModel {
     handGroup.rotation.x = 0.32;
     handGroup.rotation.y = -0.16 * side;
 
-    const backHand = new THREE.Mesh(new THREE.BoxGeometry(0.82, 0.5, 0.98), glove);
+    // Hands are the closest thing to the camera and the thing the player reads
+    // as "holding", so they carry the heaviest chamfer of anything on the
+    // model — square-edged fists are what made the weapon feel like a prop
+    // being carried rather than a weapon being gripped.
+    const backHand = new THREE.Mesh(this.cbox(0.82, 0.5, 0.98, 0.13), glove);
     handGroup.add(backHand);
 
-    const knuckles = new THREE.Mesh(new THREE.BoxGeometry(0.84, 0.27, 0.36), glove);
+    const knuckles = new THREE.Mesh(this.cbox(0.84, 0.27, 0.36, 0.09), glove);
     knuckles.position.set(0, 0.16, -0.42);
     handGroup.add(knuckles);
+    // Wrist taper into the cuff, so the hand doesn't end in a flat slab.
+    const wristBlock = new THREE.Mesh(this.cbox(0.7, 0.44, 0.34, 0.1), glove);
+    wristBlock.position.set(0, -0.02, 0.5);
+    handGroup.add(wristBlock);
 
-    // Four fingers curling over the front of the grip
+    // Four fingers curling over the front of the grip, each with a second
+    // segment so they WRAP the weapon instead of jutting out as single slabs —
+    // a straight finger reads as a mitten, a broken one reads as a grip.
+    // Each distal segment is a CHILD of its finger, positioned just past the
+    // far end in finger-local space, so the two can never drift apart however
+    // the hand is posed.
     for (let i = 0; i < 4; i++) {
-      const finger = new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.52, 0.32), glove);
+      const finger = new THREE.Mesh(this.cbox(0.17, 0.5, 0.3, 0.06), glove);
       finger.position.set(-0.3 + i * 0.2, -0.22, -0.5);
       finger.rotation.x = 0.92;
       handGroup.add(finger);
+      const tip = new THREE.Mesh(this.cbox(0.16, 0.32, 0.26, 0.06), glove);
+      tip.position.set(0, -0.3, -0.05);
+      tip.rotation.x = 0.9;
+      finger.add(tip);
     }
 
-    // Thumb on the inboard side
-    const thumb = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.5, 0.27), glove);
+    // Thumb on the inboard side, with the same knuckle break
+    const thumb = new THREE.Mesh(this.cbox(0.22, 0.5, 0.27, 0.07), glove);
     thumb.position.set(0.42 * side, -0.05, -0.06);
     thumb.rotation.z = -0.7 * side;
     thumb.rotation.x = 0.35;
     handGroup.add(thumb);
+    const thumbTip = new THREE.Mesh(this.cbox(0.19, 0.3, 0.24, 0.07), glove);
+    thumbTip.position.set(0, -0.28, -0.04);
+    thumbTip.rotation.x = 0.72;
+    thumb.add(thumbTip);
 
     handGroup.traverse((o) => {
       if (o instanceof THREE.Mesh) {
@@ -1629,9 +2258,11 @@ export class GunModel {
    * Update recoil + reload animation — calculates offsets and drives parts.
    */
   updateRecoil(delta: number) {
-    // Idle-spin / fire-spin the minigun barrels
+    // Idle-spin / fire-spin the minigun barrels. A reload overrides both: the
+    // cluster is braked to a dead stop for the feed job, then wound back up.
     if (this.spinningPart) {
-      const spinSpeed = this.recoilAnimation > 0.05 ? 32 : 1.4;
+      const spinSpeed = this.reloadSpin >= 0 ? this.reloadSpin
+        : this.recoilAnimation > 0.05 ? 32 : 1.4;
       this.spinningPart.rotation.z += delta * spinSpeed;
     }
 
@@ -1667,52 +2298,141 @@ export class GunModel {
       }
     }
 
-    // ── RELOAD — now paced to fill the FULL reload window (handed in via
-    // triggerReload) so the hands work the weapon for the entire time instead of
-    // snapping done in ~0.5s. Three flavours, each with a believable manual hand
-    // chore: shell-fed (shotgun, thumbed in one-by-one), chip-cartridge
-    // (subverter) and magazine (every other gun).
+    // ── RELOAD ────────────────────────────────────────────────────────────
+    // Paced to fill the FULL reload window (handed in via triggerReload) so the
+    // hands work the weapon for the entire time. Every weapon runs its OWN
+    // choreography of real mechanical beats — a pistol's slide-lock speed
+    // reload, an AR's rock-and-tug, a bolt gun's four-part bolt throw, shells
+    // thumbed past a loading gate, a belt fed under a hinged cover, a rocket
+    // rammed down a tube, a chip cartridge swapped into a deck — each emitting
+    // cues at the frame its parts make contact (see ReloadCue).
     if (this.isReloading) {
       this.reloadAnimation += delta / this.reloadDuration;
+      this.panicTime += delta; // drives the tremor in setPose
       const ra = Math.min(1, this.reloadAnimation);
 
-      // Whole-gun dip envelope — ease in, hold, ease out.
-      this.reloadDip =
-        ra < 0.16 ? ra / 0.16 :
-        ra > 0.84 ? Math.max(0, (1 - ra) / 0.16) :
-        1;
+      // Whole-gun envelope — ease in, hold, ease out.
+      this.reloadDip = ra < 0.14 ? this.ss(ra / 0.14)
+        : ra > 0.86 ? this.ss((1 - ra) / 0.14)
+        : 1;
 
-      if (this.currentWeaponType === 'subverter') this.animateSubverterReload(ra);
-      else if (this.currentWeaponType === 'shotgun') this.animateShellReload(ra);
-      else this.animateMagReload(ra);
-
-      // The trigger hand keeps the firing grip through the whole reload.
-      this.setArmPose(this.triggerHandGroup, this.triggerHandRest, 0, -this.reloadDip * 0.06, 0, 0, 0);
+      switch (this.currentWeaponType) {
+        case 'pistol': this.animatePistolReload(ra); break;
+        case 'rifle': this.animateRifleReload(ra); break;
+        case 'smg': this.animateSMGReload(ra); break;
+        case 'sniper': this.animateSniperReload(ra); break;
+        case 'shotgun': this.animateShellReload(ra); break;
+        case 'minigun': this.animateBeltReload(ra); break;
+        case 'launcher': this.animateRocketReload(ra); break;
+        case 'subverter': this.animateSubverterReload(ra); break;
+      }
 
       if (this.reloadAnimation >= 1.0) this.finishReload();
     } else {
-      this.reloadRotZ *= 0.9;
-      this.reloadDip *= 0.85;
-      // Ease the arms back to their natural grip pose between reloads.
+      // Ease the working posture and the hands back to the ready pose.
+      const k = 1 - Math.min(1, delta * 9);
+      this.reloadDip *= k;
+      const p = this.reloadPose;
+      p.x *= k; p.y *= k; p.z *= k; p.rx *= k; p.ry *= k; p.rz *= k;
       this.restHands(delta);
     }
+
+    // The discarded magazine falls on its own clock — it has to keep going
+    // after the reload ends (or is snapped short by an active reload) rather
+    // than blinking out of existence in mid-air.
+    this.updateMagFall(delta);
   }
 
   /** Smooth 0→1 ramp helper (Hermite). */
   private ss(v: number): number { return THREE.MathUtils.smoothstep(THREE.MathUtils.clamp(v, 0, 1), 0, 1); }
 
+  /** Progress 0..1 through the window [a,b], clamped flat outside it. */
+  private seg(v: number, a: number, b: number): number {
+    return THREE.MathUtils.clamp((v - a) / Math.max(1e-5, b - a), 0, 1);
+  }
+
+  /** A 0→1→0 bump across [a,b] — the shape of a single hand motion. */
+  private bump(v: number, a: number, b: number): number {
+    return Math.sin(this.seg(v, a, b) * Math.PI);
+  }
+
+  /**
+   * The weapon's working posture for this frame (added in applyAnimations).
+   * A panicked operator's hands shake, so the pose picks up a fast irregular
+   * tremor built from two detuned sines — a single sine reads as a machine
+   * vibrating, two beating against each other read as a person.
+   */
+  private setPose(x: number, y: number, z: number, rx: number, ry: number, rz: number) {
+    const p = this.reloadPose;
+    p.x = x; p.y = y; p.z = z; p.rx = rx; p.ry = ry; p.rz = rz;
+    const k = this.reloadPanic;
+    if (k > 0.001) {
+      const t = this.panicTime;
+      const sx = Math.sin(t * 31) * 0.6 + Math.sin(t * 47.3) * 0.4;
+      const sy = Math.sin(t * 27.4) * 0.6 + Math.sin(t * 41.1) * 0.4;
+      p.x += sx * 0.012 * k;
+      p.y += sy * 0.014 * k;
+      p.rx += sy * 0.028 * k;
+      p.ry += sx * 0.024 * k;
+      p.rz += Math.sin(t * 23.7) * 0.03 * k;
+    }
+  }
+
+  /**
+   * Where the magazine insert stalls when the operator is rattled. Returns a
+   * 0..1 "hitch" that briefly stops the magazine short of the well and shoves
+   * it home late — the fumble that sells a panicked reload. Zero when calm, so
+   * the composed drill stays perfectly clean.
+   */
+  private panicHitch(ra: number, seat: number): number {
+    const k = this.reloadPanic;
+    if (k < 0.02) return 0;
+    return this.bump(ra, seat - 0.24, seat - 0.06) * k;
+  }
+
+  /**
+   * Emit a reload beat exactly once per reload. Returns whether it fired, so
+   * callers can hang one-shot state changes (launching the mag-drop physics)
+   * off the same gate. Firing is idempotent by key, which is what keeps an
+   * active-reload fast-forward from re-triggering or skipping beats.
+   */
+  private emit(name: ReloadCue, index = 0): boolean {
+    const key = index ? `${name}#${index}` : name;
+    if (this.firedCues.has(key)) return false;
+    this.firedCues.add(key);
+    this.onReloadCue?.(name, index);
+    return true;
+  }
+
+  /** Emit `name` once the playhead reaches `at`. */
+  private cue(ra: number, at: number, name: ReloadCue, index = 0): boolean {
+    return ra >= at ? this.emit(name, index) : false;
+  }
+
   /** Snap an arm wrapper to its rest pose plus a delta (units are model space). */
   private setArmPose(
     g: THREE.Group | null,
     rest: { x: number; y: number; z: number; rx: number; ry: number },
-    dx: number, dy: number, dz: number, drx: number, dry: number,
+    dx: number, dy: number, dz: number, drx: number, dry: number, drz = 0,
   ) {
     if (!g) return;
     g.position.set(rest.x + dx, rest.y + dy, rest.z + dz);
-    g.rotation.set(rest.rx + drx, rest.ry + dry, 0);
+    g.rotation.set(rest.rx + drx, rest.ry + dry, drz);
   }
 
-  /** Ease both arms back toward their rest grip pose. */
+  /** The trigger hand's default reload behaviour: stay on the grip, ride the dip. */
+  private holdTriggerHand(extraY = 0, extraRx = 0, extraRz = 0) {
+    this.setArmPose(
+      this.triggerHandGroup, this.triggerHandRest,
+      0, -this.reloadDip * 0.06 + extraY, 0, extraRx, 0, extraRz,
+    );
+  }
+
+  /**
+   * Ease both arms back toward their rest grip pose. Roll (rotation.z) is eased
+   * to zero alongside the rest — the reload choreographies now cant the wrists,
+   * and an axis that is written but never released stays rolled forever.
+   */
   private restHands(delta: number) {
     const k = Math.min(1, delta * 12);
     const ease = (g: THREE.Group | null, r: { x: number; y: number; z: number; rx: number; ry: number }) => {
@@ -1722,147 +2442,803 @@ export class GunModel {
       g.position.z += (r.z - g.position.z) * k;
       g.rotation.x += (r.rx - g.rotation.x) * k;
       g.rotation.y += (r.ry - g.rotation.y) * k;
+      g.rotation.z += (0 - g.rotation.z) * k;
     };
     ease(this.supportHandGroup, this.supportHandRest);
     ease(this.triggerHandGroup, this.triggerHandRest);
   }
 
-  /** Magazine reload: drop the empty mag, the support hand dives for a fresh one
-   *  and slams it home, then racks the slide/bolt. */
-  private animateMagReload(ra: number) {
-    // Stage 1: Magazine drops out (0.0 - 0.24)
-    if (ra < 0.24) {
-      const p = ra / 0.24;
-      if (this.magazine) {
-        this.magazine.position.y = this.magRestY - p * 4.6;
-        this.magazine.rotation.x = p * 1.9;
-        this.magazine.rotation.z = p * 0.8;
-      }
-      if (this.slide) this.slide.position.z = this.slideRest + p * 0.6;
-      this.reloadRotZ = p * 0.6;
-    }
-    // Stage 2: Magazine away, hand reaches for a fresh one (0.24 - 0.46)
-    else if (ra < 0.46) {
-      if (this.magazine) this.magazine.visible = false;
-      this.reloadRotZ = 0.6;
-    }
-    // Stage 3: Fresh magazine slammed in (0.46 - 0.74)
-    else if (ra < 0.74) {
-      const p = (ra - 0.46) / 0.28;
-      if (this.magazine) {
+  // PER-WEAPON RELOAD CHOREOGRAPHY
+  //
+  // Each routine is a hand-authored timeline over `ra` (0→1 across the whole
+  // reload window, whatever its real duration). They share the magazine-swap
+  // skeleton below where the motion genuinely is the same, and diverge
+  // completely where the mechanism does — which is most of the interesting
+  // part of each gun.
+
+  /**
+   * The magazine change every box-fed weapon performs: strip the empty, let it
+   * fall, dive to a pouch, bring a fresh one up nose-first, guide it into the
+   * well and slap it home. Timings and the amount of "rock" are per weapon —
+   * an AR magazine goes in almost straight, an SMG's long stick has to be
+   * tipped in — and the action-cycling that FOLLOWS the swap is left to the
+   * caller, because that's where these guns stop resembling each other.
+   */
+  private magSwap(ra: number, t: {
+    release: number;  // the catch is pressed
+    free: number;     // the empty breaks clear and gravity takes it
+    pouch: number;    // support hand has reached the spare
+    carry: number;    // the fresh magazine re-enters frame
+    seat: number;     // it bottoms out in the well
+    rockOut: number;  // tilt the empty picks up as it's stripped (radians)
+    rockIn: number;   // nose-first angle the fresh one enters at (radians)
+    tug?: number;     // optional downward tug-test to confirm the lock
+  }) {
+    const rp = this.rp;
+    const w = rp.well;
+
+    // ── Strip: the empty slides down clear of the well ──
+    this.cue(ra, t.release, 'mag_release');
+    if (this.magazine) {
+      if (ra < t.free) {
+        const p = this.ss(this.seg(ra, t.release, t.free));
         this.magazine.visible = true;
-        this.magazine.position.y = this.magRestY - 4.6 * (1 - p);
-        this.magazine.rotation.x = (1 - p) * 1.3;
-        this.magazine.rotation.z = 0;
+        this.magazine.position.y = this.magRestY - p * 1.3;
+        this.magazine.rotation.x = p * t.rockOut;
+        this.magazine.rotation.z = p * t.rockOut * 0.3;
+      } else {
+        // Between "free" and "seat" the well is genuinely empty — the seated
+        // magazine mesh is hidden and the falling prop carries the motion.
+        this.magazine.visible = ra >= t.seat;
+        if (ra >= t.seat) {
+          this.magazine.position.y = this.magRestY;
+          this.magazine.rotation.set(0, 0, 0);
+        }
       }
-      this.reloadRotZ = 0.6;
-    }
-    // Stage 4: Seat the mag, rack the slide/bolt, recover (0.74 - 1.0)
-    else {
-      const p = (ra - 0.74) / 0.26;
-      if (this.magazine) {
-        this.magazine.position.y = this.magRestY;
-        this.magazine.rotation.x = 0;
-      }
-      if (this.slide) this.slide.position.z = this.slideRest + (1 - p) * 0.6;
-      if (this.bolt) this.bolt.position.z = this.boltRest + (1 - p) * 1.3;
-      this.reloadRotZ = (1 - p) * 0.6;
     }
 
-    // Support hand: dive down to the mag well (carrying a fresh mag), hold while
-    // it seats, then snap back up to the support grip with a "slap" tap.
-    const reach = ra < 0.22 ? this.ss(ra / 0.22)
-      : ra < 0.72 ? 1
-      : 1 - this.ss((ra - 0.72) / 0.28);
-    const slap = (ra > 0.7 && ra < 0.86) ? Math.sin(((ra - 0.7) / 0.16) * Math.PI) * 0.5 : 0;
+    // ── Free: the empty leaves the well ──
+    // DRY: it is dumped — gravity takes it and it clatters on the ground.
+    // TACTICAL: it still has rounds in it, so it is retained. The hand carries
+    // it down out of frame to a pouch and comes back with the fresh one, which
+    // is both what a trained shooter does and a visibly different silhouette.
+    const tactical = this.reloadStyle === 'tactical';
+    if (this.cue(ra, t.free, tactical ? 'mag_stow' : 'mag_out') && rp.spentMag && !tactical) {
+      const m = this.magFall;
+      m.active = true;
+      m.landed = false;
+      m.y = this.magRestY - 1.3;
+      m.z = w.z;
+      m.vy = -2.3;
+      m.vz = 0.8;            // tossed slightly toward the camera as it clears
+      m.spinX = 6.2;
+      m.spinZ = 2.7;
+      rp.spentMag.visible = true;
+      rp.spentMag.position.set(w.x + 0.05, m.y, m.z);
+      rp.spentMag.rotation.set(t.rockOut, 0, t.rockOut * 0.3);
+    }
+    // Tactical: the retained magazine rides the hand down to the pouch.
+    if (tactical && rp.spentMag) {
+      const stow = this.seg(ra, t.free, t.pouch + 0.05);
+      const live = ra >= t.free && stow < 1;
+      rp.spentMag.visible = live;
+      if (live) {
+        const h = rp.hold;
+        rp.spentMag.position.set(
+          THREE.MathUtils.lerp(w.x, h.x - 0.55, stow),
+          THREE.MathUtils.lerp(this.magRestY - 1.3, h.y - 0.6, stow),
+          THREE.MathUtils.lerp(w.z, h.z, stow),
+        );
+        rp.spentMag.rotation.set(t.rockOut + stow * 0.5, 0, t.rockOut * 0.3 - stow * 0.4);
+      }
+    }
+
+    // ── Carry: the fresh magazine rides up from the pouch into the well ──
+    const fresh = rp.freshMag;
+    if (fresh) {
+      if (ra >= t.carry && ra < t.seat) {
+        const q = this.ss(this.seg(ra, t.carry, t.seat));
+        // Front-loaded travel curve: the magazine covers the stretch BELOW the
+        // frame quickly and then decelerates into the well, so the part of the
+        // motion the player can actually see gets most of the running time.
+        // A panicked hitch drags it back short of the well before it goes home.
+        const p = Math.max(0, Math.pow(q, 0.62) - this.panicHitch(ra, t.seat) * 0.3);
+        const h = rp.hold;
+        fresh.visible = true;
+        fresh.position.set(
+          THREE.MathUtils.lerp(h.x, w.x, p),
+          // A touch of sag early on so it arcs up into line rather than
+          // travelling on a dead-straight rail.
+          THREE.MathUtils.lerp(h.y, w.y, p) - (1 - p) * p * 1.1,
+          THREE.MathUtils.lerp(h.z, w.z, p),
+        );
+        fresh.rotation.set((1 - p) * t.rockIn, 0, (1 - p) * -t.rockIn * 0.45);
+      } else {
+        fresh.visible = false;
+      }
+    }
+    this.cue(ra, t.seat, 'mag_in');
+
+    // ── Tug test: a short downward pull confirming the catch took ──
+    if (t.tug !== undefined) {
+      const tug = this.bump(ra, t.tug, t.tug + 0.09);
+      this.cue(ra, t.tug + 0.03, 'mag_tug');
+      if (tug > 0.001 && this.magazine) {
+        this.magazine.position.y = this.magRestY - tug * 0.13;
+      }
+    }
+
+    // ── Support hand: off the weapon → down to the pouch → back up with the
+    // magazine → palm-slap → clear. One scalar "depth" drives the whole path.
+    const dive = this.ss(this.seg(ra, t.release, t.pouch));
+    const ret = this.ss(this.seg(ra, t.carry, t.seat));
+    const clear = this.ss(this.seg(ra, t.seat + 0.04, Math.min(1, t.seat + 0.28)));
+    const depth = (dive - ret * 0.28) * (1 - clear);
+    const slap = this.bump(ra, t.seat - 0.07, t.seat + 0.05);
+    this.setSwapHand(depth, slap);
+    // Handed back so a weapon whose action-cycling overlaps the tail of the
+    // swap can re-pose the hand as swap-path PLUS its own beat. Overwriting the
+    // pose outright would snap the hand from mid-travel to the beat's origin.
+    return { depth, slap };
+  }
+
+  // ── FRAMING THE RELOAD ────────────────────────────────────────────────
+  // A viewmodel point at model (mx, my, mz) lands at world
+  //   (0.3 + 0.15·mx + poseX, −0.3 + 0.15·my + poseY, −0.5 + 0.15·mz + poseZ)
+  // after the reload rotations, and the frame at that depth is roughly
+  // ±0.77·|z| vertically. Every magazine well sits around model y = −1 to −2,
+  // i.e. world y ≈ −0.5, which is BELOW the bottom of the screen: the reload
+  // poses used to dip the weapon DOWN, so the entire magazine swap — the empty
+  // dropping, the fresh one going in — played off-frame and the player saw
+  // nothing but the gun tilting.
+  //
+  // So the poses below LIFT the weapon (positive y) and tip the muzzle down
+  // (negative rx, which rolls the well toward the camera), putting the action
+  // on screen. If you retune one of these, check the well is still framed —
+  // it is not obvious from the numbers alone, and lowering y hides the whole
+  // animation again.
+
+  /**
+   * The support hand's magazine-swap path, plus an optional action-beat delta
+   * layered on top (reaching for a bolt release, hauling a charging handle).
+   */
+  private setSwapHand(
+    depth: number, slap: number,
+    dx = 0, dy = 0, dz = 0, drx = 0, dry = 0, drz = 0,
+  ) {
     this.setArmPose(
       this.supportHandGroup, this.supportHandRest,
-      reach * 0.3,
-      -reach * 2.7 + slap * 0.7,
-      reach * 0.8,
-      reach * 0.65,
-      -reach * 0.3,
+      depth * 0.3 + dx,
+      -depth * 2.0 + slap * 0.5 + dy,
+      depth * 0.88 + dz,
+      depth * 0.72 + drx,
+      -depth * 0.34 + dry,
+      depth * 0.26 + drz,
     );
   }
 
-  /** Shotgun reload: thumb shells into the loading port one-by-one across the
-   *  window, then rack the pump at the very end. The support hand cycles between
-   *  the shell carrier and the port for each round. */
+  /**
+   * PISTOL — a competition-style slide-lock speed reload. The gun rolls hard
+   * onto its side so the magwell presents itself to the support hand instead
+   * of the shooter reaching blindly under the frame, the empty is dumped free,
+   * a fresh magazine is driven home with the palm heel, and the slide stop is
+   * thumbed off so the slide runs forward under spring pressure — fast enough
+   * that it reads as a snap rather than a slide.
+   */
+  private animatePistolReload(ra: number) {
+    const dip = this.reloadDip;
+    // Levelled back out over the last stretch, ready to fire again.
+    const work = dip * (1 - this.ss(this.seg(ra, 0.78, 0.95)) * 0.9);
+    // Brought up and OUT into the shooter's workspace — in front of the chest,
+    // not pulled into the face. That's both what a real speed reload looks like
+    // and what frames the magwell: pushing the weapon away enlarges the visible
+    // frame at its depth far more cheaply than lifting it does.
+    this.setPose(
+      -0.16 * work, 0.30 * work, -0.10 * work,
+      -0.34 * work, 0.30 * work, 0.62 * work,
+    );
+
+    this.magSwap(ra, {
+      release: 0.02, free: 0.13, pouch: 0.30, carry: 0.40, seat: 0.62,
+      rockOut: 0.42, rockIn: 0.5,
+    });
+
+    // DRY only: the slide is held to the rear by the slide stop on an empty
+    // gun and has to be released once the fresh magazine is home. On a tactical
+    // reload there is still a round in the chamber, so the slide never moves —
+    // which is the clearest visual tell between the two drills.
+    const dry = this.reloadStyle === 'dry';
+    if (this.slide) {
+      const back = dry ? this.ss(this.seg(ra, 0, 0.1)) : 0;
+      const run = this.ss(this.seg(ra, 0.70, 0.745));
+      this.slide.position.z = this.slideRest + 0.74 * back * (1 - run);
+    }
+    if (dry) this.cue(ra, 0.70, 'slide_release');
+
+    // Trigger-hand thumb: the magazine catch first, the slide stop later.
+    const thumb = this.bump(ra, 0, 0.12) * 0.5 + (dry ? this.bump(ra, 0.64, 0.78) : 0);
+    this.holdTriggerHand(thumb * 0.07, thumb * 0.06, -thumb * 0.08);
+  }
+
+  /**
+   * RIFLE — the AR-pattern drill. Support hand comes off the handguard, the
+   * empty drops straight out of the well, the fresh magazine is rocked in and
+   * TUGGED to prove it locked (the detail that sells a reload as real), then
+   * the hand travels up to slap the bolt release and send the carrier home.
+   */
+  private animateRifleReload(ra: number) {
+    const dip = this.reloadDip;
+    const work = dip * (1 - this.ss(this.seg(ra, 0.86, 1)) * 0.8);
+    // Up and out into the workspace so the whole swap is on screen.
+    this.setPose(
+      -0.15 * work, 0.20 * work, -0.10 * work,
+      -0.40 * work, 0.28 * work, 0.52 * work,
+    );
+
+    const swap = this.magSwap(ra, {
+      release: 0.06, free: 0.18, pouch: 0.34, carry: 0.46, seat: 0.66,
+      rockOut: 0.22, rockIn: 0.38, tug: 0.70,
+    });
+
+    // DRY only: the carrier is held open by the bolt catch and slams into
+    // battery when the release paddle is struck. `run` is sharp — a bolt does
+    // not glide forward. A tactical reload leaves the action closed entirely.
+    const dry = this.reloadStyle === 'dry';
+    if (this.bolt) {
+      const back = dry ? this.ss(this.seg(ra, 0, 0.12)) : 0;
+      const run = this.ss(this.seg(ra, 0.84, 0.875));
+      this.bolt.position.z = this.boltRest + 1.2 * back * (1 - run);
+    }
+    if (dry) this.cue(ra, 0.84, 'bolt_rack');
+
+    // After the tug the support hand rises to the bolt release, then returns —
+    // layered ON the swap path so it flows out of the tug rather than snapping.
+    const paddle = dry ? this.bump(ra, 0.78, 0.92) : 0;
+    if (paddle > 0.001) {
+      this.setSwapHand(
+        swap.depth, swap.slap,
+        paddle * 0.5, paddle * 0.55, paddle * 1.5, -paddle * 0.35, -paddle * 0.2, paddle * 0.3,
+      );
+    }
+    this.holdTriggerHand(0, this.bump(ra, 0.84, 0.9) * 0.04);
+  }
+
+  /**
+   * SMG — the same swap run hot and dirty. The whole weapon is canted further
+   * over than the rifle, the long stick magazine has to be tipped in nose-first,
+   * and it finishes on a side-mounted charging handle that gets yanked and
+   * dropped rather than a bolt release paddle.
+   */
+  private animateSMGReload(ra: number) {
+    const dip = this.reloadDip;
+    const work = dip * (1 - this.ss(this.seg(ra, 0.84, 1)) * 0.85);
+    // Up and out into the workspace, canted harder than the rifle.
+    this.setPose(
+      -0.16 * work, 0.22 * work, -0.10 * work,
+      -0.34 * work, 0.32 * work, 0.70 * work,
+    );
+
+    const swap = this.magSwap(ra, {
+      release: 0.02, free: 0.14, pouch: 0.28, carry: 0.38, seat: 0.60,
+      rockOut: 0.55, rockIn: 0.72,
+    });
+
+    // DRY only: the charging handle is dragged back over ~0.1 of the window
+    // then released to fly forward in a third of that time. Topping up an SMG
+    // that still has a chambered round skips the rack completely.
+    const dry = this.reloadStyle === 'dry';
+    if (this.bolt) {
+      const pull = dry ? this.ss(this.seg(ra, 0.68, 0.78)) : 0;
+      const fly = this.ss(this.seg(ra, 0.79, 0.815));
+      // Kept short: the receiver ends at z≈1.4 and the viewmodel's near plane
+      // cuts in around z≈1.9, so a longer throw would just vanish off-screen.
+      this.bolt.position.z = this.boltRest + 1.0 * pull * (1 - fly);
+    }
+    if (dry) this.cue(ra, 0.68, 'bolt_rack');
+
+    // The support hand goes up and OUTBOARD to the handle on the receiver's
+    // left, hauls it back, then snaps off it as the bolt flies home. Layered on
+    // the swap path so it grows out of the mag slap instead of teleporting.
+    const rack = this.seg(ra, 0.64, 0.80);
+    const grab = dry ? Math.sin(rack * Math.PI) : 0;
+    if (grab > 0.001) {
+      this.setSwapHand(
+        swap.depth, swap.slap,
+        -grab * 0.55, grab * 0.5, grab * (0.4 + rack * 1.5), -grab * 0.3, grab * 0.42, -grab * 0.25,
+      );
+    }
+    // A short muzzle shake as the bolt slams shut — the gun is light.
+    const shake = this.bump(ra, 0.79, 0.9);
+    this.holdTriggerHand(-shake * 0.05, shake * 0.06);
+  }
+
+  /**
+   * SNIPER — the showpiece. A bolt-action rifle cannot be reloaded one-handed,
+   * so the FIRING hand comes off the grip and works the bolt in its four real
+   * motions: lift the handle to unlock, draw it back to extract, drive it
+   * forward to chamber, turn it down to lock. The magazine change happens in
+   * the middle, while the bolt is held open — everything is deliberate and
+   * unhurried, and the rifle comes off the cheek weld and back onto it.
+   */
+  private animateSniperReload(ra: number) {
+    const dip = this.reloadDip;
+    // Off the shoulder, rolled right so the bolt and well are both reachable.
+    const shoulder = this.ss(this.seg(ra, 0.94, 1)); // back to the cheek weld
+    const work = dip * (1 - shoulder * 0.9);
+    // Pushed AWAY from the eye (negative z), not drawn in. Both because that's
+    // what you do to work a bolt off the shoulder, and because the bolt handle
+    // sits far enough back that pulling the rifle in would take the whole throw
+    // behind the camera's near plane, where none of it would be visible. The
+    // lift puts both the bolt AND the magwell on screen (see FRAMING note).
+    this.setPose(
+      -0.13 * work, 0.18 * work, -0.12 * work,
+      -0.32 * work, 0.26 * work, 0.46 * work,
+    );
+
+    // ── The bolt throw ──
+    // DRY only. Running a bolt gun to empty leaves the action open, so all four
+    // motions have to be worked. With a round still chambered the rifle is
+    // topped up without ever touching the bolt — a much calmer, quicker drill.
+    const dry = this.reloadStyle === 'dry';
+    const lift = dry ? this.ss(this.seg(ra, 0.10, 0.22)) : 0;   // handle rotates up
+    const draw = dry ? this.ss(this.seg(ra, 0.24, 0.38)) : 0;   // carrier travels back
+    const push = dry ? this.ss(this.seg(ra, 0.86, 0.93)) : 0;   // driven forward again
+    const lock = dry ? this.ss(this.seg(ra, 0.93, 0.99)) : 0;   // handle turns down
+    if (this.bolt) {
+      this.bolt.rotation.z = (lift - lock) * 1.18;
+      this.bolt.position.z = this.boltRest + (draw - push) * 1.15;
+    }
+    if (dry) {
+      this.cue(ra, 0.12, 'bolt_lift');
+      this.cue(ra, 0.30, 'bolt_back');
+      this.cue(ra, 0.88, 'bolt_forward');
+      this.cue(ra, 0.94, 'bolt_lock');
+    }
+
+    // ── The magazine change, run while the action is open ──
+    this.magSwap(ra, {
+      release: 0.40, free: 0.50, pouch: 0.60, carry: 0.68, seat: 0.82,
+      rockOut: 0.3, rockIn: 0.42,
+    });
+
+    // ── The trigger hand does the bolt work: off the grip, up and back over
+    // the receiver, then home. This is what makes a bolt gun read as a bolt gun.
+    // On a tactical top-up it never leaves the grip.
+    const onBolt = dry
+      ? this.ss(this.seg(ra, 0.04, 0.14)) * (1 - this.ss(this.seg(ra, 0.94, 1)))
+      : 0;
+    const travel = draw - push;
+    this.setArmPose(
+      this.triggerHandGroup, this.triggerHandRest,
+      onBolt * 0.42,
+      onBolt * (0.55 + lift * 0.35) - this.reloadDip * 0.06,
+      onBolt * (-0.5 + travel * 1.3),
+      -onBolt * 0.24,
+      onBolt * 0.2,
+      onBolt * (0.3 + lift * 0.4),
+    );
+  }
+
+  /**
+   * SHOTGUN — tube loading. The gun rolls over so the loading port faces the
+   * hand, and shells go in one at a time: each is plucked from the carrier,
+   * carried to the port and thumbed past the gate, with a real shell mesh
+   * making the trip. The pump is racked once at the end, throwing the hull in
+   * the chamber clear.
+   */
   private animateShellReload(ra: number) {
-    const loadEnd = 0.82;
+    const dip = this.reloadDip;
+    const rp = this.rp;
+    const loadEnd = 0.78;
+    // Rolled onto its side, muzzle down, port presented to the support hand.
+    const level = this.ss(this.seg(ra, 0.9, 1));
+    const work = dip * (1 - level * 0.9);
+    // Up and out so the loading port is on screen (see FRAMING note above) —
+    // the shells were previously thumbed in below the bottom of the frame.
+    this.setPose(
+      -0.12 * work, 0.16 * work, -0.08 * work,
+      -0.26 * work, 0.30 * work, 0.58 * work,
+    );
+
     if (ra < loadEnd) {
-      const beats = this.reloadShells;
-      const phase = (ra / loadEnd) * beats;     // which shell we're on (fractional)
-      const local = phase - Math.floor(phase);   // 0..1 within this shell's load
-      // The hand dips to the carrier (grab) then up to the port (push) each beat.
-      const reach = Math.sin(local * Math.PI);   // one dip+return per shell
+      // Cap the visible beats: a Drum Magazine perk can push the magazine well
+      // past a dozen, and thumbing sixteen shells into a two-second window is
+      // a blur. The floor is ONE — App passes the number of rounds actually
+      // missing, so topping up a nearly-full tube really is a single shell.
+      const beats = THREE.MathUtils.clamp(this.reloadShells, 1, 8);
+      const phase = (ra / loadEnd) * beats;
+      const idx = Math.min(beats - 1, Math.floor(phase));
+      const local = phase - idx;           // 0..1 within this shell's trip
+      // One shell's journey: plucked (0–0.35), carried up (0.35–0.75),
+      // pushed through the gate (0.75–1.0).
+      const carry = this.ss(this.seg(local, 0.3, 0.78));
+      const push = this.ss(this.seg(local, 0.78, 1));
+
+      if (rp.shell) {
+        const h = rp.hold;
+        // Port sits under the receiver, just ahead of the trigger guard.
+        const portX = 0.16, portY = -0.62, portZ = 0.55;
+        rp.shell.visible = true;
+        rp.shell.position.set(
+          THREE.MathUtils.lerp(h.x, portX, carry) + push * 0.05,
+          THREE.MathUtils.lerp(h.y, portY, carry),
+          THREE.MathUtils.lerp(h.z, portZ, carry) - push * 0.85, // driven in
+        );
+        rp.shell.rotation.set(-0.5 + carry * 0.5, 0, (1 - carry) * 0.7);
+        rp.shell.scale.setScalar(1 - push * 0.75); // swallowed by the tube
+      }
+      this.cue(ra, (idx + 0.88) / beats * loadEnd, 'shell_insert', idx + 1);
+
+      // The carrier flexes as each round is forced past it.
+      if (this.magazine) this.magazine.position.y = this.magRestY - push * 0.22;
+
+      // Support hand mirrors the shell's trip: down at the carrier when
+      // carry=0, up under the receiver at the port when carry=1. The hand does
+      // NOT travel all the way to the port — the shell covers that last stretch
+      // on its own, which is both how it reads and what keeps the forearm from
+      // being dragged through the receiver. `engage` eases it off the pump at
+      // the start rather than teleporting it to the carrier on frame one.
+      const engage = this.ss(this.seg(ra, 0, 0.1));
+      const shove = this.bump(local, 0.78, 1) * 0.3;
+      // Down-y matched to `hold` (grip − 2.25) so the shell sits IN the fist
+      // rather than floating below it.
       this.setArmPose(
         this.supportHandGroup, this.supportHandRest,
-        -reach * 0.5,
-        -reach * 1.9,
-        reach * 1.4,
-        reach * 0.6,
-        reach * 0.4,
+        engage * (-0.4 + carry * 0.5),
+        engage * (-2.15 + carry * 1.25),
+        engage * (0.9 + carry * 1.5) - shove,
+        engage * (0.62 - carry * 0.2),
+        engage * 0.36,
+        engage * (0.3 - carry * 0.16),
       );
-      // The shell carrier (mapped to `magazine`) nudges as each round is pushed.
-      if (this.magazine) this.magazine.position.y = this.magRestY - Math.sin(local * Math.PI) * 0.25;
-      this.reloadRotZ = 0.32;
       if (this.slide) this.slide.position.z = this.slideRest;
+      this.holdTriggerHand();
     } else {
-      // Final pump rack — yank the pump back and slam it forward.
-      const p = (ra - loadEnd) / (1 - loadEnd);
-      const rack = Math.sin(p * Math.PI);
-      if (this.slide) this.slide.position.z = this.slideRest + rack * 1.5;
+      // ── Final pump cycle ──
+      const p = this.seg(ra, loadEnd, 1);
+      // The hand leaves the loading pose (its state at carry = 1, where the
+      // loading loop hands off) and travels forward onto the pump. Blending
+      // out of that exact pose is what keeps the handoff seamless.
+      const off = this.ss(this.seg(p, 0, 0.22));
+      const back = this.ss(this.seg(p, 0, 0.42));
+      const fwd = this.ss(this.seg(p, 0.46, 0.7));
+      const stroke = back - fwd;
+      if (rp.shell) rp.shell.visible = false;
+      if (this.slide) this.slide.position.z = this.slideRest + stroke * 1.7;
+      if (this.magazine) this.magazine.position.y = this.magRestY;
+      this.cue(ra, loadEnd + (1 - loadEnd) * 0.42, 'pump_rack');
+
+      // The chambered hull is thrown clear as the action opens.
+      if (rp.ejectedShell) {
+        const e = this.seg(p, 0.34, 0.95);
+        if (e > 0 && e < 1) {
+          rp.ejectedShell.visible = true;
+          rp.ejectedShell.position.set(0.7 + e * 3.4, 0.4 + e * 1.1 - e * e * 4.6, -0.2 + e * 1.2);
+          rp.ejectedShell.rotation.set(e * 9, e * 5, e * 6.5);
+        } else {
+          rp.ejectedShell.visible = false;
+        }
+      }
+      const hold = 1 - off; // the loading pose still bleeding out
       this.setArmPose(
         this.supportHandGroup, this.supportHandRest,
-        0, -rack * 0.5, rack * 1.5, 0, 0,
+        hold * 0.1,
+        hold * -0.9 - stroke * 0.45,
+        hold * 2.4 + stroke * 1.7,
+        hold * 0.42,
+        hold * 0.36,
+        hold * 0.14 + stroke * 0.15,
       );
-      this.reloadRotZ = 0.32 * (1 - p);
-      if (this.magazine) this.magazine.position.y = this.magRestY;
+      // The whole gun rocks against the stroke — a pump gun has real mass.
+      this.holdTriggerHand(-stroke * 0.05, stroke * 0.09);
     }
   }
 
-  /** Subverter reload: a fresh chip cartridge is seated and the four intrusion
-   *  chips slam back into their slots one-by-one while the screen runs a load
-   *  scan. The support hand swaps the cartridge at the rear of the deck. */
+  /**
+   * MINIGUN — not a magazine change at all: a two-handed hardware job on a
+   * belt-fed rotary cannon. The barrels spin down to a dead stop, the feed
+   * cover is unlatched and swung open, the spent belt is stripped out, the
+   * drum is unlatched and rocked back onto its mount, a fresh belt is dragged
+   * link by link into the feed throat, the cover is slammed shut and the
+   * cluster is spun back up to speed.
+   */
+  private animateBeltReload(ra: number) {
+    const dip = this.reloadDip;
+    const rp = this.rp;
+    // Canted over and tipped back so the top-mounted feed is workable, and
+    // held OUT rather than in: the feed throat, drum and belt all live at the
+    // rear of the model, which the viewmodel's near plane would swallow if the
+    // weapon were drawn toward the camera.
+    const work = dip * (1 - this.ss(this.seg(ra, 0.9, 1)) * 0.85);
+    this.setPose(
+      0.05 * work, -0.2 * work, -0.12 * work,
+      0.24 * work, -0.2 * work, -0.34 * work,
+    );
+
+    // Barrel cluster: braked to a dead stop for the feed job, then wound back
+    // up — the motor over-spins the cluster and lets it settle to the idle rate
+    // by the final frame, so handing control back to the idle spin is seamless
+    // instead of snapping from full speed to a crawl.
+    const brake = this.ss(this.seg(ra, 0, 0.1));
+    const wind = this.ss(this.seg(ra, 0.86, 1));
+    this.reloadSpin = (1 - brake) * 1.4 + wind * 1.4 + this.bump(ra, 0.86, 1) * 13;
+
+    // ── Feed cover ──
+    const open = this.ss(this.seg(ra, 0.10, 0.26));
+    const shut = this.ss(this.seg(ra, 0.78, 0.845));
+    if (rp.feedCover) rp.feedCover.rotation.x = (open - shut) * 1.15;
+    this.cue(ra, 0.08, 'cover_open');
+    this.cue(ra, 0.80, 'cover_close');
+
+    // ── Belt: stripped out link by link, then a fresh one dragged back in ──
+    const strip = this.ss(this.seg(ra, 0.26, 0.44));
+    const feed = this.ss(this.seg(ra, 0.56, 0.78));
+    const n = rp.beltLinks.length;
+    for (let i = 0; i < n; i++) {
+      const link = rp.beltLinks[i];
+      // Links leave from the FEED end first and come back from the DRUM end,
+      // so the belt visibly pays out and then threads through.
+      const outAt = this.ss(this.seg(strip, i / n, (i + 1) / n));
+      const inAt = this.ss(this.seg(feed, (n - 1 - i) / n, (n - i) / n));
+      const present = Math.max(0, 1 - outAt) + inAt;
+      link.visible = present > 0.02;
+      link.scale.setScalar(THREE.MathUtils.clamp(present, 0.02, 1));
+    }
+    if (rp.belt) rp.belt.position.z = (1 - feed) * strip * 0.7;
+    this.cue(ra, 0.56, 'belt_feed');
+
+    // ── Drum: unlatched, rocked out on its mount and reseated ──
+    // Its body carries a baked rotation.z = π/2, so the drum's own axis runs
+    // along X: rotation.x SPINS it, while y/z swing it off the mount.
+    const rock = this.bump(ra, 0.42, 0.62);
+    if (rp.drum) {
+      rp.drum.rotation.x = feed * 3.2;  // paying the fresh belt out
+      rp.drum.rotation.y = rock * 0.3;  // swung out on its latch and back
+      rp.drum.position.z = 3.4 + rock * 0.5;
+    }
+
+    this.cue(ra, 0.86, 'spin_up');
+
+    // ── Hands: the support hand does the cover and the belt; the trigger hand
+    // stays on its spade grip to hold 40kg of cannon steady, bracing hard for
+    // the spin-up. The feed sits UP and FORWARD of the spade grips, so the
+    // reach is +y and −z.
+    const atCover = this.ss(this.seg(ra, 0.04, 0.16)) * (1 - this.ss(this.seg(ra, 0.80, 0.92)));
+    const haul = this.bump(ra, 0.5, 0.8);
+    this.setArmPose(
+      this.supportHandGroup, this.supportHandRest,
+      atCover * 0.3 - haul * 0.4,
+      atCover * 1.5 + haul * 0.3,
+      -atCover * (0.7 + haul * 0.9),
+      -atCover * 0.5,
+      atCover * 0.25,
+      -atCover * 0.3,
+    );
+    const brace = this.ss(this.seg(ra, 0.86, 0.94)) * (1 - this.ss(this.seg(ra, 0.96, 1)));
+    this.holdTriggerHand(-brace * 0.12, brace * 0.1);
+  }
+
+  /**
+   * LAUNCHER — a muzzle-loaded rocket, one round at a time (GTA IV's RPG).
+   *
+   * The tube is EMPTY from the first frame — the last round is what just left
+   * it — so the reload is genuinely "put a rocket in an empty tube" rather
+   * than a magazine change dressed up. The launcher comes down off the
+   * shoulder and swings its mouth inboard into view, the support hand goes
+   * back for a round and brings it up, the round is squared to the bore and
+   * slid down the tube motor-first until it bottoms out, the arming pin is
+   * pulled, and the whole thing is hefted back onto the shoulder.
+   *
+   * `autoReload` on the weapon (see types/game.ts) starts this the instant the
+   * tube empties, so every shot is followed by a visible reload.
+   */
+  private animateRocketReload(ra: number) {
+    const dip = this.reloadDip;
+    const rp = this.rp;
+    // Off the shoulder, muzzle swung up and inboard so the tube mouth comes
+    // round into frame where the loading can actually be seen.
+    const shoulder = this.ss(this.seg(ra, 0.90, 1));
+    const work = dip * (1 - shoulder * 0.92);
+    this.setPose(
+      -0.10 * work, -0.04 * work, 0.10 * work,
+      0.30 * work, 0.44 * work, 0.46 * work,
+    );
+
+    // The tube stays empty until the fresh round bottoms out.
+    if (rp.seatedRocket) rp.seatedRocket.visible = ra >= 0.74;
+
+    // ── The round's trip: up from the pouch, onto the bore line, down the tube ──
+    const lift = this.ss(this.seg(ra, 0.12, 0.36));   // brought up into frame
+    const align = this.ss(this.seg(ra, 0.36, 0.48));  // squared up with the bore
+    const slide = this.ss(this.seg(ra, 0.48, 0.74));  // rammed home
+    if (rp.loadRocket) {
+      // Handoff at exactly 0.74, where the carried round has reached the seated
+      // position with the seated round's pose — one visible, never both, so the
+      // two identical meshes can't z-fight through the swap.
+      const visible = ra >= 0.10 && ra < 0.74;
+      rp.loadRocket.visible = visible;
+      if (visible) {
+        const h = rp.hold;
+        // Held just ahead of the tube mouth (the front ring sits at z = −6.1),
+        // then driven back to the seated position. The round goes in
+        // motor-first, so its tail leads and the warhead ends up proud of the
+        // muzzle exactly as it sits at rest.
+        const mouthZ = -8.3, seatZ = -6.4;
+        rp.loadRocket.position.set(
+          THREE.MathUtils.lerp(h.x, 0, align) * (1 - lift * 0.35),
+          THREE.MathUtils.lerp(h.y, 0.3, lift * 0.65 + align * 0.35),
+          THREE.MathUtils.lerp(
+            THREE.MathUtils.lerp(h.z, mouthZ, lift),
+            THREE.MathUtils.lerp(mouthZ, seatZ, slide),
+            align,
+          ),
+        );
+        // Carried nose-down and canted, rolling level as it lines up with the bore.
+        rp.loadRocket.rotation.set(
+          (1 - align) * -0.75, (1 - align) * 0.6, (1 - lift * 0.5) * (1 - align) * 0.9,
+        );
+      }
+    }
+    this.cue(ra, 0.14, 'rocket_lift');
+    this.cue(ra, 0.48, 'rocket_slide');
+    this.cue(ra, 0.74, 'rocket_seat');
+
+    // Seating shove, then the arming pin on the side of the tube.
+    const shove = this.bump(ra, 0.70, 0.79);
+    const pin = this.bump(ra, 0.78, 0.89);
+    this.cue(ra, 0.82, 'pin_pull');
+
+    // Support hand: carries the round in, shoves it home, then comes back for
+    // the pin — a long, deliberate two-stage travel.
+    const carry = this.ss(this.seg(ra, 0.04, 0.18)) * (1 - this.ss(this.seg(ra, 0.86, 0.98)));
+    this.setArmPose(
+      this.supportHandGroup, this.supportHandRest,
+      carry * (0.2 - pin * 0.5),
+      -carry * (2.2 - lift * 1.7) + pin * 0.4,
+      carry * (1.2 - slide * 2.4) + shove * 0.5 + pin * 1.6,
+      carry * 0.4,
+      -carry * 0.3,
+      carry * 0.3,
+    );
+    // The launcher kicks back a touch as the round bottoms out, then the
+    // trigger hand hauls it up onto the shoulder as the reload closes out.
+    this.holdTriggerHand(-shove * 0.08 + shoulder * 0.1, shove * 0.06);
+  }
+
+  /**
+   * SUBVERTER — a chip cartridge swap on a hacking deck. The spent cartridge
+   * is blown out of the rear bay and tumbles away, the deck purges (every chip
+   * dark), a fresh cartridge is slammed into the bay, and the four intrusion
+   * chips then materialise into their slots one at a time as the deck writes
+   * them — each with its own seat blip, rising in pitch as the bay fills.
+   */
   private animateSubverterReload(ra: number) {
+    const dip = this.reloadDip;
+    const rp = this.rp;
     this.subReloadGlow = 1;
-    this.reloadRotZ = Math.sin(ra * Math.PI) * 0.28;
+    // Deck tilted up toward the player so the bay and the screen both read.
+    // The z pull is deliberately small — the chip bay already sits near the
+    // rear of the deck, and drawing it in would push the chips past the near
+    // plane just as they're supposed to be the thing you're watching.
+    const work = dip * (1 - this.ss(this.seg(ra, 0.9, 1)) * 0.85);
+    this.setPose(
+      -0.04 * work, -0.1 * work, 0.04 * work,
+      -0.26 * work, 0.18 * work, 0.3 * work,
+    );
+
     const n = this.subChips.length;
+
+    // ── Spent cartridge blown out of the rear bay ──
+    this.cue(ra, 0.06, 'cartridge_out');
+    if (rp.spentCart) {
+      const e = this.seg(ra, 0.06, 0.34);
+      const live = e > 0 && e < 1;
+      rp.spentCart.visible = live;
+      if (live) {
+        // Thrown up and out to the LEFT rather than straight back — anything
+        // travelling rearward here is behind the camera within a few frames.
+        rp.spentCart.position.set(-e * 2.4, 0.5 + e * 2.1 - e * e * 6.4, 2.5 + e * 1.5);
+        rp.spentCart.rotation.set(e * 4.2, e * 1.6, e * 3.1);
+      }
+    }
+
+    // ── Fresh cartridge driven into the bay, then drawn down flush into it ──
+    // Sinking it below the chassis line is how it leaves frame; blinking it out
+    // of existence the instant it seats would read as a glitch.
+    const insert = this.ss(this.seg(ra, 0.34, 0.54));
+    const sink = this.ss(this.seg(ra, 0.54, 0.60));
+    if (rp.freshCart) {
+      const live = ra >= 0.32 && ra < 0.61;
+      rp.freshCart.visible = live;
+      if (live) {
+        rp.freshCart.position.set(
+          0,
+          0.5 + (1 - insert) * 1.6 - sink * 0.55,
+          2.5 + (1 - insert) * 3.6,
+        );
+        rp.freshCart.rotation.set((1 - insert) * -0.5, 0, 0);
+      }
+    }
+    this.cue(ra, 0.54, 'cartridge_in');
+
+    // ── Chips written back into their slots, one at a time ──
     for (let i = 0; i < n; i++) {
       const c = this.subChips[i];
-      // Each chip seats during its slice of the [0.28, 0.96] load window.
-      const start = 0.28 + (i / n) * 0.62;
-      if (ra >= start) {
+      const at = 0.60 + (i / n) * 0.32;
+      if (ra >= at) {
         if (c.target !== 0) { c.target = 0; c.flash = 1; c.group.visible = true; }
+        this.cue(ra, at, 'chip_seat', i + 1);
       } else {
         c.target = 1; c.offset = 1; c.group.visible = false;
       }
     }
-    // Support hand reaches to the rear chip bay to seat the cartridge, then back.
-    const reach = ra < 0.2 ? this.ss(ra / 0.2)
-      : ra < 0.85 ? 1
-      : 1 - this.ss((ra - 0.85) / 0.15);
+    this.cue(ra, 0.95, 'deck_boot');
+
+    // Support hand swaps the cartridge at the rear of the deck, then returns.
+    const reach = this.ss(this.seg(ra, 0.04, 0.2)) * (1 - this.ss(this.seg(ra, 0.58, 0.78)));
+    const ram = this.bump(ra, 0.44, 0.58);
     this.setArmPose(
       this.supportHandGroup, this.supportHandRest,
-      0, -reach * 1.9, reach * 1.2, reach * 0.55, 0,
+      -reach * 0.3, -reach * 1.6, reach * 1.3 - ram * 0.9, reach * 0.5, reach * 0.3, -reach * 0.2,
     );
+    this.holdTriggerHand(-ram * 0.06, ram * 0.05);
+  }
+
+  /**
+   * Integrate the discarded magazine's fall. Runs in model space (so the mag
+   * rides the viewmodel, the standard first-person compromise) but with real
+   * gravity and tumble, and it deliberately keeps running after the reload
+   * ends so a fast reload can't leave a magazine hanging in mid-air. The
+   * landing clatter fires when it passes the "ground" line.
+   */
+  private updateMagFall(delta: number) {
+    const m = this.magFall;
+    if (!m.active) return;
+    const mesh = this.rp.spentMag;
+    if (!mesh) { m.active = false; return; }
+
+    m.vy -= 52 * delta;         // gravity, tuned so it clears frame in ~0.6s
+    m.y += m.vy * delta;
+    m.z += m.vz * delta;
+    mesh.position.y = m.y;
+    mesh.position.z = m.z;
+    mesh.rotation.x += m.spinX * delta;
+    mesh.rotation.z += m.spinZ * delta;
+
+    const ground = this.magRestY - 9.5;
+    if (!m.landed && m.y <= ground) {
+      m.landed = true;
+      this.emit('mag_drop');
+    }
+    if (m.y <= this.magRestY - 13) {
+      m.active = false;
+      mesh.visible = false;
+    }
   }
 
   /** Reset every reloadable part to rest and end the reload. */
   private finishReload() {
     this.isReloading = false;
     this.reloadAnimation = 0;
-    this.reloadRotZ = 0;
     this.reloadDip = 0;
+    // Zero the tremor BEFORE the pose reset, or setPose would re-apply it.
+    this.reloadPanic = 0;
+    this.setPose(0, 0, 0, 0, 0, 0);
+    this.reloadSpin = -1;
     if (this.magazine) {
       this.magazine.position.y = this.magRestY;
-      this.magazine.rotation.x = 0;
-      this.magazine.rotation.z = 0;
+      this.magazine.rotation.set(0, 0, 0);
       this.magazine.visible = true;
     }
     if (this.slide) this.slide.position.z = this.slideRest;
-    if (this.bolt) this.bolt.position.z = this.boltRest;
+    if (this.bolt) {
+      this.bolt.position.z = this.boltRest;
+      this.bolt.rotation.set(0, 0, 0);
+    }
+    // Park the props — except a magazine still in the air, which finishes its
+    // fall on its own clock (updateMagFall hides it when it's gone).
+    this.parkReloadProps(this.rp, this.magFall.active);
+
     if (this.currentWeaponType === 'subverter') {
       // All chips fully seated; the live count is back to the deck capacity.
       for (const c of this.subChips) { c.target = 0; c.group.visible = true; }
@@ -1871,13 +3247,64 @@ export class GunModel {
     }
   }
 
+  /**
+   * Mirror the equipped weapon's mass (WEAPONS[].weight) into the viewmodel.
+   * Called every frame from the game loop rather than at each switch site, so
+   * it can never drift out of sync with the weapon actually being carried.
+   */
+  setWeaponMass(weight: number) {
+    this.weaponMass = THREE.MathUtils.clamp(weight, 0.5, 4);
+  }
+
+  /**
+   * Weapon inertia — the weight system.
+   *
+   * `dYaw`/`dPitch` are how far the CAMERA turned this frame (radians). The
+   * gun is left behind by exactly that much and then springs back, so whipping
+   * the view drags the weapon across the screen and it settles with a wobble
+   * instead of being rigidly welded to the eye.
+   *
+   * Mass sets the spring: a heavy weapon has a softer spring (lags further,
+   * takes longer to catch up) and a lower damping ratio (it wallows on arrival
+   * rather than snapping still). The offset is clamped so a fast 180° spin
+   * throws the weapon convincingly wide without flinging it off screen.
+   */
+  updateInertia(delta: number, dYaw: number, dPitch: number) {
+    // Guard against the huge dt of a tab-restore/hitch turning into a launch.
+    const dt = Math.min(delta, 0.05);
+    const m = this.weaponMass;
+    // Heavier → softer spring → longer, lazier lag.
+    const stiffness = 175 / (0.55 + m * 0.58);
+    // Heavier → less damping → more settle wobble on arrival.
+    const ratio = 0.78 - Math.min(0.26, m * 0.075);
+    const damping = 2 * ratio * Math.sqrt(stiffness);
+    const MAX = 0.16;
+
+    const step = (off: number, vel: number, look: number): [number, number] => {
+      // The gun keeps pointing where it was: the camera's turn becomes offset.
+      let o = off - look;
+      o = THREE.MathUtils.clamp(o, -MAX, MAX);
+      const accel = -stiffness * o - damping * vel;
+      const v = vel + accel * dt;
+      o = THREE.MathUtils.clamp(o + v * dt, -MAX, MAX);
+      return [o, v];
+    };
+    [this.swing.yaw, this.swingVel.yaw] = step(this.swing.yaw, this.swingVel.yaw, dYaw);
+    [this.swing.pitch, this.swingVel.pitch] = step(this.swing.pitch, this.swingVel.pitch, dPitch);
+  }
+
   /** Update idle sway — a gentle figure-8 "breathing" drift so the weapon
-   *  feels alive at rest (still tiny enough not to disturb the aim). */
+   *  feels alive at rest. Heavier weapons breathe slower and wider: a big gun
+   *  is harder to hold still, which reads as weight even standing still. */
   updateIdleSway(delta: number) {
-    this.idleSwayTime += delta;
-    this.swayOffset.rotX = Math.sin(this.idleSwayTime * 0.85) * 0.0016
-      + Math.sin(this.idleSwayTime * 1.9) * 0.0005;
-    this.swayOffset.rotY = Math.cos(this.idleSwayTime * 0.65) * 0.0013;
+    const m = this.weaponMass;
+    // Bigger amplitude, lower frequency as mass climbs.
+    const amp = 0.6 + m * 0.5;
+    const rate = 1.15 - Math.min(0.45, m * 0.18);
+    this.idleSwayTime += delta * rate;
+    this.swayOffset.rotX = (Math.sin(this.idleSwayTime * 0.85) * 0.0016
+      + Math.sin(this.idleSwayTime * 1.9) * 0.0005) * amp;
+    this.swayOffset.rotY = Math.cos(this.idleSwayTime * 0.65) * 0.0013 * amp;
   }
 
   /**
@@ -1890,7 +3317,10 @@ export class GunModel {
       const speed = isRunning ? 8.6 : 5.2;
       this.walkBobTime += delta * speed;
 
-      const intensity = isRunning ? 0.013 : 0.0075;
+      // Mass amplifies the bob: every footfall has to shift the weapon's
+      // weight, so a rotary cannon lurches where a pistol ticks.
+      const mass = 0.72 + this.weaponMass * 0.34;
+      const intensity = (isRunning ? 0.013 : 0.0075) * mass;
       const targetY = (Math.abs(Math.sin(this.walkBobTime)) - 0.5) * intensity * 2;
       const targetX = Math.sin(this.walkBobTime * 0.5) * intensity * 0.9;
       const targetRotZ = Math.sin(this.walkBobTime * 0.5) * intensity * 1.5;
@@ -1909,10 +3339,16 @@ export class GunModel {
     }
   }
 
-  /** Smoothly transition the weapon between hip-fire and aim-down-sights. */
+  /**
+   * Smoothly transition the weapon between hip-fire and aim-down-sights.
+   * Mass sets how fast it comes up: a sidearm snaps to the sights, a rotary
+   * cannon has to be hauled into position. Shouldering speed is one of the
+   * most immediate weight cues the player feels, because they ask for it.
+   */
   updateAim(delta: number, isAiming: boolean) {
     const target = isAiming ? 1 : 0;
-    this.aimProgress += (target - this.aimProgress) * Math.min(1, delta * 12);
+    const rate = 14.5 - Math.min(7, this.weaponMass * 2.3);
+    this.aimProgress += (target - this.aimProgress) * Math.min(1, delta * rate);
     if (Math.abs(this.aimProgress - target) < 0.002) this.aimProgress = target;
   }
 
@@ -1969,17 +3405,22 @@ export class GunModel {
   updateJump(delta: number, isAirborne: boolean, verticalVelocity: number) {
     if (this.wasAirborne && !isAirborne) this.landAnim = 1; // just landed
     this.wasAirborne = isAirborne;
-    if (this.landAnim > 0) this.landAnim = Math.max(0, this.landAnim - delta * 4.5);
+    // Heavy weapons take longer to recover from the landing compression.
+    const landRate = 5.2 - Math.min(2.2, this.weaponMass * 0.75);
+    if (this.landAnim > 0) this.landAnim = Math.max(0, this.landAnim - delta * landRate);
 
     // The gun lags the camera: it drops when you accelerate upward off the
-    // ground and floats up as you fall — classic weapon-inertia feel.
+    // ground and floats up as you fall — classic weapon-inertia feel, scaled
+    // by mass so heavy ordnance sinks harder on the way up.
+    const mass = 0.7 + this.weaponMass * 0.36;
+    const lim = 0.13 * mass;
     const targetY = isAirborne
-      ? Math.max(-0.13, Math.min(0.14, -verticalVelocity * 0.55))
+      ? THREE.MathUtils.clamp(-verticalVelocity * 0.55 * mass, -lim, lim * 1.08)
       : 0;
     const targetRotX = isAirborne
-      ? Math.max(-0.12, Math.min(0.12, verticalVelocity * 0.45))
+      ? THREE.MathUtils.clamp(verticalVelocity * 0.45 * mass, -0.12 * mass, 0.12 * mass)
       : 0;
-    const k = Math.min(1, delta * 9);
+    const k = Math.min(1, delta * (9.5 - Math.min(3.5, this.weaponMass * 1.2)));
     this.jumpOffset.y += (targetY - this.jumpOffset.y) * k;
     this.jumpOffset.rotX += (targetRotX - this.jumpOffset.rotX) * k;
   }
@@ -1991,7 +3432,14 @@ export class GunModel {
     // Melee: ~0.36s total — long enough for the windup → strike → recover
     // choreography to read, still snappy against the 900ms cooldown.
     if (this.meleeAnim > 0) this.meleeAnim = Math.max(0, this.meleeAnim - delta * 2.8);
-    if (this.equipAnim > 0) this.equipAnim = Math.max(0, this.equipAnim - delta * 3.05);
+    // Weapon draw scales with mass: a sidearm comes up almost instantly, a
+    // rotary cannon has to be hauled into position. Together with the
+    // mass-scaled ADS speed this is what the player feels when they swap TO a
+    // heavy weapon — the cost of carrying it, paid up front.
+    if (this.equipAnim > 0) {
+      const drawRate = 3.5 - Math.min(1.7, this.weaponMass * 0.58);
+      this.equipAnim = Math.max(0, this.equipAnim - delta * drawRate);
+    }
     // Ease the wiring bend toward its target (engineer demolition).
     this.wireAnim += (this.wiringTarget - this.wireAnim) * Math.min(1, delta * 8);
     if (this.wiringTarget === 0 && this.wireAnim < 0.001) this.wireAnim = 0;
@@ -2187,9 +3635,39 @@ export class GunModel {
     this.reloadDuration = Math.max(0.05, remainingSec) / left;
   }
 
+  /**
+   * How far into the scope picture the player is, 0..1 (always 0 for weapons
+   * without a magnified optic). App maps this to the scope overlay's veil and
+   * aperture — see SCOPED_WEAPONS for why the 3D optic can't be looked through.
+   */
+  getScopeBlend(): number {
+    return SCOPED_WEAPONS.has(this.currentWeaponType) ? this.aimProgress : 0;
+  }
+
+  /**
+   * Hand the weapon back from the scope picture immediately. Called when the
+   * game loop bails out (pause, game over, tutorial overlay) — that skips
+   * applyAnimations, so a player who pauses while scoped would otherwise be
+   * left staring at a scene with no weapon in it while the overlay is gone.
+   */
+  clearScope() {
+    if (this.activeRig && !this.activeRig.root.visible) {
+      this.activeRig.root.visible = true;
+    }
+  }
+
   /** Apply all animation offsets — call AFTER all update methods. */
   applyAnimations() {
     const aim = this.aimProgress;
+
+    // Hand the view over to the scope picture. The whole rig goes — barrel and
+    // hands included, since none of it is in front of your eye when you're
+    // looking down a scope. App's veil is already opaque by this point, so the
+    // swap happens behind a dark screen rather than as a visible pop.
+    if (this.activeRig) {
+      const takeover = SCOPED_WEAPONS.has(this.currentWeaponType) && aim >= SCOPE_TAKEOVER;
+      if (this.activeRig.root.visible === takeover) this.activeRig.root.visible = !takeover;
+    }
     // Sprinting is mutually exclusive with aiming — aim wins.
     const sprint = this.sprintProgress * (1 - aim);
     // Sway/bob suppressed by aiming, and replaced by the sprint pose.
@@ -2252,8 +3730,23 @@ export class GunModel {
     const leanShift = lean * 0.035; // weapon trails slightly against the motion
     const leanYaw = -lean * 0.05;   // a touch of yaw for depth
 
-    // Reload pulls the weapon down and in toward the player
-    const reload = this.reloadDip;
+    // Reload working posture — a full 6-DOF pose written by whichever
+    // per-weapon choreography is running (see setPose). Every gun presents the
+    // part being worked to the hand differently, so there is no shared term.
+    const rl = this.reloadPose;
+
+    // ── WEAPON INERTIA ──────────────────────────────────────────────────
+    // The spring lag from updateInertia, expressed as rotation AND translation
+    // AND cant. Doing all three is what sells mass: a real weapon swinging
+    // behind a turn doesn't just rotate, it slides across the view and rolls
+    // over its own centre of gravity. Heavily suppressed while sighted — a
+    // shouldered weapon is braced against the body, and more to the point a
+    // scope that drifts off centre every time you adjust aim makes precision
+    // shooting miserable. A little is kept so the sights visibly SETTLE rather
+    // than tracking the eye perfectly. Sprint owns the weapon outright.
+    const inertiaAmp = (1 - aim * 0.88) * (1 - sprint * 0.85);
+    const swYaw = this.swing.yaw * inertiaAmp;
+    const swPitch = this.swing.pitch * inertiaAmp;
 
     // Weapon-equip DRAW — a cinematic raise: the gun swings up from low AND
     // cants in from the right with the muzzle tipped up, then rolls level into
@@ -2289,28 +3782,33 @@ export class GunModel {
     const wire = this.wireAnim;
 
     this.group.position.x =
-      baseX + this.walkOffset.x * swayMul + SP_X * sprint + runX - reload * 0.07
-      + leanShift + inspX + equip * 0.12 + wire * 0.05 + mX;
+      baseX + this.walkOffset.x * swayMul + SP_X * sprint + runX + rl.x
+      + leanShift + inspX + equip * 0.12 + wire * 0.05 + mX
+      + swYaw * 0.30;
     this.group.position.y =
       baseY + this.walkOffset.y * swayMul + SP_Y * sprint + runY
-      + this.jumpOffset.y - land * 0.12 + abil * 0.07 - dash * 0.05 - reload * 0.16
-      - equip * 0.5 + equipSettle * 0.05 + inspY - wire * 0.28 + mY;
+      + this.jumpOffset.y - land * 0.12 + abil * 0.07 - dash * 0.05 + rl.y
+      - equip * 0.5 + equipSettle * 0.05 + inspY - wire * 0.28 + mY
+      + swPitch * 0.24;
     this.group.position.z =
-      baseZ + this.recoilOffset.z + SP_Z * sprint + dash * 0.16 + reload * 0.12
+      baseZ + this.recoilOffset.z + SP_Z * sprint + dash * 0.16 + rl.z
       + equip * 0.10 + inspZ + wire * 0.06 - deployJab * 0.16 + mZ;
 
     this.group.rotation.x =
       (this.swayOffset.rotX + this.walkOffset.rotX) * swayMul
       + this.recoilOffset.rotX + SP_RX * sprint + runRotX
-      + this.jumpOffset.rotX - land * 0.18 - reload * 0.42 + equip * 0.55 + inspPitch
-      + wire * 0.62 - deployJab * 0.14 + mRX;
+      + this.jumpOffset.rotX - land * 0.18 + rl.rx + equip * 0.55 + inspPitch
+      + wire * 0.62 - deployJab * 0.14 + mRX
+      + swPitch * 0.85;
     this.group.rotation.y =
       this.swayOffset.rotY * swayMul + SP_RY * sprint + leanYaw + inspYaw + equip * 0.26
-      + this.recoilOffset.rotY + mRY;
+      + this.recoilOffset.rotY + rl.ry + mRY
+      + swYaw * 0.95;
     this.group.rotation.z =
-      this.walkOffset.rotZ * swayMul + this.reloadRotZ + SP_RZ * sprint
+      this.walkOffset.rotZ * swayMul + rl.rz + SP_RZ * sprint
       + runRotZ + abil * 0.22 + leanRoll + inspRoll + equip * 0.42 + wire * 0.28
-      + mRZ;
+      + mRZ
+      - swYaw * 0.42;
   }
 
   /**
@@ -2338,11 +3836,24 @@ export class GunModel {
    * reload (shotgun) plays across that window. Both default to sane values for
    * a quick one-off call.
    */
-  triggerReload(durationSec: number = 0.5, shells: number = 8) {
+  triggerReload(
+    durationSec: number = 0.5,
+    shells: number = 8,
+    style: ReloadStyle = 'dry',
+    panic: number = 0,
+  ) {
     this.isReloading = true;
     this.reloadAnimation = 0;
     this.reloadDuration = Math.max(0.25, durationSec);
     this.reloadShells = Math.max(1, Math.round(shells));
+    this.reloadStyle = style;
+    this.reloadPanic = THREE.MathUtils.clamp(panic, 0, 1);
+    // Fresh beat ledger — every cue is armed again for this reload.
+    this.firedCues.clear();
+    // A magazine still falling from a previous reload is abandoned rather than
+    // teleported: the prop is reused for the new drop.
+    this.magFall.active = false;
+    this.parkReloadProps(this.rp);
     if (this.currentWeaponType === 'subverter') this.subReloadGlow = 1;
   }
 

@@ -15,9 +15,9 @@ export interface Weapon {
   bulletColor: number;
   spread: number;
   unlockScore: number;
-  autoFire?: boolean; // Whether weapon fires automatically when mouse held
-  weight: number; // Weight affects movement speed
-  canAim?: boolean; // Whether weapon supports right-click aiming
+  autoFire?: boolean;
+  weight: number;
+  canAim?: boolean;
   /** Over-penetration: how many ADDITIONAL enemies a round can punch through
    *  after its first hit (0/undefined = stops in the first body). Each pass
    *  retains `pierceRetain` of the remaining damage. Solid terrain always
@@ -25,6 +25,10 @@ export interface Weapon {
   pierce?: number;
   /** Damage fraction KEPT per body punched through (e.g. 0.55 → 55%). */
   pierceRetain?: number;
+  /** Single-shot weapons that reload the instant they run dry, without
+   *  waiting for a trigger pull on an empty chamber — a rocket launcher holds
+   *  one round and the operator starts loading the next immediately. */
+  autoReload?: boolean;
 }
 
 export const WEAPONS: Record<string, Weapon> = {
@@ -52,7 +56,7 @@ export const WEAPONS: Record<string, Weapon> = {
     spread: 0.01,
     unlockScore: 100,
     weight: 1.5, // Medium weight
-    canAim: true // Rifle can aim
+    canAim: true
   },
   shotgun: {
     name: 'Shotgun',
@@ -97,7 +101,7 @@ export const WEAPONS: Record<string, Weapon> = {
     unlockScore: 700,
     autoFire: false,
     weight: 2.0, // Heavy weapon - slower movement
-    canAim: true, // Sniper can aim
+    canAim: true,
     // A high-velocity anti-materiel round OVER-PENETRATES: it can punch
     // through up to two robots and still wound whatever stands behind them,
     // losing ~45% of its remaining energy per body. Lining up a lane of
@@ -123,8 +127,14 @@ export const WEAPONS: Record<string, Weapon> = {
     name: 'Launcher',
     damage: 150,
     fireRate: 2000,
-    maxAmmo: 3,
-    reloadTime: 3500,
+    // ONE rocket in the tube. The launcher is muzzle-loaded a round at a time
+    // (see GunModel.animateRocketReload) and `autoReload` starts the next load
+    // the moment the tube is empty, so it plays like the RPG in GTA IV rather
+    // than magically holding three rockets. reloadTime is the single-round
+    // load, cut from the old three-rocket 3.5s so the cadence stays usable.
+    maxAmmo: 1,
+    reloadTime: 2600,
+    autoReload: true,
     bulletSpeed: 1.8,
     bulletColor: 0xff4400,
     spread: 0.01,
@@ -218,15 +228,14 @@ export interface Enemy {
   attackTime: number;
   attackCooldown: number;
   lastAttackTime: number;
-  // NEW: Advanced AI Systems
   aiBehavior?: AIBehaviorSystem;
   perception?: EnemyPerception;
   attackSystem?: AttackSystem;
   obstacleAvoidance?: ObstacleAvoidance;
   bulletDodging?: BulletDodging;
   playerVelocity?: THREE.Vector3; // Track player velocity for prediction
-  isDodging?: boolean; // Currently performing dodge maneuver
-  dodgeDirection?: THREE.Vector3; // Direction of current dodge
+  isDodging?: boolean;
+  dodgeDirection?: THREE.Vector3;
   // Object pooling support
   poolId?: number; // ID for returning mesh to pool when enemy dies
   // ── Multiplayer shared-enemy sync ──

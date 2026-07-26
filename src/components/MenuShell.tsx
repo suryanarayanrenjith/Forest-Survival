@@ -8,7 +8,6 @@ type MenuShellProps = {
 
 type ThemeConfig = {
   accent: string;
-  /** Center glow blob behind the menu card */
   centerGlow: string;
   /** Top-down warm sky-light wash (light only — never darkens) */
   topGlow: string;
@@ -16,7 +15,6 @@ type ThemeConfig = {
    *  readability anchor with the menu's identity hue (screen-blended,
    *  so it only ADDS light — it must never contribute black). */
   bottomTint: string;
-  /** Edge corner accent color */
   edgeAccent: string;
 };
 

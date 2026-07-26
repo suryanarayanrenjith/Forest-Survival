@@ -87,7 +87,6 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
           style={{ background: 'radial-gradient(circle, rgba(46,232,180,0.16), transparent 70%)' }}
         />
 
-        {/* Header */}
         <div className={`relative flex flex-none items-center justify-between border-b border-white/[0.07] ${isTouch ? 'gap-2 px-3 py-1.5' : 'px-5 py-4 sm:px-6'}`}>
           <div className={`flex items-center ${isTouch ? 'gap-2' : 'gap-3'}`}>
             <div className={`relative flex items-center justify-center rounded-lg bg-emerald-500/12 border border-emerald-400/30 ${isTouch ? 'h-7 w-7' : 'w-10 h-10 rounded-xl'}`}>

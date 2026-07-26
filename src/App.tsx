@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { GraduationCap, Play, Home, MousePointerClick, ShieldAlert } from 'lucide-react';
 import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
-import { GunModel, MELEE_CAPABLE_WEAPONS, type WeaponType as GunWeaponType } from './utils/GunModel';
+import { GunModel, MELEE_CAPABLE_WEAPONS, type WeaponType as GunWeaponType, type ReloadCue, type ReloadStyle, SCOPE_TAKEOVER } from './utils/GunModel';
 import { MuzzleFlash, MuzzleSmoke, BulletTracer, ImpactEffect, RobotHitSparks, ExplosionEffect, FireNovaEffect, NukeEffect, AbilityCastEffect, ImpactBurst, setMuzzleLightPool, setExplosionLightPool, clearParticleGeometryPools, clearTracerGeometryPool, clearFlashSpritePool, clearSmokeSpritePool, clearExplosionRigPool, clearCastRigPool, clearBurstPairPool, getSoftSparkTexture } from './utils/Effects';
 import { HackBeam, buildHackVisuals, updateHackVisuals, disposeHackVisuals } from './utils/HackVisuals';
 import { soundManager } from './utils/SoundManager';
@@ -60,6 +60,7 @@ import ScreenEffects, { triggerDamageFlash, triggerScreenShake, triggerKillFlash
 import ComboDisplay from './components/ComboDisplay';
 import { WEAPONS, type Enemy, type Bullet, type PowerUp, type Particle, type TerrainObject, type Keys, type GameState } from './types/game';
 import { AdaptiveDifficultySystem } from './utils/AdaptiveDifficultySystem';
+import { TacticalDirector } from './utils/TacticalDirector';
 import { ProceduralMissionSystem, type Mission } from './utils/ProceduralMissionSystem';
 import { CombatCoachSystem, type Tip as CoachTip } from './utils/CombatCoachSystem';
 import { PredictiveSpawnSystem } from './utils/PredictiveSpawnSystem';
@@ -355,6 +356,9 @@ const ForestSurvivalGame = () => {
   // into its `--chs` CSS var each frame so the reticle opens/closes with the
   // weapon's real cone (only the 'dynamic' crosshair style reads it).
   const crosshairRef = useRef<HTMLDivElement>(null);
+  // Sniper scope picture — driven per-frame through this ref (never setState;
+  // see the perf invariants). `--apf` is the 0..1 aperture factor.
+  const scopeOverlayRef = useRef<HTMLDivElement>(null);
   // Picked perks for the active run — surfaces as a small chip in the HUD
   // so the player can see at a glance what's stacked.
   const [activeRunPerks, setActiveRunPerks] = useState<WavePerkId[]>([]);
@@ -621,7 +625,6 @@ const ForestSurvivalGame = () => {
   const menuMusicUnlockCleanupRef = useRef<(() => void) | null>(null);
   const menuMusicVolumeRef = useRef(0);
 
-  // Check for multiplayer session in URL on mount
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const lobbyId = params.get('lobby');
@@ -857,7 +860,6 @@ const ForestSurvivalGame = () => {
     };
   }, []);
 
-  // Set up multiplayer listeners when manager is created
   // NOTE: game_start handler is now registered in MultiplayerLobby.tsx to fix timing issues
   useEffect(() => {
     if (!multiplayerManager) return;
@@ -868,16 +870,13 @@ const ForestSurvivalGame = () => {
     type MsgFor<T extends NetworkMessage['type']> = Extract<NetworkMessage, { type: T }>;
     const asMsg = <T extends NetworkMessage['type']>(raw: unknown) => raw as MsgFor<T>;
 
-    // Listen for game over
     const unsubGameOver = multiplayerManager.onMessage('game_over', (raw) => {
       const data = asMsg<'game_over'>(raw);
       setMultiplayerWinner(data.winnerId);
       setMultiplayerGameOver(true);
-      // Stop all sounds when game is over
       soundManager.mute();
     });
 
-    // Listen for kill events - real-time killer/victim info
     const unsubKilled = multiplayerManager.onMessage('player_killed', (raw) => {
       const data = asMsg<'player_killed'>(raw);
       const entry = {
@@ -900,7 +899,6 @@ const ForestSurvivalGame = () => {
     // Listen for game restart (guests receive this from host)
     const unsubRestart = multiplayerManager.onMessage('game_restart', (raw) => {
       const data = asMsg<'game_restart'>(raw);
-      // Reset UI state
       setMultiplayerGameOver(false);
       setMultiplayerWinner(null);
       setIsSpectating(false);
@@ -1383,6 +1381,18 @@ const ForestSurvivalGame = () => {
     const isAdaptiveMode = classicDifficulty === 'adaptive';
     let adaptiveSpeedTarget = 1.0;  // refreshed each adaptive update from the profile
     let adaptiveSpeedMult = 1.0;    // per-frame smoothed value used in movement
+
+    // ── ADAPTIVE TACTICAL DIRECTOR ───────────────────────────────────────────
+    // The swarm-wide "brain over the brains": it reads HOW the player is playing
+    // (camping, kiting, sniping at range, brawling) and re-tunes the entire enemy
+    // squad's approach each tick to counter it — flanking a camper, cutting off a
+    // kiter, rushing a sniper. Solo only (in MP enemies serve many players, so it
+    // stays neutral). Its directive flows into every enemy's makeDecision().
+    const tacticalDirector = new TacticalDirector(classicDifficulty);
+    const tacticalActive = !isMultiplayer; // gate the whole feature to solo
+    let lastTacticalUpdateMs = performance.now();
+    let lastTacticalStance = tacticalDirector.getStance();
+    let nextTacticalCalloutAt = 0; // ms gate so the "swarm adapts" note stays rare
 
     // 2. Procedural Mission System - Generates unique missions
     const missionSystem = new ProceduralMissionSystem();
@@ -3098,6 +3108,57 @@ const ForestSurvivalGame = () => {
     camera.add(gunModel.group);
     scene.add(camera);
 
+    // ── RELOAD AUDIO ─────────────────────────────────────────────────────
+    // The viewmodel owns the reload timeline and emits a cue the frame each
+    // part actually makes contact (a catch clicking, a magazine bottoming out,
+    // a bolt going home). Mapping them here — rather than firing one sound at
+    // reload start — is what keeps eight very different mechanisms sounding
+    // like the thing on screen. `index` distinguishes repeated beats: which
+    // shell went in, which intrusion chip seated.
+    const RELOAD_SOUNDS: Record<ReloadCue, { s: string; v: number; r?: number }> = {
+      mag_release:   { s: 'reload_magrelease', v: 0.34 },
+      mag_out:       { s: 'reload_magout',     v: 0.40 },
+      mag_stow:      { s: 'reload_magstow',    v: 0.34 },
+      mag_drop:      { s: 'reload_magdrop',    v: 0.26 },
+      mag_in:        { s: 'reload_magin',      v: 0.50 },
+      mag_tug:       { s: 'reload_magrelease', v: 0.20, r: 0.72 },
+      slide_release: { s: 'reload_slide',      v: 0.50 },
+      bolt_rack:     { s: 'reload_bolt',       v: 0.48 },
+      // One machined clunk, re-pitched for each quarter of the bolt throw:
+      // lifting rings highest, driving it forward is the heaviest.
+      bolt_lift:     { s: 'reload_boltlift',   v: 0.38, r: 1.22 },
+      bolt_back:     { s: 'reload_boltlift',   v: 0.34, r: 0.95 },
+      bolt_forward:  { s: 'reload_boltlift',   v: 0.44, r: 0.8 },
+      bolt_lock:     { s: 'reload_boltlift',   v: 0.4,  r: 1.34 },
+      shell_insert:  { s: 'reload_shell',      v: 0.42 },
+      pump_rack:     { s: 'reload_pump',       v: 0.5 },
+      cover_open:    { s: 'reload_cover',      v: 0.34, r: 1.3 },
+      belt_feed:     { s: 'reload_belt',       v: 0.4 },
+      cover_close:   { s: 'reload_cover',      v: 0.52 },
+      spin_up:       { s: 'reload_spinup',     v: 0.42 },
+      rocket_lift:   { s: 'reload_magout',     v: 0.28, r: 0.66 },
+      rocket_slide:  { s: 'reload_rocketslide', v: 0.44 },
+      rocket_seat:   { s: 'reload_magin',      v: 0.55, r: 0.6 },
+      pin_pull:      { s: 'reload_pin',        v: 0.36 },
+      cartridge_out: { s: 'reload_magout',     v: 0.34, r: 1.18 },
+      cartridge_in:  { s: 'hack_reload',       v: 0.5 },
+      chip_seat:     { s: 'hack_chip',         v: 0.32 },
+      deck_boot:     { s: 'powerUp',           v: 0.2,  r: 1.7 },
+    };
+    gunModel.onReloadCue = (cue, index) => {
+      const m = RELOAD_SOUNDS[cue];
+      if (!m) return;
+      let rate = m.r ?? 1;
+      // Repeated beats climb so a run of them reads as progress rather than a
+      // loop: chips ascend cleanly, shells wander slightly (a hand isn't a
+      // metronome and identical samples in a row sound synthetic).
+      if (cue === 'chip_seat') rate *= 1 + (index - 1) * 0.13;
+      else if (cue === 'shell_insert') rate *= 0.94 + Math.random() * 0.13;
+      soundManager.play(m.s, m.v, false, rate);
+      // Mobile: a short tick under the thumb on the two beats a player feels.
+      if (cue === 'mag_in' || cue === 'pump_rack') haptic('tap');
+    };
+
     // ── ENGINEER LEFT-HAND DETONATOR (viewmodel) ─────────────────────────
     // A handheld remote trigger held in the player's LEFT hand (mirror of the
     // right-hand gun) while a demolition bomb is armed. It rises into view once
@@ -3534,12 +3595,21 @@ const ForestSurvivalGame = () => {
     const runPerks: WavePerkId[] = [];
     let perkBonuses: PerkBonuses = { ...NEUTRAL_PERK_BONUSES };
     let perkRegenAccum = 0; // partial-HP carry for the regen-per-second perk
+    // Second Wind perk — a once-per-run death cheat. `perkSecondWindUsed` latches
+    // after it fires; `secondWindInvulnUntil` is a brief post-revive grace window
+    // (ms, Date.now()) so the player isn't instantly re-killed by the same swarm.
+    let perkSecondWindUsed = false;
+    let secondWindInvulnUntil = 0;
     // Some perks have a one-shot moment-of-pick effect (max HP grant) on top
     // of their ongoing snapshot contribution. Run them once when picked.
     const applyPerkInstantEffects = (picked: WavePerkId) => {
       if (picked === 'max_hp_25') {
         playerMaxHealth += 25;
         health = Math.min(playerMaxHealth, health + 25);
+      }
+      if (picked === 'max_hp_50') {
+        playerMaxHealth += 50;
+        health = Math.min(playerMaxHealth, health + 50);
       }
       if (picked === 'max_ammo_50') {
         // Top off the current mag immediately so the pick feels live.
@@ -5557,6 +5627,10 @@ const ForestSurvivalGame = () => {
         : wave <= 1 ? 1
         : wave === 2 ? 2
         : 3 + (Math.random() < 0.4 ? 1 : 0);
+      // Scavenger perk — pad the per-wave power-up budget so drops rain down.
+      if (!isTutorialMode && perkBonuses.powerupLuckMult > 1) {
+        wavePowerupCap = Math.round(wavePowerupCap * perkBonuses.powerupLuckMult) + 1;
+      }
       if (isTutorialMode) {
         // Tutorial — no wave progression. While the guided drill is running the
         // arena opens EMPTY: the drill stages exactly what each step needs on
@@ -6501,6 +6575,14 @@ const ForestSurvivalGame = () => {
     }
 
     const euler = new THREE.Euler(0, 0, 0, 'YXZ');   // base aim (mouse only)
+    // Previous frame's look angles — differenced each frame to drive the
+    // viewmodel's inertia spring (see GunModel.updateInertia), which is what
+    // gives the weapon its sense of mass when you swing the view around.
+    let prevLookYaw = 0;
+    let prevLookPitch = 0;
+    // Last aperture value written to the scope overlay, so a steady scope
+    // doesn't re-trigger a full-screen gradient repaint every frame.
+    let scopeApfLast = '';
     const PI_2 = Math.PI / 2;
     // Camera recoil — a transient kick added on top of the mouse aim each
     // shot, then smoothly recovered. Decoupled from `euler` so it never
@@ -6615,19 +6697,48 @@ const ForestSurvivalGame = () => {
       // Quickdraw skill + Engineer MP passive + Weapon Mastery all speed up
       // the reload. Mastery's `reloadSpeedup` is a percentage REDUCTION (0.10
       // → 10% off) so we subtract it from 1 in the multiplier chain.
+      // ── WHICH RELOAD ─────────────────────────────────────────────────
+      // Running the weapon dry locks the action open and forces the slow drill
+      // (dump the magazine, release the bolt). Reloading with rounds still in
+      // it keeps the chambered round, so the action is never touched and the
+      // partial magazine is pouched instead of thrown away — a visibly
+      // different animation AND a genuinely faster one, which rewards the
+      // player for topping up in cover instead of firing to empty.
+      const reloadStyle: ReloadStyle = ammo > 0 ? 'tactical' : 'dry';
+      const TACTICAL_SPEEDUP = 0.82;
+      // A shell-fed tube isn't a magazine swap — it's paid for per round. The
+      // shotgun thumbs in only what it's MISSING, so its window scales with the
+      // shell count instead of taking the flat tactical discount. A full reload
+      // still costs exactly the tuned reloadTime; a one-shell top-up is quick.
+      const isShellFed = currentWeapon === 'shotgun';
+      const shellsNeeded = Math.max(1, maxAmmoNow - Math.max(0, ammo));
+      const styleMult = isShellFed
+        ? 0.30 + 0.70 * (shellsNeeded / Math.max(1, maxAmmoNow))
+        : (reloadStyle === 'tactical' ? TACTICAL_SPEEDUP : 1);
+      // Panic: the hands shake and fumble the insert when the player is badly
+      // hurt. Keyed off the SAME critical-health fraction that drives the
+      // adrenaline slow-mo, so the trembling reload and the bullet-time arrive
+      // together instead of on two unrelated thresholds. Expressed as a
+      // fraction of max HP, which tracks the +25 max-health pickups.
+      const hpFracNow = playerMaxHealth > 0 ? health / playerMaxHealth : 1;
+      const panic = THREE.MathUtils.clamp(
+        (CRIT_HP_FRACTION * 1.6 - hpFracNow) / (CRIT_HP_FRACTION * 1.6),
+        0, 1,
+      );
       const reloadMs = (weapon.reloadTime / (1 + skillBonus('reloadSpeed')))
         * (mpMods.reloadSpeedMult ?? 1)
         * (1 - masteryBonus.reloadSpeedup)
-        * perkBonuses.reloadTimeMult;
-      // The viewmodel reload now fills the ENTIRE reload window so the hands work
+        * perkBonuses.reloadTimeMult
+        * styleMult;
+      // The viewmodel reload fills the ENTIRE reload window so the hands work
       // the weapon manually for the whole time (mag swap, shell-by-shell on the
-      // shotgun, chip cartridge on the subverter). The shotgun's beat count is
-      // the magazine size so each shell is thumbed in individually.
-      const reloadShells = currentWeapon === 'shotgun' ? maxAmmoNow : 8;
-      gunModel.triggerReload(reloadMs / 1000, reloadShells);
-      // Subverter swaps a chip cartridge (a layered digital clack); guns rack a
-      // fresh magazine.
-      soundManager.play(currentWeapon === 'subverter' ? 'hack_reload' : 'reload', 0.5);
+      // shotgun, chip cartridge on the subverter).
+      gunModel.triggerReload(
+        reloadMs / 1000, isShellFed ? shellsNeeded : 8, reloadStyle, panic,
+      );
+      // Audio is NOT fired here: the viewmodel emits a cue at the exact frame
+      // each part makes contact and `onReloadCue` (wired at startup) plays it,
+      // so what you hear is always what the hands are doing.
       setReloadDurationUI(reloadMs); // drives the crosshair reload indicator
       setReloadPerfectUI(false);
       // Arm the active-reload window for this reload.
@@ -7354,6 +7465,7 @@ const ForestSurvivalGame = () => {
         // — hits / triggers — stays honest; landed hits call recordHit().
         combatCoach.recordShot(false, false); // Updated when bullet hits
         adaptiveDifficulty.recordShot(false);
+        if (tacticalActive) tacticalDirector.noteShot(performance.now());
         tutorial.recordAction('shoot', 1);
 
         // Play the weapon-specific report with a subtle random pitch so
@@ -7429,6 +7541,12 @@ const ForestSurvivalGame = () => {
               pierceLeft: weapon.pierce ?? 0,
               pierceRetain: weapon.pierceRetain ?? 0.55,
             };
+          }
+          // Railgun Rounds perk — grant every non-rocket round extra
+          // over-penetration on top of whatever the weapon already has.
+          if (perkBonuses.bulletPierce > 0 && !isLauncher) {
+            rec.pierceLeft = (rec.pierceLeft ?? 0) + perkBonuses.bulletPierce;
+            if ((rec.pierceRetain ?? 0) < 0.6) rec.pierceRetain = 0.65;
           }
           bullets.push(rec);
 
@@ -8165,6 +8283,9 @@ const ForestSurvivalGame = () => {
           addKillFeedEntry('Hot-zone bounty claimed', 'combo');
         }
         enemiesKilled++;
+        // Feed the Tactical Director the distance at which this kill landed —
+        // its core read of brawler-vs-sniper playstyle.
+        if (tacticalActive) tacticalDirector.noteEngagementDistance(enemy.mesh.position.distanceTo(camera.position));
         // Daily Challenge channels — tick cumulative counts. Weapon
         // attribution follows the equipped weapon, the same rule mastery XP
         // uses below (pistol_kill, rifle_kill, … are all `<weapon>_kill`).
@@ -8328,6 +8449,10 @@ const ForestSurvivalGame = () => {
         achievementSystem.setProgress('annihilator', careerKills);
         achievementSystem.setProgress('hot_streak', killStreak);
         achievementSystem.setProgress('unstoppable', killStreak);
+        // Mobile-only streak feat — the on-screen-controls badge. Gated on a
+        // touch session so desktop play never advances it (achievements are
+        // already solo-only via the system's `enabled` flag).
+        if (touchControls.enabled) achievementSystem.setProgress('thumb_warrior', killStreak);
         // Combo + score milestones (single run). `combo`/`score` are already
         // updated for this kill above, so these read the post-kill values.
         achievementSystem.setProgress('frenzy', combo);
@@ -8439,6 +8564,12 @@ const ForestSurvivalGame = () => {
         achievementSystem.setProgress('veteran', reachedWave);
         achievementSystem.setProgress('invincible', reachedWave);
         achievementSystem.setProgress('immortal', reachedWave);
+        // Mobile-only survival feats — use THIS run's wave (not career best) so
+        // they only credit progress actually made on a touch device.
+        if (touchControls.enabled) {
+          achievementSystem.setProgress('touch_trooper', wave);
+          achievementSystem.setProgress('pocket_operator', wave);
+        }
         setShowWaveComplete(true);
         soundManager.play('waveComplete', 1.0);
         if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry(`Wave ${wave - 1} Complete!`, 'wave');
@@ -8578,6 +8709,9 @@ const ForestSurvivalGame = () => {
     // are its feedback. Death, spectate and MP bookkeeping stay identical.
     const takeEnemyDamage = (incoming: number, enemyLabel: string, enemyPos: THREE.Vector3 | null, isRadiation = false) => {
       if ((phantomActive && !isRadiation) || invincibleActive || isTutorialMode || playerEliminated) return;
+      // Second Wind grace window — briefly immune after cheating death so the
+      // player isn't instantly re-killed by the same swarm. Radiation ignores it.
+      if (!isRadiation && Date.now() < secondWindInvulnUntil) return;
 
       let damage = incoming * Math.max(0, 1 - skillBonus('damageReduction')) * perkBonuses.damageTakenMult;
 
@@ -8610,6 +8744,44 @@ const ForestSurvivalGame = () => {
         }
       }
 
+      // Retribution perk — a melee attacker eats a fraction of the blow it just
+      // landed. Only frontal/close hits carry an attacker position; networked /
+      // environmental damage passes null and reflects nothing.
+      if (perkBonuses.thornsReflect > 0 && damage > 0 && enemyPos && !isRadiation) {
+        let best: Enemy | null = null;
+        let bestD = 8.5;
+        for (let ti = 0; ti < enemies.length; ti++) {
+          const te = enemies[ti];
+          if (te.dead || te.health <= 0) continue;
+          const d = te.mesh.position.distanceTo(enemyPos);
+          if (d < bestD) { bestD = d; best = te; }
+        }
+        if (best) {
+          const refl = damage * perkBonuses.thornsReflect;
+          best.health -= refl;
+          best.damageFlashTime = 0.3;
+          createParticles(best.mesh.position, 0xffcf4a, 6);
+          if (!isMpGuest && best.health <= 0) handleEnemyKilled(best, false);
+        }
+      }
+
+      // Second Wind perk — a once-per-run death cheat. When a blow WOULD be
+      // lethal, negate it, revive at 40% HP and open the grace window instead.
+      if (perkBonuses.secondWind && !perkSecondWindUsed && damage > 0 && health - damage <= 0) {
+        perkSecondWindUsed = true;
+        secondWindInvulnUntil = Date.now() + 1500;
+        health = Math.max(1, Math.round(playerMaxHealth * 0.4));
+        damage = 0; // negate the fatal blow — nothing below sees a death
+        shieldBreakFlash = 1;
+        triggerDamageFlash();
+        if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
+        soundManager.play('powerUp', 0.95, false, 0.8);
+        showPowerMessage('SECOND WIND', 2600);
+        if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Second Wind — cheated death', 'powerup');
+        if (isMultiplayer && multiplayerManager) multiplayerManager.updatePlayerHealth(health);
+        return;
+      }
+
       health -= damage;
 
       if (damage > 0 && isRadiation) {
@@ -8625,6 +8797,9 @@ const ForestSurvivalGame = () => {
       } else if (damage > 0) {
         adaptiveDifficulty.recordDamage(damage, false);
         adaptiveDifficulty.recordHealthStatus(health, 100);
+        // Feed the Tactical Director the pressure the player is under (raises
+        // the intensity read that lightly biases how hard the squad presses).
+        if (tacticalActive) tacticalDirector.noteDamageTaken(damage);
         missionSystem.updateProgress('survival', 1);
         soundManager.play('playerHurt', 0.5);
         cameraShakeIntensity = Math.min(cameraShakeIntensity + 0.2, 0.25);
@@ -9219,18 +9394,32 @@ const ForestSurvivalGame = () => {
     // axis moves so you glide along it. Honours the same terrain + barrel tests,
     // and `camera.position.y` carries the jump height so airborne step-overs and
     // auto step-up keep working unchanged.
+    //
+    // Both tests sample the DESTINATION point rather than sweeping the segment,
+    // so a single oversized step could pop straight through a thin trunk. A long
+    // step is therefore split into sub-steps no larger than MAX_MOVE_SUBSTEP.
+    // Normal play never reaches that threshold (a 60 FPS sprint is ~0.54 units),
+    // so the common path runs exactly one iteration and is unchanged — this only
+    // engages for the genuinely big steps: a speed-boosted sprint on a low-FPS
+    // frame, where the frame-rate normaliser scales the step up.
+    const MAX_MOVE_SUBSTEP = 0.5;
     const attemptMove = (dx: number, dz: number): void => {
-      const eyeY = camera.position.y;
-      if (dx !== 0) {
-        const nx = camera.position.x + dx;
-        if (!checkTerrainCollision(nx, camera.position.z, eyeY) && !overlapsBarrel(nx, camera.position.z)) {
-          camera.position.x = nx;
+      const steps = Math.max(1, Math.ceil(Math.hypot(dx, dz) / MAX_MOVE_SUBSTEP));
+      const sx = dx / steps;
+      const sz = dz / steps;
+      for (let i = 0; i < steps; i++) {
+        const eyeY = camera.position.y;
+        if (sx !== 0) {
+          const nx = camera.position.x + sx;
+          if (!checkTerrainCollision(nx, camera.position.z, eyeY) && !overlapsBarrel(nx, camera.position.z)) {
+            camera.position.x = nx;
+          }
         }
-      }
-      if (dz !== 0) {
-        const nz = camera.position.z + dz;
-        if (!checkTerrainCollision(camera.position.x, nz, eyeY) && !overlapsBarrel(camera.position.x, nz)) {
-          camera.position.z = nz;
+        if (sz !== 0) {
+          const nz = camera.position.z + sz;
+          if (!checkTerrainCollision(camera.position.x, nz, eyeY) && !overlapsBarrel(camera.position.x, nz)) {
+            camera.position.z = nz;
+          }
         }
       }
     };
@@ -9377,6 +9566,35 @@ const ForestSurvivalGame = () => {
       }
       enemy.frozenUntil = 0;
       enemy.ccUntil = 0;
+    };
+
+    // Arc Reactor perk — a kill discharges chain lightning into up to 3 nearby
+    // foes. Called ONLY from the primary bullet-kill site (never from
+    // handleEnemyKilled itself), so a chained kill can't recursively re-arc —
+    // the cascade stays bounded to one hop per trigger.
+    const _arcMid = new THREE.Vector3();
+    const arcChainLightning = (source: Enemy, baseDamage: number) => {
+      const origin = source.mesh.position;
+      const R2 = 11 * 11;
+      let arcs = 0;
+      for (let a = 0; a < enemies.length && arcs < 3; a++) {
+        const e = enemies[a];
+        if (e === source || e.dead || e.health <= 0) continue;
+        const dx = e.mesh.position.x - origin.x;
+        const dz = e.mesh.position.z - origin.z;
+        if (dx * dx + dz * dz > R2) continue;
+        if (revShieldUp(e)) { pingRevShield(e, e.mesh.position); continue; }
+        arcs++;
+        const dmg = baseDamage * 0.55;
+        if (isMpGuest && mp) { if (e.netId !== undefined) mp.sendEnemyHit(e.netId, dmg, false); }
+        else e.health -= dmg;
+        e.damageFlashTime = 0.3;
+        _arcMid.copy(origin).lerp(e.mesh.position, 0.5);
+        createParticles(_arcMid, 0x8fdcff, 4);
+        createParticles(e.mesh.position, 0xbff0ff, 6);
+        if (!isMpGuest && e.health <= 0) handleEnemyKilled(e, false);
+      }
+      if (arcs > 0) soundManager.play('hit', 0.4, false, 1.85);
     };
 
     const CRYO_RADIUS = 14;
@@ -9800,6 +10018,25 @@ const ForestSurvivalGame = () => {
       }
 
       const delta = rawDelta * timeScale * healthTimeScale; // transient + critical slow-mo
+
+      // ── FRAME-RATE NORMALISER (60 FPS reference) ─────────────────────────
+      // Player locomotion + the jump/gravity integrator are written as PER-FRAME
+      // deltas (moveSpeed 0.3 "units per frame", gravity 0.02, etc.) rather than
+      // per-second rates. With the default uncapped FPS that made the player's
+      // speed a function of the display refresh: a 120 Hz phone panel ran the
+      // rAF loop twice as often as a 60 Hz desktop and the player walked AND
+      // sprinted at literally double speed. Multiplying those per-frame steps by
+      // `frameScale` restores parity — at 60 FPS it is exactly 1.0, so desktop
+      // behaviour is byte-for-byte unchanged, while 90/120/144 Hz now covers the
+      // same ground per SECOND instead of per frame.
+      //
+      // Clamped to 2 (a 30 FPS floor) because attemptMove()/the dash test the
+      // destination point rather than sweeping: an unbounded scale on a stutter
+      // frame would teleport the player through a trunk. Below 30 FPS movement
+      // degrades gracefully (slightly slow) instead of tunnelling.
+      // Uses rawDelta, NOT delta, so bullet-time keeps the player at full speed
+      // while the world slows — exactly as it behaves today.
+      const frameScale = Math.min(rawDelta * 60, 2);
 
       // Flush any pending HUD update at a capped rate (see flushGameState) so
       // sustained fire can't trigger a React re-render per shot/hit/kill.
@@ -10356,6 +10593,34 @@ const ForestSurvivalGame = () => {
         adaptiveSpeedMult += (adaptiveSpeedTarget - adaptiveSpeedMult) * Math.min(1, rawDelta * 1.1);
       }
 
+      // ── TACTICAL DIRECTOR — recompute the swarm-wide directive (~0.5s tick) ──
+      // Solo only. Reads the shared accuracy metric + the director's own pace /
+      // range EMAs, folds them into one directive every enemy reads, and fires a
+      // rare, legible HUD callout whenever the squad's dominant tactic shifts so
+      // the player can FEEL the adaptation instead of just being countered.
+      if (tacticalActive && frameCount % 30 === 0) {
+        const nowT = performance.now();
+        const dtT = (nowT - lastTacticalUpdateMs) / 1000;
+        lastTacticalUpdateMs = nowT;
+        // In Adaptive mode, let the director's aggression ride the live difficulty
+        // level too, so a dominating player gets both harder stats AND smarter tactics.
+        if (isAdaptiveMode) {
+          const lvl = adaptiveDifficulty.getDifficulty().level;
+          tacticalDirector.setDifficulty(lvl >= 70 ? 'hard' : lvl >= 45 ? 'medium' : 'easy');
+        }
+        tacticalDirector.update(nowT, adaptiveDifficulty.getMetrics().accuracyRate, dtT);
+        const stance = tacticalDirector.getStance();
+        if (stance !== lastTacticalStance && stance !== 'hunting' && nowT >= nextTacticalCalloutAt && !isGameOver && !paused) {
+          lastTacticalStance = stance;
+          nextTacticalCalloutAt = nowT + 16000; // at most one callout every ~16s
+          if (gameSettingsManager.getSetting('killFeed')) {
+            addKillFeedEntry(tacticalDirector.getStanceBlurb(), 'combo');
+          }
+        } else if (stance !== lastTacticalStance) {
+          lastTacticalStance = stance;
+        }
+      }
+
       // Generate missions periodically (every 30 seconds)
       if (frameCount % 1800 === 0) {
         const mission = missionSystem.generateMission({
@@ -10600,6 +10865,13 @@ const ForestSurvivalGame = () => {
       // not stall — and `onKeyDown` blocks the local player's input instead.
       const perkFreezesSim = wavePerkActiveRef.current && !isMultiplayer;
       if (isGameOver || paused || tutorialActiveRef.current || orientationBlockedRef.current || perkFreezesSim) {
+        // The scope picture is driven further down the loop, which this skips —
+        // and its overlay unmounts while paused/over. Hand the weapon back so a
+        // player who pauses mid-scope isn't left looking at an empty screen,
+        // and clear the cached aperture so a remount re-writes it (a stale
+        // cache would leave the overlay opaque with a zero-width aperture).
+        gunModel.clearScope();
+        scopeApfLast = '';
         composePostFX(rawDelta);
         return;
       }
@@ -10686,6 +10958,17 @@ const ForestSurvivalGame = () => {
       // mutually exclusive with sprinting (see below), so the COD-style flow is
       // "sprinting drops the sights; aim brings them back up".
       const aimingActive = isAiming && WEAPONS[currentWeapon].canAim === true;
+
+      // ── AUTO-RELOAD (single-shot weapons) ──────────────────────────────
+      // The launcher holds one rocket, so the operator starts loading the next
+      // the instant the tube is empty instead of waiting for a trigger pull on
+      // nothing. Driven from the loop rather than from shoot() so it runs after
+      // the shot has fully resolved, and it covers every path that can empty
+      // the weapon. startReload() carries its own paused/game-over/tutorial and
+      // already-reloading guards, so this is a single cheap check.
+      if (WEAPONS[currentWeapon].autoReload && ammo <= 0 && !isReloading) {
+        startReload();
+      }
 
       // Update gun animations - recoil handles its own offset
       gunModel.updateRecoil(delta);
@@ -10986,6 +11269,41 @@ const ForestSurvivalGame = () => {
         crosshairRef.current.style.setProperty('--chs', `${px.toFixed(2)}px`);
       }
 
+      // ── SNIPER SCOPE PICTURE ────────────────────────────────────────────
+      // Two staggered curves. The dark veil closes FIRST and is fully opaque
+      // by SCOPE_TAKEOVER, which is exactly when GunModel swaps the 3D optic
+      // away — so the handover happens behind a black screen. Only then does
+      // the aperture iris open, revealing the world at full width instead of
+      // through the scope's ~7° bore. Reversing out plays it backwards.
+      const scopeAim = gunModel.getScopeBlend();
+      const scopeVeil = THREE.MathUtils.smoothstep(scopeAim, 0.42, SCOPE_TAKEOVER);
+      if (!scopeOverlayRef.current) {
+        // Overlay isn't mounted (paused / game over): drop the cache so the
+        // next mount gets a fresh aperture write rather than a black screen.
+        scopeApfLast = '';
+      } else {
+        const el = scopeOverlayRef.current;
+        if (scopeVeil <= 0.002) {
+          if (el.style.visibility !== 'hidden') el.style.visibility = 'hidden';
+          scopeApfLast = '';
+        } else {
+          if (el.style.visibility !== 'visible') el.style.visibility = 'visible';
+          el.style.opacity = scopeVeil.toFixed(3);
+          // Only write the aperture when it actually moves: it drives a
+          // full-screen radial-gradient, and re-writing it while the player
+          // holds a steady scope would repaint the whole viewport every frame.
+          const apf = THREE.MathUtils.smoothstep(scopeAim, 0.56, 0.93).toFixed(4);
+          if (apf !== scopeApfLast) {
+            el.style.setProperty('--apf', apf);
+            scopeApfLast = apf;
+          }
+        }
+      }
+      // The hip-fire reticle has no business floating over a scope picture.
+      if (crosshairRef.current) {
+        crosshairRef.current.style.opacity = (1 - scopeVeil).toFixed(3);
+      }
+
       // Tick stamina. While sprinting it depletes; when not, after a
       // short idle delay, it regenerates.
       // Tutorial mode grants UNLIMITED stamina — new players should be free to
@@ -11039,7 +11357,11 @@ const ForestSurvivalGame = () => {
       // Recomputed here and reused by the footstep rustle. No-op off foliage.
       bushSlowMul = bushWadeAt(camera.position.x, camera.position.z);
 
-      const baseSpeed = moveSpeed * weightSpeedMultiplier * abilityEffects.speedMultiplier * powerupSpeedMult * crouchMult * bushSlowMul * (1 + skillBonus('moveSpeed')) * (mpMods.speedMult ?? 1) * perkBonuses.moveSpeedMult;
+      // `frameScale` (see the 60 FPS normaliser above) is what keeps walk /
+      // sprint / dash identical on a 60 Hz desktop and a 120 Hz phone. It is
+      // folded in HERE so all three read it — currentSpeed and the dash below
+      // are both derived from baseSpeed.
+      const baseSpeed = moveSpeed * frameScale * weightSpeedMultiplier * abilityEffects.speedMultiplier * powerupSpeedMult * crouchMult * bushSlowMul * (1 + skillBonus('moveSpeed')) * (mpMods.speedMult ?? 1) * perkBonuses.moveSpeedMult;
       let currentSpeed = isRunning ? baseSpeed * sprintMultiplier : baseSpeed;
 
       // Apply dash speed if dashing
@@ -11059,6 +11381,20 @@ const ForestSurvivalGame = () => {
         ? WIRING_EYE_HEIGHT
         : (isCrouching ? crouchHeight : standingHeight);
       currentCameraHeight = THREE.MathUtils.lerp(currentCameraHeight, targetCameraHeight, rawDelta * 12);
+
+      // ── WEAPON MASS + INERTIA ──────────────────────────────────────────
+      // Mirror the equipped weapon's weight into the viewmodel every frame
+      // (never at the switch sites — five of them, guaranteed to drift), then
+      // feed it how far the view actually turned. The gun lags that turn and
+      // springs back, which is what makes a heavy weapon feel heavy.
+      gunModel.setWeaponMass(WEAPONS[currentWeapon].weight);
+      let lookDYaw = euler.y - prevLookYaw;
+      // Yaw is unbounded and wraps; a wrap would otherwise read as a 360° whip.
+      if (lookDYaw > Math.PI) lookDYaw -= Math.PI * 2;
+      else if (lookDYaw < -Math.PI) lookDYaw += Math.PI * 2;
+      gunModel.updateInertia(delta, lookDYaw, euler.x - prevLookPitch);
+      prevLookYaw = euler.y;
+      prevLookPitch = euler.x;
 
       // Update gun sway and bobbing based on movement, then apply all animations
       gunModel.updateIdleSway(delta);
@@ -11310,8 +11646,15 @@ const ForestSurvivalGame = () => {
         jumpCutApplied = true;
       }
 
-      velocityY -= gravity;
-      camera.position.y += velocityY;
+      // Same 60 FPS normalisation as horizontal movement. `velocityY` stays in
+      // "units per 60 FPS frame", so every threshold that reads it (the 0.45
+      // normal-hop reference, the 0.62 screen-shake cut-off, gunModel.updateJump)
+      // keeps its meaning — only the integration step is rate-corrected. Apex
+      // height was already rate-independent; what this fixes is the TIME to
+      // reach it, which used to halve on a 120 Hz panel and made the hop feel
+      // twice as twitchy on mobile.
+      velocityY -= gravity * frameScale;
+      camera.position.y += velocityY * frameScale;
 
       // Land on the dynamic floor (ground or a rock top), accounting for crouch.
       if (camera.position.y <= floorY) {
@@ -11390,6 +11733,15 @@ const ForestSurvivalGame = () => {
       // and under-reading skill. Cheap; only while moving + adaptive is active.
       if ((isAdaptiveMode || RUNTIME_PREFS.adaptiveDifficulty) && isMoving) {
         adaptiveDifficulty.recordMovement(camera.position.distanceTo(lastPlayerPosition), isRunning);
+      }
+      // Feed the Tactical Director the player's HORIZONTAL pace + position so it
+      // can read camping vs kiting (ignore Y so a jump doesn't read as a sprint).
+      if (tacticalActive) {
+        const hStep = Math.hypot(
+          camera.position.x - lastPlayerPosition.x,
+          camera.position.z - lastPlayerPosition.z,
+        );
+        tacticalDirector.noteFrame(camera.position.x, camera.position.z, hStep / (delta > 0 ? delta : 0.016), delta);
       }
       lastPlayerPosition.copy(camera.position);
 
@@ -12243,6 +12595,21 @@ const ForestSurvivalGame = () => {
               createParticles(enemy.mesh.position, 0xff9933, 3); // orange sparks (robot), not red blood
             }
 
+            // ── WAVE-PERK DAMAGE MODIFIERS (solo only — neutral in MP) ──
+            // Berserker's Rage: hit harder while critically wounded.
+            if (perkBonuses.berserkerLowHpMult > 1 && health < playerMaxHealth * 0.4) {
+              damage *= perkBonuses.berserkerLowHpMult;
+            }
+            // Executioner: a low-HP non-boss is finished off outright — the
+            // struck damage is topped up to guarantee the kill this frame.
+            if (perkBonuses.executionThreshold > 0 && enemy.type !== 'boss' && !enemy.isMiniBoss
+                && enemy.health > 0 && enemy.health <= enemy.maxHealth * perkBonuses.executionThreshold) {
+              // Top the damage up to a guaranteed kill without flagging it a
+              // crit — execution isn't a headshot, so it must not inflate the
+              // headshot achievements / accuracy metrics.
+              damage = Math.max(damage, enemy.health + 1);
+            }
+
             if (isMpGuest && mp) {
               // Guests don't own enemy health — report the hit to the host and
               // let it resolve damage and death authoritatively. We still show
@@ -12267,6 +12634,13 @@ const ForestSurvivalGame = () => {
               // Landing an open-window shot tells the Revenant it's being shot
               // at → it blinks to evade (player-sourced evade only).
               if (enemy.type === 'revenant') enemy.revEvadeUntil = Date.now() + 500;
+              // Cryo Rounds perk — a chance to flash-freeze the struck enemy
+              // (bosses / mini-bosses resist a full encasement). Reuses the
+              // tested freeze helper so the frost shell + thaw all just work.
+              if (perkBonuses.frostRounds && enemy.health > 0 && enemy.type !== 'boss'
+                  && !enemy.isMiniBoss && Math.random() < 0.22) {
+                freezeEnemy(enemy, 750);
+              }
               // ── BOSS PHASE 2 ─────────────────────────────────────────
               // When a full boss drops below half HP for the first time it
               // enrages: gains +35% speed and +30% damage. Latched so the
@@ -12384,6 +12758,10 @@ const ForestSurvivalGame = () => {
 
             if (!isMpGuest && enemy.health <= 0) {
               handleEnemyKilled(enemy, isCritical);
+              // Arc Reactor perk — the fatal blow arcs chain lightning to
+              // nearby foes. Called ONLY here (on a confirmed kill), so the
+              // chain never recurses through handleEnemyKilled.
+              if (perkBonuses.chainLightning) arcChainLightning(enemy, damage);
             }
             // Detonators perk — bullets explode on hit. Splash 40% of the
             // bullet's damage to enemies within a small radius. The just-hit
@@ -12912,9 +13290,12 @@ const ForestSurvivalGame = () => {
           // ARK-07 empowerment paces the far-seek too, so surged/irradiated
           // units close the gap visibly faster.
           const netMulFar = enemySpeedMult(enemy);
+          // Tactical rush urge — distant enemies close faster on a player who is
+          // camping / out-ranging the swarm (solo only; 1.0 otherwise).
+          const rushMulFar = tacticalActive ? (1 + tacticalDirector.getRushUrge() * 0.3) : 1;
           _tempVec3.subVectors(focusPos, enemy.mesh.position).normalize();
-          enemy.mesh.position.x += _tempVec3.x * enemy.speed * sprintMul * netMulFar * delta * 60;
-          enemy.mesh.position.z += _tempVec3.z * enemy.speed * sprintMul * netMulFar * delta * 60;
+          enemy.mesh.position.x += _tempVec3.x * enemy.speed * sprintMul * netMulFar * rushMulFar * delta * 60;
+          enemy.mesh.position.z += _tempVec3.z * enemy.speed * sprintMul * netMulFar * rushMulFar * delta * 60;
           enemy.mesh.position.y = groundY;
           enemy.mesh.rotation.y = Math.atan2(_tempVec3.x, _tempVec3.z);
           continue;
@@ -12985,7 +13366,9 @@ const ForestSurvivalGame = () => {
               canSeePlayer,
               hearPlayerShooting: canHearPlayer,
               timeSinceLastSawPlayer: perception.timeSinceLastSeen,
-              isInCover: false
+              isInCover: false,
+              // Swarm-wide adaptive directive (solo only; undefined = neutral).
+              directive: tacticalActive ? tacticalDirector.getDirective() : undefined,
             }, delta);
             // Stagger ticks across enemies for an even per-frame budget.
             enemy.nextAiAt = frameNowMs + AI_TICK_MS + (i * 23) % 80;
@@ -15694,6 +16077,102 @@ const ForestSurvivalGame = () => {
             <span className="text-[12px] text-gray-400">The match is still live — click to recapture your aim.</span>
           </div>
         </div>
+      )}
+
+      {/* Scope picture sits on its own layer BENEATH the HUD (z 9 vs 10):
+          its aperture mask is near-opaque, and burying the health/ammo
+          readouts under it would be worse than the narrow scope ever was. */}
+      {!photoMode && (
+      <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 9 }}>
+        {/* ── SNIPER SCOPE PICTURE ──────────────────────────────────────────
+            A tube optic can't be looked through as a viewmodel: the scope's own
+            bore limits the sight line to a ~7° cone inside an ~83° frame, so
+            the player was squinting at the world through a keyhole ringed by
+            scope metal, and no amount of resizing fixes it (a tube's aperture
+            is bore ÷ length, which is scale-invariant). Once genuinely sighted
+            the 3D optic is swapped away and the world is drawn at FULL WIDTH
+            inside this aperture instead. Ref-driven per frame — never setState.
+            Rendered before the crosshair so the reticle sits on top of it. */}
+        {!gameState.isGameOver && !isPaused && (
+          <div
+            ref={scopeOverlayRef}
+            className="absolute inset-0"
+            style={{
+              visibility: 'hidden', opacity: 0, pointerEvents: 'none',
+              // 0 → 1 as the aperture irises open. The radius is viewport
+              // relative so the scope fills the screen on any aspect ratio.
+              ['--apf' as string]: '0',
+              ['--ap' as string]: 'calc(var(--apf) * min(46vh, 46vw))',
+            } as CSSProperties}
+          >
+            {/* Aperture — everything outside the circle is masked out. */}
+            <div
+              className="absolute inset-0"
+              style={{
+                background:
+                  'radial-gradient(circle at 50% 50%, rgba(0,0,0,0) 0, rgba(0,0,0,0) calc(var(--ap) - 1px), rgba(2,4,3,0.972) calc(var(--ap) + 2px), rgba(0,0,0,0.995) 100%)',
+              }}
+            />
+            {/* Lens body — inner shadow for depth plus a faint coated-glass rim. */}
+            <div
+              className="absolute left-1/2 top-1/2 rounded-full"
+              style={{
+                width: 'calc(var(--ap) * 2)', height: 'calc(var(--ap) * 2)',
+                transform: 'translate(-50%, -50%)',
+                boxShadow:
+                  'inset 0 0 70px 22px rgba(0,0,0,0.5), inset 0 0 8px 1px rgba(150,205,180,0.13), 0 0 2px 1px rgba(0,0,0,0.9)',
+              }}
+            />
+            {/* Reticle: duplex crosshair with a fine centre and mil ticks.
+                Clipped to the aperture so it can never spill onto the mask. */}
+            <div
+              className="absolute left-1/2 top-1/2 rounded-full overflow-hidden"
+              style={{
+                width: 'calc(var(--ap) * 2)', height: 'calc(var(--ap) * 2)',
+                transform: 'translate(-50%, -50%)',
+                opacity: 'var(--apf)',
+              } as CSSProperties}
+            >
+              {(['h', 'v'] as const).map((axis) => (
+                <div
+                  key={axis}
+                  className="absolute left-1/2 top-1/2"
+                  style={{
+                    width: axis === 'h' ? '100%' : '1.5px',
+                    height: axis === 'h' ? '1.5px' : '100%',
+                    transform: 'translate(-50%, -50%)',
+                    // Thick duplex posts outboard, hairline through the middle,
+                    // and a clear gap at the centre so the target stays visible.
+                    background: axis === 'h'
+                      ? 'linear-gradient(90deg, rgba(4,8,6,0.92) 0 30%, rgba(4,8,6,0.62) 30% 46%, transparent 46% 54%, rgba(4,8,6,0.62) 54% 70%, rgba(4,8,6,0.92) 70% 100%)'
+                      : 'linear-gradient(180deg, rgba(4,8,6,0.92) 0 30%, rgba(4,8,6,0.62) 30% 46%, transparent 46% 54%, rgba(4,8,6,0.62) 54% 70%, rgba(4,8,6,0.92) 70% 100%)',
+                  }}
+                />
+              ))}
+              {/* Mil-dot ticks down the lower post — the holdover marks. */}
+              {[1, 2, 3].map((i) => (
+                <div
+                  key={i}
+                  className="absolute left-1/2"
+                  style={{
+                    top: `calc(50% + ${i * 9}%)`,
+                    width: `${9 - i * 1.6}px`, height: '1.5px',
+                    transform: 'translateX(-50%)',
+                    background: 'rgba(4,8,6,0.8)',
+                  }}
+                />
+              ))}
+              <div
+                className="absolute left-1/2 top-1/2 rounded-full"
+                style={{
+                  width: '2.5px', height: '2.5px', transform: 'translate(-50%, -50%)',
+                  background: 'rgba(6,12,9,0.95)',
+                }}
+              />
+            </div>
+          </div>
+        )}
+      </div>
       )}
 
       {!photoMode && (

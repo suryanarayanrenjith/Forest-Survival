@@ -403,6 +403,44 @@ export class AchievementSystem {
         reward: 'Legendary Title',
         rarity: 'legendary',
       },
+
+      // ── Mobile / touch-device (single run, solo only) ──
+      // Unlockable ONLY while playing on a touch device — each trigger in
+      // App.tsx is gated on `touchControls.enabled`, so desktop play never
+      // advances them. They celebrate mastering the on-screen controls.
+      {
+        id: 'touch_trooper',
+        name: 'Touch Trooper',
+        description: 'Reach wave 5 on a touch device',
+        icon: '📱',
+        unlocked: false,
+        progress: 0,
+        target: 5,
+        reward: 'Rare Badge',
+        rarity: 'rare',
+      },
+      {
+        id: 'pocket_operator',
+        name: 'Pocket Operator',
+        description: 'Reach wave 12 on a touch device',
+        icon: '🎮',
+        unlocked: false,
+        progress: 0,
+        target: 12,
+        reward: 'Epic Badge',
+        rarity: 'epic',
+      },
+      {
+        id: 'thumb_warrior',
+        name: 'Thumb Warrior',
+        description: 'Reach a 20-kill streak on a touch device',
+        icon: '👍',
+        unlocked: false,
+        progress: 0,
+        target: 20,
+        reward: 'Epic Badge',
+        rarity: 'epic',
+      },
     ];
 
     achievementData.forEach((achievement) => {

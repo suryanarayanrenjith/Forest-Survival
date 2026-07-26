@@ -106,7 +106,6 @@ const ProfileMenu = ({ onClose, onSkillTree }: ProfileMenuProps) => {
   const [nameBusy, setNameBusy] = useState(false);
   const [nameError, setNameError] = useState<string | null>(null);
 
-  // Delete-account flow
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deletePassword, setDeletePassword] = useState('');
   const [deleteConfirm, setDeleteConfirm] = useState('');
@@ -246,7 +245,6 @@ const ProfileMenu = ({ onClose, onSkillTree }: ProfileMenuProps) => {
           : 'hud-frame relative z-10 flex max-h-[94dvh] w-full max-w-5xl flex-col overflow-hidden rounded-[24px] border border-emerald-400/15 bg-[#080d0b] shadow-[0_40px_120px_rgba(0,0,0,0.6)]'}
         style={isTouch ? undefined : { animation: 'authFade 0.32s cubic-bezier(0.16,1,0.3,1) forwards' }}
       >
-        {/* Header */}
         <div className={`flex flex-none items-center justify-between border-b border-white/[0.07] ${isTouch ? 'gap-2 px-3 py-1.5' : 'gap-4 px-5 sm:px-6 py-4'}`}>
           <div className={`flex items-center ${isTouch ? 'gap-2' : 'gap-3'}`}>
             <div className={`relative flex items-center justify-center rounded-lg bg-emerald-500/12 border border-emerald-400/30 ${isTouch ? 'h-7 w-7' : 'w-10 h-10 rounded-xl'}`}>
@@ -268,11 +266,8 @@ const ProfileMenu = ({ onClose, onSkillTree }: ProfileMenuProps) => {
           </button>
         </div>
 
-        {/* Body — LEFT account column · RIGHT showcase column */}
         <div className="m-scroll flex flex-1 min-h-0 flex-col overflow-y-auto md:flex-row md:overflow-hidden">
-          {/* ── LEFT · ACCOUNT ─────────────────────────────────────────── */}
           <aside className={`w-full flex-shrink-0 border-b border-white/[0.07] md:w-[340px] md:border-b-0 md:border-r md:overflow-y-auto ${isTouch ? 'space-y-3 p-3' : 'space-y-4 p-5'}`}>
-            {/* Identity */}
             <div
               className="hud-frame relative overflow-hidden rounded-2xl border border-emerald-400/20 bg-gradient-to-br from-emerald-500/[0.1] to-transparent p-4"
               style={{ '--hud-bracket': 'rgba(46,232,180,0.45)' } as CSSProperties}
@@ -333,7 +328,6 @@ const ProfileMenu = ({ onClose, onSkillTree }: ProfileMenuProps) => {
               </div>
             </div>
 
-            {/* Avatar picker */}
             <div className={LEFT_CARD}>
               <CardHead
                 icon={User}
@@ -370,7 +364,6 @@ const ProfileMenu = ({ onClose, onSkillTree }: ProfileMenuProps) => {
               </div>
             </div>
 
-            {/* Privacy */}
             <div className={LEFT_CARD}>
               <CardHead icon={Eye} label="Stats Privacy" />
               <p className="mt-2 text-[11px] leading-relaxed text-gray-500">When private, others still see your rank &amp; avatar — but not detailed stats.</p>
@@ -394,7 +387,6 @@ const ProfileMenu = ({ onClose, onSkillTree }: ProfileMenuProps) => {
               </div>
             </div>
 
-            {/* Leaderboard visibility */}
             <div className={LEFT_CARD}>
               <CardHead icon={Crown} label="Leaderboard" />
               <p className="mt-2 text-[11px] leading-relaxed text-gray-500">Show your name, rank &amp; best wave on the global leaderboard.</p>
@@ -418,7 +410,6 @@ const ProfileMenu = ({ onClose, onSkillTree }: ProfileMenuProps) => {
               </div>
             </div>
 
-            {/* Account — security actions + danger zone, compact */}
             <div className={LEFT_CARD}>
               <CardHead icon={KeyRound} label="Account" />
               <div className="mt-3 grid gap-2">
@@ -460,7 +451,6 @@ const ProfileMenu = ({ onClose, onSkillTree }: ProfileMenuProps) => {
             </div>
           </aside>
 
-          {/* ── RIGHT · SHOWCASE ───────────────────────────────────────── */}
           <section className="flex min-w-0 flex-1 flex-col">
             {/* On touch this tab strip sticks to the top of the scroll so the
                 showcase tabs stay reachable after scrolling past the account
@@ -548,7 +538,6 @@ const ProfileMenu = ({ onClose, onSkillTree }: ProfileMenuProps) => {
                     <HeadlineStat label="Trophies" value={`${achievementsUnlocked}/${achievements.length}`} accent="amber" />
                   </div>
 
-                  {/* Switchable stats visualizer — Bars / Donut / Radar. */}
                   <StatsVisualizer
                     soloScore={solo?.highScore ?? 0}
                     soloKills={solo?.totalKills ?? 0}
@@ -644,10 +633,8 @@ const ProfileMenu = ({ onClose, onSkillTree }: ProfileMenuProps) => {
         </div>
       </div>
 
-      {/* Change-password modal */}
       {pwOpen && <ChangePasswordModal onClose={() => setPwOpen(false)} />}
 
-      {/* Delete-account confirmation */}
       {deleteOpen && (
         <DeleteAccountDialog
           handle={usernameLabel}
@@ -673,9 +660,6 @@ const ProfileMenu = ({ onClose, onSkillTree }: ProfileMenuProps) => {
   );
 };
 
-/* ============================================================
- * DELETE ACCOUNT DIALOG
- * ============================================================ */
 interface DeleteAccountDialogProps {
   handle: string;
   password: string;
@@ -778,9 +762,6 @@ const DeleteAccountDialog = ({
     document.body,
   );
 
-/* ============================================================
- * CHANGE PASSWORD MODAL
- * ============================================================ */
 const ChangePasswordModal = ({ onClose }: { onClose: () => void }) => {
   const changePassword = useAction(api.account.changePassword);
   const [busy, setBusy] = useState(false);
@@ -889,9 +870,6 @@ const ChangePasswordModal = ({ onClose }: { onClose: () => void }) => {
   );
 };
 
-/* ============================================================
- * ACTIVITY HEATMAP (GitHub-style)
- * ============================================================ */
 const HEAT_BG = [
   'rgba(255,255,255,0.05)',
   'rgba(46,232,180,0.22)',
@@ -949,7 +927,6 @@ const ActivityHeatmap = () => {
       else break;
     }
 
-    // Longest streak across all known active days.
     const activeKeys = [...levelByDay.entries()].filter(([, lvl]) => lvl > 0).map(([k]) => k).sort();
     let longestStreak = 0;
     let run = 0;
@@ -985,7 +962,6 @@ const ActivityHeatmap = () => {
       ) : (
         <div className="mt-4 overflow-x-auto pb-1">
           <div className="inline-block min-w-max">
-            {/* Month labels */}
             <div className="flex">
               <div className="w-7 flex-shrink-0" />
               <div className="flex gap-[3px]">
@@ -999,7 +975,6 @@ const ActivityHeatmap = () => {
                 })}
               </div>
             </div>
-            {/* Weekday labels + cells */}
             <div className="mt-1 flex">
               <div className="mr-1 flex w-6 flex-shrink-0 flex-col gap-[3px]">
                 {['', 'Mon', '', 'Wed', '', 'Fri', ''].map((d, i) => (
@@ -1318,9 +1293,6 @@ const PhotosPanel = () => {
   );
 };
 
-/* ============================================================
- * STATS VISUALIZER — one switchable chart (Bars / Donut / Radar)
- * ============================================================ */
 type StatsView = 'bars' | 'donut' | 'radar';
 
 const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
@@ -1348,7 +1320,6 @@ const StatsVisualizer = (p: StatsVisualizerProps) => {
 
   return (
     <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-white/[0.02] p-4 sm:p-5">
-      {/* faint aurora wash */}
       <div className="pointer-events-none absolute -right-16 -top-16 h-44 w-44 rounded-full" style={{ background: 'radial-gradient(circle, rgba(46,232,180,0.1), transparent 70%)', filter: 'blur(10px)' }} />
 
       <div className="relative mb-4 flex items-center justify-between gap-2">

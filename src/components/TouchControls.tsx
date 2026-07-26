@@ -402,12 +402,10 @@ const Joystick = ({ mirrored }: { mirrored: boolean }) => {
     >
       {origin && (
         <>
-          {/* Base ring */}
           <div
             className="fixed h-28 w-28 -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/15 bg-black/45"
             style={{ left: origin.x, top: origin.y }}
           />
-          {/* Thumb */}
           <div
             className="fixed h-14 w-14 -translate-x-1/2 -translate-y-1/2 rounded-full border border-emerald-300/50 bg-emerald-400/30"
             style={{ left: origin.x + thumb.x, top: origin.y + thumb.y }}

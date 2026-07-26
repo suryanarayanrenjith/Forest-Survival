@@ -35,7 +35,7 @@ export const addKillFeedEntry = (message: string, type: KillFeedEntry['type'] = 
     timestamp: Date.now()
   };
 
-  killFeedEntries = [entry, ...killFeedEntries].slice(0, 5); // Keep last 5 entries
+  killFeedEntries = [entry, ...killFeedEntries].slice(0, 5);
 
   if (updateCallback) {
     updateCallback();

@@ -357,7 +357,6 @@ export class MultiplayerManager {
   // powerups (speed boosts, dashes, nukes, score multipliers, etc.).
   private antiCheat: Map<string, { x: number; z: number; t: number; strikes: number; alive: boolean }> = new Map();
 
-  // Throttling state
   private lastPositionUpdate: number = 0;
   private pendingPositionUpdate: { position: THREE.Vector3; rotation: THREE.Euler } | null = null;
   private positionUpdateTimer: ReturnType<typeof setTimeout> | null = null;
@@ -366,11 +365,9 @@ export class MultiplayerManager {
   // drop reordered packets and reconstruct our motion on their own clock.
   private positionSeq: number = 0;
 
-  // Connection health monitoring
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private connectionCheckInterval: ReturnType<typeof setInterval> | null = null;
 
-  // Connection status callback
   private onConnectionStatusChange: ((playerId: string, status: 'connected' | 'disconnected' | 'timeout') => void) | null = null;
 
   constructor(playerName: string) {
@@ -455,14 +452,12 @@ export class MultiplayerManager {
         this.localPlayer.lastHeartbeat = Date.now();
         this.isHost = true;
 
-        // Initialize game state
         this.gameState = {
           players: new Map([[id, this.localPlayer]]),
           gameMode: 'coop',
           hostId: id
         };
 
-        // Start heartbeat and connection monitoring
         this.startHeartbeat();
         this.startConnectionMonitoring();
 
@@ -488,9 +483,6 @@ export class MultiplayerManager {
     });
   }
 
-  /**
-   * Start sending heartbeats to all connected peers
-   */
   private startHeartbeat(): void {
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval);
@@ -505,9 +497,6 @@ export class MultiplayerManager {
     }, HEARTBEAT_INTERVAL);
   }
 
-  /**
-   * Start monitoring connection health
-   */
   private startConnectionMonitoring(): void {
     if (this.connectionCheckInterval) {
       clearInterval(this.connectionCheckInterval);

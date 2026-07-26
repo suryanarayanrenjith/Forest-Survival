@@ -219,7 +219,6 @@ export const submitSoloRun = mutation({
   },
 });
 
-/** Record a finished Multiplayer match. */
 export const submitMultiplayerResult = mutation({
   args: {
     score: v.number(),

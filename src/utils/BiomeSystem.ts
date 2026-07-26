@@ -233,7 +233,6 @@ function hashStdMatOpts(o: StdMatOpts): string {
 export class BiomeSystem {
   private biomeConfigs: Map<BiomeType, BiomeConfig>;
 
-  // === SHARED MATERIAL / GEOMETRY POOLS ===
   private matPool = new Map<string, THREE.Material>();
   private geoPool = new Map<string, THREE.BufferGeometry>();
 
@@ -359,7 +358,6 @@ export class BiomeSystem {
     return fresh;
   }
 
-  // === Common unit primitives (built once, scaled per-instance) ===
   // Heights/radii are 1 by default; meshes scale to the desired size.
   private unitCyl(rTop: number, rBot: number, radial: number, key: string): THREE.CylinderGeometry {
     return this.geo(`cyl:${key}`, () => new THREE.CylinderGeometry(rTop, rBot, 1, radial)) as THREE.CylinderGeometry;
@@ -392,7 +390,6 @@ export class BiomeSystem {
     return this.geo(`torus:${r}:${t}:${ts}:${rs}`, () => new THREE.TorusGeometry(r, t, ts, rs)) as THREE.TorusGeometry;
   }
 
-  // === GRASS SYSTEM ===
   // Per-biome grass tint + density (0 = none). Shared geometry + per-biome
   // materials keep thousands of instanced blades cheap to render.
   private grassConfigs: Record<BiomeType, { color: number; density: number }> = {
@@ -686,7 +683,6 @@ export class BiomeSystem {
     return this.biomeConfigs.get(biome)!;
   }
 
-  // ═══════════════ TREE (tall structures) ═══════════════
   createTree(x: number, z: number, biome: BiomeType): TerrainObject {
     switch (biome) {
       case 'volcanic': return this.createCharredStump(x, z);
@@ -700,7 +696,6 @@ export class BiomeSystem {
     }
   }
 
-  // ═══════════════ ROCK (medium obstacles) ═══════════════
   createRock(x: number, z: number, biome: BiomeType): TerrainObject {
     switch (biome) {
       case 'volcanic': return this.createObsidianShard(x, z);
@@ -714,7 +709,6 @@ export class BiomeSystem {
     }
   }
 
-  // ═══════════════ BUSH (small decor) ═══════════════
   createBush(x: number, z: number, biome: BiomeType): TerrainObject {
     switch (biome) {
       case 'volcanic': return this.createEmberPatch(x, z);
@@ -728,7 +722,6 @@ export class BiomeSystem {
     }
   }
 
-  // ═══════════════ BOULDER (large obstacles) ═══════════════
   createBoulder(x: number, z: number, biome: BiomeType): TerrainObject {
     switch (biome) {
       case 'volcanic': return this.createVolcanicBoulder(x, z);
@@ -742,7 +735,6 @@ export class BiomeSystem {
     }
   }
 
-  // ═══════════════ SPECIAL FEATURES (unique per biome) ═══════════════
   createSpecialFeature(x: number, z: number, biome: BiomeType): TerrainObject | null {
     const roll = Math.random();
     switch (biome) {
@@ -800,10 +792,6 @@ export class BiomeSystem {
       ground.material.metalness = override?.metalness ?? config.groundMetalness;
     }
   }
-
-  // ══════════════════════════════════════
-  //  FOREST
-  // ══════════════════════════════════════
 
   private createForestTree(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
@@ -964,10 +952,6 @@ export class BiomeSystem {
     return { mesh: group, x, z, type: 'bush', collidable: false, radius: 1 };
   }
 
-  // ══════════════════════════════════════
-  //  VOLCANIC
-  // ══════════════════════════════════════
-
   private createCharredStump(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
     const height = 3 + Math.random() * 4;
@@ -992,7 +976,6 @@ export class BiomeSystem {
       crack.rotation.z = (Math.random() - 0.5) * 0.3;
       group.add(crack);
     }
-    // Charred broken branches
     const branchMat = this.mat({ color: 0x0c0807, flatShading: true, roughness: 0.95 });
     for (let i = 0; i < 2; i++) {
       const branch = new THREE.Mesh(this.unitCyl(0.05, 0.16, 4, 'charredBranch'), branchMat);
@@ -1116,10 +1099,6 @@ export class BiomeSystem {
     return { mesh: group, x, z, type: 'rock', collidable: true, radius: 1.5, height: 1.0 };
   }
 
-  // ══════════════════════════════════════
-  //  TUNDRA
-  // ══════════════════════════════════════
-
   private createFrozenPine(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
     const height = 6 + Math.random() * 4;
@@ -1239,10 +1218,6 @@ export class BiomeSystem {
     group.position.set(x, 0, z);
     return { mesh: group, x, z, type: 'rock', collidable: true, radius: 1.5, height: 3 };
   }
-
-  // ══════════════════════════════════════
-  //  DESERT
-  // ══════════════════════════════════════
 
   private createMesaPillar(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
@@ -1374,10 +1349,6 @@ export class BiomeSystem {
     dune.receiveShadow = true; dune.rotation.y = Math.random() * Math.PI;
     return { mesh: dune, x, z, type: 'bush', collidable: false, radius: size };
   }
-
-  // ══════════════════════════════════════
-  //  SWAMP
-  // ══════════════════════════════════════
 
   private createGnarledTree(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
@@ -1552,10 +1523,6 @@ export class BiomeSystem {
     return { mesh: group, x, z, type: 'tree', collidable: true, radius: 2, height: 2 };
   }
 
-  // ══════════════════════════════════════
-  //  MILITARY
-  // ══════════════════════════════════════
-
   private createConcreteWall(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
     const height = 3 + Math.random() * 2;
@@ -1702,10 +1669,6 @@ export class BiomeSystem {
     group.position.set(x, 0, z);
     return { mesh: group, x, z, type: 'rock', collidable: true, radius: 2, height: 1.5 };
   }
-
-  // ══════════════════════════════════════
-  //  RUINS
-  // ══════════════════════════════════════
 
   private createStoneColumn(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
@@ -2091,7 +2054,6 @@ export class BiomeSystem {
     rune.rotation.copy(slab.rotation);
     group.add(rune);
 
-    // Cap block
     const capMat = this.mat({ color: 0x0a0612, flatShading: true, roughness: 0.4, metalness: 0.5 });
     const cap = new THREE.Mesh(this.unitBox('twilightMonoCap'), capMat);
     cap.scale.set(width + 0.2, 0.18, depth + 0.2);
@@ -2145,7 +2107,6 @@ export class BiomeSystem {
     log.castShadow = true; log.receiveShadow = true;
     group.add(log);
 
-    // Glowing fungus patches along the log.
     const fungusColor = [0x9466ff, 0x4ec3ff, 0x66ffcf][Math.floor(Math.random() * 3)];
     const fungusMat = this.mat({
       color: 0x000000, emissive: fungusColor, emissiveIntensity: 1.9, flatShading: true,

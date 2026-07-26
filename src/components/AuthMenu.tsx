@@ -270,7 +270,6 @@ const AuthMenu = ({ onClose, onSignedIn, initialMode = 'signIn' }: AuthMenuProps
           </div>
 
           <div className="space-y-4">
-            {/* Segmented Login / Register control */}
             <div className="grid grid-cols-2 gap-1 rounded-xl border border-white/10 bg-white/[0.02] p-1">
               <button
                 type="button"
@@ -288,7 +287,6 @@ const AuthMenu = ({ onClose, onSignedIn, initialMode = 'signIn' }: AuthMenuProps
               </button>
             </div>
 
-            {/* Step indicator for sign-up onboarding */}
             {isSignUp && (
               <div className="flex items-center gap-2">
                 <StepDot active={step === 1} done={step > 1} label="Account" index={1} />
@@ -421,7 +419,6 @@ const AuthMenu = ({ onClose, onSignedIn, initialMode = 'signIn' }: AuthMenuProps
                 <div className="rounded-lg border border-rose-400/20 bg-rose-500/[0.06] px-3 py-2 text-sm text-rose-100">{error}</div>
               )}
 
-              {/* Actions */}
               {!isSignUp ? (
                 <SubmitButton busy={busy} disabled={busy}>
                   <LogIn className="w-4 h-4" strokeWidth={2.25} /> {busy ? 'Signing In...' : 'Sign In'}

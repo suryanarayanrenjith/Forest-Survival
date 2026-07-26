@@ -31,9 +31,8 @@ const EMOTES = [
   { id: 'angry', label: 'Angry 😠', icon: '😠' },
 ];
 
-// Rate limiting constants
-const CHAT_COOLDOWN_MS = 500; // 500ms between chat messages
-const EMOTE_COOLDOWN_MS = 1500; // 1.5s between emotes
+const CHAT_COOLDOWN_MS = 500;
+const EMOTE_COOLDOWN_MS = 1500;
 
 // How long a kill/join/leave event lingers in the floating feed before it
 // fades out and is removed (keeps the top-left overlay from piling up).
@@ -44,7 +43,7 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
   const [inputValue, setInputValue] = useState('');
   const [showEmotes, setShowEmotes] = useState(false);
   const [showChat, setShowChat] = useState(true);
-  const [touchOpen, setTouchOpen] = useState(false); // touch overlay visibility
+  const [touchOpen, setTouchOpen] = useState(false);
   const [chatCooldown, setChatCooldown] = useState(false);
   const [emoteCooldown, setEmoteCooldown] = useState(false);
   // Ticks once a second so the floating kill/join/leave feed can auto-collapse
@@ -61,7 +60,6 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
     playerLeft?: (data: unknown) => void;
   }>({});
 
-  // Memoized handler for chat messages
   const handleChatMessage = useCallback((data: unknown) => {
     const msgData = data as {
       playerId: string;
@@ -83,7 +81,6 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
     setMessages(prev => [...prev, msg].slice(-50));
   }, []);
 
-  // Memoized handler for enemy kills
   const handleEnemyKilled = useCallback((data: unknown) => {
     const killData = data as { playerId: string };
     const player = manager.getAllPlayers().find(p => p.id === killData.playerId);
@@ -101,7 +98,6 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
     }
   }, [manager]);
 
-  // Memoized handler for player joins
   const handlePlayerJoined = useCallback((data: unknown) => {
     const joinData = data as { data: { id: string; name: string; color: number } };
     const msg: ChatMessage = {
@@ -116,7 +112,6 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
     setMessages(prev => [...prev, msg].slice(-50));
   }, []);
 
-  // Memoized handler for player leaves
   const handlePlayerLeft = useCallback((data: unknown) => {
     const leftData = data as { playerId: string };
     const msg: ChatMessage = {
@@ -131,7 +126,6 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
     setMessages(prev => [...prev, msg].slice(-50));
   }, []);
 
-  // Register handlers once and clean up on unmount
   useEffect(() => {
     // Store handlers in ref so we can clean them up
     handlersRef.current = {
@@ -141,13 +135,11 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
       playerLeft: handlePlayerLeft
     };
 
-    // Register handlers and store unsubscribe functions
     const unsubChatMessage = manager.onMessage('chat_message', handleChatMessage);
     const unsubEnemyKilled = manager.onMessage('enemy_killed', handleEnemyKilled);
     const unsubPlayerJoined = manager.onMessage('player_joined', handlePlayerJoined);
     const unsubPlayerLeft = manager.onMessage('player_left', handlePlayerLeft);
 
-    // Cleanup function - removes handlers when component unmounts or manager changes
     return () => {
       unsubChatMessage();
       unsubEnemyKilled();
@@ -157,7 +149,6 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
   }, [manager, handleChatMessage, handleEnemyKilled, handlePlayerJoined, handlePlayerLeft]);
 
   useEffect(() => {
-    // Auto-scroll to bottom
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
@@ -179,11 +170,9 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
 
     const localPlayer = manager.getLocalPlayer();
 
-    // Apply rate limiting
     setChatCooldown(true);
     setTimeout(() => setChatCooldown(false), CHAT_COOLDOWN_MS);
 
-    // Broadcast message
     manager.broadcastMessage({
       type: 'chat_message',
       playerId: localPlayer.id,
@@ -194,7 +183,6 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
       timestamp: Date.now()
     });
 
-    // Add to local messages
     const msg: ChatMessage = {
       id: `${localPlayer.id}-${Date.now()}`,
       playerId: localPlayer.id,
@@ -215,11 +203,9 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
 
     const localPlayer = manager.getLocalPlayer();
 
-    // Apply rate limiting
     setEmoteCooldown(true);
     setTimeout(() => setEmoteCooldown(false), EMOTE_COOLDOWN_MS);
 
-    // Broadcast emote
     manager.broadcastMessage({
       type: 'chat_message',
       playerId: localPlayer.id,
@@ -230,7 +216,6 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
       timestamp: Date.now()
     });
 
-    // Add to local messages
     const msg: ChatMessage = {
       id: `${localPlayer.id}-${Date.now()}`,
       playerId: localPlayer.id,
@@ -271,7 +256,6 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
     }
   };
 
-  // Safe color formatting to handle edge cases
   const formatColor = (color: number): string => {
     if (typeof color !== 'number' || color < 0) {
       return '#ffffff';
@@ -310,7 +294,6 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
           })}
         </div>
 
-        {/* Chat toggle */}
         <button
           onClick={() => setTouchOpen(true)}
           aria-label="Open chat"
@@ -320,7 +303,6 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
           <MessageSquare className="h-5 w-5 text-emerald-300" strokeWidth={2.25} />
         </button>
 
-        {/* Chat overlay (bottom sheet) */}
         {touchOpen && (
           <div
             className="fixed inset-0 z-[120] flex items-end justify-center bg-black/60 p-2"

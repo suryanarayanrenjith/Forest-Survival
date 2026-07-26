@@ -1,6 +1,5 @@
 import * as THREE from 'three';
 
-// Update shader time uniform
 export function updateShaderTime(material: THREE.ShaderMaterial, deltaTime: number) {
   if (material.uniforms.time) {
     material.uniforms.time.value += deltaTime;

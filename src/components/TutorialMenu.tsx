@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ArrowLeft, GraduationCap, Play, ChevronDown, CloudSun, Sun, Moon, BookOpen, ArrowUpRight,
   Trees, Flame, Snowflake, Mountain, Droplet, Shield, Leaf, Landmark, type LucideIcon,
@@ -45,13 +45,34 @@ const TutorialMenu = ({ onStartTutorial, onBack, selectedCharacter, onSelectChar
 
   const SelectedMapIcon = MAP_ICONS[selectedMap];
 
+  // Map is the LAST section on the page, so expanding it unfolds the 8-map grid
+  // straight into the strip covered by the fixed Start bar (or entirely below
+  // the fold on a short screen) — the dropdown looked like it did nothing.
+  // Reveal it: after the grid mounts, scroll it back above the bar.
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const mapSectionRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!showMapSelector) return;
+    // One frame so the grid has laid out and the section has its final height.
+    const raf = requestAnimationFrame(() => {
+      const scroller = scrollRef.current;
+      const section = mapSectionRef.current;
+      if (!scroller || !section) return;
+      // Height of the Start bar (pt-10 + button + pb-6) plus a little breathing
+      // room, so the last row of maps clears the scrim rather than hiding under it.
+      const START_BAR_CLEARANCE = 148;
+      const hidden = section.getBoundingClientRect().bottom - (scroller.clientHeight - START_BAR_CLEARANCE);
+      if (hidden > 0) scroller.scrollBy({ top: hidden, behavior: 'smooth' });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [showMapSelector]);
+
   return (
     <div className="relative w-full h-dvh overflow-hidden">
       {/* Backdrop chrome (dark gradients + themed tint) is rendered at App
           level OUTSIDE the menu transition so it stays static while this
           screen slides. Only the content below animates. */}
 
-      {/* Back */}
       <button
         onClick={onBack}
         className="group fixed top-5 left-5 z-50 flex items-center gap-2 rounded-xl px-4 py-2.5
@@ -62,10 +83,20 @@ const TutorialMenu = ({ onStartTutorial, onBack, selectedCharacter, onSelectChar
         Back
       </button>
 
-      {/* Scrollable content */}
-      <div className="relative z-20 h-dvh overflow-y-auto">
-        <div className={`m-safe flex flex-col items-center max-w-2xl mx-auto ${IS_TOUCH ? 'px-4 pt-16 pb-32' : 'px-4 pt-20 pb-36'}`}>
-          {/* Title */}
+      {/* Scrollable content.
+
+          `m-safe` lives on the SCROLLER, never on the padded content div below.
+          It sets all four `padding-*` longhands and is emitted after Tailwind's
+          utility layer at equal specificity, so co-locating it with `px-4 pt-20
+          pb-36` silently zeroed every one of them (env(safe-area-inset-*) is 0px
+          on desktop). That is why the Map section could never be scrolled clear
+          of the Start bar — the page had no bottom padding at all.
+
+          Bottom padding must exceed the fixed Start bar (pt-10 40px + button
+          ~56px + pb-6 24px = ~120px) so the bar always ends up BELOW the last
+          section rather than cutting into it. */}
+      <div ref={scrollRef} className="m-safe relative z-20 h-dvh overflow-y-auto">
+        <div className={`flex flex-col items-center max-w-2xl mx-auto ${IS_TOUCH ? 'px-4 pt-16 pb-36' : 'px-4 pt-20 pb-40'}`}>
           <div className={`text-center ${IS_TOUCH ? 'mb-5' : 'mb-8'}`}>
             <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl border border-amber-400/30 bg-amber-500/10 mb-4">
               <GraduationCap className="w-7 h-7 text-amber-400" strokeWidth={1.75} />
@@ -99,12 +130,10 @@ const TutorialMenu = ({ onStartTutorial, onBack, selectedCharacter, onSelectChar
           </div>
 
           <div className="w-full space-y-4 menu-stagger">
-            {/* Character — pick who you'll learn the ropes as */}
             <Section title="Character">
               <CharacterSelect selected={selectedCharacter} onSelect={onSelectCharacter} accent="#fbbf24" />
             </Section>
 
-            {/* Atmosphere — Auto/Day/Night (Auto by default) */}
             <Section title="Atmosphere">
               <div className="grid grid-cols-3 gap-2">
                 {ATMOSPHERES.map((a) => {
@@ -129,8 +158,7 @@ const TutorialMenu = ({ onStartTutorial, onBack, selectedCharacter, onSelectChar
               </div>
             </Section>
 
-            {/* Map — collapsible grid */}
-            <Section title="Map">
+            <Section title="Map" innerRef={mapSectionRef}>
               <button
                 onClick={() => setShowMapSelector(!showMapSelector)}
                 className="w-full flex items-center gap-3 rounded-xl px-3.5 py-3 border border-white/10 bg-white/[0.03]
@@ -180,12 +208,18 @@ const TutorialMenu = ({ onStartTutorial, onBack, selectedCharacter, onSelectChar
         </div>
       </div>
 
-      {/* Fixed Start button */}
+      {/* Fixed Start button.
+
+          The gradient scrim MUST stay pointer-events-none. It spans the full
+          viewport width and ~120px of height, so when it was interactive it
+          swallowed every click in the bottom strip of the screen — including
+          the Map dropdown, which sits right there once the page is scrolled
+          down. Only the button itself takes input. */}
       <div className="fixed bottom-0 left-0 right-0 z-50 pointer-events-none">
-        <div className="bg-gradient-to-t from-[#140e05] via-[#140e05]/85 to-transparent pt-10 pb-6 px-4 flex justify-center pointer-events-auto">
+        <div className="bg-gradient-to-t from-[#140e05] via-[#140e05]/85 to-transparent pt-10 pb-6 px-4 flex justify-center">
           <button
             onClick={() => onStartTutorial(selectedMap, selectedTimeOfDay)}
-            className="group font-hud flex items-center justify-center gap-2.5 rounded-xl px-12 py-4 min-w-[260px]
+            className="group font-hud pointer-events-auto flex items-center justify-center gap-2.5 rounded-xl px-12 py-4 min-w-[260px]
               font-bold tracking-[0.12em] uppercase text-[#160a04] transition-all duration-200
               hover:-translate-y-0.5 active:translate-y-0"
             style={{
@@ -202,8 +236,8 @@ const TutorialMenu = ({ onStartTutorial, onBack, selectedCharacter, onSelectChar
   );
 };
 
-const Section = ({ title, children }: { title: string; children: React.ReactNode }) => (
-  <div className="rounded-2xl border border-white/10 bg-white/[0.025] backdrop-blur-md">
+const Section = ({ title, children, innerRef }: { title: string; children: React.ReactNode; innerRef?: React.Ref<HTMLDivElement> }) => (
+  <div ref={innerRef} className="rounded-2xl border border-white/10 bg-white/[0.025] backdrop-blur-md">
     <div className="px-4 py-2.5 border-b border-white/[0.07]">
       <h2 className="font-hud text-[11px] font-semibold tracking-[0.2em] text-gray-400 uppercase">{title}</h2>
     </div>

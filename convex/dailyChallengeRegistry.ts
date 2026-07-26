@@ -272,7 +272,6 @@ export function challengeIdForDay(utcDay: string): DailyChallengeId {
   return perm[pos];
 }
 
-/** Helper — UTC calendar day string for "now". */
 export function todayUtcDay(): string {
   return new Date().toISOString().slice(0, 10);
 }
