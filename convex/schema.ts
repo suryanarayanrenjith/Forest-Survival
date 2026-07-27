@@ -48,6 +48,13 @@ export default defineSchema({
     skillPoints: v.number(),
     skills: v.record(v.string(), v.number()),
     achievements: v.number(),
+    // Achievement bits the client has CLAIMED but whose career threshold the
+    // persisted `solo` aggregates don't support yet — almost always because the
+    // unlock happened mid-run, before that run was recorded. Parked here by
+    // `mergeAchievements` and re-evaluated by `submitSoloRun` the moment the
+    // run's totals land, so a legitimate unlock is deferred (never lost) while
+    // a fabricated one simply never qualifies. Optional: legacy docs have none.
+    pendingAchievements: v.optional(v.number()),
     // Identity + preferences (optional so pre-existing docs stay valid).
     avatarIndex: v.optional(v.number()),
     statsPublic: v.optional(v.boolean()),

@@ -178,6 +178,49 @@ const MAX_NETWORK_ENEMIES = 128;
 const MAX_REPORTED_HIT_DAMAGE = 10_000;
 const MAX_CHAT_LENGTH = 240;
 
+/**
+ * ── Per-peer inbound message budgets (host-side) ────────────────────────────
+ *
+ * Every guest→host message is already shape-validated and identity-bound, but
+ * validation says nothing about RATE. A guest running a console script can emit
+ * any of these in a tight loop, and the host acts on each one: `enemy_hit`
+ * applies damage to shared enemies (so a flood clears entire waves instantly and
+ * banks the kill credit), `chat_message` and `player_update` are RELAYED to
+ * every other peer (a 7× amplification DoS), and all of them cost host CPU
+ * during a live match.
+ *
+ * Each entry is a token bucket: `capacity` is the instantaneous burst a
+ * legitimate client can produce, `perSecond` the sustained refill. Both are set
+ * well above real play — the ceilings only bite on automated traffic — and an
+ * over-budget packet is dropped SILENTLY (never a kick), so a lag-batched burst
+ * or an unusually busy frame can never eject an honest player.
+ *
+ * Guest-side inbound is deliberately NOT budgeted: a guest's only peer is the
+ * host, which already owns the match, and throttling the host's own enemy-sync
+ * stream would break the shared-enemy protocol.
+ */
+interface InboundBudgetSpec { capacity: number; perSecond: number }
+const INBOUND_BUDGET: Record<string, InboundBudgetSpec> = {
+  // A single explosion (nuke / launcher / Shockwave) reports one hit per enemy
+  // struck, so a legitimate frame can burst to the full alive-enemy count.
+  // Capacity covers several such blasts back to back.
+  enemy_hit: { capacity: 300, perSecond: 200 },
+  // Position stream is throttled to 20/sec (POSITION_UPDATE_INTERVAL), plus
+  // out-of-band updates on weapon swap / health change / kill.
+  player_update: { capacity: 80, perSecond: 45 },
+  enemy_killed: { capacity: 60, perSecond: 30 },
+  player_shot: { capacity: 60, perSecond: 30 },
+  player_killed: { capacity: 20, perSecond: 5 },
+  // Chat is human-paced; this still allows a rapid emote flurry.
+  chat_message: { capacity: 10, perSecond: 2 },
+  // Heartbeat is one every 2s; join/ready fire once per match.
+  heartbeat: { capacity: 10, perSecond: 1 },
+  player_joined: { capacity: 5, perSecond: 0.5 },
+  client_ready: { capacity: 5, perSecond: 0.5 },
+};
+
+interface TokenBucket { tokens: number; last: number }
+
 const NETWORK_MESSAGE_TYPES = new Set<NetworkMessage['type']>([
   'player_update', 'player_joined', 'player_left', 'player_rejected',
   'player_kicked', 'game_start', 'game_restart', 'return_to_lobby',
@@ -357,6 +400,10 @@ export class MultiplayerManager {
   // powerups (speed boosts, dashes, nukes, score multipliers, etc.).
   private antiCheat: Map<string, { x: number; z: number; t: number; strikes: number; alive: boolean }> = new Map();
 
+  // Host-side inbound rate budgets, per peer id → per message type (see
+  // INBOUND_BUDGET). Torn down with the connection so it can't leak.
+  private peerBudgets: Map<string, Map<string, TokenBucket>> = new Map();
+
   private lastPositionUpdate: number = 0;
   private pendingPositionUpdate: { position: THREE.Vector3; rotation: THREE.Euler } | null = null;
   private positionUpdateTimer: ReturnType<typeof setTimeout> | null = null;
@@ -518,6 +565,8 @@ export class MultiplayerManager {
           // Remove the timed out player
           this.remotePlayers.delete(playerId);
           this.readyPeers.delete(playerId);
+          this.antiCheat.delete(playerId);
+          this.clearPeerBudget(playerId);
           if (this.gameState) {
             this.gameState.players.delete(playerId);
           }
@@ -668,6 +717,8 @@ export class MultiplayerManager {
       this.connections.delete(conn.peer);
       this.remotePlayers.delete(conn.peer);
       this.readyPeers.delete(conn.peer);
+      this.antiCheat.delete(conn.peer);
+      this.clearPeerBudget(conn.peer);
 
       // Notify others about player leaving
       this.broadcastMessage({
@@ -678,9 +729,55 @@ export class MultiplayerManager {
     });
   }
 
+  /**
+   * Host-side inbound throttle. Spends one token from `peerId`'s bucket for
+   * `kind` and reports whether the packet may be processed. Message types with
+   * no configured budget are always allowed.
+   *
+   * Guests never call this (their only peer is the host — see INBOUND_BUDGET),
+   * so it is a no-op outside a hosted match.
+   */
+  private allowFromPeer(peerId: string, kind: NetworkMessage['type']): boolean {
+    if (!this.isHost) return true;
+    const spec = INBOUND_BUDGET[kind];
+    if (!spec) return true;
+
+    let byKind = this.peerBudgets.get(peerId);
+    if (!byKind) {
+      byKind = new Map();
+      this.peerBudgets.set(peerId, byKind);
+    }
+
+    const now = Date.now();
+    let bucket = byKind.get(kind);
+    if (!bucket) {
+      bucket = { tokens: spec.capacity, last: now };
+      byKind.set(kind, bucket);
+    }
+
+    // Refill for the elapsed window, then spend. Clamp the delta at zero so a
+    // backwards clock jump can't mint tokens.
+    const elapsedSec = Math.max(0, now - bucket.last) / 1000;
+    bucket.tokens = Math.min(spec.capacity, bucket.tokens + elapsedSec * spec.perSecond);
+    bucket.last = now;
+
+    if (bucket.tokens < 1) return false;
+    bucket.tokens -= 1;
+    return true;
+  }
+
+  /** Drop all per-peer inbound budget state (connection closed / match reset). */
+  private clearPeerBudget(peerId?: string): void {
+    if (peerId === undefined) this.peerBudgets.clear();
+    else this.peerBudgets.delete(peerId);
+  }
+
   private handleMessage(rawMessage: unknown, conn: DataConnection) {
     if (!isNetworkMessage(rawMessage)) return;
     const message = rawMessage;
+    // Host-side flood control. Applied before ANY handler work so an
+    // over-budget packet costs nothing beyond the bucket arithmetic.
+    if (this.isHost && !this.allowFromPeer(conn.peer, message.type)) return;
     switch (message.type) {
       case 'heartbeat': {
         const playerId = boundedString(message.playerId, MAX_PEER_ID_LENGTH);
@@ -757,7 +854,14 @@ export class MultiplayerManager {
           // Notify other players
           this.broadcastMessage(joinedMessage, conn.peer);
         } else {
-          // Not host, just add to remote players
+          // Not host, just add to remote players. Bounded by the SAME roster cap
+          // the host enforces: a hostile (or broken) host streaming endless
+          // synthetic joins would otherwise grow this map without limit, and
+          // RemotePlayerManager builds a full avatar rig per entry. Also refuse
+          // an entry for ourselves so a relayed echo can't spawn a ghost copy of
+          // the local player.
+          if (player.id === this.localPlayer.id) return;
+          if (!this.remotePlayers.has(player.id) && this.remotePlayers.size >= MAX_REMOTE_PLAYERS) return;
           this.remotePlayers.set(player.id, player);
         }
 
@@ -1023,14 +1127,32 @@ export class MultiplayerManager {
         const victimColor = finiteBetween(message.victimColor, 0, 0xffffff);
         const timestamp = finiteBetween(message.timestamp, 0, Number.MAX_SAFE_INTEGER);
         if (!killerId || !victimId || !killerName || !victimName || !weapon || victimColor === null || timestamp === null) return;
+        let safeKillerName = killerName;
+        let safeVictimName = victimName;
+        let safeVictimColor = victimColor;
         if (this.isHost) {
           if (!this.isRegisteredGuest(conn) || killerId !== conn.peer) return;
+          // Re-derive BOTH identities from the roster accepted at lobby join,
+          // never from the packet. The kill feed is rendered on every player's
+          // screen, so a guest was previously able to publish an arbitrary
+          // display name and colour for a victim of its choosing — including
+          // fabricating kills on players it never fought. An unknown victim id
+          // means the kill can't have happened; drop the message.
+          const killer = this.remotePlayers.get(conn.peer);
+          const victim = victimId === this.localPlayer.id
+            ? this.localPlayer
+            : this.remotePlayers.get(victimId);
+          if (!killer || !victim) return;
+          safeKillerName = killer.name;
+          safeVictimName = victim.name;
+          safeVictimColor = victim.color;
         } else if (!this.isHostConnection(conn)) {
           return;
         }
         const killedMessage: NetworkMessage = {
-          type: 'player_killed', killerId, victimId, killerName, victimName,
-          weapon, victimColor: clamp(victimColor, 0, 0xffffff), timestamp,
+          type: 'player_killed', killerId, victimId,
+          killerName: safeKillerName, victimName: safeVictimName,
+          weapon, victimColor: clamp(safeVictimColor, 0, 0xffffff), timestamp,
         };
         if (this.isHost) this.broadcastMessage(killedMessage, conn.peer);
         this.messageHandlers.get('player_killed')?.forEach((handler) => handler(killedMessage));
@@ -1385,6 +1507,7 @@ export class MultiplayerManager {
     this.remotePlayers.delete(playerId);
     this.readyPeers.delete(playerId);
     this.antiCheat.delete(playerId);
+    this.clearPeerBudget(playerId);
     this.gameState?.players.delete(playerId);
 
     this.broadcastMessage({ type: 'player_left', playerId });
@@ -1811,6 +1934,9 @@ export class MultiplayerManager {
     this.connections.clear();
     this.remotePlayers.clear();
     this.messageHandlers.clear();
+    this.readyPeers.clear();
+    this.antiCheat.clear();
+    this.clearPeerBudget();
 
     if (this.peer) {
       this.peer.destroy();

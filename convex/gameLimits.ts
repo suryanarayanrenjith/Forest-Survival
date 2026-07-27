@@ -145,6 +145,14 @@ export function computeRunRankXp(
 export const MAX_MP_SCORE = 150_000;
 export const MAX_MP_KILLS = 300;
 export const MAX_MP_DEATHS = 100;
+// Internal consistency ceiling, mirroring the solo path: a match's score can't
+// exceed what its kills could plausibly have produced. Without this, the three
+// caps were independent, so a crafted result could report the maximum score
+// alongside ZERO kills — and multiplayer score feeds the account's public
+// high-score column. The base allowance covers score earned outside kills
+// (objectives, survival time, match bonuses).
+export const MP_SCORE_PER_KILL_CEILING = 1000;
+export const MP_SCORE_BASE_ALLOWANCE = 10_000;
 
 // ── Registry sizes (range validation) ───────────────────────────────────────
 // DERIVED from the shared achievement registry, so appending an achievement can
@@ -215,9 +223,16 @@ export function sanitizeSoloRun(
 
 /** Clamp a multiplayer match result to plausible bounds. */
 export function sanitizeMultiplayerResult(rawScore: number, rawKills: number, rawDeaths: number) {
+  const kills = clamp(rawKills, 0, MAX_MP_KILLS);
+  // Score can't exceed what those kills could plausibly produce, or the cap —
+  // the same internal-consistency rule sanitizeSoloRun applies.
+  const scoreCeiling = Math.min(
+    MAX_MP_SCORE,
+    kills * MP_SCORE_PER_KILL_CEILING + MP_SCORE_BASE_ALLOWANCE,
+  );
   return {
-    score: clamp(rawScore, 0, MAX_MP_SCORE),
-    kills: clamp(rawKills, 0, MAX_MP_KILLS),
+    score: clamp(rawScore, 0, scoreCeiling),
+    kills,
     deaths: clamp(rawDeaths, 0, MAX_MP_DEATHS),
   };
 }

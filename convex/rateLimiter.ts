@@ -36,4 +36,30 @@ export const rateLimiter = new RateLimiter(components.rateLimiter, {
   // bounds total storage; this stops a delete→reupload loop from hammering the
   // storage API while still allowing a normal photoshoot session.
   photoUpload: { kind: "token bucket", rate: 15, period: HOUR, capacity: 6 },
+
+  // ── Quota-protection limits (keyed by userId) ───────────────────────────
+  // Every mutation below is a DB write reachable from the browser console, so
+  // an unthrottled one can be looped to burn the Convex free plan's function /
+  // bandwidth budget even though the VALUES it writes are already clamped.
+  // Ceilings are set far above any human interaction rate.
+
+  // Per-weapon mastery XP. A real run grants a handful of these per minute
+  // (batched client-side), and only 20 grants at the per-call cap can max a
+  // weapon out — so 120/min is orders of magnitude above legitimate play.
+  masteryXp: { kind: "token bucket", rate: 120, period: MINUTE, capacity: 60 },
+
+  // Profile / preference writes (avatar, privacy, leaderboard opt-in, equipped
+  // title, display name). These are discrete UI clicks: a burst of 30 covers
+  // rapid fiddling, and 60/min is unreachable by hand but stops a scripted
+  // write loop dead.
+  profileWrite: { kind: "token bucket", rate: 60, period: MINUTE, capacity: 30 },
+
+  // The settings blob has its OWN, roomier ceiling because it is debounced at
+  // 1200ms rather than click-driven: a player dragging sliders continuously can
+  // legitimately emit ~50 writes/minute, so this sits at 2.4× that worst case.
+  settingsSync: { kind: "token bucket", rate: 120, period: MINUTE, capacity: 40 },
+
+  // Skill-tree unlocks. Spending is already bounded by the point economy, but
+  // a rejected unlock (not enough points) still costs a read; cap the loop.
+  skillUnlock: { kind: "token bucket", rate: 60, period: MINUTE, capacity: 30 },
 });

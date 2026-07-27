@@ -5,7 +5,11 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 import { ConvexError } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { getSkillDef } from "./skillRegistry";
-import { isTitleEarned } from "./achievementRegistry";
+import {
+  isTitleEarned,
+  careerGrantableMask,
+  SERVER_AWARDED_MASK,
+} from "./achievementRegistry";
 import { MAX_USERNAME_LENGTH } from "./authValidation";
 import { computeRank } from "./rankSystem";
 import { rateLimiter } from "./rateLimiter";
@@ -68,6 +72,7 @@ function defaultStats(userId: Id<"users">) {
     skillPoints: 0,
     skills: {} as Record<string, number>,
     achievements: 0,
+    pendingAchievements: 0,
     avatarIndex: 0,
     statsPublic: true,
     leaderboardOptIn: true,
@@ -214,7 +219,25 @@ export const submitSoloRun = mutation({
     };
     const skillPoints = clamp(stats.skillPoints + earned, 0, MAX_TOTAL_SKILL_POINTS);
 
-    await ctx.db.patch(stats._id, { solo, skillPoints, rankXp, recentDiffs, updatedAt: Date.now() });
+    // Backfill achievements the player claimed DURING this run but whose career
+    // threshold only the run we're recording right now satisfies (see
+    // mergeAchievements). Evaluated against the UPDATED totals, so an unlock
+    // earned mid-run persists the moment the run lands — while a claim that was
+    // never actually earned stays parked and is simply re-checked next run.
+    const pending = (stats.pendingAchievements ?? 0) & ACHIEVEMENT_MASK & ~SERVER_AWARDED_MASK;
+    const backfilled = careerGrantableMask(pending, solo);
+    const achievements = stats.achievements | backfilled;
+    const pendingAchievements = pending & ~achievements;
+
+    await ctx.db.patch(stats._id, {
+      solo,
+      skillPoints,
+      rankXp,
+      recentDiffs,
+      achievements,
+      pendingAchievements,
+      updatedAt: Date.now(),
+    });
     return { skillPointsEarned: earned, skillPoints, rankXpEarned, rankXp };
   },
 });
@@ -280,6 +303,12 @@ export const unlockSkill = mutation({
     const def = getSkillDef(skillId);
     if (!def) throw new ConvexError("Unknown skill.");
 
+    // Unlocking is a handful of clicks per session; the ceiling exists only so
+    // a scripted loop can't hammer the read+write path (the point economy
+    // already bounds what it can actually spend).
+    const { ok } = await rateLimiter.limit(ctx, "skillUnlock", { key: userId });
+    if (!ok) throw new ConvexError("Slow down a moment, then try again.");
+
     const stats = await getOrCreateStats(ctx, userId);
     const skills = { ...stats.skills };
     const currentLevel = skills[skillId] ?? 0;
@@ -304,6 +333,22 @@ export const unlockSkill = mutation({
 /**
  * Merge newly-unlocked achievements (idempotent bitwise OR over the ordered
  * achievement registry). Returns the merged mask.
+ *
+ * The client is the only witness to a run, so the mask is untrusted input. Three
+ * layers bound what it can do:
+ *   1. Bits outside the known registry are dropped (no phantom achievements).
+ *   2. Bits the SERVER awards from career multiplayer totals (Team Player,
+ *      Champion) are stripped outright — the client's achievement system is
+ *      solo-only, so it is never their legitimate source.
+ *   3. Bits whose unlock condition IS a persisted career aggregate (career
+ *      kills / best wave / best score) are granted only when that aggregate
+ *      actually supports them.
+ *
+ * A bit rejected by (3) is not discarded — it is parked in `pendingAchievements`
+ * and re-checked by `submitSoloRun`. That is what keeps the gate honest without
+ * breaking real play: an achievement unlocked MID-run is claimed before that
+ * run's totals exist, so it defers by seconds and lands the instant the run is
+ * recorded. An achievement that was never earned simply never qualifies.
  */
 export const mergeAchievements = mutation({
   args: { mask: v.number() },
@@ -317,18 +362,34 @@ export const mergeAchievements = mutation({
     // Drop any bits outside the known achievement set so a crafted mask can't
     // light up phantom achievements (which would inflate rank XP). The finite
     // guard is explicit rather than relying on `NaN & x === 0` falling out of
-    // the coercion by accident.
+    // the coercion by accident. Server-awarded bits are removed in the same
+    // step so they can only ever be set by submitMultiplayerResult.
     const safeMask = Number.isFinite(mask)
-      ? (Math.max(0, Math.floor(mask)) & ACHIEVEMENT_MASK)
+      ? (Math.max(0, Math.floor(mask)) & ACHIEVEMENT_MASK & ~SERVER_AWARDED_MASK)
       : 0;
 
     // Throttle (no-op on limit) — achievements unlock a few at a time per run.
     const { ok } = await rateLimiter.limit(ctx, "achievementSync", { key: userId });
     if (!ok) return { achievements: stats.achievements };
 
-    const achievements = stats.achievements | safeMask;
-    if (achievements !== stats.achievements) {
-      await ctx.db.patch(stats._id, { achievements, updatedAt: Date.now() });
+    // Only claim bits that aren't already stored, so an unchanged resend (the
+    // client sends its FULL mask on every unlock) never rewrites the doc.
+    const claimed = safeMask & ~stats.achievements;
+    const grantable = careerGrantableMask(claimed, stats.solo);
+    const deferred = claimed & ~grantable;
+
+    const achievements = stats.achievements | grantable;
+    const prevPending = (stats.pendingAchievements ?? 0) & ACHIEVEMENT_MASK;
+    // Anything granted this call leaves the pending set; anything still short of
+    // its career threshold joins it.
+    const pendingAchievements = (prevPending | deferred) & ~achievements;
+
+    if (achievements !== stats.achievements || pendingAchievements !== prevPending) {
+      await ctx.db.patch(stats._id, {
+        achievements,
+        pendingAchievements,
+        updatedAt: Date.now(),
+      });
     }
     return { achievements };
   },
@@ -341,6 +402,8 @@ export const setAvatar = mutation({
   handler: async (ctx, { avatarIndex }) => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new ConvexError("Sign in to change your avatar.");
+    const { ok } = await rateLimiter.limit(ctx, "profileWrite", { key: userId });
+    if (!ok) throw new ConvexError("Slow down a moment, then try again.");
     const stats = await getOrCreateStats(ctx, userId);
     await ctx.db.patch(stats._id, {
       avatarIndex: clamp(avatarIndex, 0, AVATAR_COUNT - 1),
@@ -357,6 +420,8 @@ export const setStatsPrivacy = mutation({
   handler: async (ctx, { isPublic }) => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new ConvexError("Sign in to change privacy.");
+    const { ok } = await rateLimiter.limit(ctx, "profileWrite", { key: userId });
+    if (!ok) throw new ConvexError("Slow down a moment, then try again.");
     const stats = await getOrCreateStats(ctx, userId);
     await ctx.db.patch(stats._id, { statsPublic: isPublic, updatedAt: Date.now() });
     return null;
@@ -370,6 +435,8 @@ export const setLeaderboardOptIn = mutation({
   handler: async (ctx, { optIn }) => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new ConvexError("Sign in to change leaderboard visibility.");
+    const { ok } = await rateLimiter.limit(ctx, "profileWrite", { key: userId });
+    if (!ok) throw new ConvexError("Slow down a moment, then try again.");
     const stats = await getOrCreateStats(ctx, userId);
     await ctx.db.patch(stats._id, { leaderboardOptIn: optIn, updatedAt: Date.now() });
     return null;
@@ -412,6 +479,11 @@ export const setSettings = mutation({
     } catch {
       return { saved: false };
     }
+    // Throttle AFTER the cheap shape checks, so a malformed blob never costs a
+    // token. `saved: false` is the established "not stored" signal, so a
+    // throttled write reuses it rather than surfacing an error for a preference.
+    const { ok } = await rateLimiter.limit(ctx, "settingsSync", { key: userId });
+    if (!ok) return { saved: false };
     const stats = await getOrCreateStats(ctx, userId);
     await ctx.db.patch(stats._id, {
       settings,
@@ -450,6 +522,9 @@ export const equipTitle = mutation({
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new ConvexError("Sign in to equip a title.");
 
+    const { ok } = await rateLimiter.limit(ctx, "profileWrite", { key: userId });
+    if (!ok) throw new ConvexError("Slow down a moment, then try again.");
+
     const stats = await getOrCreateStats(ctx, userId);
 
     // null clears the title — always allowed.
@@ -483,6 +558,12 @@ export const addWeaponMasteryXp = mutation({
     const before = current[weaponId] ?? 0;
     const after = Math.min(MASTERY_MAX_XP_PER_WEAPON, before + delta);
     if (after === before) return after;
+    // Throttle only the path that actually writes. Mastery is already capped
+    // per-call and per-weapon, so this exists to stop a console loop burning
+    // free-plan function budget, not to referee the XP itself. Preference-style
+    // failure (return the stored value) — never a hard error mid-run.
+    const { ok } = await rateLimiter.limit(ctx, "masteryXp", { key: userId });
+    if (!ok) return before;
     await ctx.db.patch(stats._id, {
       weaponMastery: { ...current, [weaponId]: after },
       updatedAt: Date.now(),

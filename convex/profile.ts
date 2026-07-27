@@ -7,6 +7,7 @@ import {
   normalizeDisplayName,
   normalizeUsername,
 } from "./authValidation";
+import { rateLimiter } from "./rateLimiter";
 
 export const currentUser = query({
   args: {},
@@ -77,6 +78,11 @@ export const updateDisplayName = mutation({
     const normalized = normalizeDisplayName(name);
     const error = checkDisplayName(normalized);
     if (error) throw new ConvexError(error);
+    // The display name is rendered on other players' screens (lobby, kill feed,
+    // leaderboard), so cap how fast it can be churned. Checked after validation
+    // so a rejected name never costs a token.
+    const { ok } = await rateLimiter.limit(ctx, "profileWrite", { key: userId });
+    if (!ok) throw new ConvexError("Slow down a moment, then try again.");
     await ctx.db.patch(userId, { name: normalized });
     return null;
   },
