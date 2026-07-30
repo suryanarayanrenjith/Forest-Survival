@@ -382,6 +382,36 @@ export const defaultUserSettings: UserSettings = {
 
 const STORAGE_KEY = 'gameSettings';
 
+/**
+ * HUD READOUT EXCLUSIVITY
+ *
+ * `showFPS` (bare FPS counter) and `showConsole` (the detailed console: FPS PLUS
+ * renderer / memory / hardware) are mutually exclusive — the console already
+ * contains the FPS readout, so having both on stacks two overlays that report
+ * the same number. Only one may be true at a time.
+ *
+ * This is enforced HERE rather than only in the settings UI because the UI is
+ * not the only way in: a localStorage blob written by an older build, a Convex
+ * account blob restored at sign-in, or a cross-tab `storage` event can all
+ * present both flags as true. Every one of those funnels through mergeSettings,
+ * so normalising here means the invalid state cannot survive a load.
+ *
+ * @param prev the settings BEFORE this change, when known. It disambiguates a
+ *   both-true patch by intent: whichever flag the user just switched ON wins,
+ *   because that is the one they explicitly asked for. With no `prev` (a fresh
+ *   load or import, where there is no "just toggled" signal) `showConsole` wins,
+ *   since it is the strict superset and keeping it loses no information.
+ */
+function enforceReadoutExclusivity<T extends { showFPS: boolean; showConsole: boolean }>(
+  next: T,
+  prev?: { showFPS: boolean; showConsole: boolean },
+): T {
+  if (!(next.showFPS && next.showConsole)) return next;
+  if (prev && !prev.showConsole) return { ...next, showFPS: false };  // console just turned on
+  if (prev && !prev.showFPS) return { ...next, showConsole: false };  // counter just turned on
+  return { ...next, showFPS: false };                                 // no signal → superset wins
+}
+
 // Rebuild a clean, complete UserSettings from a raw/partial/legacy object (a
 // localStorage blob, a Convex sync blob, or nothing). Explicit field-by-field so
 // that retired keys (`damageNumbers`, the flat `graphicsQuality`) are DROPPED
@@ -398,7 +428,8 @@ function mergeSettings(raw: unknown): UserSettings {
     if (typeof v === 'string' && (!allowed || (allowed as readonly string[]).includes(v))) return v as T;
     return f;
   };
-  return {
+  // Wrapped so a stored/imported blob can never load with both HUD readouts on.
+  return enforceReadoutExclusivity({
     masterVolume: num('masterVolume', d.masterVolume),
     sfxVolume: num('sfxVolume', d.sfxVolume),
     musicVolume: num('musicVolume', d.musicVolume),
@@ -422,7 +453,7 @@ function mergeSettings(raw: unknown): UserSettings {
     enemyArrowColor: str('enemyArrowColor', d.enemyArrowColor),
     graphics: parseGraphics(p.graphics, p.graphicsQuality),
     keyBindings: normalizeKeyBindings(p.keyBindings as Partial<KeyBindings> | undefined),
-  };
+  });
 }
 
 class GameSettingsManager {
@@ -471,14 +502,10 @@ class GameSettingsManager {
     return this.settings[key];
   }
 
-  updateSetting<K extends keyof UserSettings>(key: K, value: UserSettings[K]): void {
-    this.settings[key] = value;
-    this.saveSettings();
-    this.notifyListeners();
-  }
-
   updateSettings(updates: Partial<UserSettings>): void {
-    this.settings = { ...this.settings, ...updates };
+    // `this.settings` is still the pre-patch state here, so it doubles as the
+    // "what did the user just switch on" signal for the exclusivity rule.
+    this.settings = enforceReadoutExclusivity({ ...this.settings, ...updates }, this.settings);
     // Keep bindings complete whether the update is partial (one rebind) or a
     // full set restored from the account blob.
     if (updates.keyBindings) {
@@ -535,15 +562,6 @@ class GameSettingsManager {
     }
   }
 
-  // Utility methods for computed values
-  getEffectiveVolume(): number {
-    return (this.settings.masterVolume / 100) * (this.settings.sfxVolume / 100);
-  }
-
-  getEffectiveMusicVolume(): number {
-    return (this.settings.masterVolume / 100) * (this.settings.musicVolume / 100);
-  }
-
   /** Master × ambience — the in-game procedural score's volume (AmbientMusicSystem). */
   getEffectiveAmbienceVolume(): number {
     return (this.settings.masterVolume / 100) * (this.settings.ambienceVolume / 100);
@@ -592,10 +610,6 @@ class GameSettingsManager {
     this.notifyListeners();
   }
 
-  // Back-compat alias (touch auto-detect): select a named preset.
-  setGraphicsQuality(quality: GraphicsQuality): void {
-    this.setGraphicsPreset(quality);
-  }
 }
 
 // Singleton instance

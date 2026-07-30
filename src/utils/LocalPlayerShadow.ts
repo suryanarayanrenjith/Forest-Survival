@@ -125,11 +125,6 @@ export class LocalPlayerShadow {
     this.crouchTarget = crouching ? 1 : 0;
   }
 
-  /** Toggle the shadow on / off without tearing down the body. */
-  setVisible(visible: boolean): void {
-    this.root.visible = visible;
-  }
-
   /** Should be called when the local player dies (collapse pose). */
   setAlive(alive: boolean): void {
     if (alive && !this.isAlive) {

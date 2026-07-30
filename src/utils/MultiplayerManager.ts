@@ -581,13 +581,6 @@ export class MultiplayerManager {
     }, 3000); // Check every 3 seconds
   }
 
-  /**
-   * Set callback for connection status changes
-   */
-  setConnectionStatusCallback(callback: (playerId: string, status: 'connected' | 'disconnected' | 'timeout') => void): void {
-    this.onConnectionStatusChange = callback;
-  }
-
   async joinLobby(lobbyId: string): Promise<void> {
     const normalizedLobbyId = lobbyId.trim();
     if (!boundedString(normalizedLobbyId, MAX_PEER_ID_LENGTH)) {
@@ -1641,64 +1634,6 @@ export class MultiplayerManager {
   }
 
   /**
-   * Host-side: restart the game in the existing lobby.
-   * Broadcasts game_restart so all guests reset their state without rejoining.
-   */
-  restartGame(
-    gameMode?: 'coop' | 'survival',
-    timeLimit?: number,
-    map?: string,
-    difficulty?: 'easy' | 'medium' | 'hard' | 'adaptive',
-    timeOfDay?: 'day' | 'night' | 'auto',
-  ) {
-    if (!this.isHost || !this.gameState) {
-      console.warn('[MultiplayerManager] Cannot restart - not host or no game state');
-      return;
-    }
-
-    // Reset stats locally
-    this.resetGameStats();
-
-    // Fresh match → guests re-warm and must re-signal readiness.
-    this.readyPeers.clear();
-    this.antiCheat.clear();
-
-    // Use previous settings if not overridden
-    const mode = gameMode || this.gameState.gameMode;
-    const tLimit = timeLimit !== undefined ? timeLimit : this.gameState.timeLimit;
-    const mapId = map !== undefined ? map : this.gameState.map;
-    const diff = difficulty !== undefined ? difficulty : this.gameState.difficulty;
-    const tod = timeOfDay !== undefined ? timeOfDay : this.gameState.timeOfDay;
-
-    // Update game state with fresh start time
-    this.gameState.gameMode = mode;
-    this.gameState.timeLimit = tLimit;
-    this.gameState.startTime = Date.now();
-    this.gameState.map = mapId;
-    this.gameState.difficulty = diff;
-    this.gameState.timeOfDay = tod;
-
-    // Make sure local player is in gameState.players
-    this.gameState.players.set(this.localPlayer.id, this.localPlayer);
-
-    const restartMessage = {
-      type: 'game_restart' as const,
-      gameState: {
-        players: Array.from(this.gameState.players.values()),
-        gameMode: this.gameState.gameMode,
-        timeLimit: this.gameState.timeLimit,
-        startTime: this.gameState.startTime,
-        hostId: this.gameState.hostId,
-        map: this.gameState.map,
-        difficulty: this.gameState.difficulty,
-        timeOfDay: this.gameState.timeOfDay,
-      }
-    };
-
-    this.broadcastMessage(restartMessage);
-  }
-
-  /**
    * Host-side: send every player back to the existing lobby (no rejoin).
    * Stats are wiped for the next match; the host then starts a new game
    * from the lobby like normal. Guests skip the join screen because the
@@ -1839,17 +1774,6 @@ export class MultiplayerManager {
     }
   }
 
-  /**
-   * Remove all handlers for a message type
-   */
-  clearMessageHandlers(type?: NetworkMessage['type']): void {
-    if (type) {
-      this.messageHandlers.delete(type);
-    } else {
-      this.messageHandlers.clear();
-    }
-  }
-
   getLocalPlayer(): PlayerData {
     return this.localPlayer;
   }
@@ -1870,13 +1794,6 @@ export class MultiplayerManager {
 
   getGameState(): GameState | null {
     return this.gameState;
-  }
-
-  /**
-   * Get the host's player ID
-   */
-  getHostId(): string {
-    return this.gameState?.hostId || '';
   }
 
   /**
@@ -1944,16 +1861,4 @@ export class MultiplayerManager {
     }
   }
 
-  /**
-   * Get connection health info for debugging
-   */
-  getConnectionHealth(): { playerId: string; name: string; lastHeartbeat: number; isHealthy: boolean }[] {
-    const now = Date.now();
-    return Array.from(this.remotePlayers.entries()).map(([playerId, player]) => ({
-      playerId,
-      name: player.name,
-      lastHeartbeat: player.lastHeartbeat || 0,
-      isHealthy: (now - (player.lastHeartbeat || 0)) < CONNECTION_TIMEOUT
-    }));
-  }
 }

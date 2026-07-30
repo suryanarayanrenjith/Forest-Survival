@@ -1141,68 +1141,8 @@ class SoundManager {
     source.start(0);
   }
 
-  /**
-   * Looping positional emitter (hazard fields, ambience, beacons). Returns a
-   * handle so the caller can move it, fade it, and — importantly — stop it.
-   * The caller OWNS the handle: leaking one leaks a voice for the whole run.
-   */
-  playLoopAt(
-    soundName: string,
-    x: number, y: number, z: number,
-    volume: number = 1.0,
-    opts?: { refDistance?: number; maxDistance?: number },
-  ): PositionalVoice | null {
-    if (this.muted) return null;
-    if (!this.initialized || !this.audioContext) {
-      this.initialize();
-      if (!this.audioContext) return null;
-    }
-    const buffer = this.sounds.get(soundName);
-    if (!buffer) return null;
-    const panner = this.makePanner(x, y, z, opts?.refDistance, opts?.maxDistance);
-    if (!panner) return null;
-
-    const ctx = this.audioContext;
-    const source = ctx.createBufferSource();
-    const gainNode = ctx.createGain();
-    source.buffer = buffer;
-    source.loop = true;
-    gainNode.gain.value = this.masterVolume * volume;
-    source.connect(gainNode);
-    gainNode.connect(panner);
-    panner.connect(this.masterBus ?? ctx.destination);
-
-    this.activeSources.add(source);
-    let stopped = false;
-    source.onended = () => { this.activeSources.delete(source); };
-    source.start(0);
-
-    return {
-      setPosition: (nx, ny, nz) => {
-        if (stopped) return;
-        if (panner.positionX) {
-          panner.positionX.value = nx; panner.positionY.value = ny; panner.positionZ.value = nz;
-        } else {
-          (panner as unknown as { setPosition?: (x: number, y: number, z: number) => void }).setPosition?.(nx, ny, nz);
-        }
-      },
-      setVolume: (v) => { if (!stopped) gainNode.gain.value = this.masterVolume * v; },
-      stop: () => {
-        if (stopped) return;
-        stopped = true;
-        try { source.stop(); } catch { /* already stopped */ }
-        this.activeSources.delete(source);
-        try { panner.disconnect(); } catch { /* already torn down */ }
-      },
-    };
-  }
-
   setVolume(volume: number): void {
     this.masterVolume = Math.max(0, Math.min(1, volume));
-  }
-
-  getVolume(): number {
-    return this.masterVolume;
   }
 
   mute(): void {
@@ -1212,10 +1152,6 @@ class SoundManager {
 
   unmute(): void {
     this.muted = false;
-  }
-
-  isMuted(): boolean {
-    return this.muted;
   }
 
   stopAll(): void {

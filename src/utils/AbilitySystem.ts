@@ -28,195 +28,21 @@ const BURST_GEO = {
 };
 const _easeOut = (t: number): number => 1 - Math.pow(1 - t, 3);
 
-export interface Ability {
-  type: AbilityType;
-  name: string;
-  description: string;
-  icon: string;
-  cooldown: number; // milliseconds
-  duration: number; // milliseconds
-  lastUsed: number;
-  active: boolean;
-  activeUntil: number;
-}
-
-export interface AbilityEffects {
-  speedMultiplier: number;
-  /** Phantom: enemies lose track of the player + the player is intangible. */
-  isPhantom: boolean;
-  /** Riot shield raised — blocks damage from the front arc (directional). */
-  shieldHeld: boolean;
-  /** Overcharge: temporary +fire-rate and +damage combat burst. */
-  overcharge: boolean;
-}
-
+/**
+ * VFX FACTORY ONLY — this class owns no gameplay state.
+ *
+ * It used to also carry a cooldown/duration state machine (an `abilities` Map,
+ * `useAbility`, `getEffects`, and a per-frame `update` returning an
+ * `AbilityEffects` blob). Nothing ever called `useAbility`, so no ability could
+ * ever go active: `update` walked six map entries every frame only to hand back
+ * a frozen `{ speedMultiplier: 1.0, isPhantom: false, ... }`, and the player's
+ * speed formula multiplied by a permanent 1.0. All of it is gone.
+ *
+ * The REAL ability gameplay — Overclock, Demolition, the Ranger dash and their
+ * cooldowns — lives in CharacterAbilityRegistry and the App run loop. Put
+ * ability state there, not here.
+ */
 export class AbilitySystem {
-  private abilities: Map<AbilityType, Ability> = new Map();
-  private effects: AbilityEffects = {
-    speedMultiplier: 1.0,
-    isPhantom: false,
-    shieldHeld: false,
-    overcharge: false,
-  };
-
-  constructor() {
-    this.initializeAbilities();
-  }
-
-  private initializeAbilities() {
-    const abilityData: Record<AbilityType, Omit<Ability, 'lastUsed' | 'active' | 'activeUntil'>> = {
-      dash: {
-        type: 'dash',
-        name: 'Dash',
-        description: 'Quick burst of speed forward',
-        icon: '⚡',
-        cooldown: 3000,
-        duration: 500
-      },
-      shield: {
-        type: 'shield',
-        name: 'Riot Shield',
-        description: 'Raise a shield that blocks damage from the front',
-        icon: '🛡️',
-        cooldown: 15000,
-        duration: 8000
-      },
-      speed: {
-        type: 'speed',
-        name: 'Sprint',
-        description: '2x movement speed',
-        icon: '🏃',
-        cooldown: 8000,
-        duration: 5000
-      },
-      phantom: {
-        type: 'phantom',
-        name: 'Phantom',
-        description: 'Enemies lose track of you and you phase through them',
-        icon: '👻',
-        cooldown: 25000,
-        duration: 5000
-      },
-      explosive: {
-        type: 'explosive',
-        name: 'Explosive Shot',
-        description: 'Next shot deals AoE damage',
-        icon: '💥',
-        cooldown: 12000,
-        duration: 10000
-      },
-      overcharge: {
-        type: 'overcharge',
-        name: 'Overcharge',
-        description: 'Faster fire rate and bigger damage for a few seconds',
-        icon: '⚡',
-        cooldown: 18000,
-        duration: 8000
-      }
-    };
-
-    Object.entries(abilityData).forEach(([type, data]) => {
-      this.abilities.set(type as AbilityType, {
-        ...data,
-        lastUsed: 0,
-        active: false,
-        activeUntil: 0
-      });
-    });
-  }
-
-  useAbility(type: AbilityType): boolean {
-    const ability = this.abilities.get(type);
-    if (!ability) return false;
-
-    const now = Date.now();
-
-    // Check cooldown
-    if (now - ability.lastUsed < ability.cooldown) {
-      return false;
-    }
-
-    // Activate ability
-    ability.lastUsed = now;
-    ability.active = true;
-    ability.activeUntil = now + ability.duration;
-
-    // Apply effects
-    switch (type) {
-      case 'shield':
-        this.effects.shieldHeld = true;
-        break;
-      case 'speed':
-        this.effects.speedMultiplier = 2.0;
-        break;
-      case 'phantom':
-        this.effects.isPhantom = true;
-        break;
-      case 'overcharge':
-        this.effects.overcharge = true;
-        break;
-    }
-
-    return true;
-  }
-
-  update(_deltaTime: number): AbilityEffects {
-    const now = Date.now();
-
-    // Update all abilities
-    this.abilities.forEach((ability) => {
-      if (ability.active && now >= ability.activeUntil) {
-        ability.active = false;
-
-        // Remove effects
-        switch (ability.type) {
-          case 'speed':
-            this.effects.speedMultiplier = 1.0;
-            break;
-          case 'phantom':
-            this.effects.isPhantom = false;
-            break;
-          case 'shield':
-            this.effects.shieldHeld = false;
-            break;
-          case 'overcharge':
-            this.effects.overcharge = false;
-            break;
-        }
-      }
-    });
-
-    return this.effects;
-  }
-
-  getAbility(type: AbilityType): Ability | undefined {
-    return this.abilities.get(type);
-  }
-
-  getAllAbilities(): Ability[] {
-    return Array.from(this.abilities.values());
-  }
-
-  getCooldownPercent(type: AbilityType): number {
-    const ability = this.abilities.get(type);
-    if (!ability) return 100;
-
-    const now = Date.now();
-    const elapsed = now - ability.lastUsed;
-
-    if (elapsed >= ability.cooldown) return 100;
-
-    return (elapsed / ability.cooldown) * 100;
-  }
-
-  isOnCooldown(type: AbilityType): boolean {
-    return this.getCooldownPercent(type) < 100;
-  }
-
-  getEffects(): AbilityEffects {
-    return { ...this.effects };
-  }
-
   /**
    * AAA power-up activation burst. A self-animating, theme-coloured flourish
    * built from a bright core flash, twin expanding ground shockwave rings, a

@@ -200,10 +200,4 @@ export class BulletDodging {
     this.detectionRange = range;
   }
 
-  /**
-   * Reset dodge cooldown (useful for state changes)
-   */
-  public resetCooldown() {
-    this.lastDodgeTime = 0;
   }
-}

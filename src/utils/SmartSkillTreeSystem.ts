@@ -276,7 +276,15 @@ export class SmartSkillTreeSystem {
   }
 
   /**
-   * Detect player's playstyle based on stats
+   * Detect player's playstyle based on stats.
+   *
+   * NOT YET WIRED — no call site anywhere, so `state.detectedPlayStyle` never
+   * moves off its initial value and `generateRecommendations` always scores
+   * against that. Kept rather than deleted because it is a latent input to live
+   * logic, not dead weight: the playstyle-specific arms of the recommendation
+   * scorer ('aggressive' → combat, 'speedrunner' → mobility, …) only ever come
+   * alive once something calls this. Note the skill-tree UI separately hard-
+   * codes `detectedPlayStyle: 'balanced'` for display.
    */
   public detectPlayStyle(stats: {
     killDeathRatio: number;
@@ -390,41 +398,6 @@ export class SmartSkillTreeSystem {
     return topRecommendations;
   }
 
-  /**
-   * Unlock/upgrade a skill
-   */
-  public unlockSkill(skillId: string): {success: boolean, message: string} {
-    const skill = this.skills.get(skillId);
-
-    if (!skill) {
-      return {success: false, message: 'Skill not found'};
-    }
-
-    if (skill.currentLevel >= skill.maxLevel) {
-      return {success: false, message: 'Skill already maxed'};
-    }
-
-    if (this.state.availablePoints < skill.cost) {
-      return {success: false, message: 'Not enough skill points'};
-    }
-
-    if (!this.meetsRequirements(skill)) {
-      return {success: false, message: 'Requirements not met'};
-    }
-
-    // Unlock/upgrade
-    skill.currentLevel++;
-    this.state.unlockedSkills.set(skillId, skill.currentLevel);
-    this.state.availablePoints -= skill.cost;
-    this.state.spentPoints += skill.cost;
-
-
-    return {
-      success: true,
-      message: `${skill.name} upgraded to level ${skill.currentLevel}!`
-    };
-  }
-
   private meetsRequirements(skill: Skill): boolean {
     for (const req of skill.requirements) {
       if (req.type === 'skill') {
@@ -445,21 +418,6 @@ export class SmartSkillTreeSystem {
     return true;
   }
 
-  /**
-   * Award skill points (e.g., on level up)
-   */
-  public awardPoints(amount: number): void {
-    this.state.totalPoints += amount;
-    this.state.availablePoints += amount;
-  }
-
-  /**
-   * Level up player
-   */
-  public levelUp(): void {
-    this.state.playerLevel++;
-    this.awardPoints(1); // 1 point per level
-  }
 
   /**
    * Calculate total stat bonuses from skills
@@ -483,20 +441,6 @@ export class SmartSkillTreeSystem {
   }
 
   /**
-   * Get skill by ID
-   */
-  public getSkill(skillId: string): Skill | undefined {
-    return this.skills.get(skillId);
-  }
-
-  /**
-   * Get all skills by category
-   */
-  public getSkillsByCategory(category: SkillCategory): Skill[] {
-    return Array.from(this.skills.values()).filter(s => s.category === category);
-  }
-
-  /**
    * Get all skills
    */
   public getAllSkills(): Skill[] {
@@ -504,29 +448,10 @@ export class SmartSkillTreeSystem {
   }
 
   /**
-   * Get all unlocked skills
-   */
-  public getUnlockedSkills(): Skill[] {
-    const unlocked: Skill[] = [];
-    for (const skillId of this.state.unlockedSkills.keys()) {
-      const skill = this.skills.get(skillId);
-      if (skill) unlocked.push(skill);
-    }
-    return unlocked;
-  }
-
-  /**
    * Get current state
    */
   public getState(): SkillTreeState {
     return { ...this.state };
-  }
-
-  /**
-   * Update player stats for playstyle detection
-   */
-  public updateStats(stats: Partial<typeof this.playerStats>): void {
-    Object.assign(this.playerStats, stats);
   }
 
   /**

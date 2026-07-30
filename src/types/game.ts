@@ -212,6 +212,19 @@ export interface Enemy {
   rightArm?: THREE.Object3D;
   torso?: THREE.Mesh;
   head?: THREE.Mesh;
+  // ── Energy lance (ranged / revenant only) ───────────────────────────
+  // `muzzle` is the bore anchor at the weapon's tip: bolts launch from its
+  // WORLD position so a shot always leaves the actual barrel rather than a
+  // fixed offset off the chassis root. `muzzleGlow` / `weaponGlow` are the
+  // emissive aperture and charge-coil stack the firing animation drives.
+  muzzle?: THREE.Object3D;
+  muzzleGlow?: THREE.Mesh;
+  weaponGlow?: THREE.Mesh;
+  /** 0..1 charge fill for the shot currently spinning up. Drives the coil
+   *  glow, the aperture swell and the aim pose; reset on fire. */
+  aimBlend?: number;
+  /** Seconds left of the post-shot recoil punch on the weapon arm. */
+  recoilTime?: number;
   // AI state
   targetPosition: THREE.Vector3;
   spreadOffset: THREE.Vector2;

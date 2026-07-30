@@ -89,23 +89,6 @@ export class SnapshotInterpolator {
     }
   }
 
-  /** True once at least one sample has been recorded. */
-  hasData(): boolean {
-    return this.times.length > 0;
-  }
-
-  /** Newest received position (no interpolation). Returns false if empty. */
-  latest(out: TransformSample): boolean {
-    const n = this.times.length;
-    if (n === 0) return false;
-    const i = n - 1;
-    out.x = this.xs[i];
-    out.y = this.ys[i];
-    out.z = this.zs[i];
-    out.yaw = this.yaws[i];
-    return true;
-  }
-
   /**
    * Resolve the entity transform at `renderTime` (= now − interpolation
    * delay) into `out`. Returns false only when the buffer is empty.

@@ -71,9 +71,7 @@ export interface AIDecision {
 }
 
 export class AIBehaviorSystem {
-  private currentState: AIState = 'idle';
   private personality: AIPersonality;
-  private stateTimer: number = 0;
   private alertLevel: number = 0; // 0-100, how aware the enemy is
   private lastKnownPlayerPosition: THREE.Vector3 = new THREE.Vector3();
   private investigatePosition: THREE.Vector3 | null = null;
@@ -133,7 +131,6 @@ export class AIBehaviorSystem {
    * the reused decision struct. No allocation.
    */
   public makeDecision(context: AIBehaviorContext, deltaTime: number): AIDecision {
-    this.stateTimer += deltaTime;
     this.updateAlertLevel(context, deltaTime);
 
     if (context.canSeePlayer) {
@@ -159,7 +156,9 @@ export class AIBehaviorSystem {
       state = 'patrol';
     }
 
-    this.currentState = state;
+    // `_decision.state` is the single source of truth — callers read it off the
+    // returned struct. A parallel `this.currentState` mirror used to be kept
+    // here purely for a getter nothing called.
     this._decision.state = state;
 
     switch (state) {
@@ -321,26 +320,7 @@ export class AIBehaviorSystem {
     this._decision.priority = 10;
   }
 
-  /** Notify AI of player shooting nearby — drives investigate + raises alert. */
-  public notifyPlayerShooting(shotPosition: THREE.Vector3, enemyPosition: THREE.Vector3) {
-    const distance = shotPosition.distanceTo(enemyPosition);
-    if (distance < 40) {
-      this.investigatePosition = shotPosition.clone();
-      this.alertLevel = Math.min(100, this.alertLevel + 30);
-    }
-  }
-
-  public getCurrentState(): AIState {
-    return this.currentState;
-  }
-
-  public getAlertLevel(): number {
-    return this.alertLevel;
-  }
-
   public reset() {
-    this.currentState = 'idle';
-    this.stateTimer = 0;
     this.alertLevel = 0;
     this.investigatePosition = null;
   }

@@ -52,23 +52,10 @@ export interface RunModifier {
   mods: RunModifierMods;
 }
 
-// ── seedable RNG ───────────────────────────────────────────────────────────
+// `generateStakeOptions` still accepts an injectable Rng, so a seeded roll can
+// be reintroduced by passing one in. The FNV-1a/xorshift `makeSeededRng` that
+// used to live here existed solely for a UTC-day-seeded variant nothing called.
 type Rng = () => number;
-
-function makeSeededRng(seedStr: string): Rng {
-  // FNV-1a 32-bit hash of the seed string feeds a small xorshift-style LCG.
-  let h = 0x811c9dc5;
-  for (let i = 0; i < seedStr.length; i++) {
-    h ^= seedStr.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return () => {
-    h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
-    h = Math.imul(h ^ (h >>> 12), 0x297a2d39);
-    h ^= h >>> 15;
-    return ((h >>> 0) % 1_000_000) / 1_000_000;
-  };
-}
 
 const pick = <T,>(rng: Rng, arr: readonly T[]): T => arr[Math.floor(rng() * arr.length) % arr.length];
 
@@ -263,12 +250,3 @@ export function generateStakeOptions(count = 3, rng: Rng = Math.random): RunModi
   return chosen.map((cat, idx) => buildModifier(cat, rng, idx.toString(36)));
 }
 
-/**
- * Deterministic UTC-day-seeded trio — every player sees the same three rolls
- * on the same day (kept for any "today's stakes" framing / shareable chatter).
- */
-export function getDailyStakeOptions(
-  utcDay: string = new Date().toISOString().slice(0, 10),
-): RunModifier[] {
-  return generateStakeOptions(3, makeSeededRng(`stakes-${utcDay}`));
-}

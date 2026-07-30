@@ -318,29 +318,6 @@ export class EnemyPerception {
   }
 
   /**
-   * Update vision parameters (useful for different enemy types)
-   */
-  public setVisionParameters(range: number, angle: number) {
-    this.visionRange = range;
-    this.visionAngle = angle;
-  }
-
-  /**
-   * Update hearing parameters
-   */
-  public setHearingParameters(range: number, sensitivity: number) {
-    this.hearingRange = range;
-    this.hearingSensitivity = sensitivity;
-  }
-
-  /**
-   * Get last known player position
-   */
-  public getLastSeenPosition(): THREE.Vector3 | null {
-    return this.lastSeenPosition;
-  }
-
-  /**
    * Reset perception (useful for respawning)
    */
   public reset() {
@@ -350,26 +327,4 @@ export class EnemyPerception {
     this.hearingSensitivity = 1.0;
   }
 
-  /**
-   * Check if position is in enemy's field of view
-   * (Useful for debugging/visualization)
-   */
-  public isInFieldOfView(
-    enemyPosition: THREE.Vector3,
-    enemyRotation: number,
-    testPosition: THREE.Vector3
-  ): boolean {
-    const toTarget = new THREE.Vector3()
-      .subVectors(testPosition, enemyPosition)
-      .normalize();
-
-    const enemyForward = new THREE.Vector3(
-      Math.sin(enemyRotation),
-      0,
-      Math.cos(enemyRotation)
-    );
-
-    const angle = Math.acos(enemyForward.dot(toTarget));
-    return angle <= this.visionAngle;
   }
-}

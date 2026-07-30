@@ -15,6 +15,7 @@
  * animation.
  */
 import * as THREE from 'three';
+import { applyRobotSurface, type RobotSurfaceKind } from './RobotSurface';
 
 export type ClassId =
   | 'ranger' | 'scout' | 'heavy' | 'operative'
@@ -71,6 +72,13 @@ interface MatOpts {
   metal?: number;
   emissive?: THREE.Color | number;
   emissiveI?: number;
+  /**
+   * Which shared detail surface this part is made of, or `'none'` for a clean
+   * unmapped material. Omitted → inferred (see `mat`), which is right for the
+   * overwhelming majority of call sites; pass it explicitly for skin, glass,
+   * lenses and anything whose emissive IS the effect.
+   */
+  surface?: RobotSurfaceKind | 'none';
 }
 
 export function mat(
@@ -88,6 +96,22 @@ export function mat(
     emissiveIntensity: opts.emissiveI ?? 0,
     flatShading: true,
   });
+  // ── SURFACE DETAIL ────────────────────────────────────────────────────
+  // These characters were flat-coloured chamfered blocks — no maps at all —
+  // while the guns they hold have carried real micro-surface for a long time.
+  // The shared bake gives fabric a twill weave and armour a machined panel
+  // with bevelled rims and fasteners, at the cost of ONE program (see
+  // RobotSurface: every armoured material in the game, enemies included,
+  // resolves to a single cache key).
+  //
+  // Inference: a part that GLOWS is the effect and must stay clean; a part
+  // with real metalness is hardware; everything else is kit and fabric.
+  const inferred: RobotSurfaceKind | 'none' =
+    (opts.emissiveI ?? 0) >= 0.8 ? 'none'
+      : (opts.metal ?? 0) >= 0.3 ? 'plate'
+        : 'cloth';
+  const surface = opts.surface ?? inferred;
+  if (surface !== 'none') applyRobotSurface(m, surface);
   if (store) store.push(m);
   return m;
 }
@@ -300,14 +324,15 @@ export function buildHumanoid(palette: Palette): HumanoidBody {
   headJoint.position.set(0, RIG.neckTopY, 0);
   root.add(headJoint);
 
-  const headMat = mat(palette.head ?? palette.skin, { rough: 0.78 }, materials);
+  // Skin and eyes stay CLEAN — a fabric weave across a face reads as a rash.
+  const headMat = mat(palette.head ?? palette.skin, { rough: 0.78, surface: 'none' }, materials);
   const head = chamfer(RIG.headW, RIG.headH, RIG.headD, headMat, 0.1,
     0, RIG.headH / 2, 0);
   head.name = 'defaultHead';
   headJoint.add(head);
 
-  const eyeMat = mat(0xf2f4f8, { rough: 0.6 }, materials);
-  const pupilMat = mat(0x14181d, { rough: 0.85 }, materials);
+  const eyeMat = mat(0xf2f4f8, { rough: 0.6, surface: 'none' }, materials);
+  const pupilMat = mat(0x14181d, { rough: 0.85, surface: 'none' }, materials);
   const eyeY = RIG.headH * 0.62;
   const eyeZ = RIG.headD / 2 + 0.001;
   const eyeL = box(0.16, 0.14, 0.02, eyeMat, -0.22, eyeY, eyeZ);
@@ -533,7 +558,7 @@ export function buildRanger(palette: Palette, materials: THREE.Material[]): THRE
     0, RIG.headH / 2 + 0.06, -0.02);
   body.headJoint.add(hood);
 
-  const shadowMat = mat(0x05060a, { rough: 1 }, materials);
+  const shadowMat = mat(0x05060a, { rough: 1, surface: 'none' }, materials);
   const inner = box(RIG.headW - 0.1, RIG.headH - 0.4, 0.04, shadowMat,
     0, RIG.headH * 0.5, RIG.headD / 2 + 0.08);
   body.headJoint.add(inner);
@@ -591,7 +616,7 @@ export function buildScout(palette: Palette, materials: THREE.Material[]): THREE
   const root = body.root;
 
   hideFace(body);
-  const visorBlackMat = mat(0x14181d, {}, materials);
+  const visorBlackMat = mat(0x14181d, { surface: 'none' }, materials);
   const visorBlack = box(RIG.headW - 0.08, 0.2, 0.05, visorBlackMat,
     0, RIG.headH * 0.6, RIG.headD / 2 + 0.025);
   body.headJoint.add(visorBlack);
@@ -671,7 +696,7 @@ export function buildHeavy(palette: Palette, materials: THREE.Material[]): THREE
     0, RIG.headH + 0.4, 0);
   body.headJoint.add(crest);
 
-  const visorBlackMat = mat(0x07080a, {}, materials);
+  const visorBlackMat = mat(0x07080a, { surface: 'none' }, materials);
   const visorBlack = chamfer(RIG.headW + 0.04, 0.3, 0.08, visorBlackMat, 0.03,
     0, RIG.headH * 0.62, RIG.headD / 2 + 0.06);
   body.headJoint.add(visorBlack);
@@ -721,10 +746,10 @@ export function buildOperative(palette: Palette, materials: THREE.Material[]): T
   const root = body.root;
 
   hideFace(body);
-  const skinSlit = box(0.7, 0.16, 0.02, mat(palette.skin, {}, materials),
+  const skinSlit = box(0.7, 0.16, 0.02, mat(palette.skin, { surface: 'none' }, materials),
     0, RIG.headH * 0.62, RIG.headD / 2 + 0.001);
   body.headJoint.add(skinSlit);
-  const pupilMat = mat(0x141518, {}, materials);
+  const pupilMat = mat(0x141518, { surface: 'none' }, materials);
   const pupL = box(0.1, 0.08, 0.02, pupilMat, -0.18, RIG.headH * 0.62, RIG.headD / 2 + 0.012);
   const pupR = box(0.1, 0.08, 0.02, pupilMat,  0.18, RIG.headH * 0.62, RIG.headD / 2 + 0.012);
   body.headJoint.add(pupL, pupR);
@@ -785,7 +810,7 @@ export function buildPyro(palette: Palette, materials: THREE.Material[]): THREE.
   const root = body.root;
 
   hideFace(body);
-  const lensBezelMat = mat(0x0a0a0c, {}, materials);
+  const lensBezelMat = mat(0x0a0a0c, { surface: 'none' }, materials);
   const bezel = chamfer(RIG.headW - 0.1, 0.38, 0.06, lensBezelMat, 0.04,
     0, RIG.headH * 0.65, RIG.headD / 2 + 0.04);
   body.headJoint.add(bezel);

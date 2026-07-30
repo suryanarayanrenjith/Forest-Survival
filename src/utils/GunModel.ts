@@ -1,4 +1,12 @@
 import * as THREE from 'three';
+// Canvas → PBR machinery lives in ProceduralSurface (it was extracted FROM this
+// file). These four were still duplicated here byte-for-byte, including the
+// whole Sobel normal-map pass. The PAINT helpers (_grain / _scratches /
+// _mottle / _woodGrain) are deliberately NOT shared: the gun variants are tuned
+// differently from the armour ones (fixed vs resolution-relative jitter, a
+// different mottle tone range), so folding those together would visibly change
+// the baked weapon finishes.
+import { bakeCanvas, bakeTex, heightToNormal } from './ProceduralSurface';
 
 export type WeaponType = 'pistol' | 'rifle' | 'shotgun' | 'smg' | 'sniper' | 'minigun' | 'launcher' | 'subverter';
 
@@ -92,84 +100,6 @@ interface FinishMaps { albedo: THREE.CanvasTexture; rough: THREE.CanvasTexture; 
 type FinishName = 'metal' | 'metal_worn' | 'metal_blued' | 'polymer' | 'polymer_rough' | 'wood';
 
 const _finishes = new Map<FinishName, FinishMaps>();
-
-/**
- * Paint a square canvas and hand back the CANVAS.
- *
- * Split out of _bakeTex because the height→normal Sobel pass needs the raw
- * pixels, and a THREE.CanvasTexture gives no way back to them.
- */
-function _bakeCanvas(size: number, paint: (ctx: CanvasRenderingContext2D, s: number) => void): HTMLCanvasElement {
-  const c = document.createElement('canvas');
-  c.width = c.height = size;
-  paint(c.getContext('2d')!, size);
-  return c;
-}
-
-/** Wrap an already-painted canvas as a tiling texture. */
-function _texFromCanvas(c: HTMLCanvasElement, repeat: number, srgb: boolean): THREE.CanvasTexture {
-  const tex = new THREE.CanvasTexture(c);
-  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(repeat, repeat);
-  if (srgb) tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
-
-function _bakeTex(size: number, repeat: number, srgb: boolean, paint: (ctx: CanvasRenderingContext2D, s: number) => void): THREE.CanvasTexture {
-  return _texFromCanvas(_bakeCanvas(size, paint), repeat, srgb);
-}
-
-/**
- * Sobel a greyscale HEIGHT canvas into a tangent-space normal map.
- *
- * `strength` is height-units-per-texel — higher digs the crevices deeper.
- * The original height is written to ALPHA so the cavity-AO shader injection can
- * read occlusion from the same sampler it already binds for normals.
- *
- * Two details here are load-bearing, and both are silent failures if missed:
- *
- *   1. Neighbour lookups WRAP. The finishes are RepeatWrapping, so a clamped
- *      Sobel would bake a visible lighting seam along every tile boundary.
- *   2. The result is left at NoColorSpace. Tagging a normal map sRGB is the
- *      classic bug — three would de-gamma the vectors and every surface would
- *      light subtly wrong with nothing obviously "broken" to point at.
- */
-function _heightToNormal(src: HTMLCanvasElement, strength: number): THREE.CanvasTexture {
-  const s = src.width;
-  const srcData = src.getContext('2d')!.getImageData(0, 0, s, s).data;
-  const out = document.createElement('canvas');
-  out.width = out.height = s;
-  const outCtx = out.getContext('2d')!;
-  const img = outCtx.createImageData(s, s);
-  const d = img.data;
-  // Red channel is enough — the height canvases are painted greyscale.
-  const h = (x: number, y: number) => srcData[(((y + s) % s) * s + ((x + s) % s)) * 4] / 255;
-
-  for (let y = 0; y < s; y++) {
-    for (let x = 0; x < s; x++) {
-      const tl = h(x - 1, y - 1), t = h(x, y - 1), tr = h(x + 1, y - 1);
-      const l  = h(x - 1, y),                      r  = h(x + 1, y);
-      const bl = h(x - 1, y + 1), b = h(x, y + 1), br = h(x + 1, y + 1);
-      const dx = (tr + 2 * r + br) - (tl + 2 * l + bl);
-      const dy = (bl + 2 * b + br) - (tl + 2 * t + tr);
-      // Normalise (-dx, -dy, 1/strength) and pack to 0..255.
-      let nx = -dx * strength, ny = -dy * strength;
-      const nz = 1;
-      const inv = 1 / Math.hypot(nx, ny, nz);
-      nx *= inv; ny *= inv;
-      const i = (y * s + x) * 4;
-      d[i]     = Math.round((nx * 0.5 + 0.5) * 255);
-      d[i + 1] = Math.round((ny * 0.5 + 0.5) * 255);
-      d[i + 2] = Math.round((nz * inv * 0.5 + 0.5) * 255);
-      d[i + 3] = Math.round(h(x, y) * 255); // height → alpha, for cavity AO
-    }
-  }
-  outCtx.putImageData(img, 0, 0);
-  const tex = new THREE.CanvasTexture(out);
-  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  // repeat stays (1,1): uvScale() already bakes world texel density into the UVs.
-  return tex;
-}
 
 /** Grey-noise fill helper: base value ± jitter, in optional horizontal streaks. */
 function _grain(ctx: CanvasRenderingContext2D, s: number, base: number, jitter: number, streaky: boolean) {
@@ -302,11 +232,11 @@ function _getFinish(name: FinishName): FinishMaps {
   const spec = _FINISH_SPECS[name];
   // 256 for height: at 128 the Sobel has too little to work with and the normal
   // map comes out mushy rather than detailed.
-  const heightCanvas = _bakeCanvas(256, spec.height);
+  const heightCanvas = bakeCanvas(256, spec.height);
   const maps: FinishMaps = {
-    albedo: _bakeTex(256, 1, true, spec.albedo),
-    rough: _bakeTex(256, 1, false, spec.rough),
-    normal: _heightToNormal(heightCanvas, spec.strength),
+    albedo: bakeTex(256, 1, true, spec.albedo),
+    rough: bakeTex(256, 1, false, spec.rough),
+    normal: heightToNormal(heightCanvas, spec.strength),
   };
   _finishes.set(name, maps);
   return maps;
@@ -3895,10 +3825,6 @@ export class GunModel {
   cancelInspect() {
     if (!this.inspectActive) return;
     this.inspectTime = Math.max(this.inspectTime, this.INSPECT_DURATION * 0.9);
-  }
-
-  isInspecting(): boolean {
-    return this.inspectActive;
   }
 
   /** A quick upward flourish + flick when an ability is cast. */

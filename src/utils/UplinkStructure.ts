@@ -19,6 +19,7 @@
 
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { applyRobotSurface } from './RobotSurface';
 
 export const UPLINK_FIELD_RADIUS = 55;
 
@@ -105,29 +106,48 @@ export class UplinkNetwork {
     const mat = <T extends THREE.Material>(m: T): T => { this.materials.push(m); return m; };
 
     // ── Materials — weathered field-installation palette ──────────────────
-    this.concrete = mat(new THREE.MeshStandardMaterial({
+    //
+    // Every structural material carries a baked detail surface (albedo ×
+    // roughness × normal, plus cavity AO sampled from the normal map's alpha —
+    // see RobotSurface). These were the last large flat-colour surfaces left in
+    // the game: a "weathered pre-collapse installation" whose concrete had no
+    // aggregate or form lines, whose steel had no rivets or welds, and whose
+    // rust was simply a brown material. From a few metres away the whole spire
+    // read as untextured blocks, which undercut the one landmark the fiction
+    // leans on hardest.
+    //
+    // The maps are session-shared and tiled (see the `repeat` note in
+    // RobotSurface) — a 12 m pad needs several tiles across it, not one
+    // stretched crack. Costs no new textures beyond the five bakes, and the
+    // loader already renders one quad per relay material, so every program
+    // this creates is compiled before the first playable frame.
+    this.concrete = mat(applyRobotSurface(new THREE.MeshStandardMaterial({
       color: 0x93938d, roughness: 0.96, metalness: 0.02, flatShading: true,
-    }));
-    this.concreteDark = mat(new THREE.MeshStandardMaterial({
+    }), 'concrete', false));
+    this.concreteDark = mat(applyRobotSurface(new THREE.MeshStandardMaterial({
       color: 0x5f625f, roughness: 0.98, metalness: 0.02, flatShading: true,
-    }));
-    this.steel = mat(new THREE.MeshStandardMaterial({
+    }), 'concrete', false));
+    this.steel = mat(applyRobotSurface(new THREE.MeshStandardMaterial({
       color: 0x66707a, roughness: 0.42, metalness: 0.88, flatShading: true,
-    }));
-    this.steelDark = mat(new THREE.MeshStandardMaterial({
+    }), 'steelPanel', false));
+    this.steelDark = mat(applyRobotSurface(new THREE.MeshStandardMaterial({
       color: 0x2f353b, roughness: 0.6, metalness: 0.75, flatShading: true,
-    }));
-    this.dishSkin = mat(new THREE.MeshStandardMaterial({
+    }), 'steelPanel', false));
+    this.dishSkin = mat(applyRobotSurface(new THREE.MeshStandardMaterial({
       color: 0xc4ccd2, roughness: 0.48, metalness: 0.6, flatShading: true,
       side: THREE.DoubleSide,
-    }));
-    this.hazard = mat(new THREE.MeshStandardMaterial({
+    }), 'dish', false));
+    // Hazard paint keeps its emissive (it is the one part meant to catch the
+    // eye at night), so this is the ONE relay material that takes an
+    // emissiveMap — the stripes have to survive in the emissive term too or
+    // they wash out into a flat orange glow after dusk.
+    this.hazard = mat(applyRobotSurface(new THREE.MeshStandardMaterial({
       color: 0xb54a1e, emissive: 0x5a1404, emissiveIntensity: 0.7,
       roughness: 0.62, metalness: 0.25, flatShading: true,
-    }));
-    this.rust = mat(new THREE.MeshStandardMaterial({
+    }), 'hazard', true));
+    this.rust = mat(applyRobotSurface(new THREE.MeshStandardMaterial({
       color: 0x6e4326, roughness: 0.92, metalness: 0.3, flatShading: true,
-    }));
+    }), 'rust', false));
     this.beaconMat = mat(new THREE.MeshBasicMaterial({ color: 0xff2318, toneMapped: false }));
     this.warnLightMat = mat(new THREE.MeshBasicMaterial({ color: 0xff8c2a, toneMapped: false }));
     this.holoMat = mat(new THREE.MeshBasicMaterial({

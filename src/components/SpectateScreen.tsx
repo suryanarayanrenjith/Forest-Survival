@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import type { PlayerData } from '../utils/MultiplayerManager';
 import { detectIsTouch } from '../hooks/useDeviceInfo';
+import { WEAPON_DISPLAY_NAMES, type WeaponId } from '../utils/WeaponMasterySystem';
 
 interface SpectateScreenProps {
   localPlayer: PlayerData;
@@ -24,7 +25,11 @@ const calculateKD = (kills: number, deaths: number): string => {
   return (kills / deaths).toFixed(2);
 };
 
-const weaponLabel = (w: string): string => (w ? w.charAt(0).toUpperCase() + w.slice(1) : 'Pistol');
+// Use the game's canonical weapon labels rather than capitalising the id: a
+// naive capitalise rendered "smg" as "Smg" here while every other surface in
+// the game shows "SMG". Falls back to the raw id for anything unrecognised.
+const weaponLabel = (w: string): string =>
+  (w ? (WEAPON_DISPLAY_NAMES[w as WeaponId] ?? w.charAt(0).toUpperCase() + w.slice(1)) : 'Pistol');
 
 const rankColor = (rank: number) => (rank === 0 ? '#fbbf24' : rank === 1 ? '#cbd5e1' : rank === 2 ? '#fb923c' : '#64748b');
 

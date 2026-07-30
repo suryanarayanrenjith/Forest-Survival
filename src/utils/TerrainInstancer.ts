@@ -212,13 +212,6 @@ export class TerrainInstancer {
     for (let i = batch.count; i < newCapacity; i++) batch.owners[i] = null;
   }
 
-  /** Live diagnostics — batch count and total instances. */
-  getStats(): { batches: number; instances: number } {
-    let instances = 0;
-    this.batches.forEach((b) => { instances += b.count; });
-    return { batches: this.batches.size, instances };
-  }
-
   /** Tear down every batch (geometries/materials are shared — not disposed). */
   dispose(): void {
     this.batches.forEach((batch) => {

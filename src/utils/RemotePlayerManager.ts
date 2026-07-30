@@ -521,11 +521,6 @@ export class RemotePlayerManager {
     });
   }
 
-  /** Iterate every visible player avatar (for debugging / external systems). */
-  getPlayerGroups(): THREE.Group[] {
-    return Array.from(this.players.values()).map((p) => p.group);
-  }
-
   /**
    * Live blips for the tactical minimap — the smoothly-interpolated world
    * position (not the raw network snapshot) of every remote ally, plus their
@@ -543,16 +538,6 @@ export class RemotePlayerManager {
       });
     });
     return out;
-  }
-
-  /** Returns true if any alive player avatar is within `radius` of `pos`. */
-  hasPlayerNear(pos: THREE.Vector3, radius: number): boolean {
-    const r2 = radius * radius;
-    for (const rec of this.players.values()) {
-      if (!rec.isAlive) continue;
-      if (rec.group.position.distanceToSquared(pos) <= r2) return true;
-    }
-    return false;
   }
 
   dispose(): void {

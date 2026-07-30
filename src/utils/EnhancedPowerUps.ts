@@ -280,6 +280,19 @@ const CHUTE_RELEASE_S = 0.6;
 /** Seconds of touchdown dust before the smoke Points is retired (it used to
  *  animate + re-upload its buffer every frame forever — per landed crate). */
 const SMOKE_LIFE_S = 6;
+/**
+ * Seconds a LANDED crate waits to be claimed before it is written off.
+ *
+ * A landed airdrop used to sit there for the rest of the run: beacon strobing,
+ * light shaft up, halo pulsing. Over a long session every crate the player
+ * declined stayed lit, so the map slowly turned into a field of loot beacons
+ * and each individual crate stopped meaning anything. Generous enough that any
+ * reachable crate is still yours (a streak reward should not be a sprint), but
+ * finite. The last CRATE_FADE_S are a visible strobe-out warning.
+ */
+const CRATE_LIFE_S = 75;
+/** Seconds of accelerating blink-out at the end of CRATE_LIFE_S. */
+const CRATE_FADE_S = 10;
 
 /**
  * Session-long shared GPU assets for every airdrop. Built lazily ONCE, reused
@@ -534,7 +547,7 @@ export class EnhancedPowerUpSystem {
         if (random <= cumulative) {
           powerUpType = type as PowerUpType;
           break;
-        }
+      }
       }
 
       if (!powerUpType) powerUpType = 'health';
@@ -750,8 +763,35 @@ export class EnhancedPowerUpSystem {
           this.buildLandingFX(airdrop);
 
           landedAirdrops.push(airdrop);
-        }
+      }
       } else {
+        // Seconds since touchdown — drives the one-shot landing pop, the chute
+        // release, the squash-and-settle and the looping idle pulses.
+        const since = airdrop.landTime ? (Date.now() - airdrop.landTime) / 1000 : 1;
+
+        // ── EXPIRY ────────────────────────────────────────────────────────
+        // An unclaimed crate is written off after CRATE_LIFE_S so the map can
+        // never accumulate a field of permanently-lit loot beacons.
+        //
+        // Deliberately checked BEFORE the render-distance gate below: a crate
+        // the player walked away from is exactly the one that should be timing
+        // out, and gating it behind the wake test would leave expired crates
+        // sitting in the array to be disposed the moment the player wandered
+        // back — which reads as loot vanishing out from under them.
+        if (since > CRATE_LIFE_S) {
+          this.disposeAirdrop(airdrop, scene);
+          this.airdrops.splice(i, 1);
+          continue;
+      }
+        // 1 → 0 across the final CRATE_FADE_S — the crate visibly winds down
+        // before it goes. Driven through per-MESH properties only (scale and
+        // group visibility): the beam and halo MATERIALS are shared per power-up
+        // type, so fading their opacity here would dim every other crate of the
+        // same type along with this one.
+        const crateLife = since > CRATE_LIFE_S - CRATE_FADE_S
+          ? (CRATE_LIFE_S - since) / CRATE_FADE_S
+          : 1;
+
         // ── Render-distance streaming (landed crates only) ────────────────
         if (playerPos && cullDistance !== undefined) {
           const dx = airdrop.mesh.position.x - playerPos.x;
@@ -773,9 +813,10 @@ export class EnhancedPowerUpSystem {
           }
         }
 
-        // Seconds since touchdown — drives the one-shot landing pop, the chute
-        // release, the squash-and-settle and the looping idle pulses.
-        const since = airdrop.landTime ? (Date.now() - airdrop.landTime) / 1000 : 1;
+        if (crateLife < 1) {
+          // Accelerating strobe — the universal "about to expire" language.
+          airdrop.mesh.visible = Math.sin(since * (6 + (1 - crateLife) * 26)) > -0.4;
+      }
 
         // Slow Y-rotation for the WHOLE crate group so the priority panel
         // and label sweep into view for any nearby player.
@@ -801,7 +842,7 @@ export class EnhancedPowerUpSystem {
               airdrop.tethers = undefined;
             }
           }
-        }
+      }
 
         // Landing pop: 0 → 1 over the first 0.45 s with an ease-out so the
         // beam/halo punch up, then settle.
@@ -823,7 +864,7 @@ export class EnhancedPowerUpSystem {
         // and halo visually anchored to the ground.
         if (airdrop.baseY !== undefined) {
           airdrop.mesh.position.y = airdrop.baseY + Math.sin(since * 2.4) * 0.12;
-        }
+      }
 
         // Strobe beacon — pulse the red blinker so a landed crate is easy
         // to spot in a forest. Cheap traversal because the group has only
@@ -837,7 +878,7 @@ export class EnhancedPowerUpSystem {
             child.material.emissiveIntensity = strobe;
             break;
           }
-        }
+      }
 
         // Light-shaft beacon — breathe its opacity + swell on landing so it
         // reads as a living column of light, not a static cone.
@@ -845,18 +886,20 @@ export class EnhancedPowerUpSystem {
           const breathe = 0.7 + Math.sin(since * 2.0) * 0.3;
           airdrop.beam.material.opacity = 0.32 * pop * breathe;
           const sway = 1 + Math.sin(since * 1.7) * 0.04;
-          airdrop.beam.scale.set(pop, sway, pop);
+          // The shaft narrows away as the crate expires (per-mesh scale — the
+          // beam MATERIAL is shared across all crates of this type).
+          airdrop.beam.scale.set(pop * crateLife, sway, pop * crateLife);
           airdrop.beam.rotation.y -= deltaTime * 0.8; // slow counter-spin shimmer
-        }
+      }
 
         // Ground halo — expands out of the impact point then idles with a
         // slow breathing pulse. (No spin: a symmetric ring reads identically
         // when rotated, and the group already turns it on its Y axis.)
         if (airdrop.halo && airdrop.halo.material instanceof THREE.MeshBasicMaterial) {
           const haloPulse = 0.85 + Math.sin(since * 3.0 + 1.0) * 0.15;
-          airdrop.halo.scale.setScalar(pop * haloPulse);
+          airdrop.halo.scale.setScalar(pop * haloPulse * crateLife);
           airdrop.halo.material.opacity = 0.55 * pop * (0.7 + Math.sin(since * 3.0) * 0.3);
-        }
+      }
 
         // Animate the touchdown dust, then RETIRE it — the old version rose
         // forever, re-uploading a 100-particle buffer every frame per landed
@@ -878,7 +921,7 @@ export class EnhancedPowerUpSystem {
             }
             airdrop.smoke.geometry.attributes.position.needsUpdate = true;
           }
-        }
+      }
       }
     }
 
@@ -900,7 +943,7 @@ export class EnhancedPowerUpSystem {
           this.glowLight.intensity = 2.0 * prox;
           lit = true;
           break;
-        }
+      }
       }
       if (!lit) this.glowLight.intensity = 0;
     }
@@ -950,27 +993,6 @@ export class EnhancedPowerUpSystem {
     }
 
     return airdrop.powerUpType;
-  }
-
-  updateActivePowerUps(): void {
-    const now = Date.now();
-    const expired: PowerUpType[] = [];
-
-    this.activePowerUps.forEach((data, type) => {
-      if (now >= data.expiresAt) {
-        expired.push(type);
-      }
-    });
-
-    expired.forEach(type => this.activePowerUps.delete(type));
-  }
-
-  isActivePowerUp(type: PowerUpType): boolean {
-    return this.activePowerUps.has(type);
-  }
-
-  getActivePowerUps(): PowerUpType[] {
-    return Array.from(this.activePowerUps.keys());
   }
 
   getRemainingTime(type: PowerUpType): number {

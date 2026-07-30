@@ -46,7 +46,6 @@ export interface PerformanceMetrics {
   // Streak Data
   currentStreak: number;
   longestStreak: number;
-  comboMultiplier: number;
 
   // Time-based
   sessionStartTime: number;
@@ -138,7 +137,6 @@ export class AdaptiveDifficultySystem {
       abilitiesUsed: 0,
       currentStreak: 0,
       longestStreak: 0,
-      comboMultiplier: 1,
       sessionStartTime: now,
       lastUpdateTime: now,
       totalPlayTime: 0
@@ -276,17 +274,23 @@ export class AdaptiveDifficultySystem {
     this.metrics.healthLost = maxHealth - currentHealth;
   }
 
+  // ── NOT YET WIRED ─────────────────────────────────────────────────────────
+  // The three recorders below have no call site anywhere in the game, and the
+  // metrics they feed ARE read by the live skill assessment. Kept deliberately
+  // rather than deleted, because each one is a latent input, not dead weight:
+  //
+  //  • recordDeath      → deathCount → `deathsPerMinute` in adjustDifficulty.
+  //    With it unwired, deathsPerMinute is pinned at 0, so the "player is
+  //    struggling, ease off" branch (> 0.5) can never fire.
+  //  • recordPowerUpUsed / recordAbilityUsed → powerUpsUsed + abilitiesUsed →
+  //    `resourceScore` in analyzePerformance, which is therefore always 0 and
+  //    drags the resource axis of the skill estimate down for every player.
+  //
+  // Calling them would change live Adaptive-mode balance, so that's a tuning
+  // decision, not a cleanup one — left for an explicit balance pass.
   public recordDeath(): void {
     this.metrics.deathCount++;
     this.metrics.currentStreak = 0;
-  }
-
-  public recordMovement(distance: number, sprinting: boolean = false): void {
-    this.metrics.distanceTraveled += distance;
-    this.metrics.timeSpentMoving += 0.016; // ~60fps
-    if (sprinting) {
-      this.metrics.timeSpentSprinting += 0.016;
-    }
   }
 
   public recordPowerUpUsed(): void {
@@ -297,8 +301,12 @@ export class AdaptiveDifficultySystem {
     this.metrics.abilitiesUsed++;
   }
 
-  public setComboMultiplier(multiplier: number): void {
-    this.metrics.comboMultiplier = multiplier;
+  public recordMovement(distance: number, sprinting: boolean = false): void {
+    this.metrics.distanceTraveled += distance;
+    this.metrics.timeSpentMoving += 0.016; // ~60fps
+    if (sprinting) {
+      this.metrics.timeSpentSprinting += 0.016;
+    }
   }
 
   /**
@@ -521,13 +529,6 @@ export class AdaptiveDifficultySystem {
    */
   public getMetrics(): PerformanceMetrics {
     return { ...this.metrics };
-  }
-
-  /**
-   * Get skill assessment
-   */
-  public getSkillLevel(): SkillLevel {
-    return this.analyzePerformance();
   }
 
   /**

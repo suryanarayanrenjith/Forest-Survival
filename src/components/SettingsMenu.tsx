@@ -103,6 +103,30 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
     setSettings((prev) => ({ ...prev, [key]: value }));
   };
 
+  /**
+   * Toggle one of the two mutually-exclusive HUD readouts (`showFPS` /
+   * `showConsole`). Switching one ON force-clears the other in the SAME state
+   * update, so the pair is never both-true even for a single render — the
+   * manager applies the same rule on write, and this keeps the UI agreeing with
+   * it instead of relying on a second pass to correct itself.
+   */
+  const setReadout = (key: 'showFPS' | 'showConsole', value: boolean) => {
+    const other = key === 'showFPS' ? 'showConsole' : 'showFPS';
+    setSettings((prev) => ({ ...prev, [key]: value, ...(value ? { [other]: false } : {}) }));
+  };
+
+  /**
+   * Which HUD readout is live. Both toggles derive their on-state AND their
+   * locked-state from this ONE value, which is what makes the pair
+   * deadlock-proof: reading the two flags independently, a hypothetical
+   * both-true state would render both toggles off AND both disabled, trapping
+   * the player with no way back. Resolving to a single winner first — console
+   * ahead of counter, matching the manager's tie-break — means there is always
+   * exactly one enabled control.
+   */
+  const activeReadout: 'fps' | 'console' | 'none' =
+    settings.showConsole ? 'console' : settings.showFPS ? 'fps' : 'none';
+
   // ── Graphics editing ───────────────────────────────────────────────────────
   const selectPreset = (name: GraphicsQuality) => {
     gameSettingsManager.setGraphicsPreset(name);
@@ -563,10 +587,32 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
 
               <div className={IS_TOUCH ? 'grid grid-cols-2 gap-2' : 'space-y-3'}>
                 <Slider label="Field of View" icon={Eye} value={settings.fov} min={60} max={120} suffix="°" onChange={(v) => updateSetting('fov', v)} />
+                {/* MUTUALLY EXCLUSIVE — the console readout already includes the
+                    FPS number, so running both stacks two overlays reporting the
+                    same thing. Whichever is on locks the other off. Turning one
+                    on also force-clears the other (see setReadout), so the pair
+                    can never both be true even if state arrives that way. */}
                 <div className="grid grid-cols-2 gap-2">
-                  <Toggle label="Show FPS Counter" desc="FPS counter only" icon={Activity} value={settings.showFPS} onChange={(v) => updateSetting('showFPS', v)} />
-                  <Toggle label="Show Console / Info" desc="FPS with in-depth detail — renderer, memory & hardware" icon={Terminal} value={settings.showConsole} onChange={(v) => updateSetting('showConsole', v)} />
+                  <Toggle
+                    label="Show FPS Counter" desc="FPS counter only" icon={Activity}
+                    value={activeReadout === 'fps'}
+                    disabled={activeReadout === 'console'}
+                    disabledHint="Turn off Show Console / Info to use this"
+                    onChange={(v) => setReadout('showFPS', v)}
+                  />
+                  <Toggle
+                    label="Show Console / Info" desc="FPS with in-depth detail — renderer, memory & hardware" icon={Terminal}
+                    value={activeReadout === 'console'}
+                    disabled={activeReadout === 'fps'}
+                    disabledHint="Turn off Show FPS Counter to use this"
+                    onChange={(v) => setReadout('showConsole', v)}
+                  />
                 </div>
+                {!IS_TOUCH && (
+                  <p className="mt-2 text-[10px] text-gray-600">
+                    Only one HUD readout can be active — Console / Info already shows the FPS count.
+                  </p>
+                )}
               </div>
             </div>
           )}
@@ -697,26 +743,42 @@ function Segmented<T extends string>({ label, icon: Icon, value, options, onChan
   );
 }
 
-const Toggle = ({ label, desc, icon: Icon, value, onChange }: {
+const Toggle = ({ label, desc, icon: Icon, value, onChange, disabled = false, disabledHint }: {
   label: string; desc?: string; icon: LucideIcon; value: boolean; onChange: (v: boolean) => void;
+  /** Locked out by another setting — renders dimmed and refuses interaction. */
+  disabled?: boolean;
+  /** Why it's locked. Surfaces as the description line + native tooltip. */
+  disabledHint?: string;
 }) => (
   <button
-    onClick={() => onChange(!value)}
+    type="button"
+    disabled={disabled}
+    aria-disabled={disabled}
+    title={disabled ? disabledHint : undefined}
+    onClick={() => { if (!disabled) onChange(!value); }}
     // Touch drops the description line — on a landscape phone that second line
     // is what pushes a list of toggles past the fold; the label carries it.
     className={`flex items-center justify-between rounded-xl border text-left transition-all ${
       IS_TOUCH ? 'm-tap gap-2 px-2.5 py-1.5' : 'px-3.5 py-3'
-    } ${value ? 'border-emerald-400/30 bg-emerald-500/[0.07]' : 'border-white/[0.07] bg-white/[0.02] hover:bg-white/[0.05]'}`}
+    } ${disabled
+      ? 'cursor-not-allowed border-white/[0.05] bg-white/[0.01] opacity-45'
+      : value ? 'border-emerald-400/30 bg-emerald-500/[0.07]' : 'border-white/[0.07] bg-white/[0.02] hover:bg-white/[0.05]'}`}
   >
     <div className={`flex items-center min-w-0 ${IS_TOUCH ? 'gap-2' : 'gap-2.5'}`}>
-      <Icon className={`flex-shrink-0 ${IS_TOUCH ? 'h-3.5 w-3.5' : 'w-4 h-4'} ${value ? 'text-emerald-400' : 'text-gray-500'}`} strokeWidth={2.25} />
+      <Icon className={`flex-shrink-0 ${IS_TOUCH ? 'h-3.5 w-3.5' : 'w-4 h-4'} ${value && !disabled ? 'text-emerald-400' : 'text-gray-500'}`} strokeWidth={2.25} />
       <div className="min-w-0">
-        <div className={`font-semibold text-gray-200 ${IS_TOUCH ? 'text-[12px] leading-tight' : 'text-sm'}`}>{label}</div>
-        {desc && !IS_TOUCH && <div className="text-[11px] text-gray-500 truncate">{desc}</div>}
+        <div className={`font-semibold ${disabled ? 'text-gray-400' : 'text-gray-200'} ${IS_TOUCH ? 'text-[12px] leading-tight' : 'text-sm'}`}>{label}</div>
+        {/* When locked, the reason replaces the normal blurb — a greyed-out
+            toggle with no explanation reads as a bug. */}
+        {(disabled ? disabledHint : desc) && !IS_TOUCH && (
+          <div className={`text-[11px] truncate ${disabled ? 'text-amber-400/70' : 'text-gray-500'}`}>
+            {disabled ? disabledHint : desc}
+          </div>
+        )}
       </div>
     </div>
-    <span className={`relative rounded-full flex-shrink-0 transition-colors ${IS_TOUCH ? 'h-[18px] w-8' : 'w-10 h-5'} ${value ? 'bg-emerald-500' : 'bg-white/15'}`}>
-      <span className={`absolute top-0.5 rounded-full bg-white transition-all ${IS_TOUCH ? 'h-[14px] w-[14px]' : 'w-[18px] h-[18px]'} ${value ? 'right-0.5' : 'left-0.5'}`} />
+    <span className={`relative rounded-full flex-shrink-0 transition-colors ${IS_TOUCH ? 'h-[18px] w-8' : 'w-10 h-5'} ${value && !disabled ? 'bg-emerald-500' : 'bg-white/15'}`}>
+      <span className={`absolute top-0.5 rounded-full bg-white transition-all ${IS_TOUCH ? 'h-[14px] w-[14px]' : 'w-[18px] h-[18px]'} ${value && !disabled ? 'right-0.5' : 'left-0.5'}`} />
     </span>
   </button>
 );

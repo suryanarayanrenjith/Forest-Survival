@@ -61,9 +61,6 @@ export class RagdollSystem {
     this.gravityY = gravityY;
   }
 
-  get isReady(): boolean { return this._ready; }
-  get activeCount(): number { return this.order.length; }
-
   /**
    * Lazily load Rapier's WASM, build the physics world + static ground, and go
    * live. Idempotent and safe to call more than once — only the first call does

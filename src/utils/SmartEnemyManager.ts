@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { type GraphicsPreset } from './GameSettingsManager';
+import { applyRobotSurface } from './RobotSurface';
 
 // ⚠ ADDING A TYPE HERE IS A RIPPLE. The compiler catches most of it (every
 // Record<EnemyType, …> below, plus ENEMY_SCALE / ENEMY_SPAWN_CLEARANCE), but
@@ -35,6 +36,13 @@ export interface AcquiredMesh {
   leftLeg: THREE.Mesh;
   rightLeg: THREE.Mesh;
   head: THREE.Mesh;
+  /** Shooter archetypes only — bore anchor at the tip of the energy lance.
+   *  Undefined for every melee archetype. */
+  muzzle?: THREE.Object3D;
+  /** Shooter archetypes only — the emissive aperture inside the muzzle. */
+  muzzleGlow?: THREE.Mesh;
+  /** Shooter archetypes only — the charge-coil stack on the weapon body. */
+  weaponGlow?: THREE.Mesh;
   poolId: number;
 }
 
@@ -232,21 +240,52 @@ interface SharedGeometries {
   visorHigh: THREE.BoxGeometry;
   footHigh: THREE.BoxGeometry;
   handHigh: THREE.BoxGeometry;
-  crestHigh: THREE.ConeGeometry;
+  // ── HEAD CREST ────────────────────────────────────────────────────────
+  // Was a single 4-segment ConeGeometry. A cone carries CYLINDRICAL UVs — one
+  // wrapped, radially-pinched texture tile — so once the armour maps went on,
+  // the crest smeared a whole stretched panel around itself while the box-UV'd
+  // skull beside it showed a crisp plate. It read as a low-res part bolted onto
+  // a different model. Rebuilt as three tapered BOXES: same swept silhouette,
+  // but it shares the head's exact texel density and panel language, so it
+  // finally reads as one piece of armour with the skull.
+  crestBaseHigh: THREE.BoxGeometry;
+  crestBladeHigh: THREE.BoxGeometry;
+  crestTipHigh: THREE.BoxGeometry;
+  /** Revenant horn segment — same box-UV treatment as the crest. */
+  hornHigh: THREE.BoxGeometry;
   hipHigh: THREE.BoxGeometry;
   // NEW detail pieces — small dressing that adds visual interest without
   // exploding mesh count. All ride on the existing animated parts.
   beltHigh: THREE.BoxGeometry;       // glowing waist strip (on body)
   kneePadHigh: THREE.BoxGeometry;    // small dark plate halfway down the leg
   elbowPadHigh: THREE.BoxGeometry;   // matching elbow plate on the arm
-  antennaHigh: THREE.ConeGeometry;   // thin spike on the head
+  // Sensor whip on the head. Was a ConeGeometry that was allocated on every
+  // init and then never added to a single mesh — dead geometry. Now a box (same
+  // UV-consistency reason as the crest) and actually fitted, merged into the
+  // head's dark set so it costs no extra draw.
+  antennaHigh: THREE.BoxGeometry;
   jetVentHigh: THREE.BoxGeometry;    // back panel (glow vent)
-  // Ranged-specific rifle barrel — long thin box clipped onto the right arm.
-  rifleBarrelHigh: THREE.BoxGeometry;
-  rifleStockHigh: THREE.BoxGeometry;
+  // ── ENEMY ENERGY LANCE ───────────────────────────────────────────────
+  // The shooter archetypes used to carry TWO boxes — a 0.18×0.22×0.46 stock
+  // and a 0.08×0.08×1.4 stick — which is why the thing in their hands read as
+  // a plank rather than a weapon. These are the parts of a real bullpup energy
+  // rifle: receiver, heat shroud, bored barrel, optic, powercell, muzzle
+  // prongs and the emissive coil stack that charges before it fires.
+  wpnReceiver: THREE.BoxGeometry;
+  wpnStock: THREE.BoxGeometry;
+  wpnGrip: THREE.BoxGeometry;
+  wpnShroud: THREE.BoxGeometry;
+  wpnBarrel: THREE.CylinderGeometry;
+  wpnScopeTube: THREE.CylinderGeometry;
+  wpnScopeMount: THREE.BoxGeometry;
+  wpnCell: THREE.BoxGeometry;
+  wpnProng: THREE.BoxGeometry;
+  wpnFin: THREE.BoxGeometry;          // revenant: swept crest fins
+  wpnCoil: THREE.TorusGeometry;       // emissive charge ring around the barrel
+  wpnCellWindow: THREE.BoxGeometry;   // emissive strip in the powercell
+  wpnEmitter: THREE.SphereGeometry;   // glowing bore aperture at the muzzle
   // Previously allocated FRESH per spawn (and leaked) — now shared.
   jetGlowHigh: THREE.BoxGeometry;     // glow stripe on the backpack vent
-  muzzleGlowHigh: THREE.SphereGeometry; // ranged rifle's glowing muzzle tip
 
   bodyMedium: THREE.BoxGeometry;
   limbMedium: THREE.BoxGeometry; // Single geometry for arms/legs
@@ -271,12 +310,19 @@ interface PooledEnemyMesh {
     head?: THREE.Mesh;
     leftEye?: THREE.Mesh;
     rightEye?: THREE.Mesh;
+    // ── Shooter archetypes only (ranged / revenant) ──
+    /** Bore anchor at the tip of the energy lance. Bolts launch from its WORLD
+     *  position, so a shot always leaves the actual barrel. */
+    muzzle?: THREE.Object3D;
+    /** The glowing aperture inside `muzzle` — scaled by the charge animation. */
+    muzzleGlow?: THREE.Mesh;
+    /** Charge-coil stack + powercell window on the weapon body. */
+    weaponGlow?: THREE.Mesh;
   };
   currentLOD: LODLevel;
   inUse: boolean;
   type: EnemyType | null;
   lastActivationTime: number;
-  _cellKey?: string; // Spatial grid cell key for quick removal
   // Meshes that cast a shadow (collected at build), plus the current gate
   // state, so distant enemies can drop shadow casting without a recompile.
   shadowCasters?: THREE.Mesh[];
@@ -372,8 +418,12 @@ class SmartEnemyManager {
   private frustum: THREE.Frustum = new THREE.Frustum();
   private frustumMatrix: THREE.Matrix4 = new THREE.Matrix4();
 
-  private spatialGrid: Map<string, Set<PooledEnemyMesh>> = new Map();
-  private gridCellSize: number = 20;
+  // NOTE: this class deliberately keeps NO spatial index of its own. It used
+  // to maintain a string-keyed `Map<"x,z", Set<PooledEnemyMesh>>` that was
+  // rebuilt for every active enemy on each LOD tick — and never once read.
+  // The only live neighbour queries in the game run against the frame-rebuilt
+  // `enemyGrid` (a packed-integer-key `SpatialGrid`) in App.tsx, which is both
+  // authoritative and far cheaper. Don't reintroduce a second index here.
 
   private lastLODUpdateTime: number = 0;
   private lodUpdateInterval: number = 100; // Update LOD every 100ms
@@ -475,17 +525,35 @@ class SmartEnemyManager {
       visorHigh: new THREE.BoxGeometry(0.72, 0.26, 0.14),
       footHigh: new THREE.BoxGeometry(0.42, 0.2, 0.56),
       handHigh: new THREE.BoxGeometry(0.34, 0.34, 0.34),
-      crestHigh: new THREE.ConeGeometry(0.16, 0.55, 4),
+      // Crest: mount plate → main fin → tapered tip. Boxes, not a cone (see
+      // the interface note) — the taper comes from the three sizes, not from
+      // geometry that would pinch its UVs to a point.
+      crestBaseHigh:  new THREE.BoxGeometry(0.30, 0.11, 0.48),
+      crestBladeHigh: new THREE.BoxGeometry(0.13, 0.34, 0.40),
+      crestTipHigh:   new THREE.BoxGeometry(0.085, 0.24, 0.24),
+      hornHigh:       new THREE.BoxGeometry(0.075, 0.30, 0.13),
       hipHigh: new THREE.BoxGeometry(0.92, 0.4, 0.56),
       beltHigh:      new THREE.BoxGeometry(1.06, 0.12, 0.62),
       kneePadHigh:   new THREE.BoxGeometry(0.42, 0.18, 0.42),
       elbowPadHigh:  new THREE.BoxGeometry(0.36, 0.16, 0.36),
-      antennaHigh:   new THREE.ConeGeometry(0.04, 0.42, 6),
+      antennaHigh:   new THREE.BoxGeometry(0.045, 0.46, 0.045),
       jetVentHigh:   new THREE.BoxGeometry(0.62, 0.6, 0.14),
-      rifleBarrelHigh: new THREE.BoxGeometry(0.08, 0.08, 1.4),
-      rifleStockHigh:  new THREE.BoxGeometry(0.18, 0.22, 0.46),
-      jetGlowHigh:     new THREE.BoxGeometry(0.46, 0.08, 0.04),
-      muzzleGlowHigh:  new THREE.SphereGeometry(0.08, 10, 8),
+      // Energy lance. Authored on their natural axes; the merge below rotates
+      // the cylinders/tori down the +Z bore.
+      wpnReceiver:   new THREE.BoxGeometry(0.15, 0.20, 0.68),
+      wpnStock:      new THREE.BoxGeometry(0.12, 0.16, 0.30),
+      wpnGrip:       new THREE.BoxGeometry(0.10, 0.24, 0.12),
+      wpnShroud:     new THREE.BoxGeometry(0.13, 0.13, 0.42),
+      wpnBarrel:     new THREE.CylinderGeometry(0.035, 0.030, 0.80, 8),
+      wpnScopeTube:  new THREE.CylinderGeometry(0.048, 0.048, 0.32, 8),
+      wpnScopeMount: new THREE.BoxGeometry(0.05, 0.10, 0.05),
+      wpnCell:       new THREE.BoxGeometry(0.11, 0.21, 0.17),
+      wpnProng:      new THREE.BoxGeometry(0.028, 0.028, 0.22),
+      wpnFin:        new THREE.BoxGeometry(0.02, 0.15, 0.34),
+      wpnCoil:       new THREE.TorusGeometry(0.068, 0.019, 6, 14),
+      wpnCellWindow: new THREE.BoxGeometry(0.055, 0.13, 0.02),
+      wpnEmitter:    new THREE.SphereGeometry(0.055, 10, 8),
+      jetGlowHigh:   new THREE.BoxGeometry(0.46, 0.08, 0.04),
 
       bodyMedium: new THREE.BoxGeometry(1, 1.5, 0.6, 1, 1, 1),
       limbMedium: new THREE.BoxGeometry(0.4, 1.5, 0.4, 1, 1, 1),
@@ -541,34 +609,61 @@ class SmartEnemyManager {
     // The emissive multipliers below are intentionally HIGH (3-4×) — the
     // ACES tonemap rolls them back to a sensible range, and bloom catches
     // their highlights for a proper "self-illuminated robot" look.
+    // ── ULTRA-LOW OPT-OUT ──────────────────────────────────────────────
+    // The "potato" tier renders at 50% scale with no post-processing, so the
+    // armour micro-surface is literally sub-pixel there — it would cost four
+    // texture fetches per fragment and ~16 MB of VRAM on exactly the hardware
+    // that can least afford either, to produce something the player cannot
+    // see. Every other tier gets the full detail. (Only ONE of the two shapes
+    // is ever used within a session, so shader warmup still covers whichever
+    // it is.) 0.50 is the ultra-low render scale; the next tier up is 0.65.
+    const detailedSurfaces = (this.graphicsPreset?.pixelRatio ?? 1) > 0.6;
+    const surface = (m: THREE.MeshStandardMaterial, kind: 'plate' | 'limb' | 'greeble') =>
+      detailedSurfaces ? applyRobotSurface(m, kind) : m;
+
     for (const [type, config] of Object.entries(ENEMY_CONFIGS)) {
+      // ── SURFACE DETAIL ────────────────────────────────────────────────
+      // Every structural material carries the shared machined-armour maps
+      // (albedo × roughness × normal, plus cavity AO read from the normal
+      // map's alpha) so a torso plate, a shoulder pad and a shin now show
+      // bevelled rims, panel gaps, construction seams, corner fasteners and
+      // combat weathering instead of one flat colour. See RobotSurface —
+      // it is ONE shared texture set and ONE shader program for the whole
+      // cast, so the warmup guarantee is unaffected.
+      //
+      // Metalness is lifted off zero now that there is a real roughness map
+      // to break up the specular: the plates finally read as METAL under the
+      // moving sun/muzzle light rather than as painted card. It stays low so
+      // the enemies never go dark when the env map does (the emissive term is
+      // what keeps them visible at night — see the note above).
+
       // Body material — strongest emissive boost so the torso reads bright.
-      registerMaterial(`${type}_body`, new THREE.MeshStandardMaterial({
+      registerMaterial(`${type}_body`, surface(new THREE.MeshStandardMaterial({
         color: config.baseColor,
         emissive: config.baseColor,
         emissiveIntensity: config.emissiveIntensity * 5.5,
-        metalness: 0.0,
+        metalness: 0.22,
         roughness: 0.52,
         flatShading: true,
-      }), 1.12);
+      }), 'plate'), 1.12);
 
-      registerMaterial(`${type}_accent`, new THREE.MeshStandardMaterial({
+      registerMaterial(`${type}_accent`, surface(new THREE.MeshStandardMaterial({
         color: config.accentColor,
         emissive: config.accentColor,
         emissiveIntensity: config.emissiveIntensity * 4.4,
-        metalness: 0.0,
+        metalness: 0.22,
         roughness: 0.5,
         flatShading: true,
-      }), 1.1);
+      }), 'limb'), 1.1);
 
-      registerMaterial(`${type}_bright`, new THREE.MeshStandardMaterial({
+      registerMaterial(`${type}_bright`, surface(new THREE.MeshStandardMaterial({
         color: config.brightColor,
         emissive: config.brightColor,
         emissiveIntensity: config.emissiveIntensity * 6.2,
-        metalness: 0.0,
+        metalness: 0.26,
         roughness: 0.46,
         flatShading: true,
-      }), 1.15);
+      }), 'plate'), 1.15);
 
       registerMaterial(`${type}_low`, new THREE.MeshStandardMaterial({
         color: config.baseColor,
@@ -579,17 +674,19 @@ class SmartEnemyManager {
         flatShading: true,
       }), 1.1);
 
-      // Dark recessed-detail material (visor frame, joints, hips).
-      // Brighter darkColor + meaningful emissive so it reads as DARK
-      // not BLACK in low-light conditions.
-      registerMaterial(`${type}_dark`, new THREE.MeshStandardMaterial({
+      // Dark recessed-detail material (visor frame, joints, hips, vents, and
+      // the ranged/revenant weapon bodies). Brighter darkColor + meaningful
+      // emissive so it reads as DARK not BLACK in low-light conditions.
+      // Takes the `greeble` surface — deep slats and a machined service band,
+      // so the parts that read as "inside the chassis" look like mechanism.
+      registerMaterial(`${type}_dark`, surface(new THREE.MeshStandardMaterial({
         color: config.darkColor,
         emissive: config.darkColor,
         emissiveIntensity: 1.65,
-        metalness: 0.0,
+        metalness: 0.35,
         roughness: 0.68,
         flatShading: true,
-      }), 1.3, 0.55);
+      }), 'greeble'), 1.3, 0.55);
 
       // Glowing energy material (chest core, eye bar) — strong emissive so it
       // catches the bloom pass and reads as a light source.
@@ -628,7 +725,11 @@ class SmartEnemyManager {
    */
   private mergedGeo(
     key: string,
-    parts: Array<{ geo: THREE.BufferGeometry; pos?: [number, number, number]; rotX?: number }>,
+    parts: Array<{
+      geo: THREE.BufferGeometry;
+      pos?: [number, number, number];
+      rotX?: number; rotY?: number; rotZ?: number;
+    }>,
   ): THREE.BufferGeometry {
     let merged = this.mergedGeoCache.get(key);
     if (merged) return merged;
@@ -637,7 +738,12 @@ class SmartEnemyManager {
       // (toNonIndexed returns `this` for already-non-indexed geometry, so
       // clone in that case to avoid mutating the shared primitive.)
       const clone = p.geo.index ? p.geo.toNonIndexed() : p.geo.clone();
+      // Rotate X→Y→Z then translate. Cylinders and tori are authored on their
+      // own axes, so the weapon build below needs all three to lay a barrel
+      // down the +Z bore and fan the muzzle prongs around it.
       if (p.rotX) clone.rotateX(p.rotX);
+      if (p.rotY) clone.rotateY(p.rotY);
+      if (p.rotZ) clone.rotateZ(p.rotZ);
       if (p.pos) clone.translate(p.pos[0], p.pos[1], p.pos[2]);
       return clone;
     });
@@ -698,7 +804,6 @@ class SmartEnemyManager {
       pooledEnemy.currentLOD = LODLevel.HIGH;
 
       this.activeEnemies.add(pooledEnemy);
-      this.updateSpatialGrid(pooledEnemy);
       ids.push(this.enemyPool.indexOf(pooledEnemy));
     }
 
@@ -851,35 +956,78 @@ class SmartEnemyManager {
     const rightArmRig = makeArm(1);
     pooledEnemy.parts.rightArm = rightArmRig.pivot;
 
-    // ── RANGED ARCHETYPE — clip a rifle onto the right hand. Reads as
-    // unmistakable from afar so the player IDs the long-range threat. The
-    // rifle/muzzle attach to the arm MESH (not the pivot) so they keep their
-    // exact local offset relative to the hand.
-    if (type === 'ranged') {
-      const rifle = new THREE.Mesh(this.mergedGeo('rifle_dark', [
-        { geo: G.rifleStockHigh, pos: [0.06, -0.65, 0.12] },
-        { geo: G.rifleBarrelHigh, pos: [0.06, -0.65, 0.78] },
-      ]), darkMat);
-      rightArmRig.armMesh.add(rifle);
-      // Glowing muzzle tip — same colour as the eye bar / belt so all
-      // emissive bits read as one "energy weapon" set.
-      const muzzle = new THREE.Mesh(G.muzzleGlowHigh, glowMat);
-      muzzle.position.set(0.06, -0.65, 1.46);
-      rightArmRig.armMesh.add(muzzle);
-    }
+    // ── SHOOTER ARCHETYPES — build the energy lance into the right hand ──
+    //
+    // Both shooters carry a real weapon now instead of two stacked boxes. It is
+    // assembled as THREE objects and no more:
+    //
+    //   • one merged DARK mesh — receiver, stock, grip, heat shroud, bored
+    //     barrel, optic, powercell, muzzle prongs (and the revenant's crest
+    //     fins). One draw, one cached geometry per archetype.
+    //   • one merged GLOW mesh — the charge-coil stack around the barrel and
+    //     the powercell window. Driven by the charge animation in App.
+    //   • one muzzle GROUP holding the bore emitter. It is the anchor the bolt
+    //     actually spawns from — previously bolts were launched from a fixed
+    //     offset off the enemy's ROOT, so an energy round visibly came out of
+    //     the sniper's chest while the barrel pointed somewhere else.
+    //
+    // Everything parents to the arm MESH (not the shoulder pivot) so it keeps
+    // its exact offset relative to the hand as the arm swings.
+    if (type === 'ranged' || type === 'revenant') {
+      const rev = type === 'revenant';
+      // Grip point in the hand, and how far the bore runs forward from it.
+      const hy = rev ? -0.62 : -0.66;
+      const reach = rev ? 0.88 : 1.0;   // revenant carries a shorter carbine
+      const key = rev ? 'rev_lance' : 'lance';
 
-    // ── REVENANT ARCHETYPE — a slim gold rifle on the hand (it shoots like a
-    // sniper). Twin glowing head horns are added after the head is built below,
-    // so its small silhouette still reads as the apex trickster.
-    if (type === 'revenant') {
-      const rifle = new THREE.Mesh(this.mergedGeo('rev_rifle_dark', [
-        { geo: G.rifleStockHigh, pos: [0.06, -0.6, 0.1] },
-        { geo: G.rifleBarrelHigh, pos: [0.06, -0.6, 0.62] },
+      const lanceDark = new THREE.Mesh(this.mergedGeo(`${key}_dark`, [
+        // Body: bullpup receiver with the cell behind the grip.
+        { geo: G.wpnReceiver, pos: [0, hy, 0.30 * reach] },
+        { geo: G.wpnStock,    pos: [0, hy - 0.01, -0.06] },
+        { geo: G.wpnGrip,     rotX: 0.22, pos: [0, hy - 0.19, 0.20 * reach] },
+        { geo: G.wpnCell,     pos: [0, hy - 0.15, 0.52 * reach] },
+        // Bore: shroud, then the barrel proper (cylinder authored on Y).
+        { geo: G.wpnShroud,   pos: [0, hy, 0.82 * reach] },
+        { geo: G.wpnBarrel,   rotX: Math.PI / 2, pos: [0, hy, 1.16 * reach] },
+        // Optic sitting on a two-point rail.
+        { geo: G.wpnScopeTube,  rotX: Math.PI / 2, pos: [0, hy + 0.17, 0.44 * reach] },
+        { geo: G.wpnScopeMount, pos: [0, hy + 0.09, 0.32 * reach] },
+        { geo: G.wpnScopeMount, pos: [0, hy + 0.09, 0.56 * reach] },
+        // Muzzle brake — three prongs fanned around the bore.
+        { geo: G.wpnProng, rotZ: 0,               pos: [0, hy + 0.075, 1.52 * reach] },
+        { geo: G.wpnProng, rotZ: (Math.PI * 2) / 3, pos: [0.065, hy - 0.038, 1.52 * reach] },
+        { geo: G.wpnProng, rotZ: -(Math.PI * 2) / 3, pos: [-0.065, hy - 0.038, 1.52 * reach] },
+        // Revenant only: swept crest fins that mirror its head horns, so the
+        // apex trickster's weapon reads as regalia rather than issue kit.
+        ...(rev ? [
+          { geo: G.wpnFin, rotZ:  0.42, pos: [ 0.10, hy + 0.10, 0.66 * reach] as [number, number, number] },
+          { geo: G.wpnFin, rotZ: -0.42, pos: [-0.10, hy + 0.10, 0.66 * reach] as [number, number, number] },
+        ] : []),
       ]), darkMat);
-      rightArmRig.armMesh.add(rifle);
-      const revMuzzle = new THREE.Mesh(G.muzzleGlowHigh, glowMat);
-      revMuzzle.position.set(0.06, -0.6, 1.2);
-      rightArmRig.armMesh.add(revMuzzle);
+      lanceDark.castShadow = shadows;
+      rightArmRig.armMesh.add(lanceDark);
+
+      // Charge coils + cell window — the emissive set the shot charges through.
+      const lanceGlow = new THREE.Mesh(this.mergedGeo(`${key}_glow`, [
+        { geo: G.wpnCoil, pos: [0, hy, 0.70 * reach] },
+        { geo: G.wpnCoil, pos: [0, hy, 0.86 * reach] },
+        { geo: G.wpnCoil, pos: [0, hy, 1.02 * reach] },
+        { geo: G.wpnCellWindow, rotY: Math.PI / 2, pos: [0.058, hy - 0.15, 0.52 * reach] },
+        { geo: G.wpnCellWindow, rotY: Math.PI / 2, pos: [-0.058, hy - 0.15, 0.52 * reach] },
+      ]), glowMat);
+      rightArmRig.armMesh.add(lanceGlow);
+      pooledEnemy.parts.weaponGlow = lanceGlow;
+
+      // Muzzle anchor. A GROUP (not the emitter mesh itself) so the charge
+      // animation can scale the glowing aperture without moving the spawn
+      // point the bolt is launched from.
+      const muzzle = new THREE.Group();
+      muzzle.position.set(0, hy, 1.62 * reach);
+      rightArmRig.armMesh.add(muzzle);
+      const emitter = new THREE.Mesh(G.wpnEmitter, glowMat);
+      muzzle.add(emitter);
+      pooledEnemy.parts.muzzle = muzzle;
+      pooledEnemy.parts.muzzleGlow = emitter;
     }
 
     // ── Legs (foot + knee pad merged into one dark mesh per leg) ──
@@ -901,18 +1049,28 @@ class SmartEnemyManager {
     pooledEnemy.parts.rightLeg = rightLeg;
     rightLeg.add(new THREE.Mesh(legDarkGeo, darkMat));
 
-    // ── Head (box + tilted crest merged; visor + glowing eye bar ride it) ──
+    // ── Head ──────────────────────────────────────────────────────────────
+    // Skull + a three-stage swept dorsal CREST, merged into one bright mesh.
+    // Each stage is a box, progressively smaller and raked further back, so the
+    // crest tapers through its silhouette rather than through a cone's pinched
+    // UVs — it now carries the same armour panel, bevel and fastener density as
+    // the skull it grows out of instead of reading as a smeared low-res spike.
     const head = new THREE.Mesh(this.mergedGeo('head_bright', [
       { geo: G.headHigh },
-      { geo: G.crestHigh, rotX: -0.32, pos: [0, 0.62, -0.04] },
+      { geo: G.crestBaseHigh,  rotX: -0.10, pos: [0, 0.435, -0.02] },
+      { geo: G.crestBladeHigh, rotX: -0.30, pos: [0, 0.63, -0.075] },
+      { geo: G.crestTipHigh,   rotX: -0.58, pos: [0, 0.85, -0.205] },
     ]), brightMat);
     head.castShadow = shadows;
     head.position.y = 1.9;
     highGroup.add(head);
     pooledEnemy.parts.head = head;
 
-    const visor = new THREE.Mesh(G.visorHigh, darkMat);
-    visor.position.set(0, -0.02, 0.34);
+    // Visor frame + the sensor whip behind it — one dark mesh, one draw.
+    const visor = new THREE.Mesh(this.mergedGeo('head_dark', [
+      { geo: G.visorHigh, pos: [0, -0.02, 0.34] },
+      { geo: G.antennaHigh, rotZ: 0.16, pos: [0.28, 0.62, -0.14] },
+    ]), darkMat);
     head.add(visor);
     const eyeBar = new THREE.Mesh(G.eyeHigh, glowMat);
     eyeBar.position.set(0, -0.02, 0.43);
@@ -920,16 +1078,18 @@ class SmartEnemyManager {
     pooledEnemy.parts.leftEye = eyeBar;
 
     // Revenant horns — twin emissive-gold crests swept back off the head. The
-    // unmistakable apex-trickster tell on top of the small gold body.
+    // unmistakable apex-trickster tell on top of the small gold body. Built
+    // from two box segments per horn (a long root and a raked tip) for the same
+    // reason as the crest, and merged so the pair costs ONE draw rather than
+    // two meshes carrying per-instance transforms.
     if (type === 'revenant') {
-      [-1, 1].forEach((s) => {
-        const horn = new THREE.Mesh(G.crestHigh, glowMat);
-        horn.scale.set(0.5, 1.15, 0.5);
-        horn.position.set(s * 0.34, 0.62, -0.06);
-        horn.rotation.z = s * 0.5;
-        horn.rotation.x = -0.3;
-        head.add(horn);
-      });
+      const horns = new THREE.Mesh(this.mergedGeo('rev_horns_glow', [
+        { geo: G.hornHigh, rotZ:  0.46, rotX: -0.24, pos: [ 0.32, 0.60, -0.05] },
+        { geo: G.hornHigh, rotZ: -0.46, rotX: -0.24, pos: [-0.32, 0.60, -0.05] },
+        { geo: G.hornHigh, rotZ:  0.62, rotX: -0.62, pos: [ 0.44, 0.83, -0.19] },
+        { geo: G.hornHigh, rotZ: -0.62, rotX: -0.62, pos: [-0.44, 0.83, -0.19] },
+      ]), glowMat);
+      head.add(horns);
     }
 
     // MEDIUM LOD - Simplified (no separate arms/legs, just body + head)
@@ -999,54 +1159,6 @@ class SmartEnemyManager {
   }
 
   /**
-   * Get an enemy from the pool or create a new one
-   */
-  acquireEnemy(type: EnemyType, position: THREE.Vector3): PooledEnemyMesh | null {
-    // Check if we've hit the adaptive limit
-    if (this.activeEnemies.size >= this.currentMaxEnemies) {
-      return null;
-    }
-
-    // Prefer a free slot that already holds THIS archetype's meshes —
-    // setupEnemyMeshes then skips the whole rebuild (type-affinity reuse).
-    let pooledEnemy = this.enemyPool.find(e => !e.inUse && e.type === type);
-    if (!pooledEnemy) pooledEnemy = this.enemyPool.find(e => !e.inUse);
-
-    // If no available enemy in pool, create new one if under max pool size
-    if (!pooledEnemy && this.poolSize < this.maxPoolSize) {
-      pooledEnemy = this.createPooledEnemy();
-      this.poolSize++;
-    }
-
-    if (!pooledEnemy) {
-      return null; // Pool exhausted
-    }
-
-    // Setup the enemy for the specific type
-    this.setupEnemyMeshes(pooledEnemy, type);
-
-    // Activate the enemy
-    pooledEnemy.inUse = true;
-    pooledEnemy.type = type;
-    pooledEnemy.lastActivationTime = performance.now();
-    pooledEnemy.group.visible = true;
-    pooledEnemy.group.position.copy(position);
-    pooledEnemy.group.rotation.set(0, 0, 0);
-    pooledEnemy.currentLOD = LODLevel.HIGH;
-
-    // Add to active set
-    this.activeEnemies.add(pooledEnemy);
-
-    // Update spatial grid
-    this.updateSpatialGrid(pooledEnemy);
-
-    // Set initial LOD
-    this.updateEnemyLOD(pooledEnemy);
-
-    return pooledEnemy;
-  }
-
-  /**
    * Return an enemy to the pool
    */
   releaseEnemy(pooledEnemy: PooledEnemyMesh): void {
@@ -1087,6 +1199,10 @@ class SmartEnemyManager {
     if (pooledEnemy.parts.head) {
       pooledEnemy.parts.head.rotation.set(0, 0, 0);
     }
+    // The charge animation scales these while a shot spins up; a recycled slot
+    // must not hand the next shooter a weapon frozen mid-charge.
+    if (pooledEnemy.parts.muzzleGlow) pooledEnemy.parts.muzzleGlow.scale.set(1, 1, 1);
+    if (pooledEnemy.parts.weaponGlow) pooledEnemy.parts.weaponGlow.scale.set(1, 1, 1);
 
     // NOTE: We do NOT reset materials because they are SHARED across all enemies.
     // The death/damage animations now use scale effects instead of material changes.
@@ -1118,9 +1234,6 @@ class SmartEnemyManager {
 
     // Remove from active set
     this.activeEnemies.delete(pooledEnemy);
-
-    // Remove from spatial grid
-    this.removeFromSpatialGrid(pooledEnemy);
   }
 
   /**
@@ -1240,73 +1353,6 @@ class SmartEnemyManager {
   }
 
   /**
-   * Update spatial grid for an enemy
-   */
-  private updateSpatialGrid(pooledEnemy: PooledEnemyMesh): void {
-    const cellKey = this.getCellKey(pooledEnemy.group.position);
-
-    // Remove from old cell if exists
-    this.removeFromSpatialGrid(pooledEnemy);
-
-    // Add to new cell
-    if (!this.spatialGrid.has(cellKey)) {
-      this.spatialGrid.set(cellKey, new Set());
-    }
-    this.spatialGrid.get(cellKey)!.add(pooledEnemy);
-
-    // Store cell key on enemy for quick removal
-    pooledEnemy._cellKey = cellKey;
-  }
-
-  /**
-   * Remove enemy from spatial grid
-   */
-  private removeFromSpatialGrid(pooledEnemy: PooledEnemyMesh): void {
-    const cellKey = pooledEnemy._cellKey;
-    if (cellKey && this.spatialGrid.has(cellKey)) {
-      this.spatialGrid.get(cellKey)!.delete(pooledEnemy);
-    }
-  }
-
-  /**
-   * Get spatial grid cell key for a position
-   */
-  private getCellKey(position: THREE.Vector3): string {
-    const x = Math.floor(position.x / this.gridCellSize);
-    const z = Math.floor(position.z / this.gridCellSize);
-    return `${x},${z}`;
-  }
-
-  /**
-   * Get nearby enemies from spatial grid
-   */
-  getNearbyEnemies(position: THREE.Vector3, radius: number): PooledEnemyMesh[] {
-    const result: PooledEnemyMesh[] = [];
-    const cellRadius = Math.ceil(radius / this.gridCellSize);
-    const centerX = Math.floor(position.x / this.gridCellSize);
-    const centerZ = Math.floor(position.z / this.gridCellSize);
-
-    for (let dx = -cellRadius; dx <= cellRadius; dx++) {
-      for (let dz = -cellRadius; dz <= cellRadius; dz++) {
-        const cellKey = `${centerX + dx},${centerZ + dz}`;
-        const cell = this.spatialGrid.get(cellKey);
-        if (cell) {
-          for (const enemy of cell) {
-            if (enemy.inUse) {
-              const dist = enemy.group.position.distanceTo(position);
-              if (dist <= radius) {
-                result.push(enemy);
-              }
-            }
-          }
-        }
-      }
-    }
-
-    return result;
-  }
-
-  /**
    * Update performance metrics and adjust enemy limits
    */
   updatePerformanceMetrics(deltaTime: number): void {
@@ -1372,93 +1418,17 @@ class SmartEnemyManager {
       // Update LOD for all active enemies
       for (const enemy of this.activeEnemies) {
         this.updateEnemyLOD(enemy);
-        this.updateSpatialGrid(enemy);
       }
       this.lastLODUpdateTime = now;
     }
   }
 
   /**
-   * Get animation parts for a pooled enemy (for leg/arm animations)
-   */
-  getAnimationParts(pooledEnemy: PooledEnemyMesh): {
-    leftLeg?: THREE.Mesh;
-    rightLeg?: THREE.Mesh;
-    leftArm?: THREE.Object3D;  // shoulder-pivot group
-    rightArm?: THREE.Object3D;
-  } {
-    // Only return parts if using high LOD (animations only at close range)
-    if (pooledEnemy.currentLOD === LODLevel.HIGH) {
-      return pooledEnemy.parts;
-    }
-    return {};
-  }
-
-  /**
-   * Check if enemy should receive full AI updates
-   */
-  shouldUpdateAI(pooledEnemy: PooledEnemyMesh): boolean {
-    // Only update AI for visible enemies (not culled)
-    return pooledEnemy.currentLOD !== LODLevel.CULLED;
-  }
-
-  /**
-   * Check if enemy should have detailed animations
-   */
-  shouldAnimate(pooledEnemy: PooledEnemyMesh): boolean {
-    // Only animate at high LOD
-    return pooledEnemy.currentLOD === LODLevel.HIGH;
-  }
-
-  /**
-   * Get current statistics
-   */
-  getStats(): {
-    poolSize: number;
-    activeCount: number;
-    maxEnemies: number;
-    avgFPS: number;
-    lodCounts: Record<LODLevel, number>;
-  } {
-    const lodCounts = {
-      [LODLevel.HIGH]: 0,
-      [LODLevel.MEDIUM]: 0,
-      [LODLevel.LOW]: 0,
-      [LODLevel.CULLED]: 0,
-    };
-
-    for (const enemy of this.activeEnemies) {
-      lodCounts[enemy.currentLOD]++;
-    }
-
-    return {
-      poolSize: this.poolSize,
-      activeCount: this.activeEnemies.size,
-      maxEnemies: this.currentMaxEnemies,
-      avgFPS: this.metrics.avgFPS,
-      lodCounts,
-    };
-  }
-
-  /**
-   * Get all active enemies
-   */
-  getActiveEnemies(): PooledEnemyMesh[] {
-    return Array.from(this.activeEnemies);
-  }
-
-  /**
-   * Get current max enemies (may be lower than base due to performance)
+   * Get current max enemies. Always the preset's target — see adjustEnemyLimit
+   * for why nothing is allowed to lower it.
    */
   getCurrentMaxEnemies(): number {
     return this.currentMaxEnemies;
-  }
-
-  /**
-   * Force a specific max enemy count (for testing)
-   */
-  setMaxEnemies(count: number): void {
-    this.currentMaxEnemies = Math.min(count, this.baseMaxEnemies);
   }
 
   /**
@@ -1504,9 +1474,6 @@ class SmartEnemyManager {
     // Add to active set
     this.activeEnemies.add(pooledEnemy);
 
-    // Update spatial grid
-    this.updateSpatialGrid(pooledEnemy);
-
     // Get pool index for ID
     const poolId = this.enemyPool.indexOf(pooledEnemy);
 
@@ -1519,6 +1486,9 @@ class SmartEnemyManager {
       leftLeg: pooledEnemy.parts.leftLeg!,
       rightLeg: pooledEnemy.parts.rightLeg!,
       head: pooledEnemy.parts.head!,
+      muzzle: pooledEnemy.parts.muzzle,
+      muzzleGlow: pooledEnemy.parts.muzzleGlow,
+      weaponGlow: pooledEnemy.parts.weaponGlow,
       poolId,
     };
   }
@@ -1533,42 +1503,6 @@ class SmartEnemyManager {
     if (!pooledEnemy || !pooledEnemy.inUse) return;
 
     this.releaseEnemy(pooledEnemy);
-  }
-
-  /**
-   * Check if a position is visible (in frustum and within view distance)
-   */
-  isPositionVisible(position: THREE.Vector3): boolean {
-    if (!this.camera || !this.graphicsPreset) return true;
-
-    const distance = position.distanceTo(this.camera.position);
-    if (distance > this.graphicsPreset.viewDistance) return false;
-
-    return this.isInFrustum(position);
-  }
-
-  /**
-   * Get the LOD level for a mesh by pool ID
-   */
-  getLODLevel(poolId: number): LODLevel {
-    if (poolId < 0 || poolId >= this.enemyPool.length) return LODLevel.HIGH;
-    return this.enemyPool[poolId].currentLOD;
-  }
-
-  /**
-   * Check if an enemy should skip expensive updates based on LOD
-   */
-  shouldSkipAIUpdate(poolId: number): boolean {
-    if (poolId < 0 || poolId >= this.enemyPool.length) return false;
-    return this.enemyPool[poolId].currentLOD === LODLevel.CULLED;
-  }
-
-  /**
-   * Check if an enemy should have full animations (only at close range)
-   */
-  shouldAnimateFull(poolId: number): boolean {
-    if (poolId < 0 || poolId >= this.enemyPool.length) return true;
-    return this.enemyPool[poolId].currentLOD === LODLevel.HIGH;
   }
 
   /**
@@ -1592,13 +1526,6 @@ class SmartEnemyManager {
   }
 
   /**
-   * Get number of active enemies
-   */
-  getActiveCount(): number {
-    return this.activeEnemies.size;
-  }
-
-  /**
    * Clean up all resources
    */
   dispose(): void {
@@ -1612,7 +1539,6 @@ class SmartEnemyManager {
     // Clear collections
     this.enemyPool = [];
     this.activeEnemies.clear();
-    this.spatialGrid.clear();
     this.poolSize = 0;
 
     // Dispose shared geometries
@@ -1627,7 +1553,15 @@ class SmartEnemyManager {
     this.mergedGeoCache.forEach((g) => g.dispose());
     this.mergedGeoCache.clear();
 
-    // Dispose shared materials
+    // Dispose shared materials.
+    //
+    // Deliberately does NOT free the armour surfaces these materials sample
+    // (see RobotSurface). Those canvases are SESSION-shared: the player
+    // character models bind the same textures, and the next run rebuilds this
+    // manager's materials against them. Disposing them here would both break
+    // any live character model and force a full re-bake + re-upload on the
+    // next run for no benefit — material.dispose() never touches textures,
+    // which is exactly why this is safe.
     for (const material of this.sharedMaterials.values()) {
       material.dispose();
     }

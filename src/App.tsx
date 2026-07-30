@@ -14,7 +14,7 @@ import { PostProcessingPipeline } from './utils/PostProcessing';
 import { SpatialGrid } from './utils/SpatialGrid';
 import { AIBehaviorSystem } from './utils/AIBehaviorSystem';
 import { EnemyPerception } from './utils/EnemyPerception';
-import { AttackSystem } from './utils/AttackSystem';
+import { AttackSystem, type MeleeStyle } from './utils/AttackSystem';
 import { BulletDodging } from './utils/BulletDodging';
 import { WeatherSystem } from './utils/WeatherSystem';
 import { BiomeSystem } from './utils/BiomeSystem';
@@ -82,7 +82,7 @@ import WavePerkPicker from './components/WavePerkPicker';
 import { aggregatePerkBonuses, NEUTRAL_PERK_BONUSES, rollMysteryBox, isPerkPoolExhausted, WAVE_PERKS, type WavePerkId, type PerkBonuses } from './utils/WavePerkRegistry';
 import RunModifierPicker from './components/RunModifierPicker';
 import { generateStakeOptions, type RunModifier } from './utils/RunModifierSystem';
-import { spawnBarrels, type ExplosiveBarrel } from './utils/HazardSystem';
+import { spawnBarrels, makeBarrelIrradiated, pulseIrradiatedBarrels, irradiatedCoreMaterials, disposeHazardAssets, type ExplosiveBarrel } from './utils/HazardSystem';
 import { UplinkNetwork, EmpShockwave } from './utils/UplinkStructure';
 import { spawnRangedSentinels, updateSentinelGlow, type RangedSentinel } from './utils/RangedSentinelSystem';
 import { CHARACTER_PASSIVES } from './utils/CharacterPassiveRegistry';
@@ -3134,6 +3134,29 @@ const ForestSurvivalGame = () => {
     // shared spire list — no extra sync needed).
     const uplinkFieldFactor = (x: number, z: number): number =>
       uplinkNet && uplinkPlaced ? uplinkNet.fieldFactorAt(x, z) : 0;
+
+    // ── IRRADIATED CORES ────────────────────────────────────────────────
+    // Every explosive barrel standing inside a relay's field has been sitting
+    // in the broadcast for decades. Those drums aren't TNT any more — they are
+    // warheads, and they get their own radiological skin (caution striping,
+    // trefoil placards, a live containment band) so the player can never
+    // confuse one for ordinary red TNT at any distance.
+    //
+    // A CONVERSION pass rather than a spawn-time decision, because the barrels
+    // are scattered before the relays are sited. Idempotent — the guest path
+    // below re-runs it once the host's spire list arrives, and any barrel
+    // already converted is skipped.
+    const markIrradiatedBarrels = (): void => {
+      if (!uplinkPlaced) return;
+      for (let b = 0; b < barrels.length; b++) {
+        const barrel = barrels[b];
+        if (barrel.irradiated || barrel.detonated) continue;
+        if (uplinkFieldFactor(barrel.mesh.position.x, barrel.mesh.position.z) > 0) {
+          makeBarrelIrradiated(barrel);
+        }
+      }
+    };
+    markIrradiatedBarrels();
     // ── Lingering irradiation charge ────────────────────────────────────────
     // The empowerment an enemy CARRIES: the max of its live field exposure
     // and the charge it soaked up earlier (peak factor, held for a long
@@ -3171,6 +3194,122 @@ const ForestSurvivalGame = () => {
     // enemy_hit handler) so guest-reported hits are never double-reduced.
     const playerBallisticsMult = (): number =>
       netWaveEvent === 'glitch' ? 1 - 0.25 * Math.min(1, netWaveEventIntensity) : 1;
+
+    // ═══ SHOOTER FIRING ANIMATION ════════════════════════════════════════
+    //
+    // The shooter archetypes had NO firing animation at all. A sniper walked
+    // its ordinary walk cycle, arms swinging at its sides, and a bolt simply
+    // appeared out of its chest — no aim, no telegraph, no recoil, and often
+    // not even facing the player. It was the weakest read in the game: the
+    // single most dangerous enemy gave the player nothing to react to.
+    //
+    // This drives the whole firing pose from one place, shared by the sniper,
+    // the subverted sniper and the revenant:
+    //
+    //   AIM      — the weapon arm comes up and PITCHES onto the target, the
+    //              support arm crosses to the fore-end, the torso leans in and
+    //              the chassis yaws to face what it's shooting at.
+    //   CHARGE   — the powercell coils swell and the bore aperture blooms as
+    //              the shot fills. This is the tell the player reads to break
+    //              line of sight, and it is why the charge window exists.
+    //   RECOIL   — the shot punches the weapon arm up and flares the muzzle.
+    //
+    // Everything is a per-instance TRANSFORM. Enemy materials are shared across
+    // the whole archetype, so brightening a material here would light up every
+    // sniper on the map at once; scaling the emissive meshes is what keeps the
+    // telegraph per-enemy. Allocation-free — it runs for every shooter, every
+    // frame.
+    const RECOIL_S = 0.22;
+
+    /**
+     * Where a shooter's bolt is actually born: the world position of the tip of
+     * its energy lance.
+     *
+     * Falls back to the old chassis-relative offset when the muzzle anchor is
+     * missing — which happens legitimately, because the anchor only exists on
+     * the HIGH-LOD build. A distant sniper firing from its simplified mesh
+     * should still produce a bolt from roughly the right height rather than
+     * from its feet.
+     *
+     * Returns a FRESH Vector3: the callers keep it (it seeds the bullet's mesh
+     * position and its direction), so a scratch vector would be aliased across
+     * every shot fired on the same frame.
+     */
+    const enemyMuzzleOrigin = (e: Enemy, fallbackY: number): THREE.Vector3 => {
+      const out = new THREE.Vector3();
+      if (e.muzzle && e.muzzle.parent) {
+        // Force the chain up to the root. The renderer skips hidden subtrees
+        // when it updates world matrices, so a shooter currently drawing at
+        // MEDIUM LOD (high group hidden) would otherwise read a stale — or on
+        // its very first shot, an identity — matrix and fire from the origin.
+        e.muzzle.updateWorldMatrix(true, false);
+        e.muzzle.getWorldPosition(out);
+        return out;
+      }
+      return out.set(e.mesh.position.x, e.mesh.position.y + fallbackY, e.mesh.position.z);
+    };
+
+    const driveShooterPose = (
+      e: Enemy,
+      tx: number, ty: number, tz: number,
+      /** 0..1 — how full the pending shot is. */
+      charge: number,
+      /** Is the unit actually presenting the weapon this frame? */
+      aiming: boolean,
+      dt: number,
+      nowMs: number,
+    ): void => {
+      // Ease between "walking" and "presenting". Rising faster than it falls,
+      // so the threat snaps up but lowers unhurriedly.
+      const blendRate = Math.min(1, dt * (aiming ? 9 : 4.5));
+      const a = (e.aimBlend = (e.aimBlend ?? 0) + ((aiming ? 1 : 0) - (e.aimBlend ?? 0)) * blendRate);
+      if ((e.recoilTime ?? 0) > 0) e.recoilTime = Math.max(0, (e.recoilTime as number) - dt);
+      const kick = (e.recoilTime ?? 0) / RECOIL_S; // 1 at the shot → 0
+
+      if (a > 0.002) {
+        // Bore pitch — a sniper on a rise shooting down at the player should
+        // visibly angle its weapon down, not fire level and have the bolt bend.
+        const flat = Math.hypot(tx - e.mesh.position.x, tz - e.mesh.position.z);
+        const pitch = Math.atan2(ty - (e.mesh.position.y + 1.2), Math.max(0.001, flat));
+        const aimX = -Math.PI / 2 + Math.max(-0.5, Math.min(0.5, pitch));
+        if (e.rightArm) {
+          e.rightArm.rotation.x = THREE.MathUtils.lerp(e.rightArm.rotation.x, aimX, a)
+            + kick * kick * 0.5 * a;                       // muzzle climb on the shot
+          e.rightArm.rotation.z = THREE.MathUtils.lerp(e.rightArm.rotation.z, -0.16, a);
+        }
+        if (e.leftArm) {
+          // Support hand crosses to the fore-end (+z rolls the LEFT arm inward).
+          e.leftArm.rotation.x = THREE.MathUtils.lerp(e.leftArm.rotation.x, -1.18, a);
+          e.leftArm.rotation.z = THREE.MathUtils.lerp(e.leftArm.rotation.z, 0.44, a);
+        }
+        if (e.torso) {
+          // Positive pitches FORWARD (same convention as the walk lean and the
+          // melee pose). Leans into the sights, then rocks back on the shot.
+          e.torso.rotation.x = THREE.MathUtils.lerp(e.torso.rotation.x, 0.14 - kick * 0.30, a);
+        }
+        // Square up to the target. Snipers hang back beyond the walk block's
+        // 20 m "never show your back" guard, so without this they routinely
+        // fired at a right angle to where they were looking.
+        let dYaw = Math.atan2(tx - e.mesh.position.x, tz - e.mesh.position.z) - e.mesh.rotation.y;
+        while (dYaw > Math.PI) dYaw -= Math.PI * 2;
+        while (dYaw < -Math.PI) dYaw += Math.PI * 2;
+        e.mesh.rotation.y += dYaw * Math.min(1, dt * 7 * a);
+      }
+
+      // Charge + recoil on the emissive set.
+      const ch = charge < 0 ? 0 : charge > 1 ? 1 : charge;
+      if (e.muzzleGlow) {
+        const throb = 1 + Math.sin(nowMs * 0.022) * 0.14 * ch;
+        e.muzzleGlow.scale.setScalar((1 + 2.1 * ch * ch) * throb + kick * 1.8);
+      }
+      if (e.weaponGlow) {
+        // X/Y ONLY. The coil offsets are baked into the merged geometry, so a
+        // uniform scale would slide the whole stack down the barrel instead of
+        // making the rings bulge.
+        const s = 1 + 0.34 * ch + kick * 0.3;
+        e.weaponGlow.scale.set(s, s, 1);
+      }
+    };
 
     // ── BOSS PER-HIT DAMAGE CAP ──────────────────────────────────────────
     //
@@ -3733,6 +3872,22 @@ const ForestSurvivalGame = () => {
     let wavePowerupDrops = 0;
     let wavePowerupCap = 1;
     let killsSinceLastDrop = 0;
+    // ── PICKUP LITTER CONTROL ────────────────────────────────────────────
+    // The per-wave budget capped how many crates SPAWN, but nothing ever took
+    // one away again: `powerUps` was append-only, world crates had no lifetime,
+    // and — because the player may only carry ONE power at a time — every crate
+    // they walked past stayed lit, bobbing and lighting the ground FOREVER. By
+    // wave 10 the map was carpeted with uncollected loot, which is exactly what
+    // makes a shooter read as cheap. Three rules fix it globally:
+    //   1. TTL — a crate that isn't claimed decays (blinks out over its last
+    //      seconds, then despawns). Loot is an opportunity, not scenery.
+    //   2. LIVE CAP — at most this many uncollected crates exist at once,
+    //      anywhere on the map. Spawning past the cap retires the OLDEST.
+    //   3. The array is spliced, so collected/expired entries stop costing a
+    //      per-frame iteration (it used to grow unbounded for the whole run).
+    const PICKUP_TTL_MS = 42000;      // ~2 waves of grace to come back for it
+    const PICKUP_FADE_MS = 7000;      // final stretch: blink + shrink out
+    const PICKUP_LIVE_CAP = 3;        // uncollected crates allowed on the map
     let isGameOver = false;
     let paused = false;
     // ── RUN CONTEXT ──────────────────────────────────────────────────────
@@ -3777,6 +3932,11 @@ const ForestSurvivalGame = () => {
     let fovPunch = 0; // FOV punch on shooting (additive degrees)
     let fovCheckAccum = 0; // throttles re-reading the FOV setting
     let abilityHudAccum = 0; // throttles ability-bar HUD updates
+    // Change-gate for the ability bar, mirroring the stamina push below: the
+    // throttle alone still handed React a brand-new array of fresh objects ~8
+    // times a second forever, so the bar reconciled constantly while sitting
+    // completely idle. Only push when a field the HUD actually renders moved.
+    let lastAbilityHudSig = '';
 
     // Track player velocity for AI prediction
     const playerVelocity = new THREE.Vector3(0, 0, 0);
@@ -4163,7 +4323,7 @@ const ForestSurvivalGame = () => {
             _shardDir.x * speed + (Math.random() - 0.5) * spread,
             1.8 + Math.random() * 2.6,
             _shardDir.z * speed + (Math.random() - 0.5) * spread,
-          );
+                );
           shard.spin.set((Math.random() - 0.5) * 26, (Math.random() - 0.5) * 26, (Math.random() - 0.5) * 26);
           shard.life = 1.3 + Math.random() * 0.5;
           shard.restY = 0.03 + Math.random() * 0.04;
@@ -4224,7 +4384,7 @@ const ForestSurvivalGame = () => {
           remotePlayerManager!.addOrUpdatePlayer(
             p,
             Array.from(multiplayerManager.getRemotePlayers().keys()),
-          );
+                );
         });
       }
 
@@ -4581,7 +4741,12 @@ const ForestSurvivalGame = () => {
       }
 
       // Extract mesh and parts from pooled enemy
-      const { mesh: enemyGroup, body: torso, leftArm, rightArm, leftLeg, rightLeg, head, poolId } = acquiredMesh;
+      const {
+        mesh: enemyGroup, body: torso, leftArm, rightArm, leftLeg, rightLeg, head, poolId,
+        // Shooter archetypes only — the energy lance's bore anchor and its
+        // emissive charge set (undefined on every melee archetype).
+        muzzle, muzzleGlow, weaponGlow,
+      } = acquiredMesh;
 
       // A recycled pooled mesh may still carry a frost-shell child (Cryo Freeze)
       // or a Revenant shield bubble from a previous occupant — strip both so
@@ -4770,8 +4935,17 @@ const ForestSurvivalGame = () => {
         (type === 'ranged' || type === 'revenant' || type === 'howler' || type === 'leaper') ? 'normal'
         : (type === 'bulwark' || type === 'splitter') ? 'tank'
         : type;
+      // The swing SHAPE is picked from the true archetype, not the timing
+      // profile above: a Revenant and a Leaper share a grunt's cadence but
+      // should not throw a grunt's punch. This is the tell the player reads
+      // in their peripheral vision to know what just closed on them.
+      const meleeStyle: MeleeStyle =
+        (type === 'tank' || type === 'boss' || type === 'bulwark') ? 'slam'
+        : (type === 'leaper' || type === 'howler' || type === 'splitter' || type === 'revenant') ? 'flurry'
+        : 'swipe';
       const attackSystemInstance = new AttackSystem(
-        AttackSystem.createConfigForType(attackArchetype, enemyDamage * diffSettings.damageMult * waveDamageRamp * easyEliteDmgMult * (runMods.enemyDamageMult ?? 1))
+        AttackSystem.createConfigForType(attackArchetype, enemyDamage * diffSettings.damageMult * waveDamageRamp * easyEliteDmgMult * (runMods.enemyDamageMult ?? 1)),
+        meleeStyle,
       );
 
       // NEW: Bullet dodging system - makes enemies dodge bullets dynamically
@@ -4816,6 +4990,9 @@ const ForestSurvivalGame = () => {
         rightArm,
         torso,
         head,
+        muzzle,
+        muzzleGlow,
+        weaponGlow,
         // AI state - prevent clumping
         targetPosition: new THREE.Vector3(x, 0, z),
         spreadOffset: new THREE.Vector2(
@@ -5341,6 +5518,9 @@ const ForestSurvivalGame = () => {
       // Materialize-in: the drop pops from a point to full size over ~0.45s
       // (driven in the per-frame loop) so loot arriving mid-fight has a beat.
       group.userData.spawnAt = Date.now();
+      // Decay clock — see PICKUP_TTL_MS. An unclaimed crate is not permanent
+      // scenery; the per-frame loop blinks it out and despawns it at expiry.
+      group.userData.expireAt = group.userData.spawnAt + PICKUP_TTL_MS;
       group.scale.setScalar(0.01);
       // `core` is the mesh exposed to gameplay code (pickup collision,
       // cleanup). Aliasing the group keeps `core.position` / `core.userData`
@@ -5355,6 +5535,56 @@ const ForestSurvivalGame = () => {
         position: new THREE.Vector3(x, 2, z),
         collected: false
       };
+    };
+
+    /**
+     * Retire a world pickup: release its pooled light and unparent the group.
+     *
+     * Shared with the collection path — every pickup material and geometry is
+     * cached per colour / per shape, so disposing here would free resources
+     * other live pickups are still drawing with. Detach only.
+     */
+    const despawnPickup = (pu: PowerUp): void => {
+      const root = pu.mesh as unknown as THREE.Object3D;
+      releasePickupLight(root.userData.light as THREE.PointLight | null | undefined);
+              root.userData.light = null;
+              root.parent?.remove(root);
+      pu.collected = true; // marks it for the splice on the next frame
+    };
+
+    /**
+     * THE single entry point for putting loot on the ground.
+     *
+     * Enforces the global live cap (see PICKUP_LIVE_CAP): if the map already
+     * holds the maximum number of unclaimed crates, the OLDEST one is retired
+     * to make room, so a fresh, relevant drop always wins over stale litter and
+     * the world can never accumulate a field of glowing boxes.
+     */
+    const spawnPickup = (x: number, z: number, type: PowerUp['type'], persistent = false): PowerUp => {
+      let live = 0;
+      let oldest: PowerUp | null = null;
+      for (let i = 0; i < powerUps.length; i++) {
+        const p = powerUps[i];
+        // `persistent` crates are exempt from BOTH the cap accounting and the
+        // eviction choice — see below.
+        if (p.collected || p.mesh.userData.persistent === true) continue;
+        live++;
+        if (!oldest || ((p.mesh.userData.spawnAt as number) || 0) < ((oldest.mesh.userData.spawnAt as number) || 0)) {
+          oldest = p;
+        }
+      }
+      if (live >= PICKUP_LIVE_CAP && oldest) despawnPickup(oldest);
+      const pu = createPowerUp(x, z, type);
+      // A persistent crate never decays and can never be evicted. Used by the
+      // tutorial, whose "collect a power-up" drill stages exactly ONE crate and
+      // then waits — a crate that timed out, or that an enemy drop pushed off
+      // the live cap, would leave that step impossible to finish.
+      if (persistent) {
+        pu.mesh.userData.persistent = true;
+        pu.mesh.userData.expireAt = Infinity;
+      }
+      powerUps.push(pu);
+      return pu;
     };
 
     const createParticles = (position: THREE.Vector3, color: number, count: number = 10) => {
@@ -5874,8 +6104,12 @@ const ForestSurvivalGame = () => {
     };
 
     const spawnWavePowerUps = () => {
+      // Counts against the SAME per-wave budget as enemy loot (it used to be a
+      // free extra on top of it), so the milestone crate can't push a wave over
+      // its ceiling.
+      if (wavePowerupDrops >= wavePowerupCap) return;
       const spot = findPickupSpot(camera.position.x, camera.position.z, 20, 35);
-      powerUps.push(createPowerUp(spot.x, spot.z, randomLoot()));
+      spawnPickup(spot.x, spot.z, randomLoot());
       wavePowerupDrops++;
     };
 
@@ -5972,16 +6206,18 @@ const ForestSurvivalGame = () => {
     };
 
     const spawnWave = () => {
-      // Reset the per-wave power-up budget. Wave 1: a single drop (significantly
-      // less). Wave 2: two. Wave 3+: three, occasionally four. Tutorial: a steady
-      // paced trickle. `killsSinceLastDrop` starts negative-ish at 0 so the first
-      // couple of kills can't immediately drop.
+      // Reset the per-wave power-up budget. Waves 1–2 get a SINGLE drop, wave 3+
+      // at most two — and that ceiling counts the milestone wave crate, so a
+      // wave can never put more than two crates on the ground no matter how
+      // many kills it takes. Combined with the live cap and the TTL, loot now
+      // arrives as an event you go and get, not a stream you walk through.
+      // Tutorial keeps a steady paced trickle (it's teaching the mechanic).
+      // `killsSinceLastDrop` starts at 0 so the opening kills can't insta-drop.
       wavePowerupDrops = 0;
       killsSinceLastDrop = 0;
       wavePowerupCap = isTutorialMode ? 99
-        : wave <= 1 ? 1
-        : wave === 2 ? 2
-        : 3 + (Math.random() < 0.4 ? 1 : 0);
+        : wave <= 2 ? 1
+        : 2;
       // Scavenger perk — pad the per-wave power-up budget so drops rain down.
       if (!isTutorialMode && perkBonuses.powerupLuckMult > 1) {
         wavePowerupCap = Math.round(wavePowerupCap * perkBonuses.powerupLuckMult) + 1;
@@ -6119,7 +6355,7 @@ const ForestSurvivalGame = () => {
               name: 'Bulwark', tag: 'ARMOURED · FRONTAL SHIELD',
               blurb: 'Its shield eats anything hitting the front arc. Flank it — shots from the side or behind land in full.',
               accent: '#5fd8ff',
-            },
+          },
           },
           {
             type: 'leaper', startWave: 7, chance: 0.45, maxAlive: 3,
@@ -6127,7 +6363,7 @@ const ForestSurvivalGame = () => {
               name: 'Leaper', tag: 'AMBUSHER · POUNCE',
               blurb: 'It crouches and howls before it springs — and it clears cover. Move the moment you hear it; it is wide open when it lands.',
               accent: '#ff8c2e',
-            },
+          },
           },
           {
             type: 'howler', startWave: 9, chance: 0.4, maxAlive: 2,
@@ -6135,7 +6371,7 @@ const ForestSurvivalGame = () => {
               name: 'Howler', tag: 'SUPPORT · OVERSHIELD',
               blurb: 'It never attacks — it shields everything around it. Kill it first or nothing else will die.',
               accent: '#d08cff',
-            },
+          },
           },
           {
             type: 'splitter', startWave: 11, chance: 0.4, maxAlive: 2,
@@ -6143,7 +6379,7 @@ const ForestSurvivalGame = () => {
               name: 'Splitter', tag: 'HOST · SPLITS ON DEATH',
               blurb: 'Bursts into three runners when it dies. Do not pop it in your face — kill it at range, ideally with splash.',
               accent: '#b6ff5a',
-            },
+          },
           },
         ];
         for (const gate of archetypeGate) {
@@ -6846,7 +7082,21 @@ const ForestSurvivalGame = () => {
         }
         const target = findNearestBarrel(camera.position.x, camera.position.z, DEMO_WIRE_RANGE);
         if (!target) {
-          showPowerMessage('No barrel nearby — stand next to a red barrel', 1600);
+          // Distinguish "nothing here" from "that one, but not that one" —
+          // otherwise an Engineer standing inside a relay field, surrounded by
+          // drums, gets told there are no barrels nearby and reads it as a bug.
+          let coreNearby = false;
+          for (let b = 0; b < barrels.length && !coreNearby; b++) {
+            const bb = barrels[b];
+            if (!bb.irradiated || bb.detonated) continue;
+            coreNearby = Math.hypot(bb.mesh.position.x - camera.position.x, bb.mesh.position.z - camera.position.z) <= DEMO_WIRE_RANGE;
+          }
+          showPowerMessage(
+            coreNearby
+              ? "ARK-07 core — can't be wired. Shoot it. From a long way off."
+              : 'No barrel nearby — stand next to a red barrel',
+            1900,
+          );
           return; // a whiff costs no cooldown
         }
         wireBomb(target);
@@ -8414,7 +8664,7 @@ const ForestSurvivalGame = () => {
           const t = Math.min(
             (cx - EDGE) / Math.max(1e-6, Math.abs(dx)),
             (cy - EDGE) / Math.max(1e-6, Math.abs(dy)),
-          );
+                );
           const ex = cx + dx * t;
           const ey = cy + dy * t;
           const ang = Math.atan2(dy, dx) * (180 / Math.PI) + 90; // chevron art points up
@@ -8879,7 +9129,7 @@ const ForestSurvivalGame = () => {
             killStreak === 48 ? 'frenzy' :
             killStreak === 58 ? 'juggernaut' :
             null
-          );
+                );
           // No upgrade left (every weapon unlocked, OR already holding the
           // top-tier gun)? Turn the Mystery Box into a Health Pack so the streak
           // still pays off and we never drop a pointless gun crate.
@@ -9023,8 +9273,8 @@ const ForestSurvivalGame = () => {
       killsSinceLastDrop++;
       if (
         wavePowerupDrops < wavePowerupCap &&
-        killsSinceLastDrop >= 3 &&
-        Math.random() < 0.22 * (1 + skillBonus('powerupSpawnRate'))
+        killsSinceLastDrop >= 6 &&
+        Math.random() < 0.13 * (1 + skillBonus('powerupSpawnRate'))
       ) {
         const ex = enemy.mesh.position.x;
         const ez = enemy.mesh.position.z;
@@ -9034,7 +9284,7 @@ const ForestSurvivalGame = () => {
           const spot = findPickupSpot(ex, ez, 1.6, 4.0);
           dropX = spot.x; dropZ = spot.z;
         }
-        powerUps.push(createPowerUp(dropX, dropZ, randomLoot()));
+        spawnPickup(dropX, dropZ, randomLoot());
         wavePowerupDrops++;
         killsSinceLastDrop = 0;
       }
@@ -9444,6 +9694,11 @@ const ForestSurvivalGame = () => {
         for (let sp = 0; sp + 1 < msg.us.length; sp += 2) {
           addUplinkSpire(msg.us[sp], msg.us[sp + 1]);
         }
+        // The guest's barrels were scattered from the same seed as the host's,
+        // but it had no relay positions until now — so the irradiated-core
+        // conversion has to run HERE, once the fields exist, or a guest would
+        // see plain red TNT where the host sees warheads.
+        markIrradiatedBarrels();
       }
       if (typeof msg.wm === 'number') {
         const kind = msg.wm === 1 ? 'surge' : msg.wm === 2 ? 'glitch' : 'none';
@@ -9463,7 +9718,15 @@ const ForestSurvivalGame = () => {
           waveTimeoutId = null;
           setShowWaveComplete(false);
         }, 2500);
-        spawnWavePowerUps();
+        // Guests never run spawnWave(), so the per-wave loot budget has to be
+        // rolled over HERE or it would stay pinned at its wave-1 value and the
+        // guest would stop seeing loot entirely after the first crate.
+        wavePowerupDrops = 0;
+        killsSinceLastDrop = 0;
+        wavePowerupCap = wave <= 2 ? 1 : 2;
+        // The milestone crate stays on the host's every-3rd-wave cadence so
+        // both sides get loot on the same waves.
+        if (wave % 3 === 0) spawnWavePowerUps();
         updateGameState();
       }
 
@@ -9531,9 +9794,17 @@ const ForestSurvivalGame = () => {
         if (w.d && !e.dead) {
           e.dead = true;
           e.deathTime = 1.0;
-          if (Math.random() < 0.26) {
+          // Guest-side loot. This used to be a flat 26% per death with NO
+          // budget and NO cooldown at all — the wave cap that keeps solo loot
+          // scarce simply wasn't on this path, so a multiplayer guest's map
+          // filled with crates far faster than the host's. Run it through the
+          // exact same budget + kill-spacing gate as the solo/host drop.
+          killsSinceLastDrop++;
+          if (wavePowerupDrops < wavePowerupCap && killsSinceLastDrop >= 6 && Math.random() < 0.13) {
             const spot = findPickupSpot(e.mesh.position.x, e.mesh.position.z, 1.2, 3.5);
-            powerUps.push(createPowerUp(spot.x, spot.z, randomLoot()));
+            spawnPickup(spot.x, spot.z, randomLoot());
+            wavePowerupDrops++;
+            killsSinceLastDrop = 0;
           }
         }
       }
@@ -9815,6 +10086,124 @@ const ForestSurvivalGame = () => {
     // detonation on the next frame, so clustered barrels read as a
     // satisfying chain-reaction without recursion stack overflow risk.
     const pendingBarrelDetonations: ExplosiveBarrel[] = [];
+
+    /**
+     * ═══ IRRADIATED CORE DETONATION ═══════════════════════════════════════
+     *
+     * The ARK-07 fields are the one part of the map that is genuinely, openly
+     * hostile — and these drums are why. A core going off is a nuclear event,
+     * not an explosion:
+     *
+     *   • It clears a 32 m circle. Nothing hostile inside it survives.
+     *   • Anything alive in that circle includes the PLAYER. Inside the
+     *     fireball there is no falloff and no partial damage — it kills you.
+     *     Standing in a relay field trading shots near a marked core is a
+     *     decision, and this is what that decision costs.
+     *   • OUTSIDE the circle, nothing happens to the player at all. Popping a
+     *     core from across the map is a completely free area wipe, and that
+     *     asymmetry is the whole tactic: these are the strongest weapon on the
+     *     map, and the only skill they ask for is standing far enough away.
+     *
+     * The chain rule is deliberately asymmetric too — see the comment below.
+     */
+    const detonateIrradiatedCore = (barrel: ExplosiveBarrel, epos: THREE.Vector3) => {
+      const R = barrel.blastRadius;
+
+      // ── Spectacle. The full nuke cinematic, sized to the real kill radius.
+      nukeEffects.push(new NukeEffect(scene, new THREE.Vector3(epos.x, 0.5, epos.z), R * 0.7));
+      spawnExplosionFX(epos, R * 0.35);
+      createCrater(epos);
+      ragdollSystem.applyRadialImpulse(epos.x, 0.5, epos.z, R * 0.8, 2.8);
+      soundManager.playAt('explosion_huge', epos.x, epos.y, epos.z, 1.0, 0.86);
+
+      // Screen feedback scales with how close the player was — a core going up
+      // on the horizon should still register, but it must not shake the camera
+      // like one at their feet.
+      const playerDist = Math.hypot(camera.position.x - epos.x, camera.position.z - epos.z);
+      const nearness = Math.max(0, 1 - playerDist / (R * 2.2));
+      if (nearness > 0.02) {
+        if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
+        fovPunch = Math.min(fovPunch + 13 * nearness, 18);
+        if (nearness > 0.45) triggerKillFlash();
+      }
+
+      // ── Everything hostile inside the circle is gone.
+      for (let j = enemies.length - 1; j >= 0; j--) {
+        const e = enemies[j];
+        if (e.dead) continue;
+        const dx = e.mesh.position.x - epos.x;
+        const dz = e.mesh.position.z - epos.z;
+        const dist = Math.hypot(dx, dz);
+        if (dist > R) continue;
+        // Barely any falloff: this is a warhead, not a grenade. Even at the rim
+        // it removes a boss's health bar in one go.
+        const dmg = barrel.blastDamage * (1 - (dist / R) * 0.25);
+        if (isMpGuest && mp) {
+          if (e.netId !== undefined) mp.sendEnemyHit(e.netId, dmg, false);
+        } else {
+          if (revShieldUp(e)) shatterRevShield(e, e.mesh.position);
+          e.health -= dmg;
+        }
+        e.damageFlashTime = 0.5;
+        stampEnemyDamage(e, dmg, false, undefined, epos);
+        if (!isMpGuest && e.health <= 0) handleEnemyKilled(e, false);
+      }
+
+      // ── The player. Binary, by design: inside is death, outside is nothing.
+      // Routed through takeEnemyDamage rather than killing directly so the
+      // protections the player EARNED still mean something — an active
+      // Invincibility power or Second Wind saves them, exactly as it would from
+      // any other lethal hit. Everything else dies.
+      if (playerDist <= R) {
+        takeEnemyDamage(100000, 'ARK-07 Irradiated Core', null);
+      }
+
+      // ── Chain. A core ignites ordinary TNT across its whole radius, but
+      // NEVER another core. Relay fields hold several of these within 32 m of
+      // each other, so a core-to-core cascade would stack a dozen simultaneous
+      // NukeEffects (the single heaviest VFX in the game) and turn every field
+      // into a one-touch map wipe. Each core stays its own deliberate decision.
+      for (let b = 0; b < barrels.length; b++) {
+        const other = barrels[b];
+        if (other === barrel || other.detonated || other.irradiated) continue;
+        if (other.mesh.position.distanceTo(epos) <= R * 0.75) {
+          pendingBarrelDetonations.push(other);
+        }
+      }
+
+      scene.remove(barrel.mesh);
+      const idx = barrels.indexOf(barrel);
+      if (idx !== -1) barrels.splice(idx, 1);
+    };
+
+    /**
+     * A barrel took a hit and SURVIVED it.
+     *
+     * Ordinary TNT gets orange sparks and a metal ping. A core gets a loud,
+     * unmistakable breach cue — green venting, a rising alarm — plus an
+     * explicit warning if the player is standing inside the radius it would
+     * take with it. That warning is the fairness contract for the whole
+     * feature: a core is an instant kill and it detonates the moment its
+     * casing gives, so the player must be told the casing is going, and told
+     * it in time to run. Shared by the player and enemy bullet paths, because
+     * a core cooked off by a sniper's stray round has to read exactly the same.
+     */
+    const registerBarrelGraze = (barrel: ExplosiveBarrel, at: THREE.Vector3): void => {
+      if (barrel.irradiated) {
+        createParticles(at, 0x8dff3a, 10);
+        soundManager.playAt('impact_metal', at.x, at.y, at.z, 0.7, 1.5);
+        soundManager.playAt('hack_fail', barrel.mesh.position.x, barrel.mesh.position.y + 1, barrel.mesh.position.z, 0.5, 0.8);
+        const d = Math.hypot(camera.position.x - barrel.mesh.position.x, camera.position.z - barrel.mesh.position.z);
+        if (d <= barrel.blastRadius) {
+          showPowerMessage('⚠ ARK-07 CORE BREACHING — GET CLEAR', 1400);
+          haptic('hurt');
+        }
+        return;
+      }
+      createParticles(at, 0xffaa33, 6);
+      soundManager.playAt('impact_metal', at.x, at.y, at.z, 0.5, 0.88 + Math.random() * 0.12);
+    };
+
     const detonateBarrel = (barrel: ExplosiveBarrel) => {
       if (barrel.detonated) return;
       barrel.detonated = true;
@@ -9823,6 +10212,13 @@ const ForestSurvivalGame = () => {
       if (barrel === armedBomb) armedBomb = null;
       if (barrel.bombKit) disposeBombKit(barrel);
       const epos = barrel.mesh.position.clone();
+      // ── ARK-07 IRRADIATED CORE ──────────────────────────────────────
+      // A drum that has been cooking inside a relay field doesn't pop — it
+      // goes off. Completely different event, so it takes its own path.
+      if (barrel.irradiated) {
+        detonateIrradiatedCore(barrel, epos);
+        return;
+      }
       spawnExplosionFX(epos, barrel.blastRadius);
       if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
       // Real, POSITIONAL detonation. This used to be a pitched-down 'powerUp'
@@ -9950,11 +10346,21 @@ const ForestSurvivalGame = () => {
     // through the existing chain-reaction pump (not detonated inline) so the
     // blast cascades naturally and damages the player + enemies caught in it —
     // e.g. a Ranger dashing over a barrel, or any ability/power cast next to one.
-    const detonateBarrelsNear = (x: number, z: number, radius: number): void => {
+    //
+    // IRRADIATED CORES ARE EXEMPT BY DEFAULT (`includeCores`). Every caller of
+    // this is an INCIDENTAL trigger — a melee swing, a Ranger dash, a power
+    // cast that happened to go off near a drum — and a core's blast is lethal
+    // out to 32 m, so an incidental trigger would mean instantly dying to your
+    // own melee animation with no decision behind it. A sealed warhead does not
+    // cook off because someone punched the air next to it; it goes off when it
+    // is SHOT, or when something genuinely nuclear-adjacent hits it (the
+    // tactical nuke passes `true`, and the player is invulnerable for that).
+    const detonateBarrelsNear = (x: number, z: number, radius: number, includeCores = false): void => {
       const r2 = radius * radius;
       for (let b = 0; b < barrels.length; b++) {
         const barrel = barrels[b];
         if (barrel.detonated) continue;
+        if (barrel.irradiated && !includeCores) continue;
         const dx = barrel.mesh.position.x - x;
         const dz = barrel.mesh.position.z - z;
         if (dx * dx + dz * dz <= r2 && !pendingBarrelDetonations.includes(barrel)) {
@@ -10016,8 +10422,10 @@ const ForestSurvivalGame = () => {
         if (e.health <= 0) { handleEnemyKilled(e, false); kills++; }
         else { e.damageFlashTime = 0.5; }
       }
-      // Sympathetic detonation of any explosive barrels caught in the area.
-      detonateBarrelsNear(center.x, center.z, radius * 0.5);
+      // Sympathetic detonation of any explosive barrels caught in the area —
+      // ARK-07 cores included: a tactical nuke absolutely cooks one off, and
+      // the invulnerability granted above covers the player through the chain.
+      detonateBarrelsNear(center.x, center.z, radius * 0.5, true);
       return kills;
     };
 
@@ -10383,12 +10791,19 @@ const ForestSurvivalGame = () => {
     };
 
     // Nearest non-detonated, not-yet-wired barrel within `range` of (x,z).
+    //
+    // ARK-07 IRRADIATED CORES ARE EXCLUDED. The Engineer's Demolition ability
+    // is a detonator kit and a length of wire spliced into a drum of TNT —
+    // that is not a procedure you perform on a critical radiological core, and
+    // letting it work would hand the Engineer a pocket 32 m instant-kill nuke
+    // on a 20-second cooldown, which no other character can answer. Cores are
+    // set off the honest way: by shooting them, from a safe distance.
     const findNearestBarrel = (x: number, z: number, range: number): ExplosiveBarrel | null => {
       let best: ExplosiveBarrel | null = null;
       let bestD = range * range;
       for (let b = 0; b < barrels.length; b++) {
         const barrel = barrels[b];
-        if (barrel.detonated || barrel.wired) continue;
+        if (barrel.detonated || barrel.wired || barrel.irradiated) continue;
         const dx = barrel.mesh.position.x - x;
         const dz = barrel.mesh.position.z - z;
         const d = dx * dx + dz * dz;
@@ -10893,10 +11308,6 @@ const ForestSurvivalGame = () => {
         skyMaterial.uniforms.skyColorHorizon.value.setHex(renderAtmosphere.fogColor);
       }
 
-      // === UPDATE ENHANCED SYSTEMS ===
-      // Update ability system
-      const abilityEffects = abilitySystem.update(delta);
-
       // === SKILL TREE: refresh bonus snapshot + reconcile max health ===
       // Re-read the unlocked-skill bonuses a few times a second so a point spent
       // mid-run applies almost immediately. The only health touch here is the
@@ -10986,26 +11397,37 @@ const ForestSurvivalGame = () => {
         else if (damageBoostActive) { powerType = 'damage'; powerState = 'active'; }
         else if (speedBoostActive) { powerType = 'speed'; powerState = 'active'; }
 
+        const abilityName = armedBomb ? 'Detonate' : activeAbility.name;
+        // Quantised so a continuously-draining cooldown doesn't defeat the gate
+        // by a hair on every tick — the bar's CSS transition covers the steps.
+        const abilityFill = abilityCooldown <= 0 ? 1 : Math.max(0, 1 - abilityCooldown / abilityCooldownMax);
+        const abilityActive = isDashing || !!armedBomb || Date.now() < abilityActiveUntil;
+        const powerName = powerType ? POWER_LABELS[powerType] : 'Find Loot';
+        const sig = `${abilityName}|${activeAbility.id}|${activeAbility.color}|${Math.round(abilityFill * 100)}|${abilityActive ? 1 : 0}`
+          + `|${powerName}|${powerType ?? ''}|${powerState}|${powerRatio === undefined ? '' : Math.round(powerRatio * 100)}`;
+        if (sig !== lastAbilityHudSig) {
+          lastAbilityHudSig = sig;
         setAbilityHud([
           {
             // Engineer's slot reads "Detonate" while a bomb is wired so the
             // player knows the next press triggers it.
             key: 'Q',
-            name: armedBomb ? 'Detonate' : activeAbility.name,
+              name: abilityName,
             kind: 'dash',
             abilityId: activeAbility.id,
             accent: activeAbility.color,
-            cooldown: abilityCooldown <= 0 ? 1 : Math.max(0, 1 - abilityCooldown / abilityCooldownMax),
-            active: isDashing || !!armedBomb || Date.now() < abilityActiveUntil,
+              cooldown: abilityFill,
+              active: abilityActive,
           },
           {
             key: 'E', kind: 'power',
-            name: powerType ? POWER_LABELS[powerType] : 'Find Loot',
+              name: powerName,
             powerType,
             state: powerState,
             ratio: powerRatio,
           },
         ]);
+        }
       }
 
       // Process queued explosive-barrel chain reactions. Done once per frame
@@ -11266,8 +11688,11 @@ const ForestSurvivalGame = () => {
           } else if (step.id === 'ability') {
             abilityCooldown = 0; // the drill can't ask for a move that isn't ready
           } else if (step.id === 'powerup') {
+            // PERSISTENT: staged exactly once, and this step cannot be
+            // completed without it — so it is exempt from the pickup TTL and
+            // from live-cap eviction.
             const spot = findPickupSpot(camera.position.x, camera.position.z, 3, 6);
-            powerUps.push(createPowerUp(spot.x, spot.z, randomLoot()));
+            spawnPickup(spot.x, spot.z, randomLoot(), true);
           }
         } else if (step && step.completed !== tutorialLastStepDone) {
           // ── JUST SATISFIED ── push the confirmation the instant the action
@@ -11747,12 +12172,12 @@ const ForestSurvivalGame = () => {
             -0.46 + (1 - e) * -0.06,
             -1.05 + e * 0.71,            // rises from stowed (low) to braced
             -0.74 + (1 - e) * 0.05,
-          );
+                );
           shieldMesh.rotation.set(
             1.05 - e * 0.99,             // tilts up from face-down to braced
             0.36,
             0.2 - e * 0.15,
-          );
+                );
           if (shieldActive) {
             shieldMesh.position.x += Math.sin(now * 0.002) * 0.006;
             shieldMesh.rotation.z += Math.sin(now * 0.0017) * 0.012;
@@ -11937,7 +12362,7 @@ const ForestSurvivalGame = () => {
       const hazardSlowMul = playerHazard
         ? 1 - (1 - HAZARD_RULES[playerHazard.kind].slow) * playerHazard.depth
         : 1;
-      const baseSpeed = moveSpeed * frameScale * weightSpeedMultiplier * abilityEffects.speedMultiplier * powerupSpeedMult * crouchMult * bushSlowMul * hazardSlowMul * weatherMoveMult * (1 + skillBonus('moveSpeed')) * (mpMods.speedMult ?? 1) * perkBonuses.moveSpeedMult;
+      const baseSpeed = moveSpeed * frameScale * weightSpeedMultiplier * powerupSpeedMult * crouchMult * bushSlowMul * hazardSlowMul * weatherMoveMult * (1 + skillBonus('moveSpeed')) * (mpMods.speedMult ?? 1) * perkBonuses.moveSpeedMult;
       let currentSpeed = isRunning ? baseSpeed * sprintMultiplier : baseSpeed;
 
       // Apply dash speed if dashing
@@ -12625,12 +13050,35 @@ const ForestSurvivalGame = () => {
         }
       }
 
-      // Update power-ups
+      // Update power-ups.
+      //
+      // Iterated BACKWARDS so a finished pickup (collected, or decayed past its
+      // TTL) can be spliced out on the spot. The array used to be append-only
+      // for the whole run, so a 25-wave session ended up walking — and reading
+      // the userData of — a hundred dead entries every single frame.
       const _puNowMs = Date.now();
       const _puNow = _puNowMs * 0.001;
-      for (const powerUp of powerUps) {
-        if (!powerUp.collected) {
+      for (let pi = powerUps.length - 1; pi >= 0; pi--) {
+        const powerUp = powerUps[pi];
+        if (powerUp.collected) { powerUps.splice(pi, 1); continue; }
+        {
           const root = powerUp.mesh as unknown as THREE.Group;
+
+          // ── DECAY ───────────────────────────────────────────────────────
+          // Checked BEFORE the sleep gate so loot left behind on the far side
+          // of the map still times out. The last PICKUP_FADE_MS are a visible
+          // warning: the crate shrinks and strobes so a player running for it
+          // can tell it's about to go.
+          // `?? Infinity`, not `|| 0`: if a future spawn path ever forgets to
+          // stamp the clock, the safe failure is a crate that lingers — not one
+          // that vanishes the instant it lands.
+          const _puTimeLeft = ((root.userData.expireAt as number | undefined) ?? Infinity) - _puNowMs;
+          if (_puTimeLeft <= 0) {
+            despawnPickup(powerUp);
+            powerUps.splice(pi, 1);
+            continue;
+          }
+          const _puDecay = _puTimeLeft < PICKUP_FADE_MS ? _puTimeLeft / PICKUP_FADE_MS : 1;
 
           // ── Render-distance streaming (sleep/wake) ──────────────────────
           // Beyond the preset's view distance the pickup is despawned: hidden,
@@ -12663,15 +13111,25 @@ const ForestSurvivalGame = () => {
 
           // Materialize-in: pop from a point to full size with a soft
           // overshoot during the first 0.45s after spawn, then lock at 1.
+          // The decay factor rides on top: as the TTL runs out the crate
+          // visibly contracts toward its "about to wink out" size.
           const spawnAge = _puNowMs - ((root.userData.spawnAt as number) || 0);
+          const _puShrink = 0.55 + 0.45 * _puDecay;
           if (spawnAge < 450) {
             const mt = spawnAge / 450;
             // easeOutBack — 0 → overshoot (~1.09) → settle at 1.
             const mb = mt - 1;
             const k = 1 + 2.70158 * mb * mb * mb + 1.70158 * mb * mb;
-            root.scale.setScalar(Math.max(0.01, k));
-          } else if (root.scale.x !== 1) {
-            root.scale.setScalar(1);
+            root.scale.setScalar(Math.max(0.01, k * _puShrink));
+          } else if (root.scale.x !== _puShrink) {
+            root.scale.setScalar(_puShrink);
+          }
+          // Expiry strobe — the last few seconds flicker at an accelerating
+          // rate, the universal "this is going away" language. Full-strength
+          // pickups skip the test entirely (_puDecay === 1).
+          if (_puDecay < 1) {
+            const blinkHz = 2.5 + (1 - _puDecay) * 9;
+            root.visible = Math.sin(_puNow * blinkHz * Math.PI * 2) > -0.45;
           }
 
           // Gentle vertical bob with a phase offset so neighbouring pickups
@@ -12699,7 +13157,9 @@ const ForestSurvivalGame = () => {
 
           const light = root.userData.light as THREE.PointLight | null | undefined;
           if (light) {
-            light.intensity = 3.5 + pulse * 3.5;
+            // Dims with the decay so a dying crate stops lighting the ground
+            // like a fresh one — the beacon fades before the crate vanishes.
+            light.intensity = (3.5 + pulse * 3.5) * _puDecay * (root.visible ? 1 : 0.25);
             // Pool lights live in world space (scene-parented), so sync
             // their position to the pickup each frame as it bobs.
             light.position.set(root.position.x, root.position.y, root.position.z);
@@ -12745,17 +13205,13 @@ const ForestSurvivalGame = () => {
                 showPowerMessage(touchControls.enabled ? 'Use your power (tap Power) before looting another' : 'Use your power (E) before looting another', 1400);
               }
             } else {
-              powerUp.collected = true;
               // All pickup materials + geometries are shared (cached per
               // colour / per shape) so we do NOT dispose them — that would
               // wipe out resources still in use by other live pickups.
-              // Just release the pool light and remove the group from the
-              // scene; GC reclaims the small per-instance Mesh wrappers.
-              const root = powerUp.mesh as unknown as THREE.Object3D;
-              const pooledLight = (root.userData.light as THREE.PointLight | null | undefined) ?? null;
-              releasePickupLight(pooledLight);
-              root.userData.light = null;
-              root.parent?.remove(root);
+              // despawnPickup releases the pool light and unparents the group;
+              // GC reclaims the small per-instance Mesh wrappers.
+              despawnPickup(powerUp);
+              powerUps.splice(pi, 1);
               soundManager.play('powerUp', 0.8);
 
               // Stow the looted power — it is NOT applied until the player
@@ -12852,6 +13308,39 @@ const ForestSurvivalGame = () => {
           enemyBullets.splice(eb, 1);
           continue;
         }
+        // ── ENEMY FIRE SETS OFF BARRELS ─────────────────────────────────
+        // Enemy bolts used to pass straight through explosive barrels, so the
+        // whole hazard layer was a one-way tool the player pointed at the
+        // swarm. Now a sniper's stray round can cook off the drum you are
+        // standing behind — and inside an ARK-07 field, where those drums are
+        // irradiated cores, that is the field's actual threat: it is not just
+        // a debuff zone, it is a place where the enemy can drop a warhead on
+        // you. The core's own lethal radius still decides whether it kills
+        // you, so keeping your distance from the marked drums is the counter.
+        let boltHitBarrel = false;
+        for (let b = 0; b < barrels.length; b++) {
+          const barrel = barrels[b];
+          if (barrel.detonated) continue;
+          const dxB = bolt.mesh.position.x - barrel.mesh.position.x;
+          const dyB = bolt.mesh.position.y - barrel.mesh.position.y;
+          const dzB = bolt.mesh.position.z - barrel.mesh.position.z;
+          if (dxB * dxB + dzB * dzB < barrel.hitRadius * barrel.hitRadius && Math.abs(dyB) < 1.0) {
+            // Queued, never detonated inline: this runs mid-iteration over
+            // enemyBullets, and detonateBarrel splices `barrels` and can kill
+            // the player. The chain pump resolves it at the safe point.
+            barrel.hp -= bolt.damage;
+            if (barrel.hp <= 0) {
+              if (!pendingBarrelDetonations.includes(barrel)) pendingBarrelDetonations.push(barrel);
+            } else {
+              registerBarrelGraze(barrel, bolt.mesh.position);
+            }
+            scene.remove(bolt.mesh);
+            enemyBullets.splice(eb, 1);
+            boltHitBarrel = true;
+            break;
+          }
+        }
+        if (boltHitBarrel) continue;
         if (bolt.life <= 0 || bolt.mesh.position.y < 0.1) {
           scene.remove(bolt.mesh);
           enemyBullets.splice(eb, 1);
@@ -12961,9 +13450,8 @@ const ForestSurvivalGame = () => {
             if (barrel.hp <= 0) {
               detonateBarrel(barrel);
             } else {
-              // Glancing hit — sparks + the bullet stops here either way.
-              createParticles(bullet.mesh.position, 0xffaa33, 6);
-              soundManager.playAt('impact_metal', bullet.mesh.position.x, bullet.mesh.position.y, bullet.mesh.position.z, 0.5, 0.88 + Math.random() * 0.12);
+              // Glancing hit — the bullet stops here either way.
+              registerBarrelGraze(barrel, bullet.mesh.position);
             }
             // Rockets still trigger their own AOE in addition to the barrel
             // detonation (a rocket landing on a barrel should feel huge).
@@ -13472,7 +13960,7 @@ const ForestSurvivalGame = () => {
           soundManager.playAt(
             impactSound, _tempVec3.x, _tempVec3.y, _tempVec3.z,
             0.5, 0.92 + Math.random() * 0.16,
-          );
+                );
           retireBulletMesh(bullet);
           bullets.splice(i, 1);
         }
@@ -13971,7 +14459,7 @@ const ForestSurvivalGame = () => {
             focusVel,
             terrainObjects,
             timeOfDay === 'night'
-          );
+                );
           // Stagger by enemy index so 28 enemies don't all tick on the same
           // frame — spreads the spikes across the ~220ms window.
           enemy.nextPerceptionAt = frameNowMs + PERCEPTION_TICK_MS + (i * 17) % 90;
@@ -14664,14 +15152,18 @@ const ForestSurvivalGame = () => {
           const engageGate = enemy.engageable !== false || (isMpHost && focusPlayerId !== null);
           if (los && engageGate) {
             if ((enemy.rangedNextShotAt ?? 0) <= frameNowMs) {
+              const wasCharging = (enemy.rangedChargeMs ?? 0) > 0;
               enemy.rangedChargeMs = (enemy.rangedChargeMs ?? 0) + delta * 1000;
+              // Spin-up whine at the instant the charge starts — the audible
+              // half of the telegraph, positional so it tells the player WHERE.
+              if (!wasCharging) {
+                soundManager.playAt('powerUp', enemy.mesh.position.x, enemy.mesh.position.y + 1.4, enemy.mesh.position.z, 0.30, 0.72);
+              }
               if (enemy.rangedChargeMs >= CHARGE_MS) {
-                // Launch bolt from the rifle muzzle (rough offset).
-                const origin = new THREE.Vector3(
-                  enemy.mesh.position.x,
-                  enemy.mesh.position.y + 1.2,
-                  enemy.mesh.position.z,
-                );
+                // Launch the bolt from the WEAPON'S BORE. This used to be a
+                // fixed offset off the chassis root, so the round left the
+                // sniper's chest while the barrel pointed elsewhere.
+                const origin = enemyMuzzleOrigin(enemy, 1.2);
                 const target = new THREE.Vector3(focusPos.x, camera.position.y - 0.2, focusPos.z);
                 const dir = target.clone().sub(origin).normalize();
                 const speed = 0.55;
@@ -14696,12 +15188,24 @@ const ForestSurvivalGame = () => {
                 );
                 enemy.rangedChargeMs = 0;
                 enemy.rangedNextShotAt = frameNowMs + COOLDOWN_MS;
+                enemy.recoilTime = RECOIL_S;
+                // Muzzle flash at the bore, not at the chassis.
+                createParticles(origin, 0x8ff5ff, 6);
               }
             }
           } else {
             // Lost LOS or out of range — drop any in-progress charge.
             enemy.rangedChargeMs = 0;
           }
+          // Present / lower the weapon and drive the charge telegraph. Called
+          // unconditionally so the pose also eases back DOWN once the sniper
+          // loses its shot — otherwise it would stay frozen mid-aim.
+          driveShooterPose(
+            enemy, focusPos.x, camera.position.y - 0.2, focusPos.z,
+            (enemy.rangedChargeMs ?? 0) / CHARGE_MS,
+            los && engageGate,
+            delta, frameNowMs,
+                );
         }
 
         // === HACKED SNIPER (subverter on a ranged enemy) ===
@@ -14716,13 +15220,12 @@ const ForestSurvivalGame = () => {
           const HACK_SNIPE_RANGE = 55;
           const dxs = hackVictim.mesh.position.x - enemy.mesh.position.x;
           const dzs = hackVictim.mesh.position.z - enemy.mesh.position.z;
-          if (Math.hypot(dxs, dzs) <= HACK_SNIPE_RANGE) {
+          const hackInRange = Math.hypot(dxs, dzs) <= HACK_SNIPE_RANGE;
+          if (hackInRange) {
             if ((enemy.rangedNextShotAt ?? 0) <= frameNowMs) {
               enemy.rangedChargeMs = (enemy.rangedChargeMs ?? 0) + delta * 1000;
               if ((enemy.rangedChargeMs ?? 0) >= 380) { // overclocked → snappy charge
-                const origin = new THREE.Vector3(
-                  enemy.mesh.position.x, enemy.mesh.position.y + 1.2, enemy.mesh.position.z,
-                );
+                const origin = enemyMuzzleOrigin(enemy, 1.2);
                 const tgt = hackVictim.mesh.position.clone(); tgt.y += 0.9;
                 // Green overclock bolt streak + impact sparks on the victim.
                 hackBeams.push(new HackBeam(scene, origin, tgt));
@@ -14740,11 +15243,29 @@ const ForestSurvivalGame = () => {
                 if (hackVictim.health <= 0) handleEnemyKilled(hackVictim, false);
                 enemy.rangedChargeMs = 0;
                 enemy.rangedNextShotAt = frameNowMs + 900; // faster than a normal sniper
+                enemy.recoilTime = RECOIL_S;
               }
             }
           } else {
             enemy.rangedChargeMs = 0;
           }
+          // Same presentation as an unhacked sniper — a subverted unit still
+          // shoulders its lance, it just points it at its own kind.
+          driveShooterPose(
+            enemy, hackVictim.mesh.position.x, hackVictim.mesh.position.y + 0.9, hackVictim.mesh.position.z,
+            (enemy.rangedChargeMs ?? 0) / 380,
+            hackInRange,
+            delta, frameNowMs,
+                );
+        } else if (enemy.type === 'ranged' && enemy.hacked && !enemy.dead) {
+          // Hacked but with no live victim: neither firing block owns this unit,
+          // so drive the pose to "weapon down" here. Without it the lance would
+          // freeze mid-aim — and its recoil/charge timers would stop decaying —
+          // for as long as the subversion lasts.
+          driveShooterPose(
+            enemy, enemy.mesh.position.x, enemy.mesh.position.y, enemy.mesh.position.z,
+            0, false, delta, frameNowMs,
+                );
         }
 
         // === BOSS BLINK / TELEPORT (wave 10+) ===
@@ -14931,9 +15452,14 @@ const ForestSurvivalGame = () => {
             && frameNowMs >= (enemy.ccUntil ?? 0) && enemy.engageable !== false;
           if (canFire) {
             if ((enemy.rangedNextShotAt ?? 0) <= frameNowMs) {
+              const wasCharging = (enemy.rangedChargeMs ?? 0) > 0;
               enemy.rangedChargeMs = (enemy.rangedChargeMs ?? 0) + delta * 1000;
+              if (!wasCharging) {
+                soundManager.playAt('powerUp', enemy.mesh.position.x, enemy.mesh.position.y + 1.4, enemy.mesh.position.z, 0.32, 0.9);
+              }
               if ((enemy.rangedChargeMs ?? 0) >= 520) {
-                const origin = new THREE.Vector3(enemy.mesh.position.x, enemy.mesh.position.y + 1.0, enemy.mesh.position.z);
+                // From the lance's bore — see the sniper path above.
+                const origin = enemyMuzzleOrigin(enemy, 1.0);
                 const target = new THREE.Vector3(focusPos.x, camera.position.y - 0.2, focusPos.z);
                 const dir = target.clone().sub(origin).normalize();
                 const bolt = new THREE.Mesh(_enemyBulletGeo, _revBoltMat);   // GOLD bolt
@@ -14944,11 +15470,22 @@ const ForestSurvivalGame = () => {
                 soundManager.play('shoot_pistol', 0.5, false, 1.55);
                 enemy.rangedChargeMs = 0;
                 enemy.rangedNextShotAt = frameNowMs + 1600;
+                enemy.recoilTime = RECOIL_S;
+                createParticles(origin, 0xffc24a, 6);
               }
             }
           } else {
             enemy.rangedChargeMs = 0;
           }
+          // The revenant BOTH shoots and melees. Its melee block runs later and
+          // overwrites the arms while a swing is in progress, which is the right
+          // priority: a lunge beats a presented weapon.
+          driveShooterPose(
+            enemy, focusPos.x, camera.position.y - 0.2, focusPos.z,
+            (enemy.rangedChargeMs ?? 0) / 520,
+            canFire,
+            delta, frameNowMs,
+                );
         }
 
         // === ATTACK SYSTEM ===
@@ -14988,7 +15525,7 @@ const ForestSurvivalGame = () => {
             enemy.mesh.position,
             enemy.mesh.rotation.y,
             focusPos
-          );
+                );
 
           // Also check for overlap damage (when enemy clips into player).
           // Use the shared frame timestamp so Date.now() isn't called once
@@ -14998,7 +15535,7 @@ const ForestSurvivalGame = () => {
             focusPos,
             enemy.lastAttackTime,
             frameNowMs
-          );
+                );
 
           if (hitPlayer || overlapDamage) {
             // ARK-07 empowerment (surge/glitch wave × uplink-field proximity)
@@ -15035,31 +15572,52 @@ const ForestSurvivalGame = () => {
             }
           }
 
-          // Melee swing — drive the arms + torso from the attack system ONLY
-          // while a swing is in progress. When not attacking we deliberately
-          // leave the limbs to the stride-synced walk / idle animation set
-          // earlier; the old `else` here overwrote that with a coarse
-          // fixed-amplitude swing that made even a standing enemy flail its
-          // arms. (isAttacking()/getAttackPhase() are allocation-free.)
+          // Melee swing — drive the WHOLE body from the attack system while a
+          // swing is in progress. When not attacking we deliberately leave the
+          // limbs to the stride-synced walk / idle animation set earlier; the
+          // old `else` here overwrote that with a coarse fixed-amplitude swing
+          // that made even a standing enemy flail its arms.
+          //
+          // The pose now covers both arms independently (roll included), the
+          // torso pitch AND turn, and the legs — a swipe is thrown from the
+          // planted foot up through a shoulder turn, which is what makes it
+          // land with weight. (getPose() reuses one object; isAttacking() /
+          // getLungeDrive() are allocation-free.)
           if (enemy.attackSystem.isAttacking() && enemy.leftArm && enemy.rightArm) {
-            const armRotations = enemy.attackSystem.getArmRotation();
-            enemy.leftArm.rotation.x = armRotations.left;
-            enemy.rightArm.rotation.x = armRotations.right;
+            const pose = enemy.attackSystem.getPose();
+            enemy.leftArm.rotation.x = pose.leftArmX;
+            enemy.leftArm.rotation.z = pose.leftArmZ;
+            enemy.rightArm.rotation.x = pose.rightArmX;
+            enemy.rightArm.rotation.z = pose.rightArmZ;
+            if (enemy.leftLeg) enemy.leftLeg.rotation.x = pose.leftLegX;
+            if (enemy.rightLeg) enemy.rightLeg.rotation.x = pose.rightLegX;
             if (enemy.torso) {
-              enemy.torso.rotation.x = enemy.attackSystem.getTorsoRotation();
+              enemy.torso.rotation.x = pose.torsoX;
+              enemy.torso.rotation.y = pose.torsoY;
             }
-            // Attack lunge — lurch toward the player on the strike so the hit
-            // reads as a committed swing, not a passive bump.
-            if (enemy.attackSystem.getAttackPhase() === 'strike') {
+            // Attack lunge — lurch toward the player so the hit reads as a
+            // committed swing, not a passive bump. Weighted by the strike's
+            // contact curve (peaks at the blow) instead of being a flat shove
+            // across the whole phase, and frame-rate independent: it used to be
+            // a fixed per-FRAME step, so a 144 Hz client's enemies lunged more
+            // than twice as far per swing as a 60 Hz client's.
+            const drive = enemy.attackSystem.getLungeDrive();
+            if (drive > 0.01) {
               const lungeDx = focusPos.x - enemy.mesh.position.x;
               const lungeDz = focusPos.z - enemy.mesh.position.z;
               const lungeDist = Math.sqrt(lungeDx * lungeDx + lungeDz * lungeDz);
               if (lungeDist > 0.5) {
-                const lungeStrength = 0.15 * baseScale;
+                const lungeStrength = 9.0 * baseScale * drive * delta;
                 enemy.mesh.position.x += (lungeDx / lungeDist) * lungeStrength;
                 enemy.mesh.position.z += (lungeDz / lungeDist) * lungeStrength;
               }
             }
+          } else if (enemy.torso && enemy.torso.rotation.y !== 0) {
+            // Unwind the shoulder turn once the swing is over — the walk/idle
+            // block only ever writes torso.rotation.x, so a finished swipe
+            // would otherwise leave the chassis permanently twisted.
+            enemy.torso.rotation.y = THREE.MathUtils.lerp(enemy.torso.rotation.y, 0, 0.15);
+            if (Math.abs(enemy.torso.rotation.y) < 0.002) enemy.torso.rotation.y = 0;
           }
         }
 
@@ -15094,7 +15652,10 @@ const ForestSurvivalGame = () => {
         // on top of the walk / hit-reaction transforms. Intensifies near burnout.
         if (enemy.hacked && !enemy.dead) {
           const urgency = 1 + (1 - (enemy.hackTimeLeft ?? 0) / (enemy.hackDuration || HACK_DURATION)) * 1.5;
-          const amt = 0.045 * urgency;
+          // Frame-scaled: this is a per-frame positional nudge, so on a 144 Hz
+          // display a glitching unit accumulated well over twice the wander it
+          // does at 60 Hz.
+          const amt = 0.045 * urgency * Math.min(2, delta * 60);
           enemy.mesh.position.x += (Math.random() - 0.5) * amt;
           enemy.mesh.position.z += (Math.random() - 0.5) * amt;
           enemy.mesh.rotation.z = (Math.random() - 0.5) * 0.14 * urgency;
@@ -15108,7 +15669,8 @@ const ForestSurvivalGame = () => {
         // ship with. Guests see the skips through the interpolated sync
         // stream (a 2–3m snap reads as intended — it IS a glitch).
         if (netWaveEvent === 'glitch' && !enemy.dead && !enemy.hacked) {
-          const shiver = 0.02 * netWaveEventIntensity;
+          // Frame-scaled for the same reason as the hacked twitch above.
+          const shiver = 0.02 * netWaveEventIntensity * Math.min(2, delta * 60);
           enemy.mesh.position.x += (Math.random() - 0.5) * shiver;
           enemy.mesh.position.z += (Math.random() - 0.5) * shiver;
           if (frameNowMs >= nextGlitchSkipCheckAt
@@ -15167,6 +15729,10 @@ const ForestSurvivalGame = () => {
           b.mesh.position.y = by;
           b.position.y = by;
         }
+        // Breathe the irradiated cores' containment bands + contamination
+        // pools. One shared-material write for the whole map, and a no-op
+        // entirely when this map's relays caught no barrels.
+        pulseIrradiatedBarrels(barrels, tSec);
         // EMP broadcast fronts — flash/shake the moment one crosses the player.
         for (let w = empShockwaves.length - 1; w >= 0; w--) {
           const emp = empShockwaves[w];
@@ -15282,7 +15848,7 @@ const ForestSurvivalGame = () => {
           setBossHealth(
             tracked.type === 'boss' ? 'Overlord' : 'Crowned Elite',
             tracked.health, tracked.maxHealth, tracked.bossPhase ?? 1,
-          );
+                );
         } else {
           setBossHealth(null);
         }
@@ -15663,7 +16229,7 @@ const ForestSurvivalGame = () => {
             wp.x + (index - warmPowerUpTypes.length / 2) * 0.85,
             wp.z,
             type,
-          );
+                );
           warmPowerUps.push(warmPowerUp);
         });
       });
@@ -15822,6 +16388,17 @@ const ForestSurvivalGame = () => {
             scene.add(q); warmupRetainedObjects.push(q);
           });
         }
+        // ARK-07 irradiated cores. Same reasoning as the spires: the drums are
+        // scattered across the whole map, so there is no guarantee one is in
+        // front of the loader camera for the scene compile pass to catch — and
+        // a core is a fully-mapped standard material plus two additive
+        // overlays, i.e. programs nothing else in the scene links. Empty (and
+        // therefore free) on maps whose relay fields caught no barrels.
+        irradiatedCoreMaterials().forEach((m, mi) => {
+          const q = new THREE.Mesh(flareAnchorGeo, m);
+          q.position.copy(wp).add(new THREE.Vector3(0, (mi + 1) * 0.03, 0));
+          scene.add(q); warmupRetainedObjects.push(q);
+        });
 
         // Enemy + Revenant bolt tracers. Their materials are SHARED session-long
         // consts, so rendering one of each once links the program for good —
@@ -16418,6 +16995,10 @@ const ForestSurvivalGame = () => {
       _surgeHaloMat.dispose();
       _radShellMat.dispose();
       uplinkNet?.dispose();
+      // The irradiated-core skin is built lazily per run (only when a relay
+      // field actually caught a barrel) and owns its own canvases, so unlike
+      // the session-shared armour surfaces it IS freed with the scene.
+      disposeHazardAssets();
       setWaveEventOverlay(null);
       setInterferenceOverlay(0);
       setWaveEventUI(null);
@@ -17406,7 +17987,7 @@ const ForestSurvivalGame = () => {
                 </span>
               )}
             </div>
-          );
+                );
         })()}
       </div>
       )}

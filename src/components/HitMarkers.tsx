@@ -45,9 +45,10 @@ export const clearHitMarkers = () => {
 
 const HitMarkers = () => {
   // Module arrays are the source of truth; this just kicks React to re-read
-  // them. A requestAnimationFrame loop runs ONLY while there are live items
-  // (it parks itself the moment everything has expired), so the float-up is a
-  // buttery 60fps instead of the old 20fps setInterval(50ms) stepping.
+  // them. A requestAnimationFrame loop drives the animation at a buttery 60fps
+  // instead of the old 20fps setInterval(50ms) stepping. It stays armed for the
+  // whole mounted lifetime and only re-renders while something is live — see
+  // the effect below for why it deliberately does NOT park itself.
   const [, forceRender] = useReducer((c: number) => (c + 1) % 1_000_000, 0);
   const rafRef = useRef<number | null>(null);
 
@@ -56,16 +57,24 @@ const HitMarkers = () => {
     // parking/unparking itself. The previous park-on-empty scheme depended on a
     // module callback re-arming the loop at exactly the right moment; if that
     // arming was ever missed, freshly-added markers silently never rendered.
-    // The always-on loop is dirt cheap (one filter over a usually-empty array)
-    // and CANNOT miss an update.
+    // The always-on loop is dirt cheap and CANNOT miss an update. Expiry is an
+    // in-place compaction rather than a `.filter()`: the loop runs every frame
+    // for the whole mounted lifetime, and filter allocated a replacement array
+    // on each one (even when empty, which is the usual case). Same order, same
+    // survivors, no per-frame garbage — and the array identity now stays put.
     let mounted = true;
     let prevCount = 0;
     const tick = () => {
       if (!mounted) return;
       const now = Date.now();
       // Kill markers linger a touch longer so the confirm ring fully sweeps out.
-      hitMarkers = hitMarkers.filter((m) => now - m.timestamp < (m.isKill ? 460 : MARKER_TTL));
-      const count = hitMarkers.length;
+      let w = 0;
+      for (let i = 0; i < hitMarkers.length; i++) {
+        const m = hitMarkers[i];
+        if (now - m.timestamp < (m.isKill ? 460 : MARKER_TTL)) hitMarkers[w++] = m;
+      }
+      hitMarkers.length = w;
+      const count = w;
       // Re-render while anything is live (to animate it) and for one extra frame
       // after the last item clears (to flush it out of the DOM).
       if (count > 0 || prevCount > 0) forceRender();
