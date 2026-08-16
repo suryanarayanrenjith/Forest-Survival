@@ -29,14 +29,14 @@ const OrientationGate = () => {
         </p>
         {/* A crawler that only ever sees this screen still gets an accurate
             description of the game and a path into the content pages. */}
-        <p className="mx-auto mt-5 max-w-sm text-xs leading-relaxed text-gray-500">
+        <p className="mx-auto mt-5 max-w-sm text-xs leading-relaxed text-gray-400">
           Forest Survival is a free 3D first-person shooter where you survive endless
           waves of hostile robots across eight biome maps, playable instantly in any
           modern browser.
         </p>
         <nav
           aria-label="About Forest Survival"
-          className="mx-auto mt-4 flex max-w-sm flex-wrap justify-center gap-x-3 gap-y-1.5 text-[10px] uppercase tracking-[0.18em] text-gray-600"
+          className="mx-auto mt-4 flex max-w-sm flex-wrap justify-center gap-x-3 gap-y-1.5 text-[10px] uppercase tracking-[0.18em] text-white/55"
         >
           <a href="/guide" className="transition-colors hover:text-emerald-300">Guide</a>
           <a href="/how-to-play" className="transition-colors hover:text-emerald-300">How to Play</a>

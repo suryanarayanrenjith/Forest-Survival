@@ -83,7 +83,7 @@
           "browserRequirements": "Requires WebGL2 and JavaScript",
           "playMode": ["SinglePlayer", "MultiPlayer", "CoOp"],
           "numberOfPlayers": { "@type": "QuantitativeValue", "minValue": 1, "maxValue": 8 },
-          "softwareVersion": "1.0",
+          "softwareVersion": "2.0",
           "license": "https://opensource.org/licenses/MIT",
           "isAccessibleForFree": true,
           "isFamilyFriendly": true,
@@ -160,14 +160,17 @@
 
     <!-- Menu typography: Oswald (condensed expedition display) + Chakra Petch
          (techy HUD data face). Scoped to menu UI via .font-display / .font-hud
-         so the in-game HUD typography is untouched. Loaded with swap so the
-         WebGL menu never blocks on font fetch. -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Oswald:wght@300;400;500;600;700&display=swap"
-      rel="stylesheet"
-    />
+         so the in-game HUD typography is untouched.
+
+         SELF-HOSTED — the @font-face rules live at the top of src/index.css and
+         the woff2 files in public/fonts/. There is deliberately no
+         fonts.googleapis.com stylesheet here: it was a render-blocking
+         cross-origin request on the critical path, and it forced two extra
+         origins into the CSP. Do NOT reintroduce the Google Fonts <link>.
+         The two preloads below cover the faces used by the first paint of the
+         menu; the rest load on demand via unicode-range. -->
+    <link rel="preload" as="font" type="font/woff2" href="/fonts/oswald-variable-latin.woff2" crossorigin />
+    <link rel="preload" as="font" type="font/woff2" href="/fonts/chakra-petch-600-latin.woff2" crossorigin />
   </head>
   <body>
     <div id="root"></div>

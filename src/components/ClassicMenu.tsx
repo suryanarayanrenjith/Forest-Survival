@@ -216,7 +216,7 @@ const ClassicMenu = ({ onStartGame, onBack, selectedCharacter, onSelectCharacter
             </Section>
           </div>
 
-          <p className="font-hud mt-6 text-[10px] tracking-[0.3em] text-gray-600 uppercase">Version 1.0 · Classic Mode</p>
+          <p className="font-hud mt-6 text-[10px] tracking-[0.3em] text-gray-600 uppercase">Version 2.0 · Classic Mode</p>
         </div>
       </div>
 

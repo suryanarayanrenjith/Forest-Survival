@@ -93,9 +93,31 @@ removes a class of "why is my link preview blank" failure.
          -w "$UA %{http_code}\n" https://forestsurvival.live/guide
   done
   ```
-- **Third-party runtime origins remain.** Google Fonts (`fonts.googleapis.com`,
-  `fonts.gstatic.com`) and the Poly Haven HDRI CDN. Self-hosting both would let four origins
-  be dropped from the CSP and remove two render-blocking third-party requests.
+- **One third-party runtime origin remains:** the Poly Haven HDRI CDN
+  (`dl.polyhaven.org`). Self-hosting the `.hdr` files would let it be dropped from the CSP
+  entirely, leaving the app with zero third-party runtime dependencies.
+  *(Google Fonts was the other one and is now gone — see below.)*
+
+## Fonts are self-hosted
+
+Oswald and Chakra Petch are served from **this origin** (`public/fonts/`, declared at the top
+of `src/index.css` and inlined in each static page). `fonts.googleapis.com` and
+`fonts.gstatic.com` have been removed from `style-src` and `font-src` accordingly.
+
+**Do not reintroduce the Google Fonts `<link>`.** It was a render-blocking cross-origin
+stylesheet on the critical path, cost two extra DNS+TLS handshakes, leaked visitor IPs and
+User-Agents to a third party, and forced two origins into the CSP.
+
+Notes for anyone touching the fonts:
+- Only the **latin** and **latin-ext** subsets are shipped (this site is English). Glyphs
+  outside those `unicode-range`s fall back per-glyph to the system stack.
+- **Oswald is a variable font** — one file per subset covers weights 300–700, declared once
+  with a `font-weight` range. Do not split it back into five static weights.
+- Chakra Petch is static: one file per weight per subset.
+- The `<link rel="preload" as="font" … crossorigin>` tags **must** keep `crossorigin`; fonts
+  are always fetched in CORS mode, and without it the browser downloads them twice.
+- Total cost: 10 files, 148 KB on disk, and a browser only fetches the subsets and weights a
+  given page actually renders.
 
 ## Dependencies
 

@@ -455,39 +455,50 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode, onSkillTre
               </div>
             </div>
 
-            {/* ── Site nav ────────────────────────────────────────────────
+            {/* ── Site nav + utility footer ───────────────────────────────
                 Real <a href> links to the static content pages. This is the
                 ONLY crawl path out of the homepage in the RENDERED DOM — the
                 links in index.html's <noscript> block cover raw-HTML crawlers
                 (and every AI crawler, none of which run JS), but noscript
                 content is not part of the rendered DOM Googlebot indexes.
                 It must stay VISIBLE — a sr-only nav here would read as
-                cloaking. Anchor text is descriptive on purpose. */}
-            <nav
-              aria-label="About Forest Survival"
-              className={`font-hud flex flex-wrap gap-x-3.5 gap-y-1.5 text-[10px] tracking-[0.22em] text-gray-600 uppercase ${isTouch ? 'mt-5 justify-center md:justify-start' : 'mt-6 lg:mt-8 justify-center lg:justify-start'}`}
-            >
-              <a href="/guide" className="transition-colors hover:text-emerald-300">Guide</a>
-              <a href="/how-to-play" className="transition-colors hover:text-emerald-300">How to Play</a>
-              <a href="/weapons" className="transition-colors hover:text-emerald-300">Weapons</a>
-              <a href="/characters" className="transition-colors hover:text-emerald-300">Classes</a>
-              <a href="/enemies" className="transition-colors hover:text-emerald-300">Robot Enemies</a>
-              <a href="/maps" className="transition-colors hover:text-emerald-300">Maps</a>
-              <a href="/multiplayer" className="transition-colors hover:text-emerald-300">Multiplayer</a>
-              <a href="/faq" className="transition-colors hover:text-emerald-300">FAQ</a>
-              <a href="/about" className="transition-colors hover:text-emerald-300">About</a>
-            </nav>
+                cloaking. Anchor text is descriptive on purpose.
 
-            {/* ── Utility footer ──────────────────────────────────────── */}
-            <div className={`font-hud flex items-center gap-2.5 text-[10px] tracking-[0.3em] text-gray-600 uppercase ${isTouch ? 'mt-3 justify-center md:justify-start' : 'mt-3 justify-center lg:justify-start'}`}>
-              <span>v1.0</span>
-              <span className="h-1 w-1 rounded-full bg-emerald-400/60 shadow-[0_0_6px_rgba(52,211,153,0.8)]" />
-              <button
-                onClick={() => setShowCredits(true)}
-                className="tracking-[0.3em] transition-colors hover:text-emerald-300"
+                Both rows sit on ONE translucent surface because the backdrop is
+                a live 3D forest whose brightness changes with the time-of-day
+                and graphics settings. As bare `text-gray-600` these were
+                effectively invisible against sunlit grass. Text colours are
+                white-alpha (not a fixed grey) so they hold contrast against
+                every scene state, and the panel is the same
+                border/blur language as the cards above. */}
+            <div
+              className={`w-full rounded-xl border border-white/10 bg-black/45 backdrop-blur-md ${isTouch ? 'mt-5 px-3.5 py-2.5' : 'mt-6 px-4 py-3 lg:mt-8'}`}
+            >
+              <nav
+                aria-label="About Forest Survival"
+                className="font-hud flex flex-wrap justify-center gap-x-3.5 gap-y-1.5 text-[10px] font-medium tracking-[0.22em] text-white/70 uppercase"
               >
-                vibe-coded by <span className="font-semibold text-gray-400">Surya</span>
-              </button>
+                <a href="/guide" className="transition-colors hover:text-emerald-300">Guide</a>
+                <a href="/how-to-play" className="transition-colors hover:text-emerald-300">How to Play</a>
+                <a href="/weapons" className="transition-colors hover:text-emerald-300">Weapons</a>
+                <a href="/characters" className="transition-colors hover:text-emerald-300">Classes</a>
+                <a href="/enemies" className="transition-colors hover:text-emerald-300">Robot Enemies</a>
+                <a href="/maps" className="transition-colors hover:text-emerald-300">Maps</a>
+                <a href="/multiplayer" className="transition-colors hover:text-emerald-300">Multiplayer</a>
+                <a href="/faq" className="transition-colors hover:text-emerald-300">FAQ</a>
+                <a href="/about" className="transition-colors hover:text-emerald-300">About</a>
+              </nav>
+
+              <div className="font-hud mt-2.5 flex items-center justify-center gap-2.5 border-t border-white/[0.08] pt-2.5 text-[10px] tracking-[0.3em] text-white/45 uppercase">
+                <span>v2.0</span>
+                <span className="h-1 w-1 rounded-full bg-emerald-400/60 shadow-[0_0_6px_rgba(52,211,153,0.8)]" />
+                <button
+                  onClick={() => setShowCredits(true)}
+                  className="tracking-[0.3em] transition-colors hover:text-emerald-300"
+                >
+                  vibe-coded by <span className="font-semibold text-white/70">Surya</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
