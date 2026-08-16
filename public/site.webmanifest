@@ -1,7 +1,7 @@
 {
   "name": "Forest Survival",
   "short_name": "Forest Survival",
-  "description": "Free online 3D multiplayer wave-survival shooter — play in your browser.",
+  "description": "Free 3D browser FPS: survive endless waves of hostile robots across 8 biome maps. No download required.",
   "id": "/",
   "start_url": "/",
   "scope": "/",

@@ -276,14 +276,20 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode, onSkillTre
                     <span className="flex h-8 w-8 flex-none items-center justify-center rounded-lg border border-emerald-400/25 bg-emerald-500/[0.08]">
                       <Clapperboard className="h-4 w-4 text-emerald-300" strokeWidth={2.15} />
                     </span>
-                    <span className="min-w-0">
-                      <span className="font-display block text-base font-semibold uppercase leading-none tracking-wide text-white">
+                    {/* The wordmark is the document's single <h1>. Before this it
+                        was a plain <span>, which left the rendered page with no
+                        H1 at all — the only headings Google saw were session
+                        chrome like "Playing as guest". Styling is unchanged; the
+                        parent is a <div> because an <h1> cannot legally nest
+                        inside a <span>. */}
+                    <div className="min-w-0">
+                      <h1 className="font-display block text-base font-semibold uppercase leading-none tracking-wide text-white">
                         Forest Survival
-                      </span>
+                      </h1>
                       <span className="font-hud mt-1 block text-[9px] font-bold uppercase tracking-[0.24em] text-emerald-300/80">
                         Official Trailer
                       </span>
-                    </span>
+                    </div>
                   </div>
                   <video
                     className="block aspect-video w-full bg-black object-cover"
@@ -312,7 +318,10 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode, onSkillTre
                         <p className="font-hud text-[10px] tracking-[0.34em] font-semibold uppercase text-amber-300/90">
                           {accessCard.tag}
                         </p>
-                        <h2 className="font-display text-base font-semibold uppercase tracking-wide text-white mt-0.5">{accessCard.title}</h2>
+                        {/* Session-state label ("Playing as guest") — a <p>, not a
+                            heading. As an <h2> it used to outrank the real title
+                            in the document outline. Classes unchanged. */}
+                        <p className="font-display text-base font-semibold uppercase tracking-wide text-white mt-0.5">{accessCard.title}</p>
                         <p className="mt-1 text-xs leading-relaxed text-gray-300/80">{accessCard.copy}</p>
                       </div>
                     </div>
@@ -341,9 +350,11 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode, onSkillTre
                           </div>
                         ) : (
                           <>
-                            <h2 className="font-display mt-0.5 truncate text-xl font-semibold tracking-wide text-white">
+                            {/* The signed-in player's name — a <p>, not a heading,
+                                for the same reason as the access card above. */}
+                            <p className="font-display mt-0.5 truncate text-xl font-semibold tracking-wide text-white">
                               {displayName}
-                            </h2>
+                            </p>
                             <div className="flex items-center gap-2 flex-wrap">
                               <p className="font-hud truncate text-[13px] text-gray-300">{handle}</p>
                               {menuRank && (
@@ -444,8 +455,31 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode, onSkillTre
               </div>
             </div>
 
+            {/* ── Site nav ────────────────────────────────────────────────
+                Real <a href> links to the static content pages. This is the
+                ONLY crawl path out of the homepage in the RENDERED DOM — the
+                links in index.html's <noscript> block cover raw-HTML crawlers
+                (and every AI crawler, none of which run JS), but noscript
+                content is not part of the rendered DOM Googlebot indexes.
+                It must stay VISIBLE — a sr-only nav here would read as
+                cloaking. Anchor text is descriptive on purpose. */}
+            <nav
+              aria-label="About Forest Survival"
+              className={`font-hud flex flex-wrap gap-x-3.5 gap-y-1.5 text-[10px] tracking-[0.22em] text-gray-600 uppercase ${isTouch ? 'mt-5 justify-center md:justify-start' : 'mt-6 lg:mt-8 justify-center lg:justify-start'}`}
+            >
+              <a href="/guide" className="transition-colors hover:text-emerald-300">Guide</a>
+              <a href="/how-to-play" className="transition-colors hover:text-emerald-300">How to Play</a>
+              <a href="/weapons" className="transition-colors hover:text-emerald-300">Weapons</a>
+              <a href="/characters" className="transition-colors hover:text-emerald-300">Classes</a>
+              <a href="/enemies" className="transition-colors hover:text-emerald-300">Robot Enemies</a>
+              <a href="/maps" className="transition-colors hover:text-emerald-300">Maps</a>
+              <a href="/multiplayer" className="transition-colors hover:text-emerald-300">Multiplayer</a>
+              <a href="/faq" className="transition-colors hover:text-emerald-300">FAQ</a>
+              <a href="/about" className="transition-colors hover:text-emerald-300">About</a>
+            </nav>
+
             {/* ── Utility footer ──────────────────────────────────────── */}
-            <div className={`font-hud flex items-center gap-2.5 text-[10px] tracking-[0.3em] text-gray-600 uppercase ${isTouch ? 'mt-5 justify-center md:mt-7 md:justify-start' : 'mt-6 lg:mt-8 justify-center lg:justify-start'}`}>
+            <div className={`font-hud flex items-center gap-2.5 text-[10px] tracking-[0.3em] text-gray-600 uppercase ${isTouch ? 'mt-3 justify-center md:justify-start' : 'mt-3 justify-center lg:justify-start'}`}>
               <span>v1.0</span>
               <span className="h-1 w-1 rounded-full bg-emerald-400/60 shadow-[0_0_6px_rgba(52,211,153,0.8)]" />
               <button

@@ -19,68 +19,85 @@
     <meta name="application-name" content="Forest Survival" />
     <meta name="theme-color" content="#05080a" />
 
-    <!-- Primary SEO metadata -->
-    <title>Forest Survival — Free Online Survival Shooter | Play in Browser</title>
-    <meta name="description" content="Play Forest Survival free in your browser — a 3D multiplayer wave-survival shooter. Battle endless enemy waves across 8 biomes with 8 weapons and 8 classes. No download required." />
-    <meta name="keywords" content="forest survival game, browser survival game, multiplayer survival game, online survival game, free survival game, survival shooter, play in browser, no download game, wave survival, 3D survival game" />
-    <meta name="author" content="SR" />
+    <!-- Primary SEO metadata.
+         The differentiator is ROBOTS: this is an on-foot FPS against machines,
+         not a survival-crafting game. "Forest Survival" alone collides with The
+         Forest / Sons of the Forest, so every surface leads with the robot +
+         wave-survival + browser cluster instead. -->
+    <title>Forest Survival — Free Robot Wave-Survival FPS in Browser</title>
+    <meta name="description" content="Fight endless waves of hostile robots across 8 biomes in a free 3D browser FPS. 8 weapons, 8 classes, 8-player co-op. No download, no account needed." />
+    <meta name="author" content="Surya" />
     <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
-    <meta name="googlebot" content="index, follow" />
     <link rel="canonical" href="https://forestsurvival.live/" />
 
     <!-- Open Graph (Facebook, Discord, LinkedIn, etc.) -->
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Forest Survival" />
     <meta property="og:url" content="https://forestsurvival.live/" />
-    <meta property="og:title" content="Forest Survival - Free Online Survival Shooter" />
-    <meta property="og:description" content="A 3D multiplayer wave-survival shooter you can play free in any modern browser. Survive endless enemy waves across 8 biomes — no download required." />
+    <meta property="og:title" content="Forest Survival — Free Robot Wave-Survival FPS in Browser" />
+    <meta property="og:description" content="Fight endless waves of hostile robots across 8 biomes in a free 3D browser FPS. 8 weapons, 8 classes, 8-player co-op. No download, no account needed." />
     <meta property="og:image" content="https://forestsurvival.live/og-image.jpg" />
     <meta property="og:image:secure_url" content="https://forestsurvival.live/og-image.jpg" />
     <meta property="og:image:type" content="image/jpeg" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
-    <meta property="og:image:alt" content="Forest Survival - 3D wave-survival shooter emblem" />
-    <meta property="og:video" content="https://forestsurvival.live/media/forest-survival-trailer.mp4" />
-    <meta property="og:video:secure_url" content="https://forestsurvival.live/media/forest-survival-trailer.mp4" />
-    <meta property="og:video:type" content="video/mp4" />
-    <meta property="og:video:width" content="1280" />
-    <meta property="og:video:height" content="720" />
+    <meta property="og:image:alt" content="Forest Survival — a first-person view of a rifle firing on hostile robots in a sunlit forest clearing" />
     <meta property="og:locale" content="en_US" />
+    <!-- No og:video tags: X ignores og:video unless twitter:card is `player`, and
+         Facebook needs an og:type in the video.* namespace, so they were inert —
+         while pointing every scraper at an 18 MB mp4. The trailer is declared
+         where crawlers actually read it: the VideoObject below, /trailer, and
+         the video sitemap entry. -->
 
     <!-- Twitter / X Card -->
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="Forest Survival - Free Online Survival Shooter" />
-    <meta name="twitter:description" content="A 3D multiplayer wave-survival shooter you can play free in any modern browser. Survive endless enemy waves across 8 biomes — no download required." />
+    <meta name="twitter:title" content="Forest Survival — Free Robot Wave-Survival FPS in Browser" />
+    <meta name="twitter:description" content="Fight endless waves of hostile robots across 8 biomes in a free 3D browser FPS. 8 weapons, 8 classes, 8-player co-op. No download, no account needed." />
     <meta name="twitter:image" content="https://forestsurvival.live/og-image.jpg" />
-    <meta name="twitter:image:alt" content="Forest Survival - 3D wave-survival shooter emblem" />
+    <meta name="twitter:image:alt" content="Forest Survival — a first-person view of a rifle firing on hostile robots in a sunlit forest clearing" />
 
-    <!-- Structured data: helps Google present this as a playable video game.
-         (No fabricated ratings — only verifiable facts are declared.) -->
+    <!-- Structured data.
+         `VideoGame` is CO-TYPED with `WebApplication` on purpose: Google states
+         plainly that a standalone VideoGame type produces no rich result, and
+         that a Software App must be co-typed to be eligible.
+         There is deliberately NO aggregateRating / review / ratingValue here —
+         no genuine ratings exist for this game, and fabricating them is a
+         structured-data spam violation. Keep it that way. -->
     <script type="application/ld+json">
     {
       "@context": "https://schema.org",
       "@graph": [
         {
-          "@type": "VideoGame",
+          "@type": ["VideoGame", "WebApplication"],
           "@id": "https://forestsurvival.live/#game",
           "name": "Forest Survival",
-          "alternateName": "Forest Survival Game",
+          "alternateName": ["Forest Survival Game", "Forest Survival FPS", "Forest Survival Robot Shooter"],
           "url": "https://forestsurvival.live/",
-          "description": "Forest Survival is a free 3D first-person wave-survival shooter you play directly in the browser. Survive escalating enemy waves across eight biome maps with eight unlockable weapons, eight character classes, roguelike perks and peer-to-peer multiplayer.",
+          "description": "Forest Survival is a free 3D first-person shooter where you survive endless waves of hostile robots across eight biome maps, playable instantly in any modern browser. Eight unlockable weapons, eight character classes, ten robot enemy archetypes, roguelike wave perks and peer-to-peer co-op for up to eight players.",
           "image": "https://forestsurvival.live/og-image.jpg",
           "inLanguage": "en",
-          "genre": ["Survival", "Shooter", "Action", "First-person shooter"],
-          "gamePlatform": ["Web Browser", "PC"],
+          "genre": ["Action", "Shooter", "First-person shooter", "Survival", "Wave survival", "Horde shooter", "Science fiction"],
+          "gamePlatform": ["Web Browser", "PC", "Mobile Web"],
           "applicationCategory": "GameApplication",
           "operatingSystem": "Any (modern web browser with WebGL)",
-          "browserRequirements": "Requires WebGL and JavaScript",
+          "browserRequirements": "Requires WebGL2 and JavaScript",
           "playMode": ["SinglePlayer", "MultiPlayer", "CoOp"],
-          "author": {
-            "@type": "Person",
-            "name": "SR",
-            "url": "https://github.com/suryanarayanrenjith"
-          },
+          "numberOfPlayers": { "@type": "QuantitativeValue", "minValue": 1, "maxValue": 8 },
+          "softwareVersion": "1.0",
+          "license": "https://opensource.org/licenses/MIT",
+          "isAccessibleForFree": true,
+          "isFamilyFriendly": true,
+          "datePublished": "2026-07-18",
+          "dateModified": "2026-08-15",
+          "trailer": { "@id": "https://forestsurvival.live/#official-trailer" },
+          "author": { "@id": "https://forestsurvival.live/#author" },
+          "creator": { "@id": "https://forestsurvival.live/#author" },
           "publisher": { "@id": "https://forestsurvival.live/#publisher" },
+          "isPartOf": { "@id": "https://forestsurvival.live/#website" },
+          "sameAs": [
+            "https://github.com/suryanarayanrenjith/Forest-Survival",
+            "https://github.com/suryanarayanrenjith/Forest-Survival/wiki"
+          ],
           "offers": {
             "@type": "Offer",
             "price": "0",
@@ -93,13 +110,15 @@
           "@type": "VideoObject",
           "@id": "https://forestsurvival.live/#official-trailer",
           "name": "Forest Survival — Official Trailer",
-          "description": "Watch the official trailer for Forest Survival, a free 3D first-person wave-survival shooter playable in the browser.",
-          "thumbnailUrl": "https://forestsurvival.live/og-image.jpg",
+          "description": "Official trailer for Forest Survival, a free 3D first-person wave-survival shooter where you fight waves of hostile robots in the browser.",
+          "thumbnailUrl": "https://forestsurvival.live/trailer-poster.jpg",
           "contentUrl": "https://forestsurvival.live/media/forest-survival-trailer.mp4",
           "uploadDate": "2026-07-18T00:00:00+05:30",
           "duration": "PT57S",
           "inLanguage": "en",
           "isFamilyFriendly": true,
+          "width": 1280,
+          "height": 720,
           "publisher": { "@id": "https://forestsurvival.live/#publisher" }
         },
         {
@@ -107,7 +126,7 @@
           "@id": "https://forestsurvival.live/#website",
           "url": "https://forestsurvival.live/",
           "name": "Forest Survival",
-          "description": "Free online 3D multiplayer wave-survival shooter - play in your browser.",
+          "description": "Free 3D browser FPS: survive endless waves of hostile robots across eight biome maps.",
           "inLanguage": "en",
           "publisher": { "@id": "https://forestsurvival.live/#publisher" }
         },
@@ -116,7 +135,24 @@
           "@id": "https://forestsurvival.live/#publisher",
           "name": "Forest Survival",
           "url": "https://forestsurvival.live/",
-          "logo": "https://forestsurvival.live/icon-512.png"
+          "logo": {
+            "@type": "ImageObject",
+            "url": "https://forestsurvival.live/icon-512.png",
+            "width": 512,
+            "height": 512
+          },
+          "founder": { "@id": "https://forestsurvival.live/#author" },
+          "sameAs": ["https://github.com/suryanarayanrenjith/Forest-Survival"]
+        },
+        {
+          "@type": "Person",
+          "@id": "https://forestsurvival.live/#author",
+          "name": "Surya",
+          "alternateName": "SR",
+          "url": "https://github.com/suryanarayanrenjith",
+          "jobTitle": "Game Developer",
+          "knowsAbout": ["Game development", "WebGL", "Three.js", "Multiplayer netcode", "Shader programming", "TypeScript"],
+          "sameAs": ["https://github.com/suryanarayanrenjith"]
         }
       ]
     }
@@ -137,21 +173,38 @@
     <div id="root"></div>
 
     <!-- Crawler / no-JavaScript fallback. Hidden whenever scripts run (the React
-         app mounts into #root above), but gives search engines and social
-         scrapers immediate, accurate text describing the game. -->
+         app mounts into #root above), but gives search engines, social scrapers
+         and AI crawlers immediate, accurate text describing the game.
+         This block matters more than it looks: no major AI crawler executes
+         JavaScript, so for ChatGPT / Claude / Perplexity this text and these
+         links ARE the site. The links are the only raw-HTML crawl path to the
+         content pages — keep them in sync with the sitemap. -->
     <noscript>
       <main style="max-width:760px;margin:0 auto;padding:40px 24px;color:#e5e7eb;background:#05080a;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.6">
-        <h1 style="color:#34d399;font-size:2rem;margin:0 0 .5rem">Forest Survival - Free Online Survival Shooter</h1>
-        <p><strong>Forest Survival</strong> is a free 3D first-person wave-survival shooter you can play right in your browser — no download or install required. Survive endless, escalating enemy waves across eight distinct biome maps.</p>
-        <h2>What you can do</h2>
+        <h1 style="color:#34d399;font-size:2rem;margin:0 0 .5rem">Forest Survival: Robot Wave-Survival FPS</h1>
+        <p><strong>Forest Survival</strong> is a free 3D first-person shooter where you survive endless waves of hostile robots across eight biome maps, playable instantly in any modern browser — no download, no install, and no account needed for Solo or Tutorial.</p>
+        <h2>What you fight</h2>
         <ul>
-          <li>Fight five enemy types with eight unlockable weapons, from a pistol to a rocket launcher.</li>
-          <li>Choose from eight character classes, each with a signature active ability and passive.</li>
-          <li>Take on roguelike wave perks, daily challenges, mutators and persistent account progression.</li>
-          <li>Team up in peer-to-peer online multiplayer or play solo.</li>
+          <li>Ten robot enemy archetypes, plus stationary Ranged Sentinel turrets, Crowned Elite mini-bosses and the Overlord boss.</li>
+          <li>Eight unlockable weapons — from the Pistol to the Subverter, a hacking deck that turns a robot against its own kind before detonating it.</li>
+          <li>Eight character classes, each with a signature active ability and a mechanical passive.</li>
+          <li>Thirty-four roguelike wave perks, 71 daily challenges, and peer-to-peer co-op for up to eight players.</li>
+        </ul>
+        <h2>Read more about Forest Survival</h2>
+        <ul>
+          <li><a href="/guide" style="color:#34d399">The complete Forest Survival guide</a></li>
+          <li><a href="/how-to-play" style="color:#34d399">How to play: controls, waves and tips</a></li>
+          <li><a href="/weapons" style="color:#34d399">All 8 weapons and their unlock scores</a></li>
+          <li><a href="/characters" style="color:#34d399">All 8 classes, abilities and passives</a></li>
+          <li><a href="/enemies" style="color:#34d399">All 10 robot enemy types and bosses</a></li>
+          <li><a href="/maps" style="color:#34d399">All 8 biome maps, weather and hazards</a></li>
+          <li><a href="/multiplayer" style="color:#34d399">Co-op multiplayer for up to 8 players</a></li>
+          <li><a href="/faq" style="color:#34d399">Frequently asked questions</a></li>
+          <li><a href="/about" style="color:#34d399">About the project and how it was built</a></li>
+          <li><a href="/trailer" style="color:#34d399">Watch the official trailer</a></li>
         </ul>
         <h2>Play now</h2>
-        <p>Forest Survival runs entirely in a modern web browser with WebGL. <strong>This page requires JavaScript to play.</strong> Visit <a href="https://forestsurvival.live/" style="color:#34d399">forestsurvival.live</a> with JavaScript enabled to start surviving.</p>
+        <p>Forest Survival runs entirely in a modern web browser with WebGL. <strong>This page requires JavaScript to play.</strong> Visit <a href="https://forestsurvival.live/" style="color:#34d399">forestsurvival.live</a> with JavaScript enabled to start playing.</p>
       </main>
     </noscript>
 

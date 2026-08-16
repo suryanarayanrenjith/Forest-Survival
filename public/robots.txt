@@ -1,15 +1,68 @@
 # Forest Survival — https://forestsurvival.live
-# Free online 3D multiplayer wave-survival shooter (play in browser).
+# Free 3D browser FPS: survive endless waves of hostile robots across 8 biomes.
 
 User-agent: *
 Allow: /
 
-# Session-specific multiplayer deep links carry no standalone, indexable
-# content — keep them out of search results (canonical also points to root).
-Disallow: /*?lobby=
-Disallow: /*?role=
+# Hashed JS/CSS bundles under /assets/ are intentionally left crawlable so
+# Googlebot can render the single-page app. Do not block them.
+#
+# Multiplayer deep links (?lobby= / ?role=) are intentionally NOT disallowed.
+# A robots-disallowed URL can never be crawled, so Google could never read the
+# rel=canonical on it — a shared lobby link would then be indexed URL-only with
+# "No information is available for this page". Letting it be crawled lets the
+# self-referencing canonical in this file fold every variant back into /.
 
-# Note: hashed JS/CSS bundles under /assets/ are intentionally left crawlable
-# so Googlebot can render the single-page app.
+# ── AI retrieval / citation crawlers (explicitly welcomed) ──
+# These fetch pages to answer user questions in real time. None of them execute
+# JavaScript, which is why the static pages under /guide, /weapons, /enemies …
+# and the <noscript> block on / exist at all.
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: Claude-SearchBot
+Allow: /
+
+User-agent: Claude-User
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Perplexity-User
+Allow: /
+
+User-agent: Applebot
+Allow: /
+
+User-agent: Applebot-Extended
+Allow: /
+
+User-agent: DuckAssistBot
+Allow: /
+
+User-agent: Bingbot
+Allow: /
+
+# ── AI training crawlers (allowed on purpose) ──
+# This is a free, open-source game. Being present in model weights is a
+# discovery channel, not a loss.
+User-agent: GPTBot
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: Meta-ExternalAgent
+Allow: /
+
+User-agent: CCBot
+Allow: /
 
 Sitemap: https://forestsurvival.live/sitemap.xml

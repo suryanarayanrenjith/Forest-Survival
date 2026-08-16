@@ -1,6 +1,6 @@
 import {
   Sparkles, Heart, Code2, ExternalLink, X,
-  Cpu, Wand2, Palette, Boxes, Zap, ArrowUpRight, Layers3,
+  Cpu, Wand2, Palette, Boxes, Zap, ArrowUpRight,
   Database, ShieldCheck, Triangle, GitFork, Crosshair, BookOpen,
   Gamepad2, Network, Brush, Cog, Bone, HeartHandshake,
   type LucideIcon,
@@ -39,8 +39,10 @@ const TECH_STACK: TechItem[] = [
   { label: 'React 19',          hint: 'TypeScript · strict',     icon: Code2,   accent: '#38bdf8' },
   { label: 'Three.js',          hint: 'r180 · WebGL2',           icon: Boxes,   accent: '#34d399' },
   { label: 'Rapier Physics',    hint: 'Ragdolls · WASM solver',  icon: Bone,    accent: '#fb7185' },
-  { label: '@react-three/fiber', hint: 'Loader scene · Canvas',   icon: Layers3, accent: '#60a5fa' },
-  { label: '@react-three/drei',  hint: 'Preload · helpers',       icon: Sparkles, accent: '#a78bfa' },
+  // @react-three/fiber and @react-three/drei were credited here but never
+  // imported anywhere in the codebase — the scene is hand-written Three.js with
+  // no reconciler between the game loop and the GPU. Both packages have been
+  // removed from package.json, so crediting them was doubly wrong.
   { label: 'three.js Postprocessing', hint: 'Bloom · GTAO · ACES · SMAA · God-rays · CAS', icon: Wand2,   accent: '#c084fc' },
   { label: 'Convex',            hint: 'Realtime DB · serverless', icon: Database, accent: '#f97316' },
   { label: 'Convex Auth',       hint: 'Accounts · sessions',     icon: ShieldCheck, accent: '#22d3ee' },

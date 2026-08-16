@@ -1,0 +1,33 @@
+# Forest Survival
+
+> Forest Survival is a free 3D first-person shooter where you survive endless waves of hostile robots across eight biome maps, playable instantly in any modern browser. No download, no install, and no account is needed for Solo or Tutorial play.
+
+Forest Survival is an on-foot FPS against machines — not a survival-crafting game, and
+not a mech game. The enemies are robots: metal, sparks, dents and EMP. It runs entirely
+client-side on WebGL2 via hand-written Three.js, with peer-to-peer co-op for up to eight
+players. Built solo by Surya and released under the MIT licence.
+
+Key facts: 8 maps (8 distinct biomes) · 8 weapons · 8 character classes · 10 robot enemy
+archetypes · 34 roguelike wave perks · 31 achievements · 71 daily challenges · 4
+difficulties (Easy, Medium, Hard, Adaptive) · up to 8-player P2P co-op · endless waves,
+no win condition · plays on desktop, phone and tablet · free, MIT licensed, no ads and no
+in-app purchases.
+
+## Pages
+
+- [Play Forest Survival](https://forestsurvival.live/): The game itself. Runs in the browser; requires JavaScript and WebGL2.
+- [Guide](https://forestsurvival.live/guide): Hub page linking every topic below, with a primer on each.
+- [How to play](https://forestsurvival.live/how-to-play): Keyboard, mouse and touch controls, the wave loop, active reload, difficulty modes and tips.
+- [Weapons](https://forestsurvival.live/weapons): All 8 weapons with stats, and how unlock scores scale with difficulty.
+- [Character classes](https://forestsurvival.live/characters): All 8 classes with their signature abilities, cooldowns and passives.
+- [Robot enemies](https://forestsurvival.live/enemies): All 10 robot archetypes, Ranged Sentinel turrets, Crowned Elite mini-bosses, the Overlord and the Revenant.
+- [Maps](https://forestsurvival.live/maps): All 8 biome maps, terrain hazards, weather and the ARK-07 relay spires.
+- [Multiplayer](https://forestsurvival.live/multiplayer): How peer-to-peer co-op works, the two modes, and what differs from solo.
+- [FAQ](https://forestsurvival.live/faq): Is it free, does it need a download or account, does it run on phones and Chromebooks.
+- [About](https://forestsurvival.live/about): The tech stack, the engineering behind it, and licensing.
+- [Trailer](https://forestsurvival.live/trailer): The 57-second official trailer.
+
+## Optional
+
+- [Source code on GitHub](https://github.com/suryanarayanrenjith/Forest-Survival): Full MIT-licensed source.
+- [Project wiki](https://github.com/suryanarayanrenjith/Forest-Survival/wiki): 21 pages of deeper documentation on gameplay, enemies, world, architecture and configuration.

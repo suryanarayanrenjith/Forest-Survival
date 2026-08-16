@@ -43,7 +43,11 @@ const MobileNotice = () => {
             </div>
           </div>
           <div className="min-w-0">
-            <h1 className="text-base font-bold leading-tight text-white">Best on desktop — but ready for touch</h1>
+            {/* <h2>: this is a dismissible dialog title, not the page heading.
+                As an <h1> it gave touch devices — including Googlebot-Smartphone
+                under mobile-first indexing — a second, competing H1 on top of
+                the menu's real one. */}
+            <h2 className="text-base font-bold leading-tight text-white">Best on desktop — but ready for touch</h2>
             <p className="mt-1 text-[12px] leading-snug text-gray-400">
               Forest Survival is tuned for keyboard &amp; mouse, yet fully playable here
               with purpose-built touch controls. Play in landscape.

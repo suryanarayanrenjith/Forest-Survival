@@ -11,7 +11,7 @@
 
 ---
 
-Survive endless, escalating enemy waves across **eight distinct biome maps**. Fight through **10 enemy types** with **8 unlockable weapons**, choose from **8 character classes**, and push your score as high as you can. Features roguelike wave perks, daily challenges, mutators, persistent account progression, and P2P multiplayer — built with React, Three.js, Rapier physics, and Convex entirely through conversational AI coding.
+**Forest Survival is a free 3D first-person shooter where you survive endless waves of hostile robots across eight biome maps, playable instantly in any modern browser.** The forest has been overrun by hostile machines. Fight through **10 robot enemy archetypes** with **8 unlockable weapons**, choose from **8 character classes**, and push your score as high as you can. Features roguelike wave perks, daily challenges, mutators, persistent account progression, and P2P multiplayer — built with React, Three.js, Rapier physics, and Convex entirely through conversational AI coding.
 
 ---
 
@@ -33,8 +33,13 @@ Weapons unlock as your score climbs. Every weapon earns its own **Mastery XP** (
 | SMG | 450 | 40 | 165ms |
 | Sniper | 700 | 5 | 1200ms |
 | Minigun | 1,100 | 100 | 50ms |
-| Rocket Launcher | 1,600 | 3 | 2000ms |
+| Launcher | 1,600 | 1 (auto-reloads) | 2000ms |
 | Subverter | 2,200 | 4 chips | 850ms |
+
+> **These are base scores, not the requirement.** The real threshold is the base score
+> multiplied by a difficulty factor: **Easy ×1.3 · Medium ×2.5 · Hard ×3.5 · Adaptive
+> ×1.2–3.4** (live, scaling with how well you are doing). On Medium the Subverter needs
+> 5,500 score, not 2,200. Full table: [Weapons →](https://forestsurvival.live/weapons)
 
 The **Subverter** is a combat hacking deck — it fires intrusion chips that turn enemies against their own kind, then burns them out in a green EMP. Bosses are immune.
 
@@ -49,11 +54,11 @@ Eight selectable classes, each with a **signature active ability** (Q) and a mec
 | Ranger | Dash — burst forward, bowl over enemies | 5s | −10% dash cooldown |
 | Scout | Adrenaline — 1.75× movement speed (4s) | 11s | +12% movement speed |
 | Heavy | Bulwark — frontal riot shield (5s) | 15s | +20% max HP, −8% speed |
-| Operative | Focus Fire — faster fire rate + bigger damage (5s) | 15s | +10% headshot damage |
+| Operative | Overclock — faster fire rate, bigger damage + unlimited ammo (5s) | 15s | +10% headshot damage |
 | Pyro | Firestorm — AoE shockwave scorches nearby enemies | 13s | Burning bullets |
 | Medic | Field Triage — restore a small amount of HP | 14s | Regen 0.5 HP/sec |
-| Engineer | Overclock — snap-reload + unlimited ammo (4s) | 14s | −15% reload time |
-| Phantom | Cloak — vanish and phase through enemies (4s) | 15s | +15% power-up duration |
+| Engineer | Demolition — wire a nearby barrel into a remote bomb, detonate on demand | 12s | −15% reload time |
+| Phantom | Cloak — vanish and phase through enemies (4s) | 15s | +15% Phantom power-up duration |
 
 ---
 
@@ -113,7 +118,7 @@ Every map hides several derelict relay spires still broadcasting a dead satellit
 | W / A / S / D | Move |
 | Mouse | Look |
 | Left Click | Shoot |
-| Right Click | Aim (Rifle / Sniper) |
+| Right Click | Aim (7 of 8 weapons — only the Sniper gets a true scoped takeover) |
 | Space | Jump |
 | Shift | Sprint |
 | C | Crouch |

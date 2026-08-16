@@ -771,7 +771,12 @@ const ForestSurvivalGame = () => {
     if (!menuMusicRef.current) {
       const music = new Audio(MENU_MUSIC_URL);
       music.loop = true;
-      music.preload = 'auto';
+      // 'none', not 'auto': the menu track is a 1.5 MB MP3 that browsers will
+      // never play before a user gesture anyway, so preloading it only competes
+      // with the menu's own LCP render for bandwidth. It is promoted to 'auto'
+      // in resumeMusic() below, immediately before the first play() — by which
+      // point the page has long since painted. No behavioural change.
+      music.preload = 'none';
       menuMusicRef.current = music;
     }
 
@@ -799,6 +804,9 @@ const ForestSurvivalGame = () => {
         }
 
         currentMusic.volume = menuMusicVolumeRef.current;
+        // Undo the 'none' set at construction: the gesture has arrived, so the
+        // track is now genuinely wanted.
+        if (currentMusic.preload !== 'auto') currentMusic.preload = 'auto';
         const playResult = currentMusic.play();
         if (playResult !== undefined) {
           playResult
@@ -9465,7 +9473,10 @@ const ForestSurvivalGame = () => {
       : type === 'fast' ? 'Stalker'
       : type === 'ranged' ? 'Sniper'
       : type === 'revenant' ? 'Revenant'
-      : 'Forest Creature';
+      // Fallback for the tactical archetypes (bulwark/howler/leaper/splitter).
+      // This read 'Forest Creature' — a leftover from before the enemies were
+      // robots, and the only string in the codebase that contradicted it.
+      : 'Rogue Unit';
 
     // Apply incoming enemy damage to the LOCAL player. Shared by the local
     // enemy-attack path (solo + the host's own hits) and, in multiplayer, by

@@ -1,24 +1,74 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Every <loc> here MUST be byte-identical to the rel=canonical on the page it
+  points at: extensionless, no trailing slash. `cleanUrls` + `trailingSlash:false`
+  in vercel.json 308-redirect the other forms, so a mismatch here would put a
+  redirect in front of every crawl.
+
+  `changefreq` and `priority` are deliberately absent — Google ignores both.
+  Do NOT stamp every <lastmod> with today's date on every deploy; Google detects
+  unreliable lastmod values and stops trusting the field site-wide. Only bump the
+  date on a page whose content actually changed.
+-->
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
         xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"
         xmlns:video="http://www.google.com/schemas/sitemap-video/1.1">
   <url>
     <loc>https://forestsurvival.live/</loc>
-    <lastmod>2026-07-18</lastmod>
-    <changefreq>weekly</changefreq>
-    <priority>1.0</priority>
+    <lastmod>2026-08-15</lastmod>
     <image:image>
       <image:loc>https://forestsurvival.live/og-image.jpg</image:loc>
-      <image:title>Forest Survival — free online survival shooter</image:title>
     </image:image>
+  </url>
+  <url>
+    <loc>https://forestsurvival.live/guide</loc>
+    <lastmod>2026-08-15</lastmod>
+  </url>
+  <url>
+    <loc>https://forestsurvival.live/how-to-play</loc>
+    <lastmod>2026-08-15</lastmod>
+  </url>
+  <url>
+    <loc>https://forestsurvival.live/weapons</loc>
+    <lastmod>2026-08-15</lastmod>
+  </url>
+  <url>
+    <loc>https://forestsurvival.live/characters</loc>
+    <lastmod>2026-08-15</lastmod>
+  </url>
+  <url>
+    <loc>https://forestsurvival.live/enemies</loc>
+    <lastmod>2026-08-15</lastmod>
+  </url>
+  <url>
+    <loc>https://forestsurvival.live/maps</loc>
+    <lastmod>2026-08-15</lastmod>
+  </url>
+  <url>
+    <loc>https://forestsurvival.live/multiplayer</loc>
+    <lastmod>2026-08-15</lastmod>
+  </url>
+  <url>
+    <loc>https://forestsurvival.live/faq</loc>
+    <lastmod>2026-08-15</lastmod>
+  </url>
+  <url>
+    <loc>https://forestsurvival.live/about</loc>
+    <lastmod>2026-08-15</lastmod>
+  </url>
+  <url>
+    <loc>https://forestsurvival.live/trailer</loc>
+    <lastmod>2026-08-15</lastmod>
     <video:video>
-      <video:thumbnail_loc>https://forestsurvival.live/og-image.jpg</video:thumbnail_loc>
+      <video:thumbnail_loc>https://forestsurvival.live/trailer-poster.jpg</video:thumbnail_loc>
       <video:title>Forest Survival — Official Trailer</video:title>
-      <video:description>Official trailer for Forest Survival, a free 3D first-person wave-survival shooter playable in the browser.</video:description>
+      <video:description>Official trailer for Forest Survival, a free 3D first-person wave-survival shooter where you fight waves of hostile robots in the browser.</video:description>
       <video:content_loc>https://forestsurvival.live/media/forest-survival-trailer.mp4</video:content_loc>
+      <video:player_loc>https://forestsurvival.live/trailer</video:player_loc>
       <video:duration>57</video:duration>
       <video:publication_date>2026-07-18T00:00:00+05:30</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
+      <video:live>no</video:live>
     </video:video>
   </url>
 </urlset>
