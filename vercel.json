@@ -4,17 +4,6 @@
   "buildCommand": "npx convex deploy --cmd 'npm run build'",
   "installCommand": "npm install",
   "outputDirectory": "dist",
-  "//routing": [
-    "cleanUrls serves public/weapons.html at /weapons and 308s /weapons.html -> /weapons,",
-    "so each static content page has exactly ONE canonical URL. It also 308s",
-    "/index.html -> /, closing a duplicate of the homepage.",
-    "trailingSlash:false 308s /weapons/ -> /weapons for the same reason.",
-    "",
-    "Do NOT add a catch-all SPA rewrite ( /(.*) -> /index.html ). The app has no",
-    "client-side router — multiplayer deep links are query strings, which never",
-    "need a rewrite — and a catch-all would silently serve the SPA shell at every",
-    "content URL, which Google reads as 11 duplicate homepages."
-  ],
   "cleanUrls": true,
   "trailingSlash": false,
   "headers": [
@@ -22,29 +11,6 @@
       "source": "/(.*)",
       "headers": [
         {
-          "//": [
-            "connect-src is an ALLOWLIST, not 'https:'. It previously permitted any",
-            "HTTPS/WSS host, which meant an XSS or a compromised dependency could",
-            "exfiltrate to anywhere. The only egress this app actually makes is:",
-            "  • Convex  — realtime sync (wss), queries/mutations and file storage",
-            "              on <deployment>.convex.cloud, HTTP actions on .convex.site.",
-            "              WILDCARDED on purpose: prod, dev and every Vercel preview",
-            "              use a DIFFERENT deployment subdomain, so pinning one host",
-            "              would break previews.",
-            "  • 0.peerjs.com — the default PeerJS cloud signalling server (`new Peer()`",
-            "              with no options). Only reached on the multiplayer path.",
-            "  • dl.polyhaven.org — per-map HDRI environment maps fetched at runtime by",
-            "              utils/HDRIEnvironment.ts for image-based lighting (High/Ultra",
-            "              tiers only; low tiers skip the load). REMOVING THIS BREAKS",
-            "              scene lighting on those tiers. The long-term fix is to",
-            "              self-host the .hdr files and drop this origin entirely.",
-            "  • Vercel Analytics / Speed Insights — same-origin /_vercel/*, so 'self'.",
-            "WebRTC STUN/TURN is NOT governed by connect-src, so P2P media is unaffected.",
-            "img-src is likewise narrowed: auth is username/password with NO OAuth",
-            "provider, so no external avatar hosts exist. Player photos come from",
-            "Convex storage. UserAvatar already falls back on error.",
-            "'wasm-unsafe-eval' is load-bearing for Rapier — do not remove it."
-          ],
           "key": "Content-Security-Policy",
           "value": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https://*.convex.cloud https://*.convex.site; media-src 'self' data: blob:; worker-src 'self' blob:; manifest-src 'self'; connect-src 'self' https://*.convex.cloud wss://*.convex.cloud https://*.convex.site wss://*.convex.site https://0.peerjs.com wss://0.peerjs.com https://dl.polyhaven.org blob: data:; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; frame-src 'none'; object-src 'none'; upgrade-insecure-requests"
         },
@@ -52,12 +18,6 @@
         { "key": "X-Frame-Options", "value": "DENY" },
         { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
         {
-          "//": [
-            "fullscreen and screen-wake-lock are deliberately NOT disabled — the game",
-            "uses both (App.tsx requestFullscreen, utils/wakeLock.ts). Denying them",
-            "would break gameplay. browsing-topics is the modern name for the old",
-            "interest-cohort/FLoC opt-out; both are sent for older-browser coverage."
-          ],
           "key": "Permissions-Policy",
           "value": "geolocation=(), camera=(), microphone=(), payment=(), usb=(), interest-cohort=(), browsing-topics=(), accelerometer=(), gyroscope=(), magnetometer=(), midi=(), serial=(), bluetooth=(), hid=(), idle-detection=(), display-capture=(), local-fonts=()"
         },
@@ -78,14 +38,6 @@
       ]
     },
     {
-      "//": [
-        "Re-opens Cross-Origin-Resource-Policy for public media only. The global",
-        "rule sets same-origin, which is right for HTML and JS; but og-image.jpg,",
-        "the icons and the trailer are meant to be fetched by other origins",
-        "(social cards, feed readers, the webmanifest). Social scrapers fetch",
-        "server-side where CORP is not enforced, so this is belt-and-braces —",
-        "it just removes a whole class of 'why is my preview image blank'."
-      ],
       "source": "/(.*).(png|jpg|jpeg|gif|webp|avif|svg|ico|mp3|ogg|wav|mp4|woff2)",
       "headers": [
         { "key": "Cache-Control", "value": "public, max-age=2592000" },
@@ -105,24 +57,6 @@
       ]
     },
     {
-      "//": [
-        "The static content pages are pure HTML: no JavaScript, no network calls,",
-        "no WASM, no third-party anything. So they get a far stricter CSP than the",
-        "game does — default-src 'none' with only what they actually use added back.",
-        "",
-        "Two subtleties, both deliberate:",
-        "  • script-src stays 'self' rather than 'none' ONLY so the",
-        "    <script type=\"application/ld+json\"> structured-data block is",
-        "    unambiguously safe. It is a data block, not executable script, but the",
-        "    whole point of these pages is that Google parses that JSON-LD, and it",
-        "    is not worth gambling the site's structured data on spec nuance.",
-        "    Nothing is exploitable here: an attacker would need to place a .js file",
-        "    on this origin, which the static build makes impossible.",
-        "  • manifest-src 'self' is REQUIRED — every page links /site.webmanifest,",
-        "    and manifests fall back to default-src, so 'none' would block it.",
-        "media-src 'self' covers the trailer <video> on /trailer.",
-        "External <a href> links (GitHub) are navigations and are not CSP-governed."
-      ],
       "source": "/(guide|how-to-play|weapons|characters|enemies|maps|multiplayer|faq|about|trailer|404)",
       "headers": [
         {

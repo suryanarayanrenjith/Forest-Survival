@@ -18,6 +18,23 @@ export interface LoadedHDRIEnvironment {
   texture: THREE.Texture;
 }
 
+/**
+ * ⚠ CSP DEPENDENCY — the only third-party asset origin the game fetches at runtime.
+ *
+ * `vercel.json`'s `connect-src` is a strict allowlist (it used to be a blanket
+ * `https:`, which let any compromised dependency exfiltrate anywhere). This host
+ * is on that allowlist ONLY because of this file. Two consequences:
+ *
+ *   • Changing this base URL, or pointing at a different CDN, silently breaks
+ *     image-based lighting IN PRODUCTION ONLY — local dev serves no CSP, so it
+ *     will look fine right up until deploy. Update `connect-src` in the same
+ *     commit.
+ *   • Self-hosting these .hdr files under /public would remove the last runtime
+ *     third-party dependency and let `https://dl.polyhaven.org` be dropped from
+ *     the policy entirely.
+ *
+ * Only High/Ultra tiers load these; low tiers skip the fetch (see `load` option).
+ */
 const POLY_HAVEN_HDR_BASE = 'https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr';
 
 const HDRI_ENVIRONMENTS: Record<MapType, HDRIEnvironmentProfile> = {
