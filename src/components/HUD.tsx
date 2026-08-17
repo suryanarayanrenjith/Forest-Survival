@@ -18,11 +18,22 @@ export interface AbilityHudItem {
   abilityId?: string; // selects the slot's icon (dash, firestorm, cloak, …)
   accent?: string;    // per-character accent colour
   cooldown?: number;  // 0..1 — 1 means fully recharged / ready
+  /**
+   * Whether the ability is castable RIGHT NOW.
+   *
+   * Sent explicitly rather than derived from `cooldown >= 1`: the producer
+   * quantises the fill to 1% for change-detection, so on a long cooldown the
+   * final step is smaller than one quantum and a derived readiness would never
+   * re-render — leaving the slot greyed out while the ability actually worked.
+   */
+  ready?: boolean;
   active?: boolean;   // currently active (dashing or effect running)
   // ── power slot ──
   powerType?: string | null;         // which loot power (null = empty slot)
   state?: 'empty' | 'held' | 'active'; // held = ready to use, active = running
   ratio?: number;     // 0..1 absorb bar (shield while active)
+  /** Inside an ARK-07 interference field the trigger is dead — say so. */
+  jammed?: boolean;
 }
 
 /** Unique icon per looted power — no more duplicate lightning bolts. */
@@ -434,7 +445,10 @@ const AbilitySlot = ({ ability }: { ability: AbilityHudItem }) =>
  */
 const DashSlot = ({ ability }: { ability: AbilityHudItem }) => {
   const cd = ability.cooldown ?? 1;
-  const ready = cd >= 1;
+  // Trust the producer's explicit readiness (see AbilityHudItem.ready); the
+  // fill is only for drawing the sweep. Falling back to `cd >= 1` keeps the
+  // component correct if a caller omits it.
+  const ready = ability.ready ?? cd >= 1;
   const deg = Math.min(360, Math.max(0, cd * 360));
   const accent = ability.accent ?? '#34d399';
   const Icon = getAbilityIcon(ability.abilityId);
@@ -483,21 +497,29 @@ const DashSlot = ({ ability }: { ability: AbilityHudItem }) => {
 const PowerSlot = ({ ability }: { ability: AbilityHudItem }) => {
   const state = ability.state ?? 'empty';
   const empty = state === 'empty';
-  const held = state === 'held';
-  const active = state === 'active';
+  // A jammed slot still HOLDS its power — it just can't fire it, so it reads
+  // as offline (red, flickering) rather than as ready-to-use amber. Without
+  // this the HUD invites a press that the relay field silently refuses.
+  const jammed = ability.jammed === true && !empty;
+  const held = state === 'held' && !jammed;
+  const active = state === 'active' && !jammed;
   const Icon = empty ? PackageSearch : (POWER_ICONS[ability.powerType ?? ''] ?? PackageSearch);
   return (
     <div className="flex flex-col items-center gap-1">
       <div
         className={`relative flex items-center justify-center w-12 h-12 rounded-xl border transition-colors duration-200 ${
-          held ? 'border-amber-400/70 bg-amber-500/15'
+          jammed ? 'border-red-500/60 bg-red-950/40'
+            : held ? 'border-amber-400/70 bg-amber-500/15'
             : active ? 'border-emerald-400/70 bg-emerald-500/20'
             : 'border-dashed border-white/15 bg-black/40'
         }`}
-        style={held ? { animation: 'abilityReady 1.6s ease-in-out infinite' } : undefined}
+        style={jammed
+          ? { animation: 'hudGlitchFlicker 0.7s steps(2, jump-none) infinite' }
+          : held ? { animation: 'abilityReady 1.6s ease-in-out infinite' } : undefined}
       >
         <Icon
-          className={`w-5 h-5 ${held ? 'text-amber-300' : active ? 'text-emerald-200' : 'text-gray-600'}`}
+          className={`w-5 h-5 ${jammed ? 'text-red-400/80'
+            : held ? 'text-amber-300' : active ? 'text-emerald-200' : 'text-gray-600'}`}
           strokeWidth={2.25}
         />
         {/* Shield absorb bar (only while a shield power is active). */}
@@ -514,15 +536,17 @@ const PowerSlot = ({ ability }: { ability: AbilityHudItem }) => {
         )}
         <kbd className={`absolute -top-1.5 -right-1.5 px-1 min-w-[15px] h-[15px] flex items-center justify-center
           rounded bg-[#0b0f15] border text-[9px] font-bold font-mono ${
-          held ? 'border-amber-400/50 text-amber-300'
+          jammed ? 'border-red-500/50 text-red-400'
+            : held ? 'border-amber-400/50 text-amber-300'
             : active ? 'border-emerald-400/50 text-emerald-300'
             : 'border-white/15 text-gray-600'}`}>
           {ability.key}
         </kbd>
       </div>
       <span className={`text-[9px] font-semibold tracking-wide uppercase ${
-        held ? 'text-amber-300' : active ? 'text-emerald-300' : 'text-gray-600'}`}>
-        {empty ? 'Find Loot' : ability.name}
+        jammed ? 'text-red-400'
+          : held ? 'text-amber-300' : active ? 'text-emerald-300' : 'text-gray-600'}`}>
+        {jammed ? 'Jammed' : empty ? 'Find Loot' : ability.name}
       </span>
     </div>
   );

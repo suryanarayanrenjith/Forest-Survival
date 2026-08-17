@@ -1,9 +1,15 @@
+// MUST STAY FIRST. Raises THREE.Texture.DEFAULT_ANISOTROPY before any
+// module-level texture singleton in the imports below is constructed — ES
+// modules evaluate dependencies in source order, so this is a guarantee.
+// Moving it (or letting a formatter sort the imports) silently drops every
+// eagerly-built texture back to unfiltered. See utils/textureDefaults.ts.
+import './utils/textureDefaults';
 import { useRef, useEffect, useState, useCallback, type CSSProperties } from 'react';
 import * as THREE from 'three';
 import { GraduationCap, Play, Home, MousePointerClick, ShieldAlert } from 'lucide-react';
 import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
-import { GunModel, MELEE_CAPABLE_WEAPONS, type WeaponType as GunWeaponType, type ReloadCue, type ReloadStyle, SCOPE_TAKEOVER } from './utils/GunModel';
+import { GunModel, MELEE_CAPABLE_WEAPONS, type WeaponType as GunWeaponType, type ReloadCue, type ReloadStyle, SCOPE_TAKEOVER, OVERCLOCK_DURATION } from './utils/GunModel';
 import { MuzzleFlash, MuzzleSmoke, BulletTracer, ImpactEffect, RobotHitSparks, ExplosionEffect, FireNovaEffect, NukeEffect, AbilityCastEffect, ImpactBurst, setMuzzleLightPool, setExplosionLightPool, clearParticleGeometryPools, clearTracerGeometryPool, clearFlashSpritePool, clearSmokeSpritePool, clearExplosionRigPool, clearCastRigPool, clearBurstPairPool, getSoftSparkTexture } from './utils/Effects';
 import { HackBeam, buildHackVisuals, updateHackVisuals, disposeHackVisuals } from './utils/HackVisuals';
 import { soundManager } from './utils/SoundManager';
@@ -30,7 +36,6 @@ import { RemotePlayerManager } from './utils/RemotePlayerManager';
 import { prewarmPlayerWounds, disposePlayerWoundAssets } from './utils/PlayerWounds';
 import { SnapshotInterpolator, type TransformSample } from './utils/SnapshotInterpolator';
 import Minimap, { renderMinimapFrame, isMinimapActive, toggleMinimapExpanded, type MinimapBlip } from './components/Minimap';
-import CombatStatsPanel from './components/CombatStatsPanel';
 import { LocalPlayerShadow } from './utils/LocalPlayerShadow';
 import type { ClassId } from './utils/CharacterModels';
 import { AbilitySystem } from './utils/AbilitySystem';
@@ -87,6 +92,8 @@ import { UplinkNetwork, EmpShockwave } from './utils/UplinkStructure';
 import { spawnRangedSentinels, updateSentinelGlow, type RangedSentinel } from './utils/RangedSentinelSystem';
 import { CHARACTER_PASSIVES } from './utils/CharacterPassiveRegistry';
 import { getCharacterAbility } from './utils/CharacterAbilityRegistry';
+import { AbilityViewmodel, abilityPropKind, ABILITY_PAYLOAD_DELAY, type AbilityBeat } from './utils/AbilityViewmodels';
+import { FireSystem } from './utils/FireSystem';
 import { DAILY_CHALLENGES, DAILY_CHANNEL_MODE, getTodayChallengeId, type DailyEventChannel } from './utils/DailyChallengeRegistry';
 import { bonusForLevel, levelFromXp, xpPerKill, xpProgressAtLevel, MAX_MASTERY_LEVEL, type MasteryBonus } from './utils/WeaponMasterySystem';
 import { TITLE_FOR_ACHIEVEMENT } from './utils/CosmeticTitles';
@@ -1924,20 +1931,47 @@ const ForestSurvivalGame = () => {
     renderer.domElement.addEventListener('webglcontextlost', onWebGLContextLost);
     renderer.domElement.addEventListener('webglcontextrestored', onWebGLContextRestored);
 
-    // Enhanced RTX-Style Lighting System with Dynamic Day Cycle.
-    // Multipliers stay at 1.0 — the DayCycleSystem values are now tuned for
-    // the AGX post pipeline, so an extra +20% on top blows out the sky.
-    // Ambient at 80% — shadow detail readable but the lit/shadow contrast
-    // is dramatic enough to read as proper Cyberpunk "hit-by-sun" lighting.
-    const ambientLight = new THREE.AmbientLight(renderAtmosphere.ambientColor, renderAtmosphere.ambientIntensity * 0.8);
+    // ═══ KEY + SKY LIGHTING ═════════════════════════════════════════════
+    // Per-map indirect shaping. These reuse the renderProfile knobs that used
+    // to drive three now-deleted lights, so no map loses its authored look —
+    // see the long note below the hemisphere light. Declared HERE, ahead of
+    // the first light that reads them: they are `const`, so referencing them
+    // from an earlier line would hit the temporal dead zone at scene build.
+    const skyFillScale = renderProfile.fillLight ?? 1.0;            // cool sky fill
+    const groundBounceScale = renderProfile.volumetricLight ?? 1.0; // warm bounce
+    const keyBoost = 0.82 + 0.18 * (renderProfile.rimLight ?? 1.0); // edge punch
+
+    // See the long note below the hemisphere light for the full rationale.
+    // In short: one shadow-casting key, one normal-varying sky term, and the
+    // smallest flat ambient that still keeps deep crevices off pure black.
+    //
+    // AMBIENT is the flatness dial. Every unit here is added identically to
+    // lit and shadowed pixels alike, so it is a direct subtraction from shadow
+    // contrast — the old 0.80 is why shadows read as washed grey. At 0.30 the
+    // shadows have real depth and the sky term below still carries the detail.
+    //
+    // PRESET SYNC: a tier with no shadow map has no cast shadows to protect,
+    // and a hard single key against zero indirect makes unlit sides read as
+    // dead flat. Those tiers get a higher floor so the world stays legible —
+    // this is the ONLY place the two lighting models differ, and it keeps
+    // ULTRA LOW looking deliberate rather than broken.
+    const AMBIENT_FLOOR = graphicsPreset.shadowsEnabled ? 0.30 : 0.55;
+    const ambientLight = new THREE.AmbientLight(
+      renderAtmosphere.ambientColor,
+      renderAtmosphere.ambientIntensity * AMBIENT_FLOOR,
+    );
     scene.add(ambientLight);
 
-    // Main directional light (Sun/Moon) — cranked 60% above base so direct
-    // sunlight drives the PBR specular lobe on the ground for crisp
-    // Cyberpunk-style "wet asphalt sun glint" highlights. Combined with
-    // the per-pixel normal perturbation in the ground shader, this is the
-    // primary visual driver — not emissive, not bloom.
-    const mainLight = new THREE.DirectionalLight(renderAtmosphere.lightColor, renderAtmosphere.lightIntensity * 1.6);
+    // Main directional light (Sun/Moon). Now the ONLY directional light and
+    // the only shadow caster, so it inherits the direct contribution the
+    // deleted fill/rim/bounce lights used to add on the lit side — hence 2.15×
+    // rather than 1.6×. One clean specular lobe instead of four competing
+    // smears is most of what makes the highlights read as sun on a surface.
+    const KEY_INTENSITY_SCALE = 2.15;
+    const mainLight = new THREE.DirectionalLight(
+      renderAtmosphere.lightColor,
+      renderAtmosphere.lightIntensity * KEY_INTENSITY_SCALE * keyBoost,
+    );
     mainLight.position.set(
       renderAtmosphere.lightPosition.x,
       renderAtmosphere.lightPosition.y,
@@ -1956,7 +1990,14 @@ const ForestSurvivalGame = () => {
     // CUSTOM mix stays coherent (a bigger map covers more ground at the same
     // texel density): 4096→120, 2048→100, 1024→72, ≤512→48.
     const sms = graphicsPreset.shadowMapSize;
-    const shadowRange = sms >= 4096 ? 120 : sms >= 2048 ? 100 : sms >= 1024 ? 72 : 48;
+    // TIGHTENED ~20% across every tier (was 120/100/72/48). Shadow crispness is
+    // texel DENSITY — map resolution divided by the world area it covers — so
+    // shrinking the frustum at a fixed map size buys ~55% more texels per metre
+    // for exactly zero additional cost. That is the other half of "the shadows
+    // feel faded": they were both washed out by the old fill lights AND
+    // under-sampled. Shrinking it further would start clipping shadows of tall
+    // trees out of the frustum at the edges of the visible range.
+    const shadowRange = sms >= 4096 ? 96 : sms >= 2048 ? 80 : sms >= 1024 ? 58 : 40;
     mainLight.shadow.camera.left = -shadowRange;
     mainLight.shadow.camera.right = shadowRange;
     mainLight.shadow.camera.top = shadowRange;
@@ -1974,65 +2015,81 @@ const ForestSurvivalGame = () => {
     // Target follows player so directional shadows stay centered on the camera
     scene.add(mainLight.target);
 
-    // Hemisphere light for natural sky reflection (dynamic based on atmospheric settings)
+    // ── SKY / INDIRECT ────────────────────────────────────────────────────
+    // The hemisphere is now the whole indirect model, and it does the job the
+    // deleted fill and bounce lights were faking — better, because it varies
+    // with the surface normal. Up-facing surfaces take the sky's colour,
+    // down-facing surfaces take warm light bounced off the ground, and
+    // everything between gets a real gradient. That gradient is what makes a
+    // shadowed surface still read as a SHAPE rather than a flat grey patch,
+    // which a plain ambient term can never do at any intensity.
     const skyColor = new THREE.Color(renderAtmosphere.skyColor);
-    const groundColor = skyColor.clone().multiplyScalar(0.35); // Darker ground reflection
-    // Hemisphere provides natural sky-tinted shadow fill. Boosted back to
-    // 0.75× so shadow areas keep a cool sky tint and read as "in shadow",
-    // not as "missing pixels".
+    // Bounce is warmed and lifted toward the sun's own colour rather than
+    // being a dimmed copy of the sky: real ground bounce carries the terrain's
+    // albedo and the key light's warmth, and this is what replaces the deleted
+    // "warm volumetric bounce" light for a fraction of the cost.
+    const groundColor = new THREE.Color(renderAtmosphere.lightColor)
+      .lerp(skyColor, 0.45)
+      .multiplyScalar(0.42 * groundBounceScale);
+    // Carries the indirect budget the old ambient used to waste on flat fill.
+    const SKY_FILL_SCALE = 1.15;
     const skyLight = new THREE.HemisphereLight(
       skyColor.getHex(),
       groundColor.getHex(),
-      renderAtmosphere.ambientIntensity * 0.75
+      renderAtmosphere.ambientIntensity * SKY_FILL_SCALE * skyFillScale,
     );
     scene.add(skyLight);
 
-    // Soft warm bounce (sun-side) — faked indirect kick that warms the
-    // lit ground. Krunker-grade golden-hour feel during day.
-    const volumetricLight = new THREE.DirectionalLight(
-      renderAtmosphere.sunVisible ? 0xffe8b8 : 0x9ab2e6,
-      (renderAtmosphere.sunVisible ? 0.55 : 0.5) * (renderProfile.volumetricLight ?? 1.0)
-    );
-    volumetricLight.position.set(
-      renderAtmosphere.lightPosition.x * 0.5,
-      renderAtmosphere.lightPosition.y * 0.8,
-      renderAtmosphere.lightPosition.z * 0.5
-    );
-    scene.add(volumetricLight);
-    scene.add(volumetricLight.target);
+    // ═══ WHAT USED TO BE HERE, AND WHY IT IS GONE ═══════════════════════
+    //
+    // Three more unshadowed DirectionalLights (a warm "volumetric" bounce, an
+    // opposite-side fill and a rim) plus a SECOND full-strength AmbientLight
+    // for night. Seven global lights in total.
+    //
+    // That rig is why the shadows read as faded and the highlights as weak.
+    // A shadow can only ever be as dark as the light that still reaches it,
+    // and here four separate lights reached everywhere:
+    //   • two ambient terms added a flat, directionless floor to EVERY pixel,
+    //     shadowed or not — the single most effective way to destroy shadow
+    //     contrast that exists;
+    //   • the fill and rim lights cast NO shadows, so they lit straight into
+    //     shadowed geometry and flattened it further;
+    //   • and with four specular lobes competing, no single highlight could
+    //     dominate, so lit surfaces got a broad smear instead of a crisp
+    //     sun glint.
+    // Adding lights to fix flat lighting makes it flatter. The fix is fewer,
+    // stronger, better-motivated ones.
+    //
+    // It was also the most expensive thing in the frame: three.js evaluates a
+    // full GGX specular + Lambert diffuse BRDF per directional light per
+    // fragment, so this cost FOUR direct-lighting evaluations on every lit
+    // pixel in the world. Collapsing to one removes ~75% of that ALU across
+    // the entire scene — the largest single GPU saving available, and it is
+    // the same edit that fixes the look.
+    //
+    // The scene now runs a KEY + SKY model:
+    //   • mainLight   — the sun/moon. The only directional light, and the only
+    //                   shadow caster. It owns all direct light and the one
+    //                   specular highlight.
+    //   • skyLight    — a HemisphereLight carrying ALL indirect: sky colour
+    //                   from above, bounced ground colour from below. Unlike
+    //                   an ambient term it varies with surface normal, so it
+    //                   still SHADES form in shadow instead of flooding it.
+    //   • ambientLight— kept deliberately small, purely so deep undersides
+    //                   don't crush to pure black.
+    //
+    // The per-map art direction is preserved, not discarded: the renderProfile
+    // knobs that drove the deleted lights are folded into the two that remain
+    // (see skyFillScale / groundBounceScale / keyBoost below), so every map
+    // keeps its identity at a quarter of the cost.
+    //
+    // ⚠ Light COUNT is a shader define (NUM_DIR_LIGHTS / NUM_HEMI_LIGHTS). It
+    // is fixed here at scene build so every program compiles once during
+    // warmup. Never add or remove a light after that — see the warmup and
+    // dynamic-light invariants.
 
-    // Fill light (opposite side of main light) — bumped so the shadowed
-    // side of geometry still reads as fully lit, just cooler. The gun,
-    // enemies, and tree trunks on the dark side all benefit.
-    const fillLight = new THREE.DirectionalLight(
-      renderAtmosphere.sunVisible ? 0xbcd6ff : 0x7a92d2,
-      (renderAtmosphere.sunVisible ? 0.55 : 0.7) * (renderProfile.fillLight ?? 1.0)
-    );
-    fillLight.position.set(
-      -renderAtmosphere.lightPosition.x * 0.6,
-      renderAtmosphere.lightPosition.y * 0.4,
-      -renderAtmosphere.lightPosition.z * 0.6
-    );
-    scene.add(fillLight);
-    scene.add(fillLight.target);
-
-    // Rim/Back light for dramatic silhouettes.
-    const rimLight = new THREE.DirectionalLight(
-      renderAtmosphere.sunVisible ? 0xffffff : 0xc4d2ff,
-      (renderAtmosphere.sunVisible ? 0.55 : 0.8) * (renderProfile.rimLight ?? 1.0)
-    );
-    rimLight.position.set(
-      renderAtmosphere.lightPosition.x * 0.3,
-      renderAtmosphere.lightPosition.y * 1.2,
-      renderAtmosphere.lightPosition.z
-    );
-    scene.add(rimLight);
-    scene.add(rimLight.target);
-
-    // Additional ambient fill for night visibility — significantly boosted
-    // so the night reads as "moody blue dusk" instead of "pitch black hole".
-    const nightFillLight = new THREE.AmbientLight(0x5c7ac0, renderAtmosphere.sunVisible ? 0.0 : 1.8);
-    scene.add(nightFillLight);
+    // (skyFillScale / groundBounceScale / keyBoost are declared above the
+    // ambient light — they are read by the lights themselves.)
 
     // Player-attached night lantern — softly illuminates surroundings when
     // sun is down. Wider radius + brighter so trees/enemies/ground 20m out
@@ -2121,18 +2178,10 @@ const ForestSurvivalGame = () => {
       renderAtmosphere.lightPosition.y,
       renderAtmosphere.lightPosition.z
     );
-    const volumetricLightBaseOffset = mainLightBaseOffset.clone().multiplyScalar(0.5);
-    volumetricLightBaseOffset.y = renderAtmosphere.lightPosition.y * 0.8;
-    const fillLightBaseOffset = new THREE.Vector3(
-      -renderAtmosphere.lightPosition.x * 0.6,
-      renderAtmosphere.lightPosition.y * 0.4,
-      -renderAtmosphere.lightPosition.z * 0.6
-    );
-    const rimLightBaseOffset = new THREE.Vector3(
-      renderAtmosphere.lightPosition.x * 0.3,
-      renderAtmosphere.lightPosition.y * 1.2,
-      renderAtmosphere.lightPosition.z
-    );
+    // Scratch colour for the per-frame hemisphere sync — the ground-bounce
+    // tint is a blend of two colours, and doing it in place keeps that sync
+    // allocation-free (it runs every frame).
+    const _skyScratch = new THREE.Color();
 
     // ── TERRAIN SHAPE + GROUND-TEXTURE IDENTITY (per map, per run) ─────────
     // A seeded, WORLD-LOCKED height field (TerrainSystem) displaces the ground
@@ -3397,62 +3446,10 @@ const ForestSurvivalGame = () => {
       if (cue === 'mag_in' || cue === 'pump_rack') haptic('tap');
     };
 
-    // ── ENGINEER LEFT-HAND DETONATOR (viewmodel) ─────────────────────────
-    // A handheld remote trigger held in the player's LEFT hand (mirror of the
-    // right-hand gun) while a demolition bomb is armed. It rises into view once
-    // the engineer finishes wiring, the plunger punches down on detonation, then
-    // it drops back out of sight. Parented to the camera like the gun so it
-    // tracks the view. All per-instance materials/geos (disposed on cleanup).
-    const _detoMats: THREE.Material[] = [];
-    const _detoGeos: THREE.BufferGeometry[] = [];
-    const buildDetonatorViewmodel = (): { group: THREE.Group; plunger: THREE.Mesh; led: THREE.Mesh } => {
-      const group = new THREE.Group();
-      const reg = <T extends THREE.BufferGeometry>(g: T): T => { _detoGeos.push(g); return g; };
-      const regM = <T extends THREE.Material>(m: T): T => { _detoMats.push(m); return m; };
-      const bodyMat = regM(new THREE.MeshStandardMaterial({ color: 0x2a2e35, metalness: 0.6, roughness: 0.45 }));
-      const body = new THREE.Mesh(reg(new THREE.BoxGeometry(0.5, 0.3, 0.66)), bodyMat);
-      group.add(body);
-      // Grip handle under the body.
-      const grip = new THREE.Mesh(reg(new THREE.BoxGeometry(0.18, 0.34, 0.18)), bodyMat);
-      grip.position.set(0, -0.3, 0.12);
-      group.add(grip);
-      // Glowing status screen on the back face (faces the player).
-      const screen = new THREE.Mesh(
-        reg(new THREE.PlaneGeometry(0.32, 0.16)),
-        regM(new THREE.MeshBasicMaterial({ color: 0x1affc6, toneMapped: false })),
-      );
-      screen.position.set(0, 0.06, 0.34);
-      group.add(screen);
-      // Red plunger button on top (pressed on detonate).
-      const plunger = new THREE.Mesh(
-        reg(new THREE.CylinderGeometry(0.12, 0.14, 0.16, 14)),
-        regM(new THREE.MeshStandardMaterial({ color: 0xe23b2a, metalness: 0.3, roughness: 0.4, emissive: 0x4a0d06, emissiveIntensity: 0.6 })),
-      );
-      plunger.position.set(0, 0.22, -0.05);
-      group.add(plunger);
-      // Antenna + blinking tip LED.
-      const ant = new THREE.Mesh(reg(new THREE.CylinderGeometry(0.02, 0.02, 0.4, 6)), regM(new THREE.MeshStandardMaterial({ color: 0x53585f, metalness: 0.85, roughness: 0.3 })));
-      ant.position.set(0.2, 0.28, -0.22);
-      group.add(ant);
-      const led = new THREE.Mesh(reg(new THREE.SphereGeometry(0.05, 10, 8)), regM(new THREE.MeshBasicMaterial({ color: 0xff3324, toneMapped: false })));
-      led.position.set(0.2, 0.5, -0.22);
-      group.add(led);
-      group.traverse((o) => { if (o instanceof THREE.Mesh) o.castShadow = false; });
-      return { group, plunger, led };
-    };
-    const detonatorVM = buildDetonatorViewmodel();
-    const detonatorPlunger = detonatorVM.plunger;
-    const detonatorLed = detonatorVM.led;
-    const detonatorGroup = detonatorVM.group;
-    detonatorGroup.scale.setScalar(0.14);
-    detonatorGroup.visible = false;
-    camera.add(detonatorGroup);
-    // Left-hand rest pose (mirror of the right-hand gun) + animation state.
-    const DETO_BASE = { x: -0.34, y: -0.32, z: -0.52 };
-    const detoPlungerBaseY = detonatorPlunger.position.y;
-    let detonatorRaise = 0;  // 0 hidden (below view) → 1 fully held
-    let detonatorPress = 0;  // 1 = plunger just slammed on detonate, decays to 0
-    // Wiring "bend over the barrel" animation (engineer demolition).
+    // ── ENGINEER "BEND OVER THE BARREL" WIRING STATE ──────────────────────
+    // The prop the engineer then holds (the radio firing device) is an
+    // AbilityViewmodel built further down, once the player's class is known —
+    // see `abilityProp`. These three drive the camera/weapon half of the wire.
     let wiringTime = 0;      // counts down while the bend-and-wire animation plays
     let wiringPitch = 0;     // smoothed downward camera bend applied during wiring
     const DEMO_BEND = 0.42;  // radians the view dips toward the barrel while wiring
@@ -3472,12 +3469,23 @@ const ForestSurvivalGame = () => {
     // a gunmetal frame with reinforcement bands, a grip, and a status core that
     // shifts green→amber→red as the absorb pool drains. Material refs are kept
     // so the game loop can animate raise/lower, hit flashes and shatter.
+    //
+    // It is a COLLAPSIBLE shield: the panel is carried folded, and deploying it
+    // swings two hinged wings out to full width and drops the bottom skirt —
+    // that unfolding is the Heavy's ability mechanism, the equivalent of the
+    // other classes' hand props (see `shieldDeploy`).
     const shieldMesh = new THREE.Group();
     // Definite-assignment: all four are set synchronously in the block below.
     let shieldGlassMat!: THREE.MeshStandardMaterial;
     let shieldCoreMat!: THREE.MeshStandardMaterial;
     let shieldRimMat!: THREE.MeshBasicMaterial;
     let shieldEnergyMat!: THREE.MeshBasicMaterial;
+    // Hinged sections driven by the deploy animation, plus the two materials
+    // they introduce (tracked explicitly so teardown frees exactly those and
+    // never double-disposes one shared with the fixed panel).
+    const shieldWings: THREE.Group[] = [];
+    const shieldFoldMats: THREE.Material[] = [];
+    let shieldSkirt!: THREE.Group;
     {
       // Rounded-rectangle path centred on the origin.
       const roundedRect = (w: number, h: number, r: number): THREE.Shape => {
@@ -3578,6 +3586,55 @@ const ForestSurvivalGame = () => {
       );
       grip.position.set(0.12, 0, 0.12);
       shieldMesh.add(grip);
+
+      // ── FOLDING SECTIONS ────────────────────────────────────────────────
+      // Two side wings hinged on the frame's vertical edges plus a bottom skirt
+      // hinged under it. Carried folded flat against the panel and swung out on
+      // deploy, which is what turns "a shield appears" into "a shield is
+      // opened". Each wing is its own pivot GROUP so the hinge line is the
+      // frame edge, not the panel centre.
+      const wingMat = new THREE.MeshStandardMaterial({
+        color: 0x1e2733, metalness: 0.88, roughness: 0.42,
+      });
+      const wingGlassMat = new THREE.MeshStandardMaterial({
+        color: 0xbfe0ff, transparent: true, opacity: 0.14, roughness: 0.1, metalness: 0,
+        emissive: 0x3aa0ff, emissiveIntensity: 0.14, side: THREE.DoubleSide,
+        depthWrite: false, fog: false,
+      });
+      shieldFoldMats.push(wingMat, wingGlassMat);
+      for (const side of [-1, 1]) {
+        const wing = new THREE.Group();
+        wing.position.set(side * (W / 2 + 0.02), 0, 0);
+        const panel = new THREE.Mesh(new THREE.BoxGeometry(0.17, H - 0.06, 0.016), wingMat);
+        panel.position.set(side * 0.085, 0, 0);
+        wing.add(panel);
+        const port = new THREE.Mesh(new THREE.PlaneGeometry(0.11, H - 0.30), wingGlassMat);
+        port.position.set(side * 0.085, 0.05, 0.011);
+        wing.add(port);
+        // Hinge knuckles along the fold line so it reads as a real joint.
+        for (const ky of [0.30, 0, -0.30]) {
+          const knuckle = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, 0.05, 10), bandMat);
+          knuckle.position.set(0, ky, 0);
+          wing.add(knuckle);
+        }
+        shieldMesh.add(wing);
+        shieldWings.push(wing);
+      }
+      // Bottom skirt — drops to cover the shins once braced.
+      shieldSkirt = new THREE.Group();
+      shieldSkirt.position.set(0, -(H / 2 + 0.02), 0);
+      {
+        const skirtPanel = new THREE.Mesh(new THREE.BoxGeometry(W - 0.04, 0.15, 0.014), wingMat);
+        skirtPanel.position.set(0, -0.075, 0);
+        shieldSkirt.add(skirtPanel);
+        for (const kx of [-0.2, 0, 0.2]) {
+          const knuckle = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.05, 10), bandMat);
+          knuckle.rotation.z = Math.PI / 2;
+          knuckle.position.set(kx, 0, 0);
+          shieldSkirt.add(knuckle);
+        }
+      }
+      shieldMesh.add(shieldSkirt);
 
       // Braced forward-lower-left in view space; the loop eases it in/out.
       shieldMesh.position.set(-0.46, -0.34, -0.78);
@@ -3806,6 +3863,27 @@ const ForestSurvivalGame = () => {
     // `mpMods` name retained for the many downstream stat-stack sites; it now
     // applies the selected character's passive in EVERY mode, not just MP.
     const mpMods = CHARACTER_PASSIVES[activeClassId]?.mods ?? {};
+
+    // ── SIGNATURE-ABILITY VIEWMODEL ──────────────────────────────────────
+    // Every character's power is operated with a real piece of equipment held
+    // in the LEFT hand — a radio firing device, a flame projector, a field
+    // case, a stim injector, a cloak bracer, a kinetic charge unit. Exactly ONE
+    // is built (this class's), it is parented to the camera like the weapon,
+    // and its choreography emits BEATS that App hangs the actual gameplay
+    // effect off (see `abilityPayload`), so the mechanism causes the power
+    // instead of decorating it. Null for the Operative (whose mechanism is the
+    // weapon itself) and the Heavy (whose mechanism is the shield).
+    const abilityPropType = abilityPropKind(activeAbility.id);
+    const abilityProp = abilityPropType ? new AbilityViewmodel(abilityPropType, camera) : null;
+    // How long the mechanism takes to reach the frame it does its work. Timed
+    // buffs add this back so the player is never charged for the wind-up. The
+    // Operative has no prop — its wind-up is the weapon retune's own `lock`
+    // beat, two thirds of the way through the choreography.
+    const abilityWindupMs = abilityPropType
+      ? ABILITY_PAYLOAD_DELAY[abilityPropType] * 1000
+      : activeAbility.id === 'overclock'
+        ? OVERCLOCK_DURATION * 0.66 * 1000
+        : 0;
 
     // Game state. Ammo starts at the pistol's max-ammo cap, with the
     // One-in-the-Chamber modifier (if active) clamping it to 1.
@@ -4044,6 +4122,10 @@ const ForestSurvivalGame = () => {
     // built from the SAME MuzzleSmoke class → reuses the smoke shader program.
     // Cap scales with particle density; skipped entirely on the lowest presets.
     const enemySmokePuffs: MuzzleSmoke[] = [];
+    // Live gust strength, mirrored out of the render loop so anything spawned
+    // OUTSIDE it (smoke plumes, drifting embers) blows the same way the grass
+    // and foliage do instead of inventing its own weather.
+    let currentWindGust = 1;
     const MAX_ENEMY_SMOKE = Math.max(0, Math.round(24 * graphicsPreset.particleDensity));
     const bulletTracers: BulletTracer[] = [];
     const impactEffects: ImpactEffect[] = [];
@@ -4765,6 +4847,11 @@ const ForestSurvivalGame = () => {
         const ch = enemyGroup.children[ci];
         if (ch.userData?.isFrostShell) {
           enemyGroup.remove(ch);
+        } else if (ch.userData?.isBurnShell) {
+          // Fire shell (Pyro) — shared geo+mat owned by FireSystem, and the
+          // system's own list must drop it too or it keeps animating a shell
+          // that is no longer on anything.
+          fireSystem.detachBurn(ch as THREE.Group);
         } else if (ch.userData?.isSurgeHalo || ch.userData?.isRadShell) {
           // ARK-07 event wrappers share their geo/mat — detach only, never dispose.
           enemyGroup.remove(ch);
@@ -5240,6 +5327,33 @@ const ForestSurvivalGame = () => {
       explosionLightPool.push({ light: el, inUse: false });
     }
     setExplosionLightPool(
+      () => {
+        for (const slot of explosionLightPool) {
+          if (!slot.inUse) { slot.inUse = true; return slot.light; }
+        }
+        return null;
+      },
+      (light) => {
+        if (!light) return;
+        for (const slot of explosionLightPool) {
+          if (slot.light === light) {
+            slot.inUse = false;
+            slot.light.intensity = 0;
+            return;
+          }
+        }
+      },
+    );
+
+    // ── FIRE ─────────────────────────────────────────────────────────────
+    // The Pyro's flame projector, the ground it sets alight, and the robots
+    // that keep burning after the sweep passes. Borrows a slot from the SAME
+    // pre-allocated explosion-light pool above (never creates a light at
+    // runtime — that is the documented cause of the mid-fight recompile
+    // stutter), and reuses the explosion family's additive material
+    // permutation so it adds no shader program to link.
+    const fireSystem = new FireSystem(
+      scene,
       () => {
         for (const slot of explosionLightPool) {
           if (!slot.inUse) { slot.inUse = true; return slot.light; }
@@ -6608,6 +6722,10 @@ const ForestSurvivalGame = () => {
     let shieldRaise = 0;        // 0 = stowed, 1 = fully braced (eased each frame)
     let shieldHitFlash = 0;     // 0..1, spikes on a blocked hit then decays
     let shieldBreakFlash = 0;   // 0..1, spikes when the shield shatters
+    // 0 = folded flat against the panel, 1 = wings + skirt locked open. Runs
+    // slightly BEHIND the raise so the panel comes up first and then visibly
+    // unfolds in the hand, which is the whole read of a collapsible shield.
+    let shieldDeploy = 0;
     // Reusable temps for the per-hit frontal-block test (avoid per-hit allocs).
     const _shieldFwd = new THREE.Vector3();
     const _shieldToEnemy = new THREE.Vector3();
@@ -6671,12 +6789,24 @@ const ForestSurvivalGame = () => {
         case 'overcharge':
           overchargeActive = true;
           overchargeEndTime = nowMs + overchargeDuration;
+          // An overcharge is a change made TO THE WEAPON, so the player watches
+          // their hands make it: the support hand comes off the handguard, rolls
+          // the gas regulator past its stop and cycles the action. Purely
+          // cosmetic here — the buff above has already landed, and the retune's
+          // `lock` cue is gated on `overclockCastPending` so a looted overcharge
+          // can never hand a passing Operative their signature ability for free.
+          gunModel.triggerOverclock();
           showPowerMessage('Overcharge · faster fire & damage');
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Overcharge Active!', 'powerup');
           createParticles(camera.position, 0xffcc33, 22);
           break;
         case 'ammo':
           ammo = effectiveMaxAmmo(currentWeapon);
+          // Magazines do not refill themselves: play the weapon's own reload
+          // choreography so the hands visibly swap one in. Visual only — the
+          // count above is already restored, and a real reload in progress owns
+          // the viewmodel, so we never stomp it.
+          if (!isReloading) gunModel.triggerReload(0.85, 8, 'tactical', 0);
           showPowerMessage('Ammo Refilled');
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Ammo Refilled', 'powerup');
           createParticles(camera.position, 0xffd54a, 12);
@@ -6720,6 +6850,9 @@ const ForestSurvivalGame = () => {
         case 'infinite_ammo':
           infiniteAmmoActive = true;
           infiniteAmmoEndTime = nowMs + infiniteAmmoDuration;
+          // The feed is converted on the weapon, in the hands — same cosmetic
+          // retune as the overcharge above (see the note there).
+          gunModel.triggerOverclock();
           showPowerMessage('Infinite Ammo · 10s');
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Infinite Ammo Active!', 'powerup');
           createParticles(camera.position, 0xff5aff, 22);
@@ -6946,20 +7079,26 @@ const ForestSurvivalGame = () => {
     // Only one bomb is armed at a time. Declared here (before detonateBarrel) so
     // the detonation path can clear the reference if the bomb goes off any way.
     let armedBomb: ExplosiveBarrel | null = null;
+    // The bomb claimed by a detonate press but not yet fired: it goes off on the
+    // frame the THUMB bottoms the plunger out, a few frames later. Claiming it
+    // here (and clearing `armedBomb` immediately) is what stops a mashed key
+    // double-firing the same drum.
+    let pendingDetonation: ExplosiveBarrel | null = null;
     const DEMO_WIRE_RANGE = 5.5;   // how close the engineer must stand to a barrel
     const DEMO_ARM_TIME = 1.0;     // seconds the crouch-and-wire animation takes
 
-    // ── ONE-HANDED LEFT ARM (detonator ⇄ riot shield) ────────────────────
-    // The engineer's remote detonator and the riot shield are BOTH held on the
-    // player's left arm — they can never be carried at once. This single
-    // predicate is the source of truth: it's true while a bomb is wired/armed
-    // (or the detonator is still dropping out of view), so every shield-raise
-    // path (loot power-up, killstreak Juggernaut) is blocked while it holds,
-    // and wiring is blocked while the shield is up. Keeps the two viewmodels
-    // mutually exclusive in EVERY game mode. (detonatorRaise/wiringTime are
-    // declared above; armedBomb just above.)
+    // ── ONE-HANDED LEFT ARM (firing device ⇄ riot shield) ────────────────
+    // The Engineer's radio firing device and the riot shield are BOTH carried
+    // on the player's left arm, and unlike every other ability prop the device
+    // is held INDEFINITELY — for as long as a bomb is live. So this predicate
+    // stays deliberately Engineer-specific: it blocks every shield-raise path
+    // (loot power-up, killstreak Juggernaut) while a bomb is wired, armed or
+    // mid-detonation, and blocks wiring while the shield is up. The other
+    // classes' props are up for about a second, and are handled instead by
+    // stowing the shield's VISUAL for that beat (see the shield animate block).
     const detonatorOccupiesHand = (): boolean =>
-      armedBomb !== null || wiringTime > 0 || detonatorRaise > 0.05;
+      armedBomb !== null || pendingDetonation !== null || wiringTime > 0
+      || (abilityProp?.kind === 'detonator' && abilityProp.occupiesHand());
 
     // ── KILLSTREAK AIRDROP REWARDS ───────────────────────────────────────
     // Earned by chaining kills without dying. Effects are INSTANT (no held
@@ -6999,6 +7138,35 @@ const ForestSurvivalGame = () => {
     //    burst heal (was a third of max HP, which felt oppressive).
     const ABILITY_DAMAGE_CAP = 120;
     const MEDIC_TRIAGE_HEAL = 18;
+
+    // ── PYRO FLAME PROJECTOR (Firestorm) ─────────────────────────────────
+    // The Pyro's signature is no longer an instantaneous nova but a SUSTAINED
+    // 360° jet: the emitter head spins up and throws fire in a ring that widens
+    // as the pressure builds, the fuel that lands keeps burning on the ground,
+    // and everything it touches carries the flames away with it.
+    //
+    // Damage budget: direct ticks are small and frequent (a flamethrower does
+    // not one-shot, it cooks), the burn is where the payoff is, and a target
+    // that steps out of the jet early takes a fraction of the total — the whole
+    // point of the power is AREA DENIAL, not a nuke with a different colour.
+    const PYRO_BURST_SEC = 1.5;        // how long the valve stays open
+    const PYRO_MAX_RADIUS = 13;        // reach of the front at full pressure
+    const PYRO_MIN_RADIUS = 3.2;       // reach the instant the valve cracks
+    const PYRO_TICK_MS = 200;          // direct-damage cadence inside the jet
+    const PYRO_TICK_DAMAGE = 16;
+    const PYRO_BURN_MS = 5000;
+    const PYRO_BURN_DPS = 9;
+    const PYRO_PATCH_LIFE = 6.5;       // seconds a ground fire keeps burning
+    const PYRO_PATCH_DPS = 12;
+    const PYRO_PATCH_BURN_MS = 2200;   // top-up ignite for standing in the fire
+    let pyroBurstTime = -1;            // <0 = idle, else seconds into the burst
+    let pyroNextTickAt = 0;
+    let pyroNextPatchAt = 0;
+
+    // True only between an Operative CASTING Overclock and the retune's `lock`
+    // beat. Looted overcharge / infinite-ammo play the same weapon animation for
+    // flavour, and this is what stops those from applying the ability.
+    let overclockCastPending = false;
 
     // CHARACTER ABILITY - bound to the dash/ability key, dispatched per class.
     // The cooldown gate is unified across every ability (so the HUD shows ONE
@@ -7058,18 +7226,14 @@ const ForestSurvivalGame = () => {
       // the bomb we're trying to arm).
       if (activeAbility.id === 'demolition') {
         if (armedBomb) {
-          const bomb = armedBomb;
+          // The bomb is claimed HERE (so a second press can't double-fire it)
+          // but it does not go off until the THUMB bottoms the plunger out —
+          // see the 'press' beat in abilityPayload. `pendingDetonation` carries
+          // it across those few frames.
+          pendingDetonation = armedBomb;
           armedBomb = null;
-          // Engineer modification: a bigger, reliably-lethal blast vs a stray shot.
-          bomb.blastRadius = Math.max(bomb.blastRadius, 9.5);
-          bomb.blastDamage = Math.max(bomb.blastDamage, 220);
-          detonateBarrel(bomb); // strips the kit + cascades via the chain pump
-          detonatorPress = 1;   // slam the plunger; the detonator then drops away
-          triggerAbilityFlash(activeAbility.color);
-          if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
-          fovPunch = Math.min(fovPunch + 6, 12);
-          showPowerMessage('Bomb detonated!');
-          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Remote Detonation!', 'powerup');
+          abilityProp?.press();      // thumb rolls onto the button and drives it
+          soundManager.play('reload', 0.5, false, 1.9); // safety cap / trigger travel
           gunModel.triggerAbility();
           abilityCooldown = cd;
           abilityCooldownMax = cd;
@@ -7128,9 +7292,71 @@ const ForestSurvivalGame = () => {
         return;
       }
 
+      // ── EVERY OTHER ABILITY: START THE MECHANISM ─────────────────────────
+      // The keypress no longer applies the power — it starts the piece of
+      // equipment that applies it. Each prop's choreography emits a BEAT on the
+      // frame its mechanism does its work (needle in, valve open, toggle
+      // thrown, charge lever released) and `abilityPayload` hangs the real
+      // effect off that beat. Only the bookkeeping that must not be delayed —
+      // cooldown, tutorial/daily credit, the "equipment out" cue — stays here.
+      switch (activeAbility.id) {
+        case 'overclock':
+          // Operative — no prop: the weapon IS the mechanism. The support hand
+          // comes off the handguard, rolls the gas regulator past its stop and
+          // hauls the charging handle; the buff lands on the `lock` cue when the
+          // bolt slams back into battery (see gunModel.onOverclockCue). The flag
+          // is what separates THIS retune from the purely-cosmetic one a looted
+          // overcharge plays — only a real cast may apply the ability.
+          overclockCastPending = true;
+          gunModel.triggerOverclock();
+          soundManager.play('reload', 0.45, false, 1.45);
+          break;
+        case 'bulwark':
+          // Heavy — the shield IS the mechanism: it swings up off the back and
+          // its two wings unfold into the braced panel (see the deploy pass in
+          // the render loop). Instant, so its payload runs right here.
+          abilityPayload('ready');
+          break;
+        default:
+          // dash / adrenaline / triage / firestorm / cloak — all prop-driven.
+          abilityProp?.play();
+          break;
+      }
+
+      // Immediate feel: the haptic thump and the braced weapon flourish belong
+      // to the KEYPRESS (the player has to know the input registered); the
+      // screen flash, the world cast burst and the camera kick belong to the
+      // payload, so they land with the power rather than ahead of it.
+      haptic('dash');
+      if (activeAbility.id !== 'dash') gunModel.triggerAbility();
+
+      abilityCooldown = cd;
+      abilityCooldownMax = cd;
+      abilityActiveUntil = nowMs + Math.max(activeMs + abilityWindupMs, 200);
+      tutorial.recordAction('use_ability', 1); // advances the ability tutorial step
+      if (dailyEnabled) dailyCounts.ability_use += 1; // daily ability channel
+    }
+
+    /**
+     * THE POWER ITSELF — run from the frame the mechanism acts, not the frame
+     * the key was pressed.
+     *
+     * Every branch is guarded on the beat that physically causes it, so the
+     * heal happens when the needle goes in, the fire starts when the valve
+     * opens, the cloak engages when the toggle is thrown and the bomb goes off
+     * when the thumb bottoms the plunger. Hoisted so the beat handler installed
+     * further down (and the Heavy's instant branch above) can both reach it.
+     */
+    function abilityPayload(beat: AbilityBeat) {
+      const nowMs = Date.now();
+      // Timed buffs get the wind-up handed back so the choreography is never
+      // paid for out of the player's uptime.
+      const activeMs = activeAbility.duration * 1000 + abilityWindupMs;
       switch (activeAbility.id) {
         case 'dash': {
-          // Ranger — a trampling charge + a brief cinematic time-warp.
+          if (beat !== 'slam') return;
+          // Ranger — the hip charge unit blows off and the trampling charge
+          // launches, plus a brief cinematic time-warp.
           isDashing = true;
           dashTimer = dashDuration;
           dashHitEnemies.clear();
@@ -7138,7 +7364,6 @@ const ForestSurvivalGame = () => {
           // FOV surge — the lens pulls wide for the burst, then the existing
           // per-frame decay eases it back. Reads as raw acceleration.
           fovPunch = Math.min(fovPunch + 8, 10);
-          // (Cooldown reduction is now applied once for every ability up top.)
           const dir = new THREE.Vector3();
           camera.getWorldDirection(dir);
           dir.y = 0; dir.normalize();
@@ -7155,6 +7380,11 @@ const ForestSurvivalGame = () => {
           if (dashDirection.length() === 0) dashDirection.copy(dir);
           dashDirection.normalize();
           soundManager.play('jump', 0.5);
+          // The vent blowing off: a hard pneumatic crack under the player.
+          soundManager.play('powerUp', 0.5, false, 2.1);
+          // Exhaust plume out of the actuator, at the player's feet.
+          _burstFeet.set(camera.position.x, camera.position.y - currentCameraHeight + 0.2, camera.position.z);
+          createParticles(_burstFeet, 0xbff4ff, 16);
           gunModel.triggerDash();
           if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
           timeScale = 0.5;
@@ -7162,66 +7392,71 @@ const ForestSurvivalGame = () => {
           break;
         }
         case 'adrenaline': {
-          // Scout — short, strong movement-speed surge (reuses speed boost).
+          if (beat !== 'inject') return;
+          // Scout — the stim goes in and the surge takes hold immediately.
           speedBoostActive = true;
           speedBoostEndTime = nowMs + activeMs;
           showPowerMessage('Adrenaline · speed surge');
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Adrenaline Surge!', 'powerup');
           createParticles(camera.position, 0x6ef0ff, 18);
+          soundManager.play('hit', 0.35, false, 2.4);   // the hiss of the injector
+          soundManager.play('powerUp', 0.55, false, 1.25);
           break;
         }
         case 'bulwark': {
+          if (beat !== 'ready') return;
           // Heavy — braces the riot shield (reuses the frontal-absorb shield).
           shieldActive = true;
           shieldEndTime = nowMs + activeMs;
           shieldAbsorb = SHIELD_ABSORB_MAX;
           shieldBreakFlash = 0;
+          shieldDeploy = 0; // replay the unfold from stowed
           showPowerMessage('Bulwark · frontal shield raised');
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Bulwark Raised!', 'powerup');
+          soundManager.play('reload', 0.6, false, 0.8); // the frame locking open
           break;
         }
         case 'firestorm': {
-          // Pyro — AoE fire-nova ultimate. `explodeRocket` still resolves the
-          // real distance-falloff damage AND multiplayer-guest hit reporting,
-          // so mechanics are untouched. On top of it we cast a single
-          // FireNovaEffect (expanding double fire-ring + flame dome + embers)
-          // for the signature sweep, then roll TWO concentric rings of pure-FX
-          // secondary bursts outward so the shockwave visibly races across the
-          // arena — a true fire nova, not one small pop.
-          const fpos = camera.position.clone();
-          fpos.y = 1.2; // originate near the ground so the blast hugs the floor
-          explodeRocket(fpos, 70);
-          fireNovas.push(new FireNovaEffect(scene, new THREE.Vector3(fpos.x, 0.5, fpos.z), 17));
-          createParticles(new THREE.Vector3(fpos.x, 1.5, fpos.z), 0xffb24a, 30);
-          const novaRings = [
-            { r: 7.0, n: 6, delay: 70, size: 4.8 },
-            { r: 12.5, n: 9, delay: 200, size: 4.0 },
-          ];
-          for (const ring of novaRings) {
-            for (let k = 0; k < ring.n; k++) {
-              const fa = (k / ring.n) * Math.PI * 2 + Math.random() * 0.4;
-              const fr = ring.r + (Math.random() - 0.5) * 1.6;
-              const fx = fpos.x + Math.cos(fa) * fr;
-              const fz = fpos.z + Math.sin(fa) * fr;
-              window.setTimeout(() => {
-                if (isSceneDisposed || isGameOver) return;
-                explosionEffects.push(new ExplosionEffect(scene, new THREE.Vector3(fx, 0.4, fz), ring.size, 0xff7a2a));
-                createParticles(new THREE.Vector3(fx, 1.0, fz), 0xff7a2a, 6);
-              }, ring.delay + (k % 3) * 26);
-            }
+          // Pyro — a SUSTAINED 360° jet, not a one-frame nova. Three beats:
+          // the striker lights the pilot, the main valve opens (the fire
+          // starts and runs for PYRO_BURST_SEC), and the valve shuts.
+          if (beat === 'ignite') {
+            soundManager.play('hit', 0.3, false, 2.6); // striker spark
+            return;
           }
-          fovPunch = Math.min(fovPunch + 9, 14);
-          triggerScreenShake();
-          showPowerMessage('Firestorm!');
-          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Firestorm!', 'powerup');
-          break;
+          if (beat === 'burst') {
+            pyroBurstTime = 0;
+            pyroNextTickAt = 0;
+            pyroNextPatchAt = 0;
+            fireSystem.setJet(true);
+            // The IGNITION — unburnt fuel already out of the nozzles catches all
+            // at once in a low ring before the steady jet takes over. Reuses the
+            // existing (pooled-light, warmup-linked) fire nova for that one beat.
+            fireNovas.push(new FireNovaEffect(
+              scene,
+              new THREE.Vector3(camera.position.x, camera.position.y - currentCameraHeight + 0.4, camera.position.z),
+              PYRO_MIN_RADIUS * 1.6,
+            ));
+            createParticles(camera.position, 0xffb24a, 22);
+            soundManager.play('explosion_small', 0.55, false, 0.55); // the woof of ignition
+            showPowerMessage('Firestorm · 360° flame · the ground is burning', 2400);
+            if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Firestorm!', 'powerup');
+            fovPunch = Math.min(fovPunch + 7, 12);
+            if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
+            break; // fall through to the shared cast FX below
+          }
+          if (beat === 'flameoff') {
+            pyroBurstTime = -1;
+            fireSystem.setJet(false);
+            soundManager.play('reload', 0.4, false, 0.7); // the valve shutting
+          }
+          return;
         }
         case 'triage': {
-          // Medic — a quick FIELD PATCH, not a burst heal. Previously restored
-          // a third of max HP (~35), which made the Medic feel oppressive /
-          // un-killable on a 16s cooldown. Now it tops up only a small flat
-          // amount (a "few HP") so it's a stabiliser, not a reset button. The
-          // Medic still leans on its passive 0.5 HP/s out-of-combat regen.
+          if (beat !== 'inject') return;
+          // Medic — a quick FIELD PATCH, not a burst heal: a small flat top-up
+          // administered from the case, delivered on the frame the auto-injector
+          // fires. The Medic still leans on its passive out-of-combat regen.
           const triageHeal = Math.min(MEDIC_TRIAGE_HEAL, playerMaxHealth - health);
           health = Math.min(playerMaxHealth, health + MEDIC_TRIAGE_HEAL);
           updateGameState();
@@ -7230,13 +7465,15 @@ const ForestSurvivalGame = () => {
           showPowerMessage(`Field Triage · +${Math.max(0, Math.round(triageHeal))} HP`);
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Field Triage!', 'powerup');
           createParticles(camera.position, 0x4dff9e, 14);
+          soundManager.play('hit', 0.3, false, 2.2);     // the injector firing
           soundManager.play('powerUp', 0.6);
           break;
         }
         case 'overclock': {
-          // Operative — OVERCLOCK the gun: snap-reload to full, then unlimited
-          // ammo PLUS the overcharge buff (faster fire rate + bigger damage) for
-          // the duration. "Overclocked gun with unlimited ammo."
+          if (beat !== 'ready') return;
+          // Operative — the regulator is past its stop and the bolt is back in
+          // battery: unlimited ammo PLUS the overcharge burst, and the magazine
+          // is topped off as part of the retune.
           infiniteAmmoActive = true;
           infiniteAmmoEndTime = nowMs + activeMs;
           overchargeActive = true;
@@ -7249,24 +7486,42 @@ const ForestSurvivalGame = () => {
           break;
         }
         case 'cloak': {
-          // Phantom — intangible stealth (reuses phantom; Phantom passive also
-          // extends its duration via mpMods.phantomDurationMult).
+          if (beat !== 'switch') return;
+          // Phantom — the toggle is thrown and the emitter takes hold.
           phantomActive = true;
           phantomEndTime = nowMs + activeMs * (mpMods.phantomDurationMult ?? 1);
           showPowerMessage('Cloak · you fade from sight');
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Cloak Engaged!', 'powerup');
+          soundManager.play('powerUp', 0.55, false, 0.75);
           break;
+        }
+        case 'demolition': {
+          if (beat !== 'press') return;
+          const bomb = pendingDetonation;
+          pendingDetonation = null;
+          if (!bomb || bomb.detonated) return; // shot out from under us
+          // Engineer modification: a bigger, reliably-lethal blast vs a stray shot.
+          bomb.blastRadius = Math.max(bomb.blastRadius, 9.5);
+          bomb.blastDamage = Math.max(bomb.blastDamage, 220);
+          detonateBarrel(bomb); // strips the kit + cascades via the chain pump
+          triggerAbilityFlash(activeAbility.color);
+          if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
+          fovPunch = Math.min(fovPunch + 6, 12);
+          triggerAbilityCam(-0.09, 0);
+          showPowerMessage('Bomb detonated!');
+          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Remote Detonation!', 'powerup');
+          return; // NOT the shared FX below — the blast is its own event, and
+                  // detonateBarrelsNear here would chain every other drum nearby
         }
       }
 
-      // ── SIGNATURE-MOVE FX (shared by every ability) ──────────────────────
+      // ── SIGNATURE-MOVE FX (shared by every payload above) ────────────────
       // Tinted screen pulse + a world-space cast burst (ground ring + rising
       // pillar + sparks) in the ability's own accent colour, plus a per-ability
       // CAMERA KICK that gives each power a distinct physical "tell" in
       // first-person — the Ranger dips into a forward lunge, the Heavy braces
-      // into a crouch, the Pyro bucks up off the blast, and so on.
+      // into a crouch, the Pyro bucks up off the jet, and so on.
       triggerAbilityFlash(activeAbility.color);
-      haptic('dash'); // the signature move lands as a firm thump in the hand
       const castColor = parseInt(activeAbility.color.replace('#', ''), 16) || 0x22d3ee;
       castEffects.push(new AbilityCastEffect(scene, camera.position, castColor));
       switch (activeAbility.id) {
@@ -7278,26 +7533,40 @@ const ForestSurvivalGame = () => {
         case 'overclock':  triggerAbilityCam(-0.05, 0.03); break;
         case 'cloak':      triggerAbilityCam(-0.03, 0); break;
       }
+      if (activeAbility.id !== 'firestorm' && activeAbility.id !== 'triage'
+        && activeAbility.id !== 'adrenaline' && activeAbility.id !== 'cloak') {
+        soundManager.play('powerUp', 0.7);
+      }
 
-      // Casting ANY ability next to a barrel sets it off — the surge of energy
+      // A power going off next to a barrel sets it off — the surge of energy
       // ignites the TNT, which then blasts the player + nearby enemies. (The
       // Ranger's dash additionally lights up every barrel along its charge path,
       // handled in the dash movement block.)
       detonateBarrelsNear(camera.position.x, camera.position.z, 4.5);
-
-      abilityCooldown = cd;
-      abilityCooldownMax = cd;
-      abilityActiveUntil = nowMs + Math.max(activeMs, 200);
-      tutorial.recordAction('use_ability', 1); // advances the ability tutorial step
-      if (dailyEnabled) dailyCounts.ability_use += 1; // daily ability channel
-      if (activeAbility.id !== 'dash') {
-        gunModel.triggerAbility(); // braced weapon flourish
-        // Firestorm + Triage play their own SFX; the rest get a generic cast cue.
-        if (activeAbility.id !== 'firestorm' && activeAbility.id !== 'triage') {
-          soundManager.play('powerUp', 0.7);
-        }
-      }
     }
+
+    // ── ABILITY BEAT WIRING ────────────────────────────────────────────────
+    // The prop's choreography and the weapon's overclock retune both push their
+    // mechanical beats into `abilityPayload`. Installed once, here, so there is
+    // exactly one place where a mechanism is allowed to cause a power.
+    if (abilityProp) abilityProp.onBeat = abilityPayload;
+    gunModel.onOverclockCue = (cue) => {
+      switch (cue) {
+        case 'grab': soundManager.play('reload_magout', 0.32, false, 1.5); break;
+        case 'dial': soundManager.play('reload_pin', 0.40, false, 1.25); break;
+        case 'rack': soundManager.play('reload_bolt', 0.48, false, 1.1); break;
+        case 'lock':
+          soundManager.play('reload_magin', 0.55, false, 1.2);
+          // The bolt is home — THAT is the overclock. Only for a real cast: the
+          // same animation is played cosmetically by looted overcharge/infinite
+          // ammo, and those must not hand out the signature ability.
+          if (overclockCastPending) {
+            overclockCastPending = false;
+            abilityPayload('ready');
+          }
+          break;
+      }
+    };
 
     const euler = new THREE.Euler(0, 0, 0, 'YXZ');   // base aim (mouse only)
     // Previous frame's look angles — differenced each frame to drive the
@@ -8577,7 +8846,6 @@ const ForestSurvivalGame = () => {
         unlockedWeapons: [...unlockedWeapons],
         weaponMastery: masteryHud,
         weaponUnlockMult: weaponUnlockMultNow(),
-        headshots: headshotsThisRun,
       });
     };
 
@@ -8943,6 +9211,9 @@ const ForestSurvivalGame = () => {
       clearHackState(enemy);
       // Drop any frost shell / crowd-control so a thawing corpse can't carry it.
       clearEnemyCC(enemy);
+      // Put out any fire it was carrying — the flame shell rides SHARED assets,
+      // so it must come off before the corpse/pool path touches the mesh.
+      clearEnemyBurn(enemy);
       // Strip the ARK-07 surge halo / irradiated shell BEFORE the corpse path:
       // the pooled-mesh release disposes unknown add-on children, and these
       // wrappers ride SHARED assets that must never be disposed per-enemy.
@@ -10025,6 +10296,29 @@ const ForestSurvivalGame = () => {
         : { color: 0x303338, sizeScale: 1.4 * ts, lifeScale: 1.7, opacityScale: 1.3, rise: 0.2 }));
     };
 
+    // Sooty smoke off a patch of burning ground. Fire without smoke reads as a
+    // decal; the rising column is most of what sells it as combustion. Shares
+    // the enemy-venting pool (same cap, same already-warmed shader) so ground
+    // fire can never out-compete the more important damage cue for slots.
+    const ventFireSmoke = (x: number, y: number, z: number, radius: number) => {
+      if (MAX_ENEMY_SMOKE <= 0) return;
+      if (enemySmokePuffs.length >= MAX_ENEMY_SMOKE) {
+        const old = enemySmokePuffs.shift();
+        if (old) old.dispose(scene);
+      }
+      _smokePos.set(
+        x + (Math.random() - 0.5) * radius * 1.1,
+        y + 0.5 + Math.random() * 0.6,
+        z + (Math.random() - 0.5) * radius * 1.1,
+      );
+      // Rises nearly straight up, drifting with the same gust that moves the
+      // foliage so the whole scene shares one wind.
+      _smokeDir.set(currentWindGust * 0.16 + (Math.random() - 0.5) * 0.25, 1, (Math.random() - 0.5) * 0.25);
+      enemySmokePuffs.push(new MuzzleSmoke(scene, _smokePos, _smokeDir, {
+        color: 0x24262a, sizeScale: 1.6 + radius * 0.35, lifeScale: 2.2, opacityScale: 0.85, rise: 0.55,
+      }));
+    };
+
     // Explosion flash, sparks, smoke, shake and crater.
     // The animated fireball + shockwave + pooled light is owned by
     // ExplosionEffect (updated in the animate loop). NO fresh PointLight is
@@ -10221,6 +10515,9 @@ const ForestSurvivalGame = () => {
       // If this was the Engineer's armed remote bomb, release the reference and
       // strip the detonator kit (it goes off however it was triggered).
       if (barrel === armedBomb) armedBomb = null;
+      // Also released if it goes off (bullet / chain) between the detonate press
+      // and the plunger bottoming out — the beat then finds nothing to fire.
+      if (barrel === pendingDetonation) pendingDetonation = null;
       if (barrel.bombKit) disposeBombKit(barrel);
       const epos = barrel.mesh.position.clone();
       // ── ARK-07 IRRADIATED CORE ──────────────────────────────────────
@@ -10397,13 +10694,26 @@ const ForestSurvivalGame = () => {
       nukeEffects.push(new NukeEffect(scene, new THREE.Vector3(center.x, 0.5, center.z), radius * 0.62));
       // A nuke throws corpses far — a big radius + strong kick (solo Rapier only).
       ragdollSystem.applyRadialImpulse(center.x, 0.5, center.z, radius * 0.62, 2.4);
-      // Screen feedback — blinding flash, heavy shake, wide FOV punch and the
-      // heaviest blast in the game. Deliberately NON-positional: a tactical
-      // nuke is an everywhere-at-once event, not a thing happening over there.
+      // ── SCREEN FEEDBACK, STAGED THE WAY A REAL DETONATION ARRIVES ────────
+      // Light first, pressure second. Everything used to land on the same
+      // frame, which reads as "a big explosion"; separating them by ~0.4 s —
+      // the flash and its thin crack, a beat of silence, then the blast wave
+      // hitting with the deep roar and the shake — is what makes it read as a
+      // detonation happening at a DISTANCE and reaching you. Deliberately
+      // non-positional: a tactical nuke is an everywhere-at-once event.
       triggerKillFlash();
-      if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
-      fovPunch = Math.min(fovPunch + 13, 18);
-      soundManager.play('explosion_huge', 1.0, false, 0.92);
+      triggerAbilityFlash('#ffffff');            // the white-out
+      soundManager.play('hit', 0.5, false, 2.6); // the sharp initial crack
+      fovPunch = Math.min(fovPunch + 5, 18);
+      const BLAST_ARRIVAL_MS = 420;
+      window.setTimeout(() => {
+        // Guarded like every other deferred effect: the scene may be gone.
+        if (isSceneDisposed) return;
+        if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
+        fovPunch = Math.min(fovPunch + 13, 18);
+        soundManager.play('explosion_huge', 1.0, false, 0.92);
+        haptic('hurt');
+      }, BLAST_ARRIVAL_MS);
       // Shield the player from their own nuke — also covers the barrel chain it
       // ignites, so deploying it next to cover never suicides the player.
       invincibleActive = true;
@@ -10505,6 +10815,49 @@ const ForestSurvivalGame = () => {
       }
       enemy.frozenUntil = 0;
       enemy.ccUntil = 0;
+    };
+
+    // ── BURNING ──────────────────────────────────────────────────────────────
+    // Fire is not an instant hit: a robot that walks through the Pyro's jet or
+    // stands in burning fuel carries the flames away with it and keeps taking
+    // damage.
+    //
+    // MULTIPLAYER: the burn TIMER is local bookkeeping (and so is the flame
+    // shell — it's cast feedback on the client that lit it), but the DAMAGE is
+    // routed the same way as every other guest hit: through sendEnemyHit, so
+    // the host stays the single authority on health and kills. One tick per
+    // burning enemy every BURN_TICK_MS is comfortably inside the enemy_hit
+    // budget. What a guest genuinely cannot do is apply CC, so thawing a frozen
+    // target is host/solo only.
+    // Damage cadence for every burn in the game — fixed so frame rate can never
+    // change how much a fire hurts.
+    const BURN_TICK_MS = 400;
+    const igniteEnemy = (enemy: Enemy, durationMs: number, dps: number) => {
+      if (enemy.dead || enemy.health <= 0) return;
+      // A frozen robot can't burn — the fire thaws it instead, which is both the
+      // intuitive read and stops cryo+fire double-locking a target.
+      if (!isMpGuest && (enemy.frostShell || (enemy.frozenUntil ?? 0) > Date.now())) {
+        clearEnemyCC(enemy);
+      }
+      const now = Date.now();
+      enemy.burnUntil = Math.max(enemy.burnUntil ?? 0, now + durationMs);
+      enemy.burnDps = Math.max(enemy.burnDps ?? 0, dps);
+      if (enemy.burnNextTickAt === undefined || enemy.burnNextTickAt < now) {
+        enemy.burnNextTickAt = now + BURN_TICK_MS;
+      }
+      if (!enemy.burnFx) {
+        enemy.burnFx = fireSystem.attachBurn(enemy.mesh, enemyTypeScale(enemy.type));
+      }
+    };
+
+    // Put a robot out (burn expired, death, recycle). Shared assets → detach.
+    const clearEnemyBurn = (enemy: Enemy) => {
+      if (enemy.burnFx) {
+        fireSystem.detachBurn(enemy.burnFx);
+        enemy.burnFx = undefined;
+      }
+      enemy.burnUntil = 0;
+      enemy.burnDps = 0;
     };
 
     // Arc Reactor perk — a kill discharges chain lightning into up to 3 nearby
@@ -11184,68 +11537,32 @@ const ForestSurvivalGame = () => {
       mainLight.target.position.set(camera.position.x, 0, camera.position.z);
       mainLight.target.updateMatrixWorld();
 
-      // Keep volumetric, fill, and rim lights aimed at the player too
-      volumetricLightBaseOffset.set(
-        renderAtmosphere.lightPosition.x * 0.5,
-        renderAtmosphere.lightPosition.y * 0.8,
-        renderAtmosphere.lightPosition.z * 0.5
-      );
-      volumetricLight.color.setHex(renderAtmosphere.sunVisible ? 0xffe8b8 : 0x9ab2e6);
-      volumetricLight.intensity = (renderAtmosphere.sunVisible ? 0.55 : 0.5) * (renderProfile.volumetricLight ?? 1.0);
-      volumetricLight.position.set(
-        camera.position.x + volumetricLightBaseOffset.x,
-        volumetricLightBaseOffset.y,
-        camera.position.z + volumetricLightBaseOffset.z
-      );
-      volumetricLight.target.position.set(camera.position.x, 0, camera.position.z);
-      volumetricLight.target.updateMatrixWorld();
+      // (The volumetric / fill / rim lights this block used to steer no longer
+      //  exist — see the KEY + SKY note at the light rig. Three fewer lights
+      //  also means three fewer target.updateMatrixWorld() calls per frame.)
 
-      fillLightBaseOffset.set(
-        -renderAtmosphere.lightPosition.x * 0.6,
-        renderAtmosphere.lightPosition.y * 0.4,
-        -renderAtmosphere.lightPosition.z * 0.6
-      );
-      fillLight.color.setHex(renderAtmosphere.sunVisible ? 0xbcd6ff : 0x7a92d2);
-      fillLight.intensity = (renderAtmosphere.sunVisible ? 0.55 : 0.7) * (renderProfile.fillLight ?? 1.0);
-      fillLight.position.set(
-        camera.position.x + fillLightBaseOffset.x,
-        fillLightBaseOffset.y,
-        camera.position.z + fillLightBaseOffset.z
-      );
-      fillLight.target.position.set(camera.position.x, 0, camera.position.z);
-      fillLight.target.updateMatrixWorld();
-
-      rimLightBaseOffset.set(
-        renderAtmosphere.lightPosition.x * 0.3,
-        renderAtmosphere.lightPosition.y * 1.2,
-        renderAtmosphere.lightPosition.z
-      );
-      rimLight.color.setHex(renderAtmosphere.sunVisible ? 0xffffff : 0xc4d2ff);
-      rimLight.intensity = (renderAtmosphere.sunVisible ? 0.55 : 0.8) * (renderProfile.rimLight ?? 1.0);
-      rimLight.position.set(
-        camera.position.x + rimLightBaseOffset.x,
-        rimLightBaseOffset.y,
-        camera.position.z + rimLightBaseOffset.z
-      );
-      rimLight.target.position.set(camera.position.x, 0, camera.position.z);
-      rimLight.target.updateMatrixWorld();
-
-      // Multiplier matches init (0.8×) — readable shadow detail without
-      // washing out the lit/shadow contrast.
+      // Every multiplier below MUST match the scale used at build time, or the
+      // very first frame re-grades the whole scene.
       ambientLight.color.setHex(renderAtmosphere.ambientColor);
-      ambientLight.intensity = renderAtmosphere.ambientIntensity * 0.8;
+      ambientLight.intensity = renderAtmosphere.ambientIntensity * AMBIENT_FLOOR;
 
-      // Keep hemisphere light synced with current sky & ground tones.
-      // Multiplier matches init (0.75×) so shadowed surfaces keep their
-      // cool sky-tint fill. setHex + multiplyScalar avoids the per-frame
-      // `new THREE.Color()` allocation.
+      // Hemisphere carries all the indirect. Ground bounce is derived from the
+      // KEY light's colour (warmed, then pulled toward the sky) exactly as at
+      // build time — setHex + lerp + multiplyScalar in place, so the per-frame
+      // sync still allocates nothing.
       skyLight.color.setHex(renderAtmosphere.skyColor);
-      skyLight.groundColor.setHex(renderAtmosphere.skyColor).multiplyScalar(0.35);
-      skyLight.intensity = renderAtmosphere.ambientIntensity * 0.75;
+      _skyScratch.setHex(renderAtmosphere.skyColor);
+      skyLight.groundColor
+        .setHex(renderAtmosphere.lightColor)
+        .lerp(_skyScratch, 0.45)
+        .multiplyScalar(0.42 * groundBounceScale);
+      skyLight.intensity = renderAtmosphere.ambientIntensity * SKY_FILL_SCALE * skyFillScale;
 
-      // Nighttime moonlight fill + attached lantern so players can see
-      nightFillLight.intensity = renderAtmosphere.sunVisible ? 0.0 : 1.8;
-      playerNightLantern.intensity = renderAtmosphere.sunVisible ? 0.0 : 2.4;
+      // Night readability is now the LANTERN's job, not a flat ambient flood.
+      // A pool of light that travels with the player keeps the ground legible
+      // while leaving the distance genuinely dark — which is both the better
+      // look and one less light in every fragment shader.
+      playerNightLantern.intensity = renderAtmosphere.sunVisible ? 0.0 : 3.4;
 
       // Keep the sky dome centered on the player so the player never walks
       // "outside" the sphere (which is what caused the giant-blob glitch).
@@ -11408,14 +11725,32 @@ const ForestSurvivalGame = () => {
         else if (damageBoostActive) { powerType = 'damage'; powerState = 'active'; }
         else if (speedBoostActive) { powerType = 'speed'; powerState = 'active'; }
 
-        const abilityName = armedBomb ? 'Detonate' : activeAbility.name;
+        // "Detonate" covers the whole time a bomb is live — including the few
+        // frames between the press and the plunger bottoming out, or the slot
+        // would flicker back to "Demolition" mid-detonation.
+        const bombLive = armedBomb !== null || pendingDetonation !== null;
+        const abilityName = bombLive ? 'Detonate' : activeAbility.name;
         // Quantised so a continuously-draining cooldown doesn't defeat the gate
         // by a hair on every tick — the bar's CSS transition covers the steps.
         const abilityFill = abilityCooldown <= 0 ? 1 : Math.max(0, 1 - abilityCooldown / abilityCooldownMax);
-        const abilityActive = isDashing || !!armedBomb || Date.now() < abilityActiveUntil;
+        const abilityActive = isDashing || bombLive || Date.now() < abilityActiveUntil;
         const powerName = powerType ? POWER_LABELS[powerType] : 'Find Loot';
-        const sig = `${abilityName}|${activeAbility.id}|${activeAbility.color}|${Math.round(abilityFill * 100)}|${abilityActive ? 1 : 0}`
-          + `|${powerName}|${powerType ?? ''}|${powerState}|${powerRatio === undefined ? '' : Math.round(powerRatio * 100)}`;
+        // ⚠ READY IS ITS OWN SIGNATURE FIELD, NOT A CONSEQUENCE OF THE FILL.
+        // The fill is quantised to 1% so a continuously-draining cooldown
+        // doesn't re-render every tick — but the HUD's "ready" test is the
+        // EXACT `fill >= 1`. On a long cooldown one throttled step (0.12 s) is
+        // under 1% of the bar, so the last not-ready push and the first ready
+        // push both rounded to 100, the signature never changed, and the
+        // re-render was skipped: the slot sat greyed out while the ability was
+        // in fact usable. That is the "greyed out but still activatable" bug —
+        // it just showed up most around the relay, where the jam churns the
+        // other slot and makes the mismatch obvious. Never fold a boolean the
+        // renderer branches on back into a rounded number.
+        const abilityReady = abilityFill >= 1;
+        const sig = `${abilityName}|${activeAbility.id}|${activeAbility.color}|${Math.round(abilityFill * 100)}`
+          + `|${abilityReady ? 1 : 0}|${abilityActive ? 1 : 0}`
+          + `|${powerName}|${powerType ?? ''}|${powerState}|${powerRatio === undefined ? '' : Math.round(powerRatio * 100)}`
+          + `|${playerSignalJammed ? 1 : 0}`;
         if (sig !== lastAbilityHudSig) {
           lastAbilityHudSig = sig;
         setAbilityHud([
@@ -11428,6 +11763,7 @@ const ForestSurvivalGame = () => {
             abilityId: activeAbility.id,
             accent: activeAbility.color,
               cooldown: abilityFill,
+              ready: abilityReady,
               active: abilityActive,
           },
           {
@@ -11436,6 +11772,10 @@ const ForestSurvivalGame = () => {
             powerType,
             state: powerState,
             ratio: powerRatio,
+            // Inside a relay's interference field the trigger electronics are
+            // fried and the E key genuinely does nothing — so the slot has to
+            // SAY so instead of sitting there looking usable.
+            jammed: playerSignalJammed && powerState !== 'empty',
           },
         ]);
         }
@@ -11791,6 +12131,7 @@ const ForestSurvivalGame = () => {
       // aren't precipitation (gloom) still stir a light breeze via skyDarken.
       const windElapsed = clock.getElapsedTime();
       const windGust = 1 + weatherMods.rainAmount * 1.6 + weatherMods.skyDarken * 0.5;
+      currentWindGust = windGust; // shared with effects spawned outside the loop
       biomeSystem.updateWind(windElapsed, windGust);
 
       // Advance the signature per-map ambience field (fireflies / embers /
@@ -11822,6 +12163,11 @@ const ForestSurvivalGame = () => {
           photoAnchor.copy(camera.position);
           photoFov = baseFOV; // start zoom at the player's configured FOV
           gunModel.group.visible = false;
+          // The ability prop is normally hidden by its own update() tracking the
+          // weapon's visibility — but photo mode returns from the loop BEFORE
+          // that runs, so it has to be switched off here or an armed Engineer's
+          // firing device hangs in every screenshot.
+          if (abilityProp) abilityProp.group.visible = false;
         }
         updatePhotoCamera(rawDelta);
         composePostFX(rawDelta);
@@ -11853,6 +12199,14 @@ const ForestSurvivalGame = () => {
         // cache would leave the overlay opaque with a zero-width aperture).
         gunModel.clearScope();
         scopeApfLast = '';
+        // A flame jet must never be left frozen mid-burst with its pooled light
+        // still burning. A PAUSE freezes it with everything else (correct — the
+        // world is stopped), but a DEATH ends the run, so the valve is shut and
+        // the fire is allowed to keep burning down and hand its light back.
+        if (isGameOver) {
+          if (pyroBurstTime >= 0) { pyroBurstTime = -1; fireSystem.setJet(false); }
+          fireSystem.update(rawDelta);
+        }
         composePostFX(rawDelta);
         return;
       }
@@ -12070,36 +12424,28 @@ const ForestSurvivalGame = () => {
         }
       }
 
-      // ── ENGINEER WIRING POSE + LEFT-HAND DETONATOR ──────────────────────
-      // While the wiring animation plays, the view dips toward the barrel and
-      // the gun drops into a wiring pose; once the bomb is armed the detonator
-      // rises into the LEFT hand and is held there, and it drops away (after the
-      // plunger slams) the instant the bomb is detonated or otherwise destroyed.
+      // ── ENGINEER WIRING POSE ────────────────────────────────────────────
+      // While the wiring animation plays the view dips toward the barrel and the
+      // gun drops into a wiring pose; only once the bend-and-wire finishes does
+      // the firing device come up into the LEFT hand (below).
       if (wiringTime > 0) wiringTime = Math.max(0, wiringTime - rawDelta);
       const wiringOn = wiringTime > 0;
       gunModel.setWiring(wiringOn);
       wiringPitch += ((wiringOn ? DEMO_BEND : 0) - wiringPitch) * Math.min(1, rawDelta * 9);
-      // The detonator only rises AFTER the bend-and-wire finishes — bend over the
-      // barrel → wire it → stand up with the detonator now in the left hand.
-      const detoTarget = (armedBomb && !wiringOn) ? 1 : 0;
-      detonatorRaise += (detoTarget - detonatorRaise) * Math.min(1, rawDelta * 8);
-      if (detonatorPress > 0) detonatorPress = Math.max(0, detonatorPress - rawDelta * 4);
-      // Hidden alongside the gun (e.g. photo mode hides the whole viewmodel).
-      detonatorGroup.visible = detonatorRaise > 0.01 && gunModel.group.visible;
-      if (detonatorGroup.visible) {
-        // Draw up from below the view as it's raised; settle into the held pose.
-        detonatorGroup.position.set(
-          DETO_BASE.x,
-          DETO_BASE.y - (1 - detonatorRaise) * 0.5,
-          DETO_BASE.z,
-        );
-        // Held tilt: top/screen angled toward the player (thumb on the plunger).
-        detonatorGroup.rotation.set(-0.5 - (1 - detonatorRaise) * 0.6, 0.35, 0.12);
-        // Plunger punches down on a press, then springs back.
-        detonatorPlunger.position.y = detoPlungerBaseY - detonatorPress * 0.12;
-        // Status LED blinks in time with the armed bomb.
-        const dblink = 0.5 + 0.5 * Math.sin(clock.getElapsedTime() * 7 * Math.PI * 2);
-        detonatorLed.scale.setScalar(0.7 + dblink * 0.8);
+
+      // ── ABILITY PROP (the left hand) ─────────────────────────────────────
+      // One update drives whichever piece of equipment this character carries.
+      // The Engineer's device is the only one that STAYS up between casts (as
+      // long as a bomb is live); the rest are raised by their own choreography.
+      if (abilityProp) {
+        if (abilityProp.kind === 'detonator') {
+          abilityProp.setHeld(!!armedBomb && !wiringOn);
+        }
+        // Hidden alongside the weapon (photo mode hides the whole viewmodel).
+        abilityProp.update(rawDelta, gunModel.group.visible);
+        // The prop owns the support hand: take the arm off the gun and roll the
+        // weapon into a one-handed carry for as long as it's up.
+        gunModel.setOneHanded(abilityProp.handBlend > 0.15);
       }
 
       // Update dash timer
@@ -12173,7 +12519,12 @@ const ForestSurvivalGame = () => {
       // Ease it up when active, drop it when not, sway gently while braced,
       // and react to blocked hits (flash/kick) and shatter (break flash).
       {
-        const raiseTarget = shieldActive ? 1 : 0;
+        // One left arm, one thing in it: while an ability prop is up the shield
+        // is slung rather than braced. It keeps ABSORBING (the player earned
+        // that) but it visually gets out of the way for the ~1s the prop is in
+        // frame, then comes straight back up — no two objects in one hand.
+        const propInHand = (abilityProp?.handBlend ?? 0) > 0.2;
+        const raiseTarget = shieldActive && !propInHand ? 1 : 0;
         shieldRaise += (raiseTarget - shieldRaise) * Math.min(1, delta * 12);
         const visible = shieldRaise > 0.02 || shieldBreakFlash > 0.01;
         shieldMesh.visible = visible;
@@ -12203,11 +12554,138 @@ const ForestSurvivalGame = () => {
           shieldRimMat.opacity = 0.22 + shieldHitFlash * 0.75 + Math.sin(now * 0.004) * 0.06;
           shieldRimMat.color.setRGB(0.4 + (1 - integ) * 0.6, 0.6 + integ * 0.4, 0.6 + integ * 0.4);
           shieldEnergyMat.opacity = 0.1 + integ * 0.12 + shieldHitFlash * 0.4;
+          // ── UNFOLD ──
+          // The panel comes up folded and the two wings swing out to full width
+          // with the skirt dropping under them. Deliberately LAGS the raise
+          // (`shieldRaise - 0.25`) so the player sees the shield arrive and THEN
+          // open, rather than a finished object fading in. A blocked hit shakes
+          // the wings on their hinges; a shatter throws them back open.
+          const deployTarget = shieldActive ? Math.max(0, (shieldRaise - 0.25) / 0.75) : 0;
+          shieldDeploy += (deployTarget - shieldDeploy) * Math.min(1, delta * 9);
+          const d = shieldDeploy * shieldDeploy * (3 - 2 * shieldDeploy);
+          // Overshoot then settle — the hinges hit their stops and rebound.
+          const settle = Math.sin(Math.min(1, shieldDeploy) * Math.PI) * 0.10;
+          const hinge = (1 - d) * 2.25 - settle + shieldHitFlash * 0.10 + shieldBreakFlash * 0.5;
+          for (let wi = 0; wi < shieldWings.length; wi++) {
+            // −1 wing folds one way, +1 the other, so they close onto the panel.
+            shieldWings[wi].rotation.y = (wi === 0 ? 1 : -1) * hinge;
+          }
+          shieldSkirt.rotation.x = -((1 - d) * 2.0 - settle * 0.6);
         }
         shieldHitFlash = Math.max(0, shieldHitFlash - delta * 4);
         shieldBreakFlash = Math.max(0, shieldBreakFlash - delta * 2.5);
       }
       applyPhantomVisual(phantomActive);
+
+      // ── FIRE: THE PYRO'S JET, THE GROUND, AND WHAT'S BURNING ────────────
+      // The jet is strapped to the player's arm, so while the valve is open the
+      // emitter follows them and the front widens as the pressure builds.
+      if (pyroBurstTime >= 0) {
+        pyroBurstTime += rawDelta;
+        const bp = Math.min(1, pyroBurstTime / PYRO_BURST_SEC);
+        const front = PYRO_MIN_RADIUS + (PYRO_MAX_RADIUS - PYRO_MIN_RADIUS) * Math.sqrt(bp);
+        fireSystem.aimJet(
+          camera.position.x,
+          camera.position.y - currentCameraHeight + 0.35,
+          camera.position.z,
+          front,
+        );
+        // Direct damage on a fixed cadence — a flamethrower cooks, it doesn't
+        // one-shot, so the ticks are small and the burn is where the payoff is.
+        if (now >= pyroNextTickAt) {
+          pyroNextTickAt = now + PYRO_TICK_MS;
+          const f2 = front * front;
+          for (let i = 0; i < enemies.length; i++) {
+            const e = enemies[i];
+            if (e.dead || e.health <= 0) continue;
+            const dx = e.mesh.position.x - camera.position.x;
+            const dz = e.mesh.position.z - camera.position.z;
+            if (dx * dx + dz * dz > f2) continue;
+            // A Revenant's shield phases the flame off — no damage, no ignite.
+            if (revShieldUp(e)) { pingRevShield(e, e.mesh.position); continue; }
+            const dmg = Math.min(ABILITY_DAMAGE_CAP, PYRO_TICK_DAMAGE);
+            if (isMpGuest && mp) {
+              if (e.netId !== undefined) mp.sendEnemyHit(e.netId, dmg, false);
+            } else {
+              e.health -= dmg;
+              if (e.health <= 0) { handleEnemyKilled(e, false); continue; }
+              e.damageFlashTime = Math.max(e.damageFlashTime, 0.3);
+            }
+            igniteEnemy(e, PYRO_BURN_MS, PYRO_BURN_DPS);
+          }
+        }
+        // Fuel that lands keeps burning: patches are laid down around the front
+        // as it sweeps, which is what turns the power into area denial.
+        if (now >= pyroNextPatchAt) {
+          pyroNextPatchAt = now + 110;
+          const pa = Math.random() * Math.PI * 2;
+          const pr = front * (0.45 + Math.random() * 0.5);
+          const px = camera.position.x + Math.cos(pa) * pr;
+          const pz = camera.position.z + Math.sin(pa) * pr;
+          fireSystem.ignite(px, visualGroundY(px, pz) + 0.02, pz, 1.5 + Math.random() * 1.1, PYRO_PATCH_LIFE);
+        }
+        if (pyroBurstTime >= PYRO_BURST_SEC) {
+          pyroBurstTime = -1;
+          fireSystem.setJet(false);
+        }
+      }
+      // Burning ground sets alight (and, on the authority, directly damages)
+      // whatever stands in it. The player is immune to their own fuel — the Pyro
+      // is the one wearing the suit, and self-damage on your own signature power
+      // is a trap, not depth. On a guest the patch only IGNITES: the burn tick
+      // below carries the damage, which keeps one message per burning enemy
+      // instead of one per enemy per patch.
+      for (let pi = 0; pi < fireSystem.patches.length; pi++) {
+        const patch = fireSystem.patches[pi];
+        if (patch.life <= 0) continue;
+        if (now < patch.nextTickAt) continue;
+        patch.nextTickAt = now + BURN_TICK_MS;
+        // A column of sooty smoke off every burning patch — thickest while the
+        // fuel is fresh, thinning as it dies back to embers.
+        if (Math.random() < 0.55 * (patch.life / patch.maxLife)) {
+          ventFireSmoke(patch.x, patch.y, patch.z, patch.radius);
+        }
+        const pr2 = patch.radius * patch.radius;
+        for (let i = 0; i < enemies.length; i++) {
+          const e = enemies[i];
+          if (e.dead || e.health <= 0) continue;
+          const dx = e.mesh.position.x - patch.x;
+          const dz = e.mesh.position.z - patch.z;
+          if (dx * dx + dz * dz > pr2) continue;
+          if (revShieldUp(e)) continue;
+          if (!isMpGuest) {
+            e.health -= PYRO_PATCH_DPS * (BURN_TICK_MS / 1000);
+            if (e.health <= 0) { handleEnemyKilled(e, false); continue; }
+            e.damageFlashTime = Math.max(e.damageFlashTime, 0.2);
+          }
+          igniteEnemy(e, PYRO_PATCH_BURN_MS, PYRO_BURN_DPS);
+        }
+      }
+      // Burn damage-over-time. Fixed cadence, so frame rate can never change how
+      // much a fire hurts; a guest reports each tick and lets the host resolve
+      // health and kills.
+      for (let i = 0; i < enemies.length; i++) {
+        const e = enemies[i];
+        if (!e.burnFx) continue;
+        if (e.dead || e.health <= 0 || now >= (e.burnUntil ?? 0)) {
+          clearEnemyBurn(e);
+          continue;
+        }
+        if (now < (e.burnNextTickAt ?? 0)) continue;
+        e.burnNextTickAt = now + BURN_TICK_MS;
+        const burnDmg = (e.burnDps ?? 0) * (BURN_TICK_MS / 1000);
+        // A robot cooking from the inside vents — reuses the already-pooled,
+        // already-warmed smoke puff rather than a new effect.
+        if (Math.random() < 0.35) ventEnemySmoke(e, false);
+        if (isMpGuest) {
+          if (mp && e.netId !== undefined) mp.sendEnemyHit(e.netId, burnDmg, false);
+          continue;
+        }
+        e.health -= burnDmg;
+        e.damageFlashTime = Math.max(e.damageFlashTime, 0.15);
+        if (e.health <= 0) handleEnemyKilled(e, false);
+      }
+      fireSystem.update(rawDelta);
 
       // Player movement with weight-based speed and ability effects.
       // On touch, the analog joystick contributes to both "is moving" and the
@@ -14151,6 +14629,10 @@ const ForestSurvivalGame = () => {
             // sweep. Catches every death route (incl. guest-mirrored deaths
             // that never pass through handleEnemyKilled).
             clearNetEventVisuals(enemy);
+            // Same for a flame shell — shared geo+mat owned by FireSystem, and
+            // the system's own list has to drop it or it keeps animating a
+            // shell that is no longer attached to anything.
+            clearEnemyBurn(enemy);
             // Revenant shield — detach + dispose its per-instance geo/mats so
             // the recycled slot never carries a stray gold shield.
             if (enemy.revShield) {
@@ -15840,6 +16322,22 @@ const ForestSurvivalGame = () => {
           } else {
             radExposureS = Math.max(0, radExposureS - delta * 2);
           }
+        } else if (playerSignalJammed || radiationSmooth > 0) {
+          // The metering block above is gated on being alive, in a placed
+          // network and out of the tutorial — and it owned the ONLY writes that
+          // clear the jam latch and the interference overlays. Dying (or the run
+          // ending) inside a field therefore froze the player mid-jam: the
+          // static stayed on screen and `playerSignalJammed` stayed true, so
+          // every equipment trigger kept being refused. Releasing here means the
+          // latch can never outlive the condition that set it.
+          playerSignalJammed = false;
+          radiationSmooth = 0;
+          radExposureS = 0;
+          postFX?.setInterference(0);
+          if (lastRadPushed !== 0) {
+            lastRadPushed = 0;
+            setInterferenceOverlay(0);
+          }
         }
       }
 
@@ -16264,6 +16762,14 @@ const ForestSurvivalGame = () => {
         // briefly made visible (restored in teardown) so the compile stage
         // picks up its materials; the ability flares auto-remove after 2s.
         shieldMesh.visible = true;
+        // ── ABILITY PROP + FIRE ──
+        // A shader PROGRAM links on first RENDER, and both of these are
+        // camera-parented / hidden until the player uses their power — i.e.
+        // they would otherwise link mid-fight, which is exactly the activation
+        // stutter this stage exists to kill. Shown here (parked out of the
+        // loader's frame) and switched back off in the warmup teardown.
+        abilityProp?.prewarm();
+        fireSystem.prewarm(wp.clone());
         warmAbilityFlares.push(
           abilitySystem.createAbilityEffect(scene, wp, 'shield'),
           abilitySystem.createAbilityEffect(scene, wp, 'overcharge'),
@@ -16555,6 +17061,11 @@ const ForestSurvivalGame = () => {
       // even if one resource fails to dispose cleanly.
       try {
         shieldMesh.visible = false; // restore — it was raised only to warm its shaders
+        // Same deal for the ability prop and the fire system: both were shown
+        // only so the compile passes could link them. Their materials are NOT
+        // disposed here — that would evict the very programs we just built.
+        abilityProp?.endPrewarm();
+        fireSystem.endPrewarm();
         warm.forEach(o => scene.remove(o));
         warmPowerUps.forEach((powerUp) => {
           const root = powerUp.mesh as unknown as THREE.Object3D;
@@ -16958,6 +17469,7 @@ const ForestSurvivalGame = () => {
       // Cleanup the Engineer's armed remote bomb kit + its shared geometries.
       if (armedBomb) disposeBombKit(armedBomb);
       armedBomb = null;
+      pendingDetonation = null;
       _bombDetGeo.dispose();
       _bombAntGeo.dispose();
       _bombSphGeo.dispose();
@@ -16973,10 +17485,16 @@ const ForestSurvivalGame = () => {
       _crownGoldMat.dispose();
       _crownJewelMat.dispose();
 
-      // Cleanup the left-hand detonator viewmodel (per-instance geos + mats).
-      camera.remove(detonatorGroup);
-      _detoGeos.forEach((g) => g.dispose());
-      _detoMats.forEach((m) => m.dispose());
+      // Cleanup the left-hand ability prop (per-instance geos + mats) and the
+      // fire system (jet + ground-patch rigs + the shared burn-shell assets —
+      // every shell it lit is detached first, inside dispose()).
+      abilityProp?.dispose();
+      gunModel.onOverclockCue = null;
+      for (const e of enemies) { e.burnFx = undefined; }
+      fireSystem.dispose();
+      // The riot shield's folding sections introduced two materials of their
+      // own (the fixed panel's are shared with parts not torn down here).
+      shieldFoldMats.forEach((m) => m.dispose());
 
       // Cleanup any in-flight impact-confirm bursts (per-instance sprite
       // materials; shared textures persist for the session).
@@ -18041,11 +18559,11 @@ const ForestSurvivalGame = () => {
 
       {/* Tactical map for Solo & Tutorial — same radar as multiplayer, but it
           only shows enemies (no other players). Desktop docks a compact radar
-          below the top-right stats panel, with a small kills/headshots readout
-          stacked directly under it (same flex column, so the two panels can
-          never overlap regardless of either one's rendered height — the HUD
-          Score panel at right-4 top-4 w-44 runs to ~129px tall, so top-[152px]
-          leaves a clean ~24px gap above the map). Touch uses a right-edge
+          below the top-right stats panel (the HUD Score panel at right-4 top-4
+          w-44 runs to ~129px tall, so top-[152px] leaves a clean ~24px gap
+          above the map). A kills/headshots readout used to sit under it; it
+          duplicated the kill counter the Score panel already shows, so it was
+          removed rather than kept in two places. Touch uses a right-edge
           toggle instead (no room for a docked stack). Press M (or the
           on-screen button) to expand. Hidden while paused. */}
       {gameStarted && !gameState.isGameOver && !isPaused && !photoMode
@@ -18055,7 +18573,6 @@ const ForestSurvivalGame = () => {
           : (
             <div className="pointer-events-none absolute right-4 top-[152px] z-[12] flex w-44 flex-col gap-2">
               <Minimap soloMode />
-              <CombatStatsPanel kills={gameState.enemiesKilled} headshots={gameState.headshots ?? 0} />
             </div>
           )
       )}

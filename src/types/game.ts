@@ -369,6 +369,18 @@ export interface Enemy {
   ccUntil?: number;
   frozenUntil?: number;
   frostShell?: THREE.Mesh;
+  // ── Burning (Pyro flame projector / burning ground) ──────────────────────
+  // A robot that walks through fire carries it away with it. `burnUntil` is the
+  // ms timestamp the flames go out, `burnDps` the damage-per-second while they
+  // burn, `burnNextTickAt` the throttle for the damage tick (burn damage is
+  // applied on a fixed cadence, not per frame, so frame rate can never change
+  // how much a fire hurts). `burnFx` is the FireSystem flame shell attached to
+  // the chassis — shared geo+mat, so it is DETACHED on death/recycle, never
+  // disposed. Host-authoritative, exactly like the cryo/shockwave CC above.
+  burnUntil?: number;
+  burnDps?: number;
+  burnNextTickAt?: number;
+  burnFx?: THREE.Group;
   // Twitch offsets so the instability jitter can be cleanly zeroed out.
   hackJitter?: THREE.Vector3;
   // ── ARK-07 network events (lore layer) ───────────────────────────────────
@@ -570,8 +582,4 @@ export interface GameState {
    *  medium/hard higher, adaptive dynamic). Drives the locked-weapon "Unlocks at
    *  N pts" readout in the HUD. Defaults to 1 when omitted. */
   weaponUnlockMult?: number;
-  /** This-run headshot (critical hit) count. Drives the compact combat-stats
-   *  readout docked under the Solo/Tutorial tactical map. Omitted in
-   *  multiplayer (per-player headshots aren't tracked over the network). */
-  headshots?: number;
 }

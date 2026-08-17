@@ -62,16 +62,25 @@ export const GRAPHICS_PRESETS: Record<GraphicsQuality, GraphicsPreset> = {
     terrainDetail: 0.40,
   },
   // LOW — maximum performance for older / integrated GPUs.
-  //   • No real-time shadows (single biggest WebGL cost)
+  //   • Real-time shadows ON at 512² (see below — this is now AFFORDABLE)
   //   • No post-processing (composer + bloom is ~2-3ms per frame)
   //   • 65% pixel ratio + nearest-neighbour scaling = ~42% of the fragment work
   //   • Particle density 0.42 + terrain detail 0.55 — still readable
   //     world, no "empty plain" feel
   //   • viewDistance 92m — fog masks the cull boundary
+  //
+  // ⚠ SHADOWS WERE TURNED ON HERE, and it is a net performance WIN, not a
+  // concession. The lighting rig used to run four directional lights, i.e. four
+  // full BRDF evaluations on every lit fragment in the world; it now runs one
+  // (see the KEY + SKY note in App.tsx). That bought back far more GPU time
+  // than a single 512² depth pass costs. It also MATTERS more than it used to:
+  // with one key light and no shadow map, geometry reads completely flat — the
+  // old fill and rim lights were papering over the missing shadows. ULTRA LOW
+  // stays shadowless as the genuine last-resort tier.
   low: {
     pixelRatio: 0.65,
     shadowMapSize: 512,
-    shadowsEnabled: false,
+    shadowsEnabled: true,
     antialias: false,
     postProcessing: false,
     // Particles (pooled, capped) + grass are the cheapest way to keep the

@@ -17,11 +17,17 @@
  * incurred only on minified, obliquely-viewed texels, which is exactly where the
  * quality win lives, so it is effectively free everywhere else.
  *
- * IMPORTANT: this module is imported FIRST in `main.tsx` (before `App` and all
- * of its transitive util imports) so the new default is in place before any
- * module-level texture singleton is constructed. Importing it anywhere else, or
- * later, would miss those eagerly-built textures. It mutates a global static and
- * has no other side effects — safe to import exactly once.
+ * IMPORTANT: this module is the FIRST import in `App.tsx`, ahead of every other
+ * util import, so the new default is in place before any module-level texture
+ * singleton is constructed. ES modules evaluate a module's dependencies in
+ * source order, so "first import wins" is a guarantee, not a convention —
+ * importing it anywhere else, or later, would miss those eagerly-built textures.
+ * It mutates a global static and has no other side effects, so importing it
+ * more than once is harmless.
+ *
+ * It deliberately lives in App's chunk rather than the entry chunk: it pulls in
+ * three.js, and having it in `main.tsx` dragged all 140 KB (gzipped) of three
+ * onto the critical path for a page that is showing a menu.
  */
 import * as THREE from 'three';
 

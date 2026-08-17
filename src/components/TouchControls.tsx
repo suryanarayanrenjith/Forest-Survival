@@ -4,6 +4,7 @@ import {
   Crosshair, ChevronsUp, ChevronsRight, ChevronsDown, RotateCw, Zap, Pause,
   Wind, Shield as ShieldIcon, Flame, Heart, Infinity as InfinityIcon, Ghost, Bomb,
   Boxes, Swords, PackageSearch, ChevronDown, Lock, X,
+  Snowflake, Bolt, Waves,
   type LucideIcon,
 } from 'lucide-react';
 import { touchControls } from '../utils/touchControls';
@@ -89,7 +90,9 @@ const TouchControls = ({
 
   const dash = abilities.find((a) => a.kind === 'dash');
   const power = abilities.find((a) => a.kind === 'power');
-  const dashReady = (dash?.cooldown ?? 1) >= 1;
+  // Explicit readiness, NOT a re-derivation from the quantised fill — see
+  // AbilityHudItem.ready for why deriving it leaves the button stuck greyed.
+  const dashReady = dash?.ready ?? (dash?.cooldown ?? 1) >= 1;
   // Per-character ability icon (the touch button still dispatches the bound
   // ability key, so any class's signature move fires from here).
   const ABILITY_ICONS: Record<string, LucideIcon> = {
@@ -97,12 +100,18 @@ const TouchControls = ({
     firestorm: Flame, triage: Heart, demolition: Bomb, cloak: Ghost,
   };
   const abilityIcon = ABILITY_ICONS[dash?.abilityId ?? 'dash'] ?? ChevronsRight;
-  const powerHeld = power?.state === 'held';
-  const powerActive = power?.state === 'active';
+  // A jammed slot still holds its power but cannot fire it (ARK-07 relay
+  // interference), so it must not render as ready-to-tap.
+  const powerJammed = power?.jammed === true && power?.state !== 'empty';
+  const powerHeld = power?.state === 'held' && !powerJammed;
+  const powerActive = power?.state === 'active' && !powerJammed;
   // Held/active pickup icon, so mobile players can SEE which power they have.
+  // ⚠ Keep in sync with POWER_ICONS in HUD.tsx — every HeldPower needs an
+  // entry here or mobile shows a generic box for it.
   const POWER_ICONS: Record<string, LucideIcon> = {
     ammo: Boxes, speed: Wind, damage: Swords, shield: ShieldIcon,
     infinite_ammo: InfinityIcon, overcharge: Zap, phantom: Ghost, health: Heart,
+    cryo: Snowflake, tesla: Bolt, shockwave: Waves, nuke: Bomb,
   };
   const powerIcon = power?.powerType ? (POWER_ICONS[power.powerType] ?? PackageSearch) : PackageSearch;
   const isReloading = reloadDuration !== null;
@@ -283,7 +292,8 @@ const TouchControls = ({
       </Positioned>
       <Positioned id="power" layout={layout}>
         <PowerButton
-          label={powerHeld || powerActive ? (power?.name ?? 'Power') : 'Power'}
+          label={powerJammed ? 'Jammed' : powerHeld || powerActive ? (power?.name ?? 'Power') : 'Power'}
+          jammed={powerJammed}
           icon={powerIcon}
           onTap={() => tapKey('KeyE')}
           held={powerHeld}
@@ -458,19 +468,19 @@ const ActionButton = ({
 // what they have — empty = dashed "Power" prompt, held = amber + name, active =
 // emerald + name (with the shield's absorb sliver when applicable).
 const PowerButton = ({
-  label, icon: Icon, onTap, held, active, ratio,
+  label, icon: Icon, onTap, held, active, ratio, jammed = false,
 }: {
   label: string; icon: LucideIcon; onTap: () => void;
-  held: boolean; active: boolean; ratio?: number;
+  held: boolean; active: boolean; ratio?: number; jammed?: boolean;
 }) => {
-  const accent = held ? ACCENT.amber : active ? ACCENT.emerald : ACCENT.slate;
+  const accent = jammed ? ACCENT.red : held ? ACCENT.amber : active ? ACCENT.emerald : ACCENT.slate;
   return (
     <button
       type="button"
       aria-label={label}
       onPointerDown={(e) => { e.preventDefault(); onTap(); }}
       className={`pointer-events-auto relative flex h-[52px] w-[52px] flex-col items-center justify-center rounded-2xl border ${accent.border} ${accent.bg} transition-transform active:scale-90 ${
-        held ? 'animate-pulse' : ''
+        jammed ? 'opacity-70' : held ? 'animate-pulse' : ''
       }`}
     >
       <Icon className={`h-5 w-5 ${accent.text}`} strokeWidth={2.25} />

@@ -360,6 +360,22 @@ export type ReloadCue =
 export type ReloadStyle = 'dry' | 'tactical';
 
 /**
+ * Beats of the Operative's OVERCLOCK — the only ability whose mechanism is the
+ * weapon itself. The support hand comes off the handguard, works the gas
+ * regulator round to an illegal setting, then hauls the charging handle to cycle
+ * the freshly-retuned action. Each beat is emitted on the frame the parts make
+ * contact so App can sound it (same contract as ReloadCue).
+ */
+export type OverclockCue =
+  | 'grab'  // hand leaves the handguard and lands on the receiver
+  | 'dial'  // the regulator is turned past its stop
+  | 'rack'  // the charging handle is hauled to the rear
+  | 'lock'; // the bolt slams back into battery on the new setting
+
+/** Wall-clock length of the overclock choreography, seconds. */
+export const OVERCLOCK_DURATION = 1.15;
+
+/**
  * Physical props that only exist during a reload. They're built ONCE with the
  * weapon's rig (hidden at rest) rather than allocated per reload — a reload is
  * a hot, frequent action and spawning meshes mid-fight would both churn the GC
@@ -479,6 +495,13 @@ export class GunModel {
    * repeated beats — which shell, which chip.
    */
   onReloadCue: ((cue: ReloadCue, index: number) => void) | null = null;
+
+  /**
+   * Fired on the frame each beat of the Operative's Overclock lands (see
+   * OverclockCue). App sounds them AND hangs the actual buff off `lock`, so the
+   * power arrives when the bolt comes back into battery rather than on keypress.
+   */
+  onOverclockCue: ((cue: OverclockCue) => void) | null = null;
 
   // Rest positions for animated parts (set per weapon)
   private slideRest: number = -1.5;
@@ -632,6 +655,21 @@ export class GunModel {
   // `wiringTarget` in updateActions so the bend eases in and out.
   private wireAnim = 0;
   private wiringTarget = 0;
+  // ── ONE-HANDED CARRY ──────────────────────────────────────────────────────
+  // A character's ability prop (detonator, medkit, stim, flame projector…) is
+  // held in the LEFT hand — the same hand that grips this weapon's handguard.
+  // While one is up the support arm is taken OFF the gun and hidden, and the
+  // weapon rolls inboard into a genuine one-handed carry. Without this the
+  // player visibly grows a second left arm the moment they use their ability.
+  // Suppressed while reloading: both hands are needed to work the action, so
+  // the arm comes back for the drill and the pose releases.
+  private oneHandTarget = 0;
+  private oneHandAnim = 0;
+  // ── Operative OVERCLOCK — the weapon IS the mechanism ──
+  // 1 on trigger, decays over OVERCLOCK_DURATION. Drives a four-beat retune of
+  // the receiver (see animateOverclock / the pose block in applyAnimations).
+  private overclockAnim = 0;
+  private overclockCues = new Set<OverclockCue>();
   private equipAnim = 0; // weapon-swap raise (gun rises from low into the ready pose)
   // ── WEAPON INSPECT (CS:GO-style, bound to F) ──
   // A cinematic "look at the weapon": the gun is drawn in close and slowly
@@ -2577,7 +2615,10 @@ export class GunModel {
       this.reloadDip *= k;
       const p = this.reloadPose;
       p.x *= k; p.y *= k; p.z *= k; p.rx *= k; p.ry *= k; p.rz *= k;
-      this.restHands(delta);
+      // The Operative's retune owns the hands while it runs; otherwise they
+      // ease back to the grip.
+      if (this.overclockAnim > 0) this.animateOverclock();
+      else this.restHands(delta);
     }
 
     // The discarded magazine falls on its own clock — it has to keep going
@@ -2689,6 +2730,56 @@ export class GunModel {
     };
     ease(this.supportHandGroup, this.supportHandRest);
     ease(this.triggerHandGroup, this.triggerHandRest);
+  }
+
+  /** Emit an overclock beat exactly once per cast. */
+  private emitOverclock(cue: OverclockCue) {
+    if (this.overclockCues.has(cue)) return;
+    this.overclockCues.add(cue);
+    this.onOverclockCue?.(cue);
+  }
+
+  /**
+   * OPERATIVE — OVERCLOCK.
+   *
+   * The only signature ability with no prop: the Operative retunes the weapon
+   * they are already holding. The support hand comes off the handguard and up
+   * onto the receiver, rolls the gas regulator past its stop (a fast wrist
+   * twist, not a single canned pose), slides back to the charging handle and
+   * HAULS it to the rear, and the bolt slams home on the new setting — which is
+   * the frame the buff actually lands (see the `lock` cue).
+   *
+   * Runs in place of restHands, so at both p=0 and p=1 every term is zero and
+   * the hand is exactly at its grip pose — the transition in and out of the
+   * animation can never pop.
+   */
+  private animateOverclock() {
+    const p = 1 - this.overclockAnim;
+    // How far the support hand has left the handguard (up, then back).
+    const up = this.ss(this.seg(p, 0.04, 0.22));
+    const ret = this.ss(this.seg(p, 0.74, 0.96));
+    const reach = Math.max(0, up - ret);
+    // Rolling the regulator: three quick bites of the wrist, enveloped so it
+    // starts and ends on zero.
+    const twist = Math.sin(this.seg(p, 0.24, 0.44) * Math.PI * 3) * this.bump(p, 0.22, 0.46);
+    // Sliding back to the charging handle, then the haul itself.
+    const slide = this.ss(this.seg(p, 0.40, 0.50)) * (1 - this.ss(this.seg(p, 0.68, 0.80)));
+    const pull = this.bump(p, 0.46, 0.68);
+    this.setArmPose(
+      this.supportHandGroup, this.supportHandRest,
+      reach * -0.22,
+      reach * 0.92 - pull * 0.18,
+      reach * 1.15 + slide * 0.60 + pull * 1.35,
+      reach * -0.30 - pull * 0.16,
+      reach * 0.26 + twist * 0.40,
+      reach * -0.20 + twist * 0.52,
+    );
+    // The trigger hand keeps the weapon; it only rides the roll.
+    this.holdTriggerHand(0, 0, 0);
+    // Cycling the action for real: the handle drags the carrier back and the
+    // spring throws it home.
+    if (this.slide) this.slide.position.z = this.slideRest + pull * 0.9;
+    if (this.bolt) this.bolt.position.z = this.boltRest + pull * 1.3;
   }
 
   // PER-WEAPON RELOAD CHOREOGRAPHY
@@ -3686,6 +3777,21 @@ export class GunModel {
     // Ease the wiring bend toward its target (engineer demolition).
     this.wireAnim += (this.wiringTarget - this.wireAnim) * Math.min(1, delta * 8);
     if (this.wiringTarget === 0 && this.wireAnim < 0.001) this.wireAnim = 0;
+    // Ease the one-handed carry. A reload always wins: you cannot work a
+    // magazine well with a detonator in that hand, so the arm comes back.
+    const oneHandWant = this.isReloading ? 0 : this.oneHandTarget;
+    this.oneHandAnim += (oneHandWant - this.oneHandAnim) * Math.min(1, delta * 9);
+    if (oneHandWant === 0 && this.oneHandAnim < 0.002) this.oneHandAnim = 0;
+    // Overclock retune — decays across OVERCLOCK_DURATION, emitting each
+    // mechanical beat once as the playhead passes it.
+    if (this.overclockAnim > 0) {
+      this.overclockAnim = Math.max(0, this.overclockAnim - delta / OVERCLOCK_DURATION);
+      const p = 1 - this.overclockAnim;
+      if (p >= 0.14) this.emitOverclock('grab');
+      if (p >= 0.32) this.emitOverclock('dial');
+      if (p >= 0.50) this.emitOverclock('rack');
+      if (p >= 0.66) this.emitOverclock('lock');
+    }
     if (this.inspectActive) {
       this.inspectTime += delta;
       if (this.inspectTime >= this.INSPECT_DURATION) {
@@ -3836,6 +3942,28 @@ export class GunModel {
   setWiring(on: boolean) {
     this.wiringTarget = on ? 1 : 0;
   }
+
+  /**
+   * An ability prop has taken over the support (left) hand. The arm comes off
+   * the weapon, is hidden, and the gun rolls into a one-handed carry. Called
+   * every frame from App with the live prop blend — cheap and idempotent.
+   */
+  setOneHanded(on: boolean) {
+    this.oneHandTarget = on ? 1 : 0;
+  }
+
+  /**
+   * Operative: begin the four-beat weapon retune. The buff is applied by App on
+   * the `lock` cue, not here — the mechanism causes the power.
+   */
+  triggerOverclock() {
+    this.cancelInspect();
+    this.overclockAnim = 1;
+    this.overclockCues.clear();
+  }
+
+  /** True while the retune is still playing (App gates a re-cast on it). */
+  get isOverclocking(): boolean { return this.overclockAnim > 0; }
 
   /** A sharp braced pull-back when the player dashes. */
   triggerDash() {
@@ -4020,33 +4148,69 @@ export class GunModel {
     // the body (muzzle dips, slight cant) while the free hand works at the TNT.
     const wire = this.wireAnim;
 
+    // ── ONE-HANDED CARRY ──────────────────────────────────────────────────
+    // The support arm is off the weapon (it's holding an ability prop), so the
+    // gun is carried in the strong hand alone: it rolls inboard over its own
+    // grip, the muzzle rides a little high because nothing is pulling it down,
+    // and the whole weapon sits lower and further outboard. The support arm is
+    // hidden outright — the prop's own hand is the one on screen.
+    const oneHand = this.oneHandAnim * (1 - aim * 0.7);
+    if (this.supportHandGroup) {
+      const showSupport = this.oneHandAnim < 0.5;
+      if (this.supportHandGroup.visible !== showSupport) this.supportHandGroup.visible = showSupport;
+    }
+
+    // ── OVERCLOCK POSE ────────────────────────────────────────────────────
+    // The weapon is turned in the hand so the receiver faces the operator:
+    // drawn in close, rolled onto its side with the ejection port up, and
+    // kicked by the charging-handle haul. ADS / sprint override it outright.
+    let ocX = 0, ocY = 0, ocZ = 0, ocRX = 0, ocRY = 0, ocRZ = 0;
+    if (this.overclockAnim > 0) {
+      const p = 1 - this.overclockAnim;
+      const w = this.ss(this.seg(p, 0, 0.18)) * (1 - this.ss(this.seg(p, 0.80, 1)))
+        * (1 - aim) * (1 - sprint);
+      const rack = this.bump(p, 0.46, 0.68) * (1 - aim) * (1 - sprint);
+      ocX = -0.055 * w;
+      ocY = 0.048 * w + rack * 0.014;
+      ocZ = 0.118 * w - rack * 0.020;
+      ocRX = 0.15 * w - rack * 0.12;
+      ocRY = 0.40 * w;
+      ocRZ = 0.54 * w + rack * 0.07;
+    }
+
     this.group.position.x =
       baseX + this.walkOffset.x * swayMul + SP_X * sprint + runX + rl.x
-      + leanShift + inspX + equip * 0.12 + wire * 0.05 + mX
+      + leanShift + inspX + equip * 0.12 + wire * 0.05 + mX + ocX
+      + oneHand * 0.045
       + swYaw * 0.30;
     this.group.position.y =
       baseY + this.walkOffset.y * swayMul + SP_Y * sprint + runY
       + this.jumpOffset.y - land * 0.12 + abil * 0.07 - dash * 0.05 + rl.y
-      - equip * 0.5 + equipSettle * 0.05 + inspY - wire * 0.28 + mY
+      - equip * 0.5 + equipSettle * 0.05 + inspY - wire * 0.28 + mY + ocY
+      - oneHand * 0.048
       + swPitch * 0.24;
     this.group.position.z =
       baseZ + this.recoilOffset.z + SP_Z * sprint + dash * 0.16 + rl.z
-      + equip * 0.10 + inspZ + wire * 0.06 - deployJab * 0.16 + mZ;
+      + equip * 0.10 + inspZ + wire * 0.06 - deployJab * 0.16 + mZ + ocZ
+      + oneHand * 0.030;
 
     this.group.rotation.x =
       (this.swayOffset.rotX + this.walkOffset.rotX) * swayMul
       + this.recoilOffset.rotX + SP_RX * sprint + runRotX
       + this.jumpOffset.rotX - land * 0.18 + rl.rx + equip * 0.55 + inspPitch
-      + wire * 0.62 - deployJab * 0.14 + mRX
+      + wire * 0.62 - deployJab * 0.14 + mRX + ocRX
+      - oneHand * 0.075
       + swPitch * 0.85;
     this.group.rotation.y =
       this.swayOffset.rotY * swayMul + SP_RY * sprint + leanYaw + inspYaw + equip * 0.26
-      + this.recoilOffset.rotY + rl.ry + mRY
+      + this.recoilOffset.rotY + rl.ry + mRY + ocRY
+      - oneHand * 0.11
       + swYaw * 0.95;
     this.group.rotation.z =
       this.walkOffset.rotZ * swayMul + rl.rz + SP_RZ * sprint
       + runRotZ + abil * 0.22 + leanRoll + inspRoll + equip * 0.42 + wire * 0.28
-      + mRZ
+      + mRZ + ocRZ
+      + oneHand * 0.26
       - swYaw * 0.42;
   }
 

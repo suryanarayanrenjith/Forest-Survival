@@ -987,7 +987,10 @@ export class FireNovaEffect {
 //
 // Refs: mushroom-cloud + shockwave layering — the same expanding-ring approach
 // as the fire nova above, extended with a rising stem/cap pair.
-const NUKE_STEM_GEO = new THREE.CylinderGeometry(0.42, 0.62, 1, 18, 1, true);
+// Wider at the TOP: a real mushroom stem is drawn narrow off the ground and
+// flares where it feeds the cap. It was the other way round, which read as a
+// smoke cone with a ball on it rather than a column being sucked upward.
+const NUKE_STEM_GEO = new THREE.CylinderGeometry(0.62, 0.34, 1, 18, 1, true);
 const NUKE_CAP_GEO = new THREE.IcosahedronGeometry(1, 3);
 const NUKE_COLLAR_GEO = new THREE.TorusGeometry(1, 0.42, 12, 28);
 const NUKE_RING_GEO = (() => {
@@ -1008,6 +1011,16 @@ export class NukeEffect {
   private cap: THREE.Mesh;
   private collar: THREE.Mesh;
   private shock: THREE.Mesh;
+  /**
+   * The WILSON CONDENSATION CLOUD — the white spherical shell that briefly
+   * wraps a detonation as the shockwave's low-pressure tail drops the air below
+   * its dew point. It is the single most recognisable frame of real test
+   * footage, and it is what was missing: without it the blast reads as a large
+   * explosion, with it the blast reads as a nuclear one. Expands with the
+   * shock front and is gone inside a second.
+   */
+  private wilson: THREE.Mesh;
+  private wilsonMat: THREE.MeshBasicMaterial;
   private dust: THREE.Mesh;
   private debris: THREE.Points;
   private debrisVel: Float32Array;
@@ -1091,6 +1104,17 @@ export class NukeEffect {
     this.shock.renderOrder = 991;
     this.group.add(this.shock);
 
+    // 4c. Condensation shell — rides just behind the shock front (see `wilson`).
+    // Same additive/no-depth-write permutation as the flash, so it introduces
+    // no shader program of its own.
+    this.wilsonMat = new THREE.MeshBasicMaterial({
+      color: 0xdfe9f2, transparent: true, opacity: 0,
+      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+    });
+    this.wilson = new THREE.Mesh(NUKE_CAP_GEO, this.wilsonMat);
+    this.wilson.renderOrder = 995;
+    this.group.add(this.wilson);
+
     // 4b. Base dust ring — kicked-up dirt skirting the crater.
     this.dustMat = new THREE.MeshBasicMaterial({
       color: 0x6a5d4c, transparent: true, opacity: 0.0,
@@ -1146,10 +1170,17 @@ export class NukeEffect {
     const t = this.age / this.life;
     if (t >= 1) return true;
 
-    // 1. Flash — colossal in the first ~80ms, gone by ~180ms.
+    // 1. Flash — colossal in the first ~80ms. A real fission device gives a
+    // DOUBLE flash: an initial pulse, a dip as the expanding fireball's own
+    // shock front goes opaque, then a second, brighter peak as it becomes
+    // transparent again. Modelled literally, because that stutter is the thing
+    // the eye recognises as nuclear rather than "big bomb".
     const flGrow = easeOut(Math.min(1, this.age / 0.08));
     this.flash.scale.setScalar(this.radius * (0.4 + 1.1 * flGrow));
-    this.flashMat.opacity = Math.max(0, 1 - this.age / 0.18);
+    const firstPulse = Math.max(0, 1 - this.age / 0.09);
+    const minimum = Math.max(0, 1 - Math.abs(this.age - 0.11) / 0.05) * 0.55; // the dip
+    const secondPulse = Math.max(0, 1 - Math.abs(this.age - 0.2) / 0.16);
+    this.flashMat.opacity = Math.min(1, Math.max(firstPulse - minimum, secondPulse));
     this.flash.visible = this.flashMat.opacity > 0.01;
 
     // 2. Fireball — expands hard, lifts off and dims into the rising stem.
@@ -1171,10 +1202,20 @@ export class NukeEffect {
     this.collarMat.color.copy(_NUKE_HOT).lerp(_NUKE_ASH, coolA);
 
     // Cap: a wide, slightly flattened billow that rolls outward as it rises.
+    // The TOROIDAL CIRCULATION is the reason a mushroom cloud looks alive —
+    // hot gas climbs the middle, rolls out over the top and is drawn back
+    // under. Rotating the cap and counter-rotating the vortex collar, with a
+    // slow non-uniform billow on top, reads as that overturn instead of a
+    // sphere being scaled up.
+    const roll = this.age * 0.55;
+    const billow = 1 + Math.sin(this.age * 2.1) * 0.045;
     this.cap.position.y = capY;
-    this.cap.scale.set(capScale, capScale * 0.74, capScale);
+    this.cap.rotation.y = roll;
+    this.cap.rotation.z = Math.sin(this.age * 0.9) * 0.06;
+    this.cap.scale.set(capScale * billow, capScale * 0.74 / billow, capScale * billow);
     // Vortex collar hugs the cap underside, a touch wider than the cap.
     this.collar.position.y = capY - capScale * 0.34;
+    this.collar.rotation.y = -roll * 1.6;
     this.collar.scale.set(capScale * 0.92, capScale * 0.92, capScale * 0.5);
 
     // Stem: from the ground up to just under the cap, thickening slightly.
@@ -1199,6 +1240,17 @@ export class NukeEffect {
     this.shock.scale.set(swScale, 1, swScale);
     this.shockMat.opacity = 0.95 * Math.max(0, 1 - swT);
     this.shock.visible = this.shockMat.opacity > 0.01;
+
+    // 4c. Condensation shell — chases the shock front outward, thin and brief.
+    // It is only visible while the pressure tail is passing, so it fades on a
+    // much shorter clock than the shockwave that drives it.
+    const wT = Math.min(1, this.age / 0.85);
+    const wScale = this.radius * (0.5 + 1.75 * easeOut(wT));
+    this.wilson.scale.set(wScale, wScale * 0.82, wScale);
+    this.wilson.position.y = this.radius * 0.3;
+    // Rises from nothing over the first 120 ms, then dissolves.
+    this.wilsonMat.opacity = 0.5 * Math.min(1, this.age / 0.12) * Math.max(0, 1 - wT) * (1 - wT * 0.4);
+    this.wilson.visible = this.wilsonMat.opacity > 0.01;
 
     // 4b. Base dust ring — slower, lingers low around the crater.
     const dT = Math.min(1, this.age / 1.8);
@@ -1228,10 +1280,15 @@ export class NukeEffect {
     // Light: blinding flash that decays fast, then a warm afterglow from the
     // burning cloud that fades over ~1.2s.
     if (this.light) {
-      const flashGlow = this.lightPeak * Math.max(0, 1 - this.age / 0.4);
-      const cloudGlow = this.lightPeak * 0.28 * Math.max(0, 1 - this.age / 1.2);
+      // Tracks the DOUBLE FLASH above rather than a single smooth decay, so
+      // the world lighting stutters with the fireball exactly as the sky does.
+      const flashGlow = this.lightPeak * this.flashMat.opacity;
+      const cloudGlow = this.lightPeak * 0.28 * Math.max(0, 1 - this.age / 1.2)
+        * (0.88 + Math.sin(this.age * 17) * 0.12); // burning cloud, never steady
       this.light.intensity = Math.max(flashGlow, cloudGlow);
       this.light.position.y = 4 + capY * 0.4;
+      // Cools with the cloud: searing white → warm amber as it ages.
+      this.light.color.copy(_NUKE_HOT).lerp(_NUKE_FIRE, Math.min(1, this.age / 1.1));
     }
 
     return false;
@@ -1246,6 +1303,7 @@ export class NukeEffect {
       this.capMat.dispose();
       this.collarMat.dispose();
       this.shockMat.dispose();
+      this.wilsonMat.dispose();
       this.dustMat.dispose();
       this.debrisMat.dispose();
       this.debrisGeo.dispose();

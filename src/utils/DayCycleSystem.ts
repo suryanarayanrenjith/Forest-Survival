@@ -57,9 +57,15 @@ export class DayCycleSystem {
       fogColor: 0x1c2a55,
       fogDensity: 0.0036,
       ambientColor: 0x97b0ee,
-      ambientIntensity: 1.55,
+      // Rebalanced for the KEY + SKY rig (App.tsx). Night used to be propped up
+      // by a second, flat 1.8-intensity AmbientLight on top of everything else;
+      // that light is gone, and this budget now flows through the HEMISPHERE
+      // instead — same readability, but it varies with the surface normal, so
+      // the night forest reads as shaped by moonlight rather than uniformly
+      // fogged with grey. Moonlight itself is up a notch to carry the contrast.
+      ambientIntensity: 1.9,
       lightColor: 0xc8dcff,
-      lightIntensity: 2.8,
+      lightIntensity: 3.1,
       lightPosition: { x: -60, y: 70, z: -120 },
       sunVisible: false,
       moonVisible: true,

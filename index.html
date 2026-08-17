@@ -11,6 +11,86 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/site.webmanifest" />
 
+    <!-- NOTE: the boot hero's display face (Oswald) does NOT need a manual
+         <link rel="preload"> here — Vite already emits one from its CSS
+         analysis at build time, and a second tag for the same URL is just
+         noise in the head. -->
+
+    <!-- ── CRITICAL BOOT STYLES ───────────────────────────────────────────
+         Inlined, so the hero below can paint from the HTML response alone —
+         no stylesheet, no JavaScript, no round trip. This is what First
+         Contentful Paint and Largest Contentful Paint actually measure now;
+         previously the first pixel could not appear until the entire game
+         engine had downloaded and executed. Keep this block small and keep it
+         inline: linking it would reintroduce the render-blocking request it
+         exists to avoid. -->
+    <style>
+      html, body { margin: 0; padding: 0; background: #05080a; }
+      #boot {
+        position: fixed;
+        inset: 0;
+        z-index: 40;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background:
+          radial-gradient(115% 85% at 50% 0%, #0d1a16 0%, #05080a 62%),
+          #05080a;
+        color: #e6f2ec;
+        font-family: 'Oswald', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+        opacity: 1;
+        transition: opacity .45s ease;
+      }
+      #boot.boot-out { opacity: 0; pointer-events: none; }
+      .boot-inner { text-align: center; padding: 0 24px; }
+      .boot-title {
+        margin: 0;
+        font-size: clamp(2.75rem, 12vw, 7rem);
+        font-weight: 600;
+        line-height: .92;
+        letter-spacing: .06em;
+        text-transform: uppercase;
+      }
+      .boot-title span { display: block; color: #34d399; }
+      .boot-sub {
+        margin: 1.1rem 0 0;
+        font-size: clamp(.72rem, 2.2vw, .95rem);
+        letter-spacing: .38em;
+        text-transform: uppercase;
+        color: #6d8a80;
+        font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      }
+      .boot-bar {
+        margin: 2.2rem auto 0;
+        width: min(240px, 60vw);
+        height: 2px;
+        background: rgba(52, 211, 153, .16);
+        overflow: hidden;
+      }
+      .boot-bar i {
+        display: block;
+        height: 100%;
+        width: 40%;
+        background: #34d399;
+        animation: bootSweep 1.15s ease-in-out infinite;
+      }
+      @keyframes bootSweep {
+        0%   { transform: translateX(-100%); }
+        100% { transform: translateX(350%); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .boot-bar i { animation: none; width: 100%; }
+        #boot { transition: none; }
+      }
+    </style>
+    <!-- Without JavaScript nothing ever removes the boot hero, and being a
+         fixed full-viewport overlay it would bury the <noscript> fallback in
+         the body — which is the ONLY thing non-JS crawlers (and every major AI
+         crawler) can read. Drop it outright in that case. -->
+    <noscript>
+      <style>#boot { display: none !important; }</style>
+    </noscript>
+
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -173,6 +253,22 @@
     <link rel="preload" as="font" type="font/woff2" href="/fonts/chakra-petch-600-latin.woff2" crossorigin />
   </head>
   <body>
+    <!-- ── BOOT HERO ──────────────────────────────────────────────────────
+         Real above-the-fold content, delivered in the HTML response and styled
+         by the inline block in <head>, so the page has something to paint the
+         instant the server responds rather than after ~600 KB of JavaScript.
+         `main.tsx` fades and removes it as soon as the app mounts. It is a
+         fixed overlay, so that removal shifts nothing (CLS stays 0).
+         aria-hidden: it is a loading state, not content for a screen reader —
+         the noscript block below is the accessible/crawler description. -->
+    <div id="boot" aria-hidden="true">
+      <div class="boot-inner">
+        <h1 class="boot-title">Forest<span>Survival</span></h1>
+        <p class="boot-sub">Robot Wave-Survival FPS</p>
+        <div class="boot-bar"><i></i></div>
+      </div>
+    </div>
+
     <div id="root"></div>
 
     <!-- Crawler / no-JavaScript fallback. Hidden whenever scripts run (the React
