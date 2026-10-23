@@ -106,6 +106,9 @@ export function clearFlashSpritePool(): void {
 export class MuzzleFlash {
   /** Single source of truth for spawn + fade curve — they must not drift. */
   private static readonly LIFETIME = 0.10;
+  /** Candela. Was 20: with the physically-exposed grade that is as bright as
+   *  the sun at 1 m, so a robot at point-blank range flashed to white. */
+  private static readonly LIGHT_INTENSITY = 6;
 
   light: THREE.PointLight | null;
   sprite: THREE.Sprite;
@@ -124,19 +127,19 @@ export class MuzzleFlash {
       this.light = _muzzleLightAcquire();
       if (this.light) {
         this.light.color.setHex(fireColor);
-        this.light.intensity = 20;
-        this.light.distance = 15;
+        this.light.intensity = MuzzleFlash.LIGHT_INTENSITY;
+        this.light.distance = 12;
         this.light.position.copy(position);
       }
     } else {
       // Fallback path (e.g. tests that don't wire up the pool) —
       // allocate a fresh light. Should never run in production.
-      this.light = new THREE.PointLight(fireColor, 20, 15);
+      this.light = new THREE.PointLight(fireColor, MuzzleFlash.LIGHT_INTENSITY, 12);
       this.light.castShadow = false;
       this.light.position.copy(position);
       scene.add(this.light);
     }
-    this._initialIntensity = 20;
+    this._initialIntensity = MuzzleFlash.LIGHT_INTENSITY;
 
     // Borrow a pooled sprite (its SpriteMaterial is reused — opacity reset on
     // acquire); the flash texture is shared across all flashes.
@@ -164,8 +167,11 @@ export class MuzzleFlash {
     }
 
     // Fast fade out for snappy feel
-    const opacity = Math.pow(this.lifetime / MuzzleFlash.LIFETIME, 0.5);
-    if (this.light) this.light.intensity = this._initialIntensity * opacity;
+    const life = this.lifetime / MuzzleFlash.LIFETIME;
+    const opacity = Math.pow(life, 0.5);
+    // The LIGHT dies much faster than the sprite (squared): a real flash lights
+    // the surroundings for about a frame, not a 100 ms floodlight.
+    if (this.light) this.light.intensity = this._initialIntensity * life * life;
     if (this.sprite.material instanceof THREE.SpriteMaterial) {
       this.sprite.material.opacity = opacity;
     }
@@ -1711,6 +1717,14 @@ export function clearBurstPairPool(): void {
 const _burstTint = new THREE.Color();
 const _burstWhite = new THREE.Color(0xffffff);
 
+// Camera the impact bursts scale against (set by the host scene). A burst a
+// metre from the lens used to fill the screen — the ring sweeps to 2.3 m and
+// the near-white core is additive — washing a point-blank robot to salmon.
+let _burstCamera: THREE.Camera | null = null;
+export function setImpactBurstCamera(camera: THREE.Camera | null): void {
+  _burstCamera = camera;
+}
+
 export class ImpactBurst {
   private pair: BurstPair;
   private coreMat: THREE.SpriteMaterial;
@@ -1718,17 +1732,25 @@ export class ImpactBurst {
   private age = 0;
   private readonly life = 0.24;
   private readonly size: number;
+  private readonly fade: number;
   private _released = false;
 
   constructor(scene: THREE.Scene, position: THREE.Vector3, color = 0xffe6b0, size = 1) {
-    this.size = size;
+    // Shrink + dim inside ~5 m of the camera (full size beyond).
+    let near = 1;
+    if (_burstCamera) {
+      const d = position.distanceTo(_burstCamera.position);
+      near = Math.min(1, Math.max(0.3, (d - 0.5) / 4.5));
+    }
+    this.size = size * near;
+    this.fade = 0.45 + 0.55 * near;
     this.pair = _burstPairPool.pop() ?? buildBurstPair();
     const { core, ring } = this.pair;
     _burstTint.setHex(color);
 
     this.coreMat = core.material as THREE.SpriteMaterial;
     this.coreMat.color.copy(_burstTint).lerp(_burstWhite, 0.55);
-    this.coreMat.opacity = 1;
+    this.coreMat.opacity = this.fade;
     core.visible = true;
     core.position.copy(position);
     core.scale.setScalar(0.2 * size);
@@ -1736,7 +1758,7 @@ export class ImpactBurst {
 
     this.ringMat = ring.material as THREE.SpriteMaterial;
     this.ringMat.color.copy(_burstTint);
-    this.ringMat.opacity = 1;
+    this.ringMat.opacity = this.fade;
     ring.position.copy(position);
     ring.scale.setScalar(0.3 * size);
     scene.add(ring);
@@ -1750,13 +1772,13 @@ export class ImpactBurst {
     // Core: snaps out big, then fades fast — the spark of contact.
     const coreT = Math.min(1, this.age / 0.1);
     this.pair.core.scale.setScalar((0.2 + 0.72 * easeOut(coreT)) * this.size);
-    this.coreMat.opacity = Math.max(0, 1 - this.age / 0.1);
+    this.coreMat.opacity = Math.max(0, 1 - this.age / 0.1) * this.fade;
     this.pair.core.visible = this.coreMat.opacity > 0.01;
 
     // Ring: sweeps outward + thins to nothing.
     const ringS = (0.3 + 2.0 * easeOut(t)) * this.size;
     this.pair.ring.scale.setScalar(ringS);
-    this.ringMat.opacity = 0.9 * Math.max(0, 1 - t);
+    this.ringMat.opacity = 0.9 * Math.max(0, 1 - t) * this.fade;
 
     return false;
   }

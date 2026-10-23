@@ -137,17 +137,26 @@ export const TutorialOverlay = React.memo(function TutorialOverlay({
             className="pointer-events-auto"
             style={{ animation: 'tutorialEnter 0.3s cubic-bezier(0.16,1,0.3,1) forwards' }}
           >
-            <div className={`flex items-center gap-2.5 rounded-2xl border bg-black/85 px-3.5 py-2.5 shadow-2xl transition-colors sm:gap-3 sm:px-5 sm:py-3 ${
-              done ? 'border-emerald-400/60' : 'border-emerald-400/25'
-            }`}>
-              <div className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl ${done ? 'bg-emerald-500/25' : 'bg-emerald-500/12'}`}>
+            <div
+              className="relative flex items-center gap-2.5 py-2.5 pl-4 pr-3.5 shadow-2xl transition-colors sm:gap-3 sm:py-3 sm:pl-6 sm:pr-5"
+              style={{
+                borderRadius: TUT_SHAPE_SM,
+                background: done ? 'rgba(8,24,18,0.94)' : 'rgba(6,11,9,0.92)',
+                boxShadow: `inset 0 0 0 1px ${done ? 'rgba(46,232,180,0.55)' : 'rgba(46,232,180,0.22)'}`,
+              }}
+            >
+              <div className="absolute inset-y-0 left-0 w-[3px]" style={{ background: '#2ee8b4', boxShadow: '0 0 10px #2ee8b4' }} />
+              <div
+                className={`flex h-9 w-9 flex-shrink-0 items-center justify-center ${done ? 'bg-[#2ee8b4]/25' : 'bg-[#2ee8b4]/[0.12]'}`}
+                style={{ borderRadius: TUT_SHAPE_ICON }}
+              >
                 {done ? <Check className="w-5 h-5 text-emerald-300" strokeWidth={2.5} /> : <Play className="w-4 h-4 text-emerald-400" strokeWidth={2.5} />}
               </div>
               <div className="min-w-0">
-                <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-emerald-300/80">
+                <div className="hud-label" style={{ color: 'rgba(46,232,180,0.85)', fontSize: 9.5 }}>
                   {done ? 'Nice!' : `Try it · ${stepNumber}/${stepTotal}`}
                 </div>
-                <div className="text-[13px] font-semibold leading-snug text-white sm:text-sm">
+                <div className="font-hud mt-1 text-[13px] font-semibold leading-snug text-white sm:text-sm">
                   {done ? 'Great — moving on…' : actionHint}
                 </div>
               </div>
@@ -160,7 +169,7 @@ export const TutorialOverlay = React.memo(function TutorialOverlay({
               {!done && stuck && onSkip && (
                 <button
                   onClick={onSkip}
-                  className="ml-1 flex-shrink-0 whitespace-nowrap rounded-lg border border-white/10 px-2.5 py-1.5 text-[11px] font-semibold text-gray-400 transition-colors hover:bg-white/[0.06] hover:text-gray-200"
+                  className="font-hud ml-1 flex-shrink-0 whitespace-nowrap border border-white/15 px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-[0.14em] text-white/55 transition-colors hover:bg-white/[0.06] hover:text-white"
                 >
                   Skip step
                 </button>
@@ -201,18 +210,23 @@ export const TutorialOverlay = React.memo(function TutorialOverlay({
         >
           {/* flex column + capped height so the card never overflows the screen;
               the body scrolls while the header + action buttons stay pinned. */}
-          <div className="flex max-h-[88dvh] flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#0b0f15] shadow-2xl">
-            <div className="h-0.5 w-full flex-shrink-0 bg-emerald-400" />
+          <div
+            className="flex max-h-[88dvh] flex-col overflow-hidden bg-[#060b09] shadow-2xl"
+            style={{ borderRadius: TUT_SHAPE, boxShadow: 'inset 0 0 0 1px rgba(214,228,220,0.1)' }}
+          >
+            <div className="h-[2px] w-full flex-shrink-0" style={{ background: 'linear-gradient(90deg, #2ee8b4, rgba(46,232,180,0.15))' }} />
 
             <div className="flex flex-shrink-0 items-center gap-3 px-4 pb-3 pt-3.5 sm:px-5 sm:pt-4">
-              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-emerald-500/12">
-                <GraduationCap className="w-5 h-5 text-emerald-400" strokeWidth={2} />
+              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center border border-[#2ee8b4]/35 bg-[#2ee8b4]/10" style={{ borderRadius: TUT_SHAPE_ICON }}>
+                <GraduationCap className="w-5 h-5 text-[#2ee8b4]" strokeWidth={2} />
               </div>
               <div className="min-w-0 flex-1">
-                <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-gray-500">
+                <div className="hud-label" style={{ fontSize: 9.5 }}>
                   Tutorial · Step {stepNumber} of {stepTotal}
                 </div>
-                <h2 className="truncate text-[15px] font-bold text-white sm:text-base">{currentStep.title}</h2>
+                <h2 className="font-display mt-1.5 truncate text-[19px] font-semibold uppercase leading-none text-white" style={{ letterSpacing: '0.08em' }}>
+                  {currentStep.title}
+                </h2>
               </div>
               {/* Deep link to the wiki page that documents this exact mechanic in
                   full numeric detail — a quiet "learn more" for players who want
@@ -225,7 +239,7 @@ export const TutorialOverlay = React.memo(function TutorialOverlay({
                   rel="noopener noreferrer"
                   title="Read more on the Game Wiki"
                   aria-label="Read more on the Game Wiki"
-                  className="flex flex-shrink-0 items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-[11px] font-semibold text-gray-400 transition-colors hover:border-emerald-400/30 hover:bg-emerald-500/[0.08] hover:text-emerald-300"
+                  className="font-hud flex flex-shrink-0 items-center gap-1.5 border border-white/[0.12] bg-white/[0.03] px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-[0.14em] text-white/55 transition-colors hover:border-[#2ee8b4]/40 hover:bg-[#2ee8b4]/[0.08] hover:text-[#2ee8b4]"
                 >
                   <BookOpen className="w-3.5 h-3.5" strokeWidth={2.1} />
                   <span className="hidden sm:inline">Wiki</span>
@@ -238,10 +252,10 @@ export const TutorialOverlay = React.memo(function TutorialOverlay({
               <p className="text-[13px] leading-relaxed text-gray-300 sm:text-sm">{currentStep.description}</p>
 
               {currentStep.instructions.length > 0 && (
-                <div className="space-y-1.5 rounded-xl border border-white/[0.07] bg-white/[0.02] p-3">
+                <div className="space-y-1.5 border-l-2 border-[#2ee8b4]/50 bg-white/[0.025] p-3">
                   {currentStep.instructions.map((instruction, idx) => (
                     <div key={idx} className="flex items-start gap-2">
-                      <span className="mt-1.5 h-1 w-1 flex-shrink-0 rounded-full bg-emerald-400" />
+                      <span className="mt-1.5 h-1 w-1 flex-shrink-0 rotate-45 bg-[#2ee8b4]" />
                       <p className="text-xs leading-relaxed text-gray-300">{instruction}</p>
                     </div>
                   ))}
@@ -249,12 +263,12 @@ export const TutorialOverlay = React.memo(function TutorialOverlay({
               )}
 
               <div>
-                <div className="mb-1.5 flex justify-between text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-500">
-                  <span>Progress</span>
-                  <span>{Math.round(progress)}%</span>
+                <div className="mb-1.5 flex items-baseline justify-between">
+                  <span className="hud-label" style={{ fontSize: 9 }}>Progress</span>
+                  <span className="hud-num text-[13px] text-white/80">{Math.round(progress)}%</span>
                 </div>
-                <div className="h-1 overflow-hidden rounded-full bg-white/10">
-                  <div className="h-full rounded-full bg-emerald-400 transition-all duration-500" style={{ width: `${progress}%` }} />
+                <div className="h-[3px] overflow-hidden bg-white/10">
+                  <div className="h-full bg-[#2ee8b4] transition-all duration-500" style={{ width: `${progress}%`, boxShadow: '0 0 8px rgba(46,232,180,0.6)' }} />
                 </div>
               </div>
             </div>
@@ -265,7 +279,7 @@ export const TutorialOverlay = React.memo(function TutorialOverlay({
               {onEndTutorial && (
                 <button
                   onClick={onEndTutorial}
-                  className="m-tap whitespace-nowrap text-xs font-semibold text-gray-500 transition-colors hover:text-gray-300"
+                  className="m-tap font-hud whitespace-nowrap text-[11px] font-semibold uppercase tracking-[0.14em] text-white/45 transition-colors hover:text-white/80"
                 >
                   End Tutorial
                 </button>
@@ -273,8 +287,8 @@ export const TutorialOverlay = React.memo(function TutorialOverlay({
               <div className="flex-1" />
               <button
                 onClick={() => { setPractice({ id: stepId, trying: true, stuck: false }); onTry?.(); }}
-                className="flex items-center gap-1.5 whitespace-nowrap rounded-lg px-5 py-2 text-xs font-bold tracking-wide text-[#04130a] transition-all duration-150 hover:-translate-y-0.5"
-                style={{ background: 'linear-gradient(135deg, #34d399, #22c55e)' }}
+                className="font-hud flex items-center gap-1.5 whitespace-nowrap px-5 py-2.5 text-[12px] font-bold uppercase tracking-[0.18em] text-[#04130a] transition-all duration-150 hover:-translate-y-0.5 hover:brightness-110"
+                style={{ background: 'linear-gradient(135deg, #2ee8b4, #22c55e)', borderRadius: TUT_SHAPE_ICON }}
               >
                 <Play className="w-3.5 h-3.5" strokeWidth={2.5} /> Try it
               </button>
@@ -287,6 +301,11 @@ export const TutorialOverlay = React.memo(function TutorialOverlay({
     </div>
   );
 });
+
+// Partial-rounded silhouettes (the game-wide shape language).
+const TUT_SHAPE = '16px 4px';
+const TUT_SHAPE_SM = '10px 2.5px';
+const TUT_SHAPE_ICON = '7px 2px';
 
 const tutorialCss = `
   @keyframes tutorialEnter {

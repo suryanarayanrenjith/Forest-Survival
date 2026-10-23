@@ -79,9 +79,10 @@ const ClassicMenu = ({ onStartGame, onBack, selectedCharacter, onSelectCharacter
 
       <button
         onClick={onBack}
-        className="group fixed top-5 left-5 z-50 flex items-center gap-2 rounded-xl px-4 py-2.5
-          border border-white/10 bg-black/50 backdrop-blur-md font-hud text-sm font-semibold uppercase tracking-wider text-gray-300
-          transition-all duration-200 hover:text-white hover:bg-black/70 hover:border-white/20"
+        className="group fixed top-5 left-5 z-50 flex items-center gap-2 px-4 py-2.5
+          border border-white/[0.12] bg-[#060b09]/85 font-hud text-[11px] font-semibold uppercase tracking-[0.24em] text-white/70
+          transition-all duration-200 hover:text-white hover:border-white/30"
+        style={{ borderRadius: '10px 2.5px' }}
       >
         <ArrowLeft className="w-4 h-4 group-hover:-translate-x-0.5 transition-transform" strokeWidth={2.25} />
         Back
@@ -113,21 +114,22 @@ const ClassicMenu = ({ onStartGame, onBack, selectedCharacter, onSelectCharacter
                 setIsRandomMode(next);
                 setSelectedDifficulty(next ? 'adaptive' : 'medium');
               }}
-              className="w-full flex items-center gap-4 rounded-2xl px-4 py-4 border transition-all duration-300 text-left"
+              className="w-full flex items-center gap-4 px-4 py-4 border transition-all duration-300 text-left"
               style={{
-                borderColor: isRandomMode ? 'rgba(167,139,250,0.55)' : 'rgba(255,255,255,0.1)',
-                background: isRandomMode ? 'rgba(167,139,250,0.12)' : 'rgba(255,255,255,0.03)',
+                borderColor: isRandomMode ? 'rgba(167,139,250,0.6)' : 'rgba(255,255,255,0.1)',
+                background: isRandomMode ? 'linear-gradient(90deg, rgba(60,40,110,0.9), rgba(16,12,30,0.88))' : 'rgba(6,11,9,0.84)',
+                borderRadius: '10px 2.5px',
               }}
             >
               <span
-                className="flex items-center justify-center w-12 h-12 rounded-xl flex-shrink-0"
-                style={{ background: 'rgba(167,139,250,0.15)' }}
+                className="flex items-center justify-center w-12 h-12 flex-shrink-0 border border-violet-300/25"
+                style={{ background: 'rgba(167,139,250,0.14)' }}
               >
                 <Dices className="w-6 h-6 text-violet-400" strokeWidth={1.75} />
               </span>
               <span className="flex-1 min-w-0">
                 <span className="font-display block text-lg font-semibold uppercase tracking-wide text-white">Random Mode</span>
-                <span className="font-hud block text-xs text-gray-400 truncate">
+                <span className="font-hud block text-xs text-white/55 truncate">
                   {isRandomMode ? 'Adaptive difficulty + randomized atmosphere & map' : 'Let the game roll difficulty, time and map'}
                 </span>
               </span>
@@ -156,8 +158,8 @@ const ClassicMenu = ({ onStartGame, onBack, selectedCharacter, onSelectCharacter
                     <OptionCard key={d.key} active={active} color={d.color}
                       onClick={() => { setSelectedDifficulty(d.key); setIsRandomMode(false); }}>
                       <Icon className="w-5 h-5 mb-1.5" style={{ color: active ? d.color : '#9ca3af' }} strokeWidth={2} />
-                      <span className={`font-hud text-xs font-bold ${active ? 'text-white' : 'text-gray-300'}`}>{d.label}</span>
-                      <span className="text-[10px] text-gray-500">{d.desc}</span>
+                      <span className={`font-hud text-xs font-bold ${active ? 'text-white' : 'text-white/75'}`}>{d.label}</span>
+                      <span className="font-hud text-[10px] text-white/45">{d.desc}</span>
                     </OptionCard>
                   );
                 })}
@@ -173,8 +175,8 @@ const ClassicMenu = ({ onStartGame, onBack, selectedCharacter, onSelectCharacter
                     <OptionCard key={a.key} active={active} color={a.color}
                       onClick={() => setSelectedTimeOfDay(a.key)}>
                       <Icon className="w-5 h-5 mb-1.5" style={{ color: active ? a.color : '#9ca3af' }} strokeWidth={2} />
-                      <span className={`font-hud text-xs font-bold ${active ? 'text-white' : 'text-gray-300'}`}>{a.label}</span>
-                      <span className="text-[10px] text-gray-500">{a.desc}</span>
+                      <span className={`font-hud text-xs font-bold ${active ? 'text-white' : 'text-white/75'}`}>{a.label}</span>
+                      <span className="font-hud text-[10px] text-white/45">{a.desc}</span>
                     </OptionCard>
                   );
                 })}
@@ -184,15 +186,15 @@ const ClassicMenu = ({ onStartGame, onBack, selectedCharacter, onSelectCharacter
             <Section title="Map" dimmed={isRandomMode} innerRef={mapSectionRef}>
               <button
                 onClick={() => setShowMapSelector(!showMapSelector)}
-                className="w-full flex items-center gap-3 rounded-xl px-3.5 py-3 border border-white/10 bg-white/[0.03]
-                  transition-colors hover:bg-white/[0.06]"
+                className="w-full flex items-center gap-3 px-3.5 py-3 border border-white/10 bg-[#08100d]/90
+                  transition-colors hover:border-emerald-300/30 hover:bg-[#0b1511]"
               >
-                <span className="flex items-center justify-center w-10 h-10 rounded-lg bg-emerald-500/12 flex-shrink-0">
+                <span className="flex items-center justify-center w-10 h-10 border border-emerald-300/20 bg-emerald-500/[0.12] flex-shrink-0">
                   <SelectedMapIcon className="w-5 h-5 text-emerald-400" strokeWidth={1.75} />
                 </span>
                 <span className="flex-1 min-w-0 text-left">
-                  <span className="block text-sm font-bold text-white truncate">{MAP_CONFIGS[selectedMap].name}</span>
-                  <span className="block text-[11px] text-gray-500 truncate">{MAP_CONFIGS[selectedMap].description}</span>
+                  <span className="font-display block text-[15px] font-semibold uppercase tracking-wide text-white truncate">{MAP_CONFIGS[selectedMap].name}</span>
+                  <span className="font-hud block text-[11px] text-white/50 truncate">{MAP_CONFIGS[selectedMap].description}</span>
                 </span>
                 <ChevronDown className={`w-4 h-4 text-gray-500 flex-shrink-0 transition-transform ${showMapSelector ? 'rotate-180' : ''}`} strokeWidth={2.25} />
               </button>
@@ -216,7 +218,7 @@ const ClassicMenu = ({ onStartGame, onBack, selectedCharacter, onSelectCharacter
             </Section>
           </div>
 
-          <p className="font-hud mt-6 text-[10px] tracking-[0.3em] text-gray-600 uppercase">Version 2.0 · Classic Mode</p>
+          <p className="font-hud mt-6 text-[10px] tracking-[0.3em] text-white/40 uppercase" style={{ textShadow: '0 1px 2px rgba(0,0,0,0.8)' }}>Version 2.0 · Classic Mode</p>
         </div>
       </div>
 
@@ -237,10 +239,11 @@ const ClassicMenu = ({ onStartGame, onBack, selectedCharacter, onSelectCharacter
                 onStartGame(selectedDifficulty, selectedTimeOfDay, selectedMap, false);
               }
             }}
-            className="group font-hud pointer-events-auto flex items-center justify-center gap-2.5 rounded-xl px-12 py-4 min-w-[260px]
-              font-bold tracking-[0.12em] uppercase text-[#04130a] transition-all duration-200
-              hover:-translate-y-0.5 active:translate-y-0"
+            className="group font-hud pointer-events-auto flex items-center justify-center gap-2.5 px-12 py-4 min-w-[280px]
+              font-bold tracking-[0.22em] uppercase text-[#04130a] transition-all duration-200
+              hover:-translate-y-0.5 hover:brightness-110 active:translate-y-0"
             style={{
+              borderRadius: '14px 3.5px',
               background: isRandomMode
                 ? 'linear-gradient(135deg, #a78bfa, #f0abfc)'
                 : 'linear-gradient(135deg, #34d399, #22c55e)',
@@ -261,9 +264,14 @@ const ClassicMenu = ({ onStartGame, onBack, selectedCharacter, onSelectCharacter
 };
 
 const Section = ({ title, dimmed, children, innerRef }: { title: string; dimmed: boolean; children: React.ReactNode; innerRef?: React.Ref<HTMLDivElement> }) => (
-  <div ref={innerRef} className={`rounded-2xl border border-white/10 bg-white/[0.025] backdrop-blur-md transition-opacity duration-300 ${dimmed ? 'opacity-40 pointer-events-none' : ''}`}>
-    <div className="px-4 py-2.5 border-b border-white/[0.07]">
-      <h2 className="font-hud text-[11px] font-semibold tracking-[0.2em] text-gray-400 uppercase">{title}</h2>
+  <div
+    ref={innerRef}
+    className={`border border-white/[0.09] bg-[#060b09]/85 shadow-[0_18px_50px_rgba(0,0,0,0.3)] transition-opacity duration-300 ${dimmed ? 'opacity-40 pointer-events-none' : ''}`}
+    style={{ borderRadius: '10px 2.5px' }}
+  >
+    <div className="flex items-center gap-2.5 px-4 py-2.5 border-b border-white/[0.07]">
+      <span className="h-3 w-[2px] bg-emerald-300/80" />
+      <h2 className="font-hud text-[10px] font-semibold tracking-[0.3em] text-white/70 uppercase">{title}</h2>
     </div>
     <div className="p-3">{children}</div>
   </div>
@@ -274,10 +282,11 @@ const OptionCard = ({ active, color, onClick, children }: {
 }) => (
   <button
     onClick={onClick}
-    className="flex flex-col items-center justify-center py-3 px-2 rounded-xl border transition-all duration-200 hover:-translate-y-0.5"
+    className="relative flex flex-col items-center justify-center py-3 px-2 border transition-all duration-200 hover:-translate-y-0.5"
     style={{
-      borderColor: active ? `${color}99` : 'rgba(255,255,255,0.08)',
-      background: active ? `${color}1f` : 'rgba(255,255,255,0.03)',
+      borderColor: active ? `${color}aa` : 'rgba(255,255,255,0.08)',
+      background: active ? `linear-gradient(180deg, ${color}2e, ${color}10)` : 'rgba(10,16,14,0.9)',
+      boxShadow: active ? `inset 0 -2px 0 ${color}` : undefined,
     }}
   >
     {children}

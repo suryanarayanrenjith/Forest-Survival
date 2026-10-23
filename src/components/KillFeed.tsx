@@ -43,11 +43,11 @@ export const addKillFeedEntry = (message: string, type: KillFeedEntry['type'] = 
 };
 
 const TYPE_META: Record<KillFeedEntry['type'], { icon: LucideIcon; color: string }> = {
-  kill: { icon: Skull, color: '#9ca3af' },
-  headshot: { icon: Crosshair, color: '#f87171' },
-  combo: { icon: Flame, color: '#fb923c' },
+  kill: { icon: Skull, color: '#d6e4dc' },
+  headshot: { icon: Crosshair, color: '#ff5a5f' },
+  combo: { icon: Flame, color: '#ffb265' },
   powerup: { icon: Sparkles, color: '#c084fc' },
-  wave: { icon: Waves, color: '#38bdf8' },
+  wave: { icon: Waves, color: '#39d0e6' },
 };
 
 const KillFeed = ({ visible, anchorClass = 'top-36 right-4', isTouch = false }: KillFeedProps) => {
@@ -85,16 +85,25 @@ const KillFeed = ({ visible, anchorClass = 'top-36 right-4', isTouch = false }: 
         return (
           <div
             key={entry.id}
-            className="flex items-center gap-2 rounded-lg border border-white/10 bg-black/80 px-3 py-1.5"
+            className="relative flex items-center gap-2 py-1 pl-6 pr-3 hud-ink"
             style={{
-              opacity: index === 0 ? 1 : 0.7,
+              opacity: index === 0 ? 1 : 0.72,
+              // Soft strip for legibility over bright scenes — fades out
+              // toward the screen centre so it never reads as a box.
+              background: isTouch
+                ? 'linear-gradient(90deg, transparent, rgba(4,8,7,0.62) 22%, rgba(4,8,7,0.62) 78%, transparent)'
+                : 'linear-gradient(90deg, transparent, rgba(4,8,7,0.66) 34%)',
               animation: `kfIn 0.22s ease-out ${index * 0.04}s both, kfOut 0.35s ease-in 2.0s both`,
             }}
           >
-            <Icon className="w-3.5 h-3.5 flex-shrink-0" style={{ color: meta.color }} strokeWidth={2.25} />
-            <span className="text-xs font-semibold text-gray-200 tracking-wide whitespace-nowrap">
+            <Icon className="w-3.5 h-3.5 flex-shrink-0" style={{ color: meta.color }} strokeWidth={2.3} />
+            <span
+              className="hud-label whitespace-nowrap"
+              style={{ fontSize: 11, letterSpacing: '0.14em', color: index === 0 ? 'var(--hud-ink)' : 'var(--hud-dim)' }}
+            >
               {entry.message}
             </span>
+            {!isTouch && <span className="absolute right-0 top-1 bottom-1 w-[2px]" style={{ background: meta.color, boxShadow: `0 0 6px ${meta.color}` }} />}
           </div>
         );
       })}

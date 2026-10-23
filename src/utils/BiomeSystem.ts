@@ -140,9 +140,19 @@ interface PulseConfig {
   /** Swing depth: emissive scales across [1-depth .. 1+depth]. */
   depth: number;
 }
+/** Canopy shading (Medium+): a crown-occlusion gradient along the part's
+ *  local height plus backlit sun translucency. */
+interface FoliageConfig {
+  /** Local-Y band the crown gradient spans (0 = shaded underside → 1 = tip). */
+  y0: number;
+  y1: number;
+  /** Strength of the light transmitted through backlit leaves. */
+  translucency: number;
+}
 interface DynamicFx {
   wind?: WindConfig;
   pulse?: PulseConfig;
+  foliage?: FoliageConfig;
 }
 
 /** GLSL float literal. */
@@ -176,6 +186,38 @@ function pulseFragBody(p: PulseConfig): string {
     float dynPw = 0.5 + 0.5 * sin( uWindTime * ${gf(p.speed)} + dynPPh );
     dynPw *= dynPw;
     totalEmissiveRadiance *= ${gf(1 - p.depth)} + ${gf(p.depth * 2)} * dynPw;
+  }
+`;
+}
+
+function foliageVertBody(f: FoliageConfig): string {
+  return `
+  vFoliageH = smoothstep( ${gf(f.y0)}, ${gf(f.y1)}, transformed.y );
+`;
+}
+
+const FOLIAGE_COLOR_BODY = /* glsl */ `
+  // Crown occlusion: the underside and inner layers of every canopy part sit
+  // in their own shade, the tips catch the sky — stacked low-poly tiers read
+  // as modelled volumes instead of flat-lit cones.
+  diffuseColor.rgb *= mix( 0.5, 1.1, vFoliageH );
+`;
+
+function foliageLightBody(f: FoliageConfig): string {
+  return /* glsl */ `
+  {
+    // Backlit translucency: sunlight transmitted through leaves when the sun
+    // sits behind the canopy from the viewer — the glowing-edge canopy of
+    // real forests. Self-shadowed back faces keep a floor of the effect.
+    vec3 fSun = normalize( ( viewMatrix * vec4( uFoliageSunDir, 0.0 ) ).xyz );
+    float fBack = pow( saturate( dot( -geometryViewDir, fSun ) ), 4.0 );
+    float fThin = 0.45 + 0.55 * saturate( -dot( geometryNormal, fSun ) );
+    #ifdef FS_SUN_SHADOW
+    float fVis = mix( 0.3, 1.0, fsSunShadow );
+    #else
+    float fVis = 1.0;
+    #endif
+    reflectedLight.directDiffuse += uFoliageSunColor * diffuseColor.rgb * fBack * fThin * fVis * ${gf(f.translucency)} * ( 0.4 + 0.6 * vFoliageH );
   }
 `;
 }
@@ -230,6 +272,29 @@ function hashStdMatOpts(o: StdMatOpts): string {
   ].join(':');
 }
 
+/**
+ * AAA MATERIAL GRADING — a physically plausible surface response for every
+ * prop that goes through the pool.
+ *
+ *  • "Readability" self-emission (emissive ≈ the albedo at ≤ 0.3 intensity)
+ *    lit every bark, rock and leaf surface from the inside, putting a grey
+ *    floor under every shadow in the world. It is cut to 30%. Genuine emitters
+ *    (lava, embers, fungi, runes, wisps — all above 0.3) are untouched.
+ *  • Opaque dielectrics get a 0.7 roughness floor: glossy foliage, bark and
+ *    rock mirrored the sky into pale plastic highlights (the white-tipped
+ *    canopy cones). Metals, glass, ice and water keep their authored gloss.
+ */
+function gradeMaterial(o: StdMatOpts): StdMatOpts {
+  const emissiveI = o.emissive !== undefined ? (o.emissiveIntensity ?? 1) : 0;
+  const glowing = emissiveI > 0.3;
+  const opaque = !o.transparent && (o.opacity ?? 1) >= 0.99;
+  const dielectric = (o.metalness ?? 0) < 0.3;
+  const out: StdMatOpts = { ...o };
+  if (!glowing && o.emissive !== undefined) out.emissiveIntensity = emissiveI * 0.3;
+  if (opaque && dielectric && !glowing) out.roughness = Math.max(o.roughness ?? 1, 0.7);
+  return out;
+}
+
 export class BiomeSystem {
   private biomeConfigs: Map<BiomeType, BiomeConfig>;
 
@@ -252,16 +317,24 @@ export class BiomeSystem {
   // shader work entirely so Medium and below compile the exact pre-pass
   // programs and pay zero extra vertex/fragment cost.
   private dynamicFxOn = false;
+  // True on Medium+ (terrainDetail >= 0.82): canopy crown gradient + backlit
+  // translucency. Low tiers compile the plain programs.
+  private foliageOn = false;
+  // Shared sun holders for the foliage translucency (written once per frame).
+  private foliageSunDir = { value: new THREE.Vector3(0, 1, 0) };
+  private foliageSunColor = { value: new THREE.Color(1, 1, 1) };
 
   /** Reuse a MeshStandardMaterial with the given options, or create + cache it.
    *  `dyn` optionally layers the High/Ultra-only wind-sway / glow-pulse pass —
    *  ignored on lower tiers so the pooled material stays byte-identical. */
-  private mat(opts: StdMatOpts, dyn?: DynamicFx): THREE.MeshStandardMaterial {
+  private mat(rawOpts: StdMatOpts, dyn?: DynamicFx): THREE.MeshStandardMaterial {
+    const opts = gradeMaterial(rawOpts);
     const fx = this.dynamicFxOn ? dyn : undefined;
-    const fxKey = fx
+    const foliage = this.foliageOn ? dyn?.foliage : undefined;
+    const fxKey = (fx
       ? `|w:${fx.wind ? [fx.wind.amp, fx.wind.y0, fx.wind.y1, fx.wind.speed, fx.wind.bob ?? 0].join(',') : '-'}` +
         `|p:${fx.pulse ? [fx.pulse.speed, fx.pulse.depth].join(',') : '-'}`
-      : '';
+      : '') + (foliage ? `|f:${[foliage.y0, foliage.y1, foliage.translucency].join(',')}` : '');
     const key = hashStdMatOpts(opts) + fxKey;
     const cached = this.matPool.get(key);
     if (cached) return cached as THREE.MeshStandardMaterial;
@@ -274,8 +347,8 @@ export class BiomeSystem {
       !opts.transparent &&
       (opts.opacity ?? 1) >= 0.99 &&
       (opts.emissiveIntensity ?? 0) <= 0.3;
-    if (wantDetail || fx?.wind || fx?.pulse) {
-      this.applyDynamicShader(fresh, wantDetail, fx?.wind, fx?.pulse);
+    if (wantDetail || fx?.wind || fx?.pulse || foliage) {
+      this.applyDynamicShader(fresh, wantDetail, fx?.wind, fx?.pulse, foliage);
     }
     this.matPool.set(key, fresh);
     return fresh;
@@ -289,6 +362,7 @@ export class BiomeSystem {
     detail: boolean,
     wind?: WindConfig,
     pulse?: PulseConfig,
+    foliage?: FoliageConfig,
   ): void {
     // The pulse phase field reads the world-position varying the detail pass
     // introduced, so emit that plumbing for either consumer.
@@ -300,16 +374,22 @@ export class BiomeSystem {
       }
       if (wind || pulse) shader.uniforms.uWindTime = this.grassTime;
       if (wind) shader.uniforms.uWindStrength = this.windStrength;
+      if (foliage) {
+        shader.uniforms.uFoliageSunDir = this.foliageSunDir;
+        shader.uniforms.uFoliageSunColor = this.foliageSunColor;
+      }
 
       let vertHead = '';
       if (needWP) vertHead += PROP_DETAIL_VERT_HEAD;
       if (wind || pulse) vertHead += 'uniform float uWindTime;\n';
       if (wind) vertHead += 'uniform float uWindStrength;\n';
-      // ORDER MATTERS: vPropWP is captured BEFORE the wind displacement so the
-      // weathering noise + pulse field stay pinned to the surface instead of
-      // swimming as the geometry sways.
+      if (foliage) vertHead += 'varying float vFoliageH;\n';
+      // ORDER MATTERS: vPropWP + the crown height are captured BEFORE the wind
+      // displacement so the weathering noise, pulse field and canopy gradient
+      // stay pinned to the surface instead of swimming as the geometry sways.
       let vertBody = '';
       if (needWP) vertBody += PROP_DETAIL_VERT_BODY;
+      if (foliage) vertBody += foliageVertBody(foliage);
       if (wind) vertBody += windVertBody(wind);
       shader.vertexShader = vertHead + shader.vertexShader.replace(
         '#include <begin_vertex>',
@@ -320,11 +400,22 @@ export class BiomeSystem {
       if (detail) fragHead += PROP_DETAIL_FRAG_HEAD;
       else if (pulse) fragHead += 'varying vec3 vPropWP;\n';
       if (pulse) fragHead += 'uniform float uWindTime;\n';
+      if (foliage) fragHead += 'varying float vFoliageH;\nuniform vec3 uFoliageSunDir;\nuniform vec3 uFoliageSunColor;\n';
       let frag = shader.fragmentShader;
       if (detail) {
         frag = frag.replace(
           '#include <color_fragment>',
           `#include <color_fragment>\n${PROP_DETAIL_FRAG_BODY}`,
+        );
+      }
+      if (foliage) {
+        frag = frag.replace(
+          '#include <color_fragment>',
+          `#include <color_fragment>\n${FOLIAGE_COLOR_BODY}`,
+        );
+        frag = frag.replace(
+          '#include <lights_fragment_end>',
+          `#include <lights_fragment_end>\n${foliageLightBody(foliage)}`,
         );
       }
       if (pulse) {
@@ -341,7 +432,8 @@ export class BiomeSystem {
     const progKey =
       `biomeDyn|d${detail ? 1 : 0}` +
       `|w${wind ? [wind.amp, wind.y0, wind.y1, wind.speed, wind.bob ?? 0].join(',') : '-'}` +
-      `|p${pulse ? [pulse.speed, pulse.depth].join(',') : '-'}`;
+      `|p${pulse ? [pulse.speed, pulse.depth].join(',') : '-'}` +
+      `|f${foliage ? [foliage.y0, foliage.y1, foliage.translucency].join(',') : '-'}`;
     mat.customProgramCacheKey = () => progKey;
   }
 
@@ -393,7 +485,7 @@ export class BiomeSystem {
   // Per-biome grass tint + density (0 = none). Shared geometry + per-biome
   // materials keep thousands of instanced blades cheap to render.
   private grassConfigs: Record<BiomeType, { color: number; density: number }> = {
-    forest:   { color: 0x3c7a2c, density: 1.0 },
+    forest:   { color: 0x3a6e2c, density: 1.0 },
     volcanic: { color: 0x3a2218, density: 0.12 },
     tundra:   { color: 0x9ab0a8, density: 0 },     // snow & ice — no grass grows here
     desert:   { color: 0xc2a866, density: 0.22 },
@@ -427,6 +519,13 @@ export class BiomeSystem {
     // Wind sway + emissive glow pulses are a High/Ultra-only luxury — below
     // that the props stay static and the shader programs stay unchanged.
     this.dynamicFxOn = detailLevel >= 1.0;
+    this.foliageOn = detailLevel >= 0.82;
+  }
+
+  /** Feed the canopy translucency the live key light (once per frame). */
+  setFoliageSun(direction: THREE.Vector3, color: THREE.Color, intensity: number) {
+    this.foliageSunDir.value.copy(direction).normalize();
+    this.foliageSunColor.value.copy(color).multiplyScalar(intensity);
   }
 
   /** Release every pooled resource. Called when the game scene tears down. */
@@ -796,7 +895,7 @@ export class BiomeSystem {
   private createForestTree(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
     const height = 8 + Math.random() * 5;
-    const trunkMat = this.mat({ color: 0x3d2a18, flatShading: true, roughness: 0.95, metalness: 0.0, emissive: 0x140d06, emissiveIntensity: 0.1 });
+    const trunkMat = this.mat({ color: 0x4e3523, flatShading: true, roughness: 0.95, metalness: 0.0, emissive: 0x140d06, emissiveIntensity: 0.1 });
     const trunk = new THREE.Mesh(this.unitCyl(0.34, 0.72, 7, 'forestTrunk'), trunkMat);
     trunk.scale.set(1, height, 1);
     trunk.castShadow = true; trunk.receiveShadow = true;
@@ -831,7 +930,7 @@ export class BiomeSystem {
       const coneMat = this.mat({
         color, flatShading: true, roughness: 0.62 - t * 0.08, metalness: 0.04,
         emissive: color, emissiveIntensity: 0.12 + t * 0.10,
-      }, { wind: { amp: 0.15, y0: -0.5, y1: 0.5, speed: 0.9 } });
+      }, { wind: { amp: 0.15, y0: -0.5, y1: 0.5, speed: 0.9 }, foliage: { y0: -0.5, y1: 0.5, translucency: 0.22 } });
       const cone = new THREE.Mesh(this.unitCone(coneRadius, 7, `forestCanopy${i}`), coneMat);
       cone.scale.set(1, coneHeight, 1);
       cone.position.y = height / 2 + 0.3 + i * 2.7;
@@ -861,12 +960,12 @@ export class BiomeSystem {
   private createForestBush(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
     const bushSize = 0.8 + Math.random() * 0.6;
-    const colors = [0x1a6a1a, 0x156515, 0x2a7a2a];
+    const colors = [0x1d5a20, 0x184f1c, 0x2a6427];
     for (let i = 0; i < 3; i++) {
       const color = colors[Math.floor(Math.random() * colors.length)];
       const bushMat = this.mat(
         { color, flatShading: true, roughness: 0.6, metalness: 0.04, emissive: color, emissiveIntensity: 0.14 },
-        { wind: { amp: 0.06, y0: -0.1, y1: 1.0, speed: 1.3 } },
+        { wind: { amp: 0.06, y0: -0.1, y1: 1.0, speed: 1.3 }, foliage: { y0: -1.0, y1: 1.0, translucency: 0.2 } },
       );
       const partSize = bushSize * (1 - i * 0.15);
       const part = new THREE.Mesh(this.unitSphere(4, 3, 'bushSphere'), bushMat);
@@ -1103,7 +1202,7 @@ export class BiomeSystem {
   private createFrozenPine(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
     const height = 6 + Math.random() * 4;
-    const trunkMat = this.mat({ color: 0x3a2a20, flatShading: true, roughness: 0.9, metalness: 0.1 });
+    const trunkMat = this.mat({ color: 0x4a3628, flatShading: true, roughness: 0.9, metalness: 0.1 });
     const trunk = new THREE.Mesh(this.unitCyl(0.3, 0.5, 5, 'frozenPineTrunk'), trunkMat);
     trunk.scale.set(1, height, 1);
     trunk.castShadow = true; trunk.receiveShadow = true;
@@ -1122,7 +1221,7 @@ export class BiomeSystem {
       const color = needles[i];
       const needleMat = this.mat(
         { color, flatShading: true, emissive: color, emissiveIntensity: 0.20, roughness: 0.55, metalness: 0.06 },
-        pineWind,
+        { ...pineWind, foliage: { y0: -0.5, y1: 0.5, translucency: 0.16 } },
       );
       const foliage = new THREE.Mesh(this.unitCone(size * 0.72, 6, `frozenPineCone${i}`), needleMat);
       foliage.scale.set(1, 4 - i * 1.0, 1);
@@ -1355,7 +1454,7 @@ export class BiomeSystem {
   private createGnarledTree(x: number, z: number): TerrainObject {
     const group = new THREE.Group();
     const height = 6 + Math.random() * 4;
-    const trunkMat = this.mat({ color: 0x2a2018, flatShading: true, roughness: 0.95, metalness: 0.05 });
+    const trunkMat = this.mat({ color: 0x3a2c21, flatShading: true, roughness: 0.95, metalness: 0.05 });
     const trunk = new THREE.Mesh(this.unitCyl(0.25, 0.6, 5, 'gnarledTrunk'), trunkMat);
     trunk.scale.set(1, height, 1);
     trunk.rotation.z = (Math.random() - 0.5) * 0.3; trunk.castShadow = true; trunk.receiveShadow = true;
@@ -1369,7 +1468,7 @@ export class BiomeSystem {
       const color = fColors[i % fColors.length];
       const foliageMat = this.mat(
         { color, flatShading: true, emissive: color, emissiveIntensity: 0.12 },
-        { wind: { amp: 0.1, y0: -1.0, y1: 1.0, speed: 0.7 } },
+        { wind: { amp: 0.1, y0: -1.0, y1: 1.0, speed: 0.7 }, foliage: { y0: -1.0, y1: 1.0, translucency: 0.18 } },
       );
       const size = 2.1 - i * 0.45;
       const foliage = new THREE.Mesh(this.unitSphere(5, 3, 'gnarledFoliage'), foliageMat);

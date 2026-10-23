@@ -106,6 +106,8 @@ export const skyDomeFragmentShader = `
       sky = mix(horizon, zenith, pow(h, 0.42));
 
       float sunAmount = max(sd, 0.0);
+      // 1 as the sun nears the horizon (golden hour), 0 from mid-afternoon on.
+      float lowSun = 1.0 - smoothstep(0.02, 0.42, sunDir.y);
 
       // ── ATMOSPHERIC FORWARD SCATTERING ──
       // The half of the sky toward the sun — especially the horizon band —
@@ -115,12 +117,22 @@ export const skyDomeFragmentShader = `
       float horizonBand = pow(1.0 - h, 1.7);
       sky += scatterWarm * sunAmount * horizonBand * 0.12;
 
+      // ── GOLDEN HOUR ──
+      // Long air paths strip the blue out of low sunlight, so the sky around
+      // the setting sun burns amber→orange (a tight core + a broad band that
+      // hugs the horizon) while the far side stays cool, with a faint rose
+      // "Belt of Venus" low on the anti-solar sky.
+      vec3 sunsetGlow = vec3(1.0, 0.52, 0.22);
+      sky += sunsetGlow * (pow(sunAmount, 5.0) * 0.5 + pow(sunAmount, 1.6) * horizonBand * 0.32) * lowSun;
+      float antiSun = max(-sd, 0.0);
+      sky += vec3(0.62, 0.32, 0.42) * exp(-pow((h - 0.08) * 11.0, 2.0)) * antiSun * lowSun * 0.16;
+
       // Warm glow around the sun — feeds the bloom pass so the sun reads as a
       // radiant light source rather than a flat dot. TIGHTENED + DIMMED so the
       // sun no longer blows out the whole centre of the frame: the glow falls
       // off faster (higher powers) and at lower intensity, keeping the bright
       // region compact instead of a giant white wash.
-      vec3 sunColor = vec3(1.0, 0.94, 0.80);
+      vec3 sunColor = mix(vec3(1.0, 0.94, 0.80), vec3(1.0, 0.72, 0.45), lowSun);
       float glow = pow(sunAmount, 14.0);
       float wideGlow = pow(sunAmount, 4.5);
       // Soft wide sun-side scatter. When sunGlowScale → 0 (no bloom) we lean on
@@ -158,7 +170,11 @@ export const skyDomeFragmentShader = `
         vec2 towardSun = normalize(sunDir.xz - dir.xz + vec2(1e-4)) * 0.05;
         float densSun = fbm(cuv + towardSun) * 0.62 + fbm(cuv * 2.4 + towardSun) * 0.38;
         float lit = clamp((density - densSun) * 3.5 + 0.45, 0.0, 1.0);
-        vec3 cloudCol = mix(vec3(0.55, 0.58, 0.66), vec3(1.0, 0.97, 0.90), lit);
+        // Low sun: sun-facing billows glow orange, the shaded undersides
+        // turn dusky violet.
+        vec3 cloudShade = mix(vec3(0.55, 0.58, 0.66), vec3(0.36, 0.33, 0.50), lowSun);
+        vec3 cloudLit = mix(vec3(1.0, 0.97, 0.90), vec3(1.0, 0.62, 0.40), lowSun);
+        vec3 cloudCol = mix(cloudShade, cloudLit, lit);
         cloudCol = mix(cloudCol, sunColor, glow * 0.5);
         sky = mix(sky, cloudCol, clouds * 0.5);
       }
@@ -190,14 +206,23 @@ export const skyDomeFragmentShader = `
       // which keep the cobalt gradient + magenta belt + moon for a clean,
       // still-atmospheric night sky.
       if (!lowDetail) {
-        // Twinkling star field (sky only, above the horizon).
+        // Twinkling star field (sky only, above the horizon). Each hash cell
+        // holds at most one star: a soft ROUND point jittered inside the cell
+        // and sized from the cell's screen footprint, so stars stay crisp 1–2
+        // pixel points instead of filling the whole cell as a hard square.
         vec2 suv = dir.xz / max(abs(dir.y) + 0.06, 0.06) * 64.0;
-        float sv = hash(floor(suv));
+        vec2 starCell = floor(suv);
+        // Footprint taken in uniform control flow (derivatives).
+        float starPx = max(fwidth(suv.x), fwidth(suv.y));
+        float sv = hash(starCell);
         if (sv > 0.973 && dir.y > 0.03) {
+          vec2 starJitter = (vec2(hash(starCell + 1.7), hash(starCell + 3.1)) - 0.5) * 0.6;
+          float starR = max(0.06, starPx * 1.1);
+          float starCore = 1.0 - smoothstep(starR * 0.35, starR, length(fract(suv) - 0.5 - starJitter));
           float twinkle = 0.55 + 0.45 * sin(time * 3.0 + sv * 120.0);
           // Star colour drifts between cool white and faint blue based on hash.
           vec3 starCol = mix(vec3(1.0, 1.0, 1.05), vec3(0.7, 0.85, 1.1), fract(sv * 41.0));
-          sky += starCol * ((sv - 0.973) * 40.0 * twinkle) * (0.5 + 0.5 * h);
+          sky += starCol * ((sv - 0.973) * 60.0 * twinkle) * starCore * (0.5 + 0.5 * h);
         }
 
         // Faint milky-way style band — slightly warm against the cool sky.

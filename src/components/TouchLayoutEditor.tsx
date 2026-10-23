@@ -243,7 +243,7 @@ const TouchLayoutEditor = () => {
           </div>
 
           {/* Look-swipe hint — sits on the aiming side. */}
-          <div className={`pointer-events-none absolute top-2 flex items-center gap-1 rounded-full border border-white/15 bg-black/35 px-2 py-0.5 ${layout.mirrored ? 'left-2' : 'right-2'}`}>
+          <div className={`pointer-events-none absolute top-2 flex items-center gap-1 rounded-lg border border-white/15 bg-black/35 px-2 py-0.5 ${layout.mirrored ? 'left-2' : 'right-2'}`}>
             <Hand className="h-2.5 w-2.5 text-white/60" strokeWidth={2.2} />
             <span className="text-[7px] font-bold uppercase tracking-wider text-white/60">Swipe to look</span>
           </div>

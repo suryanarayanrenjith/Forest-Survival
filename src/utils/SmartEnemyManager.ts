@@ -43,7 +43,20 @@ export interface AcquiredMesh {
   muzzleGlow?: THREE.Mesh;
   /** Shooter archetypes only — the charge-coil stack on the weapon body. */
   weaponGlow?: THREE.Mesh;
+  /** Articulated claws (HIGH LOD): finger + thumb pivots, curled by App. */
+  leftClaw?: EnemyClaw;
+  rightClaw?: EnemyClaw;
   poolId: number;
+}
+
+/**
+ * A robot gripper: a pair of jointed fingers at the front of the palm and an
+ * opposing thumb at the back, each on its own knuckle pivot. Curling rotates
+ * the fingers back and the thumb forward so the claw closes into a fist.
+ */
+export interface EnemyClaw {
+  fingers: THREE.Object3D;
+  thumb: THREE.Object3D;
 }
 
 export const LODLevel = {
@@ -240,6 +253,10 @@ interface SharedGeometries {
   visorHigh: THREE.BoxGeometry;
   footHigh: THREE.BoxGeometry;
   handHigh: THREE.BoxGeometry;
+  palmHigh: THREE.BoxGeometry;
+  clawProxHigh: THREE.BoxGeometry;
+  clawDistHigh: THREE.BoxGeometry;
+  clawKnuckleHigh: THREE.BoxGeometry;
   // ── HEAD CREST ────────────────────────────────────────────────────────
   // Was a single 4-segment ConeGeometry. A cone carries CYLINDRICAL UVs — one
   // wrapped, radially-pinched texture tile — so once the armour maps went on,
@@ -318,6 +335,8 @@ interface PooledEnemyMesh {
     muzzleGlow?: THREE.Mesh;
     /** Charge-coil stack + powercell window on the weapon body. */
     weaponGlow?: THREE.Mesh;
+    leftClaw?: EnemyClaw;
+    rightClaw?: EnemyClaw;
   };
   currentLOD: LODLevel;
   inUse: boolean;
@@ -504,6 +523,8 @@ class SmartEnemyManager {
           const blend = isGlow ? sf : sf * 0.35;
           this._surgeTmpColor.setHex(baseColor).lerp(SmartEnemyManager.SURGE_RED, blend);
           material.color.copy(this._surgeTmpColor);
+          const baseEmissive = (material.userData.baseEmissiveHex as number | undefined) ?? baseColor;
+          this._surgeTmpColor.setHex(baseEmissive).lerp(SmartEnemyManager.SURGE_RED, blend);
           material.emissive.copy(this._surgeTmpColor);
           if (isGlow) intensity *= 1 + sf * 1.5;
         }
@@ -525,6 +546,11 @@ class SmartEnemyManager {
       visorHigh: new THREE.BoxGeometry(0.72, 0.26, 0.14),
       footHigh: new THREE.BoxGeometry(0.42, 0.2, 0.56),
       handHigh: new THREE.BoxGeometry(0.34, 0.34, 0.34),
+      // Articulated claw: a slimmer palm block, then jointed finger segments.
+      palmHigh: new THREE.BoxGeometry(0.32, 0.2, 0.3),
+      clawProxHigh: new THREE.BoxGeometry(0.075, 0.16, 0.085),
+      clawDistHigh: new THREE.BoxGeometry(0.065, 0.14, 0.075),
+      clawKnuckleHigh: new THREE.BoxGeometry(0.3, 0.06, 0.1),
       // Crest: mount plate → main fin → tapered tip. Boxes, not a cone (see
       // the interface note) — the taper comes from the three sizes, not from
       // geometry that would pinch its UVs to a point.
@@ -589,6 +615,9 @@ class SmartEnemyManager {
       // — the lerp always starts from this snapshot, never from a half-shifted
       // live colour, so repeated surges can't drift the palette.
       material.userData.baseColorHex = material.color.getHex();
+      // Emissive gets its own anchor: the diffuse albedo is trimmed for the sun
+      // (sunAlbedo below) but the glow keeps the authored colour.
+      material.userData.baseEmissiveHex = material.emissive.getHex();
       // Seed at the day floor; the first setNightFactor() sets the real value.
       material.emissiveIntensity = created * dayFactor;
       this.sharedMaterials.set(key, material);
@@ -637,36 +666,45 @@ class SmartEnemyManager {
       // the enemies never go dark when the env map does (the emissive term is
       // what keeps them visible at night — see the note above).
 
+      // DIFFUSE albedo is trimmed (×0.78, linear) while the EMISSIVE keeps the
+      // authored colour: under the physically-exposed grade a high-albedo red
+      // face turned straight at a noon sun clipped and skewed to salmon. The
+      // night look (driven by emissive) is untouched.
+      const sunAlbedo = (hex: number) => new THREE.Color(hex).multiplyScalar(0.78);
+
       // Body material — strongest emissive boost so the torso reads bright.
       registerMaterial(`${type}_body`, surface(new THREE.MeshStandardMaterial({
-        color: config.baseColor,
+        color: sunAlbedo(config.baseColor),
         emissive: config.baseColor,
         emissiveIntensity: config.emissiveIntensity * 5.5,
-        metalness: 0.22,
-        roughness: 0.52,
+        // Painted armour, not polished metal: at 0.22 / 0.52 a broad white sky
+        // sheen spread over every up-facing plate and turned red robots salmon
+        // at close range under a noon sun.
+        metalness: 0.15,
+        roughness: 0.66,
         flatShading: true,
       }), 'plate'), 1.12);
 
       registerMaterial(`${type}_accent`, surface(new THREE.MeshStandardMaterial({
-        color: config.accentColor,
+        color: sunAlbedo(config.accentColor),
         emissive: config.accentColor,
         emissiveIntensity: config.emissiveIntensity * 4.4,
-        metalness: 0.22,
-        roughness: 0.5,
+        metalness: 0.16,
+        roughness: 0.62,
         flatShading: true,
       }), 'limb'), 1.1);
 
       registerMaterial(`${type}_bright`, surface(new THREE.MeshStandardMaterial({
-        color: config.brightColor,
+        color: sunAlbedo(config.brightColor),
         emissive: config.brightColor,
         emissiveIntensity: config.emissiveIntensity * 6.2,
-        metalness: 0.26,
-        roughness: 0.46,
+        metalness: 0.18,
+        roughness: 0.58,
         flatShading: true,
       }), 'plate'), 1.15);
 
       registerMaterial(`${type}_low`, new THREE.MeshStandardMaterial({
-        color: config.baseColor,
+        color: sunAlbedo(config.baseColor),
         emissive: config.baseColor,
         emissiveIntensity: config.emissiveIntensity * 5.5,
         metalness: 0.0,
@@ -935,10 +973,34 @@ class SmartEnemyManager {
     // pixel-identical), but walk / attack / summon rotations now swing the arm
     // about the SHOULDER instead of spinning it around its own middle — the
     // "propeller arm" look, most obvious on the 2× boss, is gone.
-    const armDarkGeo = this.mergedGeo('arm_dark', [
-      { geo: G.handHigh, pos: [0, -0.62, 0] },
+    const armDarkGeo = this.mergedGeo('arm_dark_claw', [
+      { geo: G.palmHigh, pos: [0, -0.62, 0] },
+      { geo: G.clawKnuckleHigh, pos: [0, -0.7, 0.08] },
       { geo: G.elbowPadHigh, pos: [0, -0.10, 0] },
     ]);
+    // Finger pair (front of the palm) and thumb (back), authored in their
+    // knuckle pivot's space so a single rotation.x curls the whole digit.
+    const fingerGeo = this.mergedGeo('claw_fingers', [
+      { geo: G.clawProxHigh, pos: [-0.075, -0.08, 0] },
+      { geo: G.clawProxHigh, pos: [0.075, -0.08, 0] },
+      { geo: G.clawDistHigh, pos: [-0.075, -0.2, -0.035], rotX: 0.55 },
+      { geo: G.clawDistHigh, pos: [0.075, -0.2, -0.035], rotX: 0.55 },
+    ]);
+    const thumbGeo = this.mergedGeo('claw_thumb', [
+      { geo: G.clawProxHigh, pos: [0, -0.07, 0] },
+      { geo: G.clawDistHigh, pos: [0, -0.18, 0.035], rotX: -0.55 },
+    ]);
+    const makeClaw = (armMesh: THREE.Mesh): EnemyClaw => {
+      const fingers = new THREE.Group();
+      fingers.position.set(0, -0.72, 0.09);
+      fingers.add(new THREE.Mesh(fingerGeo, darkMat));
+      armMesh.add(fingers);
+      const thumb = new THREE.Group();
+      thumb.position.set(0, -0.71, -0.1);
+      thumb.add(new THREE.Mesh(thumbGeo, darkMat));
+      armMesh.add(thumb);
+      return { fingers, thumb };
+    };
     const SHOULDER_Y = 1.2; // pivot height (arm spans pivot → pivot−1.2)
     const makeArm = (side: -1 | 1): { pivot: THREE.Group; armMesh: THREE.Mesh } => {
       const pivot = new THREE.Group();
@@ -955,6 +1017,8 @@ class SmartEnemyManager {
     pooledEnemy.parts.leftArm = leftArmRig.pivot;
     const rightArmRig = makeArm(1);
     pooledEnemy.parts.rightArm = rightArmRig.pivot;
+    pooledEnemy.parts.leftClaw = makeClaw(leftArmRig.armMesh);
+    pooledEnemy.parts.rightClaw = makeClaw(rightArmRig.armMesh);
 
     // ── SHOOTER ARCHETYPES — build the energy lance into the right hand ──
     //
@@ -1198,6 +1262,11 @@ class SmartEnemyManager {
     }
     if (pooledEnemy.parts.head) {
       pooledEnemy.parts.head.rotation.set(0, 0, 0);
+    }
+    for (const claw of [pooledEnemy.parts.leftClaw, pooledEnemy.parts.rightClaw]) {
+      if (!claw) continue;
+      claw.fingers.rotation.set(0, 0, 0);
+      claw.thumb.rotation.set(0, 0, 0);
     }
     // The charge animation scales these while a shot spins up; a recycled slot
     // must not hand the next shooter a weapon frozen mid-charge.
@@ -1489,6 +1558,8 @@ class SmartEnemyManager {
       muzzle: pooledEnemy.parts.muzzle,
       muzzleGlow: pooledEnemy.parts.muzzleGlow,
       weaponGlow: pooledEnemy.parts.weaponGlow,
+      leftClaw: pooledEnemy.parts.leftClaw,
+      rightClaw: pooledEnemy.parts.rightClaw,
       poolId,
     };
   }

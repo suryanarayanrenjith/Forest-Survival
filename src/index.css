@@ -1008,6 +1008,9 @@ canvas {
   background-clip: text;
   -webkit-text-fill-color: transparent;
   color: transparent;
+  /* An inherited text-shadow paints OVER a text-clipped background and turns
+     the gradient muddy — the glow comes from the drop-shadow filter instead. */
+  text-shadow: none;
   filter: drop-shadow(0 4px 30px rgba(46, 232, 180, 0.42)) drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
   animation: titleSheen 8.5s cubic-bezier(0.5, 0, 0.2, 1) 1.1s infinite;
 }
@@ -1112,3 +1115,101 @@ canvas {
   to { opacity: 1; transform: translateX(0); filter: blur(0); }
 }
 .row-in { animation: rowIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) backwards; }
+
+/* ===== TACTICAL COMBAT HUD =====
+   The in-combat HUD speaks the same language as the menus, pared down for
+   play: condensed Oswald numerals, tracked Chakra Petch labels, hairline
+   rules and chamfered frames — text-forward, no heavy boxes. Everything is
+   solid-ink (text-shadow, translucent fills): NO backdrop-filter here, ever —
+   blurring the live canvas behind HUD panels costs FPS every frame. */
+:root {
+  --hud-ink: #eef4f0;
+  --hud-dim: rgba(214, 228, 220, 0.62);
+  --hud-faint: rgba(214, 228, 220, 0.3);
+  --hud-line: rgba(214, 228, 220, 0.16);
+  --hud-accent: #2ee8b4;
+  --hud-warn: #ffb265;
+  --hud-danger: #ff5a5f;
+  --hud-cool: #39d0e6;
+  --hud-plate: rgba(6, 10, 9, 0.62);
+}
+.hud-num {
+  font-family: 'Oswald', 'Segoe UI', Tahoma, sans-serif;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+  line-height: 0.9;
+  letter-spacing: 0.01em;
+}
+.hud-label {
+  font-family: 'Chakra Petch', 'Segoe UI', Tahoma, sans-serif;
+  font-weight: 600;
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--hud-dim);
+}
+.hud-ink {
+  color: var(--hud-ink);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.75), 0 0 14px rgba(0, 0, 0, 0.35);
+}
+.hud-rule {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--hud-line) 18%, var(--hud-line) 82%, transparent);
+}
+.hud-rule-r {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(214, 228, 220, 0.28));
+}
+.hud-rule-l {
+  height: 1px;
+  background: linear-gradient(90deg, rgba(214, 228, 220, 0.28), transparent);
+}
+/* PARTIAL-ROUNDED shape language (game-wide): TL + BR corners rounded, TR + BL
+   near-square, straight edges. Tailwind's rounded-md…3xl carry the same
+   two-value radii (tailwind.config.js); these cover hand-written CSS. */
+.ui-pr-sm { border-radius: 7px 2px; }
+.ui-pr { border-radius: 12px 3px; }
+.ui-pr-lg { border-radius: 16px 4px; }
+.hud-key {
+  font-family: 'Chakra Petch', 'Segoe UI', Tahoma, sans-serif;
+  font-weight: 700;
+  font-size: 9px;
+  line-height: 1;
+  letter-spacing: 0.04em;
+}
+@keyframes hudLowPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+@keyframes hudSlotReady {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(46, 232, 180, 0); }
+  50% { box-shadow: 0 0 14px 0 rgba(46, 232, 180, 0.32); }
+}
+@keyframes hudEventPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+@keyframes hudGlitchFlicker {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+/* Ammo counter kick on every shot / reload (keyed remount). */
+@keyframes hudAmmoKick {
+  0% { transform: translateY(-3px) scale(1.08); filter: brightness(1.6); }
+  100% { transform: none; filter: none; }
+}
+/* Health readout jolt when a hit lands. */
+@keyframes hudHurtHit {
+  0% { transform: scale(1.14); color: #ff5a5f; }
+  18% { transform: translateX(-4px) scale(1.07); color: #ff5a5f; }
+  36% { transform: translateX(3px) scale(1.03); }
+  56% { transform: translateX(-2px); }
+  100% { transform: none; }
+}
+@keyframes hudScorePop {
+  0% { transform: scale(1); }
+  35% { transform: scale(1.09); }
+  100% { transform: scale(1); }
+}

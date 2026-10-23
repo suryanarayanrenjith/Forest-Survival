@@ -151,7 +151,7 @@ const RunModifierPicker = ({ options: initialOptions, onChoose, onBack }: RunMod
                     <Icon className="h-5 w-5" strokeWidth={2.25} style={{ color: accent.text }} />
                   </span>
                   <span
-                    className="rounded-full border px-2 py-0.5 text-[11px] font-black tabular-nums"
+                    className="rounded-lg border px-2 py-0.5 text-[11px] font-black tabular-nums"
                     style={{ borderColor: `${accent.ring}66`, background: accent.chip, color: accent.text }}
                   >
                     ×{mod.scoreMult.toFixed(2)} score

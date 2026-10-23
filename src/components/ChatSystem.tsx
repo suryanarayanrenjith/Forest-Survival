@@ -408,10 +408,9 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
   }
 
   return (
-    // Lifted up from the bottom edge so the panel clears the bottom-left
-    // stamina pie meter (HUD) that sits at bottom-4 left-4 — they used to
-    // overlap in multiplayer.
-    <div className="absolute bottom-24 sm:bottom-28 left-2 sm:left-4 space-y-2" style={{ zIndex: 30 }}>
+    // Lifted clear of the bottom-left vitals block (health + segmented bar +
+    // stamina, plus the ARK-07 event tag when a network wave is live).
+    <div className="absolute bottom-[164px] left-2 sm:left-4 space-y-2" style={{ zIndex: 30 }}>
       {/* Chat Messages - Responsive sizing */}
       {showChat && (
         <div className="w-[280px] sm:w-80 md:w-96 h-48 sm:h-56 md:h-64 bg-[#080d0b]/95 border border-white/10 rounded-2xl overflow-hidden flex flex-col">

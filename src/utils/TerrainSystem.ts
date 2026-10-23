@@ -74,6 +74,13 @@ export interface TerrainProfileInput {
   /** Emissive crack veins (lava). */
   crackGlow?: number;
   crackColor?: number;
+  /** Near-field micro-surface family (see getGroundDetailTexture). */
+  groundDetail?: GroundDetailKind;
+  /** 0..1.5 — how strongly the detail tile shows (albedo + relief). */
+  groundDetailStrength?: number;
+  /** Multiplier the tile's secondary-material mask tints toward (straw
+   *  blades, rust leaves, pale pebbles, dark mineral grains, icy crust). */
+  groundDetailTint?: [number, number, number];
 }
 
 export interface ResolvedTerrainProfile {
@@ -97,7 +104,19 @@ export interface ResolvedTerrainProfile {
   waterColor: number;
   crackGlow: number;
   crackColor: number;
+  groundDetail: GroundDetailKind;
+  groundDetailStrength: number;
+  groundDetailTint: [number, number, number];
 }
+
+// Per-family defaults for the detail tile's secondary-material tint.
+const DETAIL_TINT: Record<GroundDetailKind, [number, number, number]> = {
+  turf: [1.3, 1.18, 0.7],     // sun-bleached straw blades in the green
+  litter: [1.5, 0.8, 0.5],    // rust-red fallen leaves
+  grit: [1.3, 1.27, 1.22],    // pale pebbles on darker soil
+  sand: [0.62, 0.57, 0.53],   // dark mineral grains
+  snow: [0.9, 0.97, 1.08],    // blue-white wind crust
+};
 
 // Sensible neutral defaults — every map overrides the parts that give it
 // character; anything omitted falls back to a grounded "earth" look.
@@ -122,6 +141,9 @@ const DEFAULTS: ResolvedTerrainProfile = {
   waterColor: 0x2fc356,
   crackGlow: 0.0,
   crackColor: 0xff5512,
+  groundDetail: 'grit',
+  groundDetailStrength: 1.0,
+  groundDetailTint: DETAIL_TINT.grit,
 };
 
 /** Merge a map's authored terrain block with the neutral defaults. */
@@ -151,6 +173,9 @@ export function resolveTerrainProfile(map: MapConfig): ResolvedTerrainProfile {
     waterColor: t.waterColor ?? DEFAULTS.waterColor,
     crackGlow: t.crackGlow ?? DEFAULTS.crackGlow,
     crackColor: t.crackColor ?? DEFAULTS.crackColor,
+    groundDetail: t.groundDetail ?? DEFAULTS.groundDetail,
+    groundDetailStrength: t.groundDetailStrength ?? DEFAULTS.groundDetailStrength,
+    groundDetailTint: t.groundDetailTint ?? DETAIL_TINT[t.groundDetail ?? DEFAULTS.groundDetail],
   };
 }
 
@@ -196,7 +221,7 @@ export function terrainSegments(terrainDetail: number): number {
 // Returned to the caller so the static terrain uniforms can be created once and
 // the per-frame day-cycle uniforms (uTime etc.) keep their existing wiring.
 export interface TerrainUniforms {
-  [name: string]: { value: number | THREE.Color | THREE.Vector2 | THREE.Vector3 };
+  [name: string]: { value: number | THREE.Color | THREE.Vector2 | THREE.Vector3 | THREE.Texture };
 }
 
 /**
@@ -234,7 +259,384 @@ export function createTerrainUniforms(
     uTWaterCol: { value: new THREE.Color(profile.waterColor) },
     uTCrackGlow: { value: profile.crackGlow },
     uTCrackCol: { value: new THREE.Color(profile.crackColor) },
+    uTDetailTex: { value: getGroundDetailTexture(profile.groundDetail) },
+    uTDetailTexStr: { value: profile.groundDetailStrength * DETAIL_STRENGTH[profile.groundDetail] },
+    uTDetailNrm: { value: DETAIL_RELIEF[profile.groundDetail] },
+    uTDetailTint: {
+      value: new THREE.Color(profile.groundDetailTint[0], profile.groundDetailTint[1], profile.groundDetailTint[2]),
+    },
   };
+}
+
+// ── GROUND DETAIL TILE ──────────────────────────────────────────────────────
+// The ground shader's procedural layers are all value noise: nothing finer
+// than a few centimetres and no real micro-shape, so up close the floor read as
+// soft, blurry mottling (and smeared when looking down). AAA terrain solves
+// this with a tiling DETAIL texture blended in near the camera. This builds one
+// on the CPU, once per session and seeded (identical every run): a 512²
+// tileable micro-surface per ground family, packed as
+//   RG = height-field slope (−dh/du, −dh/dv), 0.5 = flat
+//   B  = albedo + cavity modulation, mean-centred on 0.5
+//   A  = secondary-material mask (straw / rust leaf / pebble / grain / crust)
+// RG and B average to neutral down the mip chain, so the tile fades to the
+// plain ground with distance on its own; mipmaps + anisotropy mean it can
+// never shimmer the way sub-pixel procedural noise does.
+export type GroundDetailKind = 'turf' | 'litter' | 'grit' | 'sand' | 'snow';
+
+// Albedo/relief weight per family — sand and snow are fine-grained surfaces
+// whose character should stay quiet next to their ripples and sparkle.
+const DETAIL_STRENGTH: Record<GroundDetailKind, number> = {
+  turf: 1.0, litter: 1.0, grit: 0.9, sand: 0.6, snow: 0.5,
+};
+const DETAIL_RELIEF: Record<GroundDetailKind, number> = {
+  turf: 0.55, litter: 0.5, grit: 0.6, sand: 0.35, snow: 0.3,
+};
+
+const DETAIL_N = 512; // power of two: mipmaps + bit-mask wrapping
+const _detailTiles = new Map<GroundDetailKind, THREE.DataTexture>();
+
+/** Deterministic PRNG (mulberry32) so the tile is the same every session. */
+function detailRng(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** Tileable fBm value noise in 0..1 (lattice wraps every `cells`). */
+function periodicFbm(n: number, baseCells: number, octaves: number, rnd: () => number): Float32Array {
+  const out = new Float32Array(n * n);
+  let amp = 0.5;
+  let norm = 0;
+  let cells = baseCells;
+  for (let o = 0; o < octaves; o++) {
+    const lat = new Float32Array(cells * cells);
+    for (let i = 0; i < lat.length; i++) lat[i] = rnd();
+    const s = cells / n;
+    for (let y = 0; y < n; y++) {
+      const fy = y * s;
+      const y0 = Math.floor(fy);
+      let ty = fy - y0;
+      ty = ty * ty * (3 - 2 * ty);
+      const r0 = (y0 % cells) * cells;
+      const r1 = ((y0 + 1) % cells) * cells;
+      for (let x = 0; x < n; x++) {
+        const fx = x * s;
+        const x0 = Math.floor(fx);
+        let tx = fx - x0;
+        tx = tx * tx * (3 - 2 * tx);
+        const c0 = x0 % cells;
+        const c1 = (x0 + 1) % cells;
+        const top = lat[r0 + c0] + (lat[r0 + c1] - lat[r0 + c0]) * tx;
+        const bot = lat[r1 + c0] + (lat[r1 + c1] - lat[r1 + c0]) * tx;
+        out[y * n + x] += (top + (bot - top) * ty) * amp;
+      }
+    }
+    norm += amp;
+    amp *= 0.5;
+    cells *= 2;
+  }
+  for (let i = 0; i < out.length; i++) out[i] /= norm;
+  return out;
+}
+
+/** Wrap-aware stamping target shared by the shape painters below. */
+interface DetailCanvas {
+  n: number;
+  h: Float32Array;   // height
+  alb: Float32Array; // signed albedo modulation
+  mat: Float32Array; // secondary-material mask 0..1
+}
+
+/** A tapered grass blade (or twig) lying on the ground; the tip stands proud. */
+function stampBlade(
+  c: DetailCanvas, cx: number, cy: number, ang: number,
+  len: number, wid: number, hgt: number, tone: number, mat: number,
+): void {
+  const m = c.n - 1;
+  const dx = Math.cos(ang);
+  const dy = Math.sin(ang);
+  const ex = cx + dx * len;
+  const ey = cy + dy * len;
+  const x0 = Math.floor(Math.min(cx, ex) - wid - 1);
+  const x1 = Math.ceil(Math.max(cx, ex) + wid + 1);
+  const y0 = Math.floor(Math.min(cy, ey) - wid - 1);
+  const y1 = Math.ceil(Math.max(cy, ey) + wid + 1);
+  for (let py = y0; py <= y1; py++) {
+    for (let px = x0; px <= x1; px++) {
+      const rx = px + 0.5 - cx;
+      const ry = py + 0.5 - cy;
+      const t = (rx * dx + ry * dy) / len;
+      if (t < 0 || t > 1) continue;
+      const w = wid * (1 - 0.85 * t);
+      const d = Math.abs(ry * dx - rx * dy);
+      if (d >= w) continue;
+      const q = d / w;
+      const v = hgt * (0.35 + 0.65 * t) * Math.sqrt(1 - q * q);
+      const i = (py & m) * c.n + (px & m);
+      if (v > c.h[i]) {
+        c.h[i] = v;
+        c.alb[i] = tone * (0.55 + 0.45 * t);
+        c.mat[i] = mat * t;
+      }
+    }
+  }
+}
+
+/** An irregular domed pebble. */
+function stampPebble(
+  c: DetailCanvas, cx: number, cy: number, r: number,
+  hgt: number, tone: number, mat: number, rnd: () => number,
+): void {
+  const m = c.n - 1;
+  const p1 = rnd() * 6.2832;
+  const p2 = rnd() * 6.2832;
+  const k1 = 0.2 * rnd();
+  const k2 = 0.12 * rnd();
+  const reach = Math.ceil(r * (1 + k1 + k2) + 1);
+  const ix = Math.floor(cx);
+  const iy = Math.floor(cy);
+  for (let py = iy - reach; py <= iy + reach; py++) {
+    for (let px = ix - reach; px <= ix + reach; px++) {
+      const rx = px + 0.5 - cx;
+      const ry = py + 0.5 - cy;
+      const dist = Math.sqrt(rx * rx + ry * ry);
+      const a = Math.atan2(ry, rx);
+      const rr = r * (1 + k1 * Math.sin(3 * a + p1) + k2 * Math.sin(5 * a + p2));
+      if (dist >= rr) continue;
+      const q = dist / rr;
+      const v = hgt * Math.sqrt(1 - q * q);
+      const i = (py & m) * c.n + (px & m);
+      if (v > c.h[i]) {
+        c.h[i] = v;
+        c.alb[i] = tone + 0.25 * (1 - q); // sunlit crown, darker rim
+        c.mat[i] = mat;
+      }
+    }
+  }
+}
+
+/** A flat leaf with a pointed outline and a midrib groove, painted on top. */
+function stampLeaf(
+  c: DetailCanvas, cx: number, cy: number, ang: number,
+  len: number, wid: number, base: number, tone: number, mat: number,
+): void {
+  const m = c.n - 1;
+  const dx = Math.cos(ang);
+  const dy = Math.sin(ang);
+  const reach = Math.ceil(len * 0.5 + wid + 1);
+  const ix = Math.floor(cx);
+  const iy = Math.floor(cy);
+  for (let py = iy - reach; py <= iy + reach; py++) {
+    for (let px = ix - reach; px <= ix + reach; px++) {
+      const rx = px + 0.5 - cx;
+      const ry = py + 0.5 - cy;
+      const t = (rx * dx + ry * dy) / len + 0.5;
+      if (t < 0 || t > 1) continue;
+      const w = wid * Math.pow(Math.sin(Math.PI * t), 0.75);
+      const perp = Math.abs(ry * dx - rx * dy);
+      if (perp >= w) continue;
+      const q = perp / w;
+      const rib = Math.max(0, 1 - perp / 0.9);
+      const i = (py & m) * c.n + (px & m);
+      // Later leaves lie ON TOP (painter's order), so overwrite.
+      c.h[i] = base + 0.18 * (1 - q * q) - 0.12 * rib;
+      c.alb[i] = tone - 0.3 * rib + 0.12 * (1 - q);
+      c.mat[i] = mat;
+    }
+  }
+}
+
+/** Box blur with wrap-around (one axis per pass), in place via a scratch row. */
+function wrapBlur(src: Float32Array, n: number, r: number): Float32Array {
+  const tmp = new Float32Array(n * n);
+  const out = new Float32Array(n * n);
+  const m = n - 1;
+  const inv = 1 / (2 * r + 1);
+  for (let y = 0; y < n; y++) {
+    const row = y * n;
+    let acc = 0;
+    for (let k = -r; k <= r; k++) acc += src[row + (k & m)];
+    for (let x = 0; x < n; x++) {
+      tmp[row + x] = acc * inv;
+      acc += src[row + ((x + r + 1) & m)] - src[row + ((x - r) & m)];
+    }
+  }
+  for (let x = 0; x < n; x++) {
+    let acc = 0;
+    for (let k = -r; k <= r; k++) acc += tmp[(k & m) * n + x];
+    for (let y = 0; y < n; y++) {
+      out[y * n + x] = acc * inv;
+      acc += tmp[((y + r + 1) & m) * n + x] - tmp[((y - r) & m) * n + x];
+    }
+  }
+  return out;
+}
+
+/** 97th-percentile magnitude (robust normaliser, ignores rare spikes). */
+function robustMax(values: Float32Array, centre: number): number {
+  const sample = new Float32Array(4096);
+  const step = Math.max(1, Math.floor(values.length / sample.length));
+  for (let i = 0, j = 0; j < sample.length; i += step, j++) sample[j] = Math.abs(values[i] - centre);
+  sample.sort();
+  return Math.max(1e-6, sample[Math.floor(sample.length * 0.97)]);
+}
+
+function buildDetailCanvas(kind: GroundDetailKind): DetailCanvas {
+  const n = DETAIL_N;
+  const rnd = detailRng(0x5eed0 + kind.length * 7919 + kind.charCodeAt(0) * 131);
+  const c: DetailCanvas = {
+    n,
+    h: new Float32Array(n * n),
+    alb: new Float32Array(n * n),
+    mat: new Float32Array(n * n),
+  };
+  // Base soil body shared by every family: low clumps + albedo mottle.
+  const soil = periodicFbm(n, 8, 4, rnd);
+  const soilTone = periodicFbm(n, 16, 3, rnd);
+  for (let i = 0; i < n * n; i++) {
+    c.h[i] = soil[i] * 0.22;
+    c.alb[i] = (soilTone[i] - 0.5) * 0.5;
+  }
+
+  if (kind === 'turf') {
+    // Clumpy turf: blade density follows a coarse mask, leaving bare,
+    // darker soil between tufts; ~10% sun-bleached straw blades.
+    const clump = periodicFbm(n, 4, 3, rnd);
+    for (let i = 0; i < n * n; i++) c.alb[i] -= 0.45;
+    let placed = 0;
+    for (let tries = 0; placed < 9000 && tries < 40000; tries++) {
+      const x = rnd() * n;
+      const y = rnd() * n;
+      const k = clump[(Math.floor(y) & (n - 1)) * n + (Math.floor(x) & (n - 1))];
+      if (rnd() > 0.15 + 0.85 * Math.min(1, Math.max(0, (k - 0.32) / 0.3))) continue;
+      const straw = rnd() < 0.07;
+      stampBlade(
+        c, x, y, rnd() * Math.PI * 2,
+        14 + rnd() * 26, 1.3 + rnd() * 1.5,
+        0.5 + rnd() * 0.5,
+        straw ? 0.55 : -0.1 + rnd() * 0.55,
+        straw ? 1 : 0,
+      );
+      placed++;
+    }
+  } else if (kind === 'litter') {
+    // Layered fallen leaves over dark humus, a few twigs on top.
+    for (let i = 0; i < n * n; i++) c.alb[i] -= 0.5;
+    for (let k = 0; k < 2600; k++) {
+      stampLeaf(
+        c, rnd() * n, rnd() * n, rnd() * Math.PI * 2,
+        18 + rnd() * 24, 5 + rnd() * 7,
+        0.4 + rnd() * 0.25, -0.2 + rnd() * 0.6, Math.pow(rnd(), 1.5),
+      );
+    }
+    for (let k = 0; k < 260; k++) {
+      stampBlade(c, rnd() * n, rnd() * n, rnd() * Math.PI * 2, 28 + rnd() * 40, 1.1 + rnd() * 0.6, 0.9, -0.55, 0);
+    }
+  } else if (kind === 'grit') {
+    // Gravel: mostly small stones, a few fist-sized, over fine soil grain.
+    for (let k = 0; k < 1500; k++) {
+      const r = 2 + Math.pow(rnd(), 2.2) * 10;
+      stampPebble(c, rnd() * n, rnd() * n, r, 0.16 + r * 0.05, -0.25 + rnd() * 0.6, 0.35 + rnd() * 0.65, rnd);
+    }
+    for (let i = 0; i < n * n; i++) {
+      c.h[i] += (rnd() - 0.5) * 0.05;
+      c.alb[i] += (rnd() - 0.5) * 0.22;
+    }
+  } else if (kind === 'sand') {
+    // Fine grain + sparse dark mineral flecks + the odd small stone.
+    const fine = periodicFbm(n, 64, 2, rnd);
+    for (let i = 0; i < n * n; i++) {
+      c.h[i] = c.h[i] * 0.6 + fine[i] * 0.12 + (rnd() - 0.5) * 0.06;
+      c.alb[i] = c.alb[i] * 0.5 + (rnd() - 0.5) * 0.3;
+      if (rnd() > 0.965) c.mat[i] = 0.6 + rnd() * 0.4;
+    }
+    for (let k = 0; k < 140; k++) {
+      stampPebble(c, rnd() * n, rnd() * n, 1.5 + rnd() * 3, 0.3, -0.1 + rnd() * 0.4, 0.5, rnd);
+    }
+  } else {
+    // Snow: soft wind-crust bumps, faint crystal grain, icy patches.
+    const crust = periodicFbm(n, 16, 3, rnd);
+    const ice = periodicFbm(n, 8, 3, rnd);
+    for (let i = 0; i < n * n; i++) {
+      c.h[i] = c.h[i] * 0.8 + crust[i] * 0.3 + (rnd() - 0.5) * 0.025;
+      c.alb[i] = c.alb[i] * 0.35 + (rnd() - 0.5) * 0.08;
+      c.mat[i] = Math.min(1, Math.max(0, (ice[i] - 0.56) / 0.12));
+    }
+  }
+  return c;
+}
+
+/**
+ * The session-cached detail tile for a ground family. Built on first use
+ * (~tens of ms, during the loader) and reused by every later run; call
+ * disposeGroundDetailTextures() at game teardown to release the GPU copy.
+ */
+export function getGroundDetailTexture(kind: GroundDetailKind): THREE.DataTexture {
+  const cached = _detailTiles.get(kind);
+  if (cached) return cached;
+
+  const c = buildDetailCanvas(kind);
+  const n = c.n;
+  const m = n - 1;
+
+  // Cavity: anything below its blurred neighbourhood darkens (crevices,
+  // gaps between blades / leaves / stones), crowns brighten slightly.
+  const blurred = wrapBlur(c.h, n, 4);
+  for (let i = 0; i < n * n; i++) c.alb[i] += (c.h[i] - blurred[i]) * 1.6;
+
+  // Slope from wrapped central differences (texel units).
+  const sx = new Float32Array(n * n);
+  const sy = new Float32Array(n * n);
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      const i = y * n + x;
+      sx[i] = -(c.h[y * n + ((x + 1) & m)] - c.h[y * n + ((x - 1) & m)]) * 0.5;
+      sy[i] = -(c.h[((y + 1) & m) * n + x] - c.h[((y - 1) & m) * n + x]) * 0.5;
+    }
+  }
+
+  // Normalise: slopes to ±0.42 and albedo to ±0.4 at the 97th percentile, and
+  // centre the albedo on its mean so the mip tail is exactly neutral.
+  let albMean = 0;
+  for (let i = 0; i < n * n; i++) albMean += c.alb[i];
+  albMean /= n * n;
+  const sNorm = 0.42 / Math.max(robustMax(sx, 0), robustMax(sy, 0));
+  const aNorm = 0.4 / robustMax(c.alb, albMean);
+
+  const data = new Uint8Array(n * n * 4);
+  const q = (v: number) => Math.max(0, Math.min(255, Math.round(v * 255)));
+  for (let i = 0; i < n * n; i++) {
+    data[i * 4] = q(0.5 + sx[i] * sNorm);
+    data[i * 4 + 1] = q(0.5 + sy[i] * sNorm);
+    data[i * 4 + 2] = q(0.5 + (c.alb[i] - albMean) * aNorm);
+    data[i * 4 + 3] = q(c.mat[i]);
+  }
+
+  const tex = new THREE.DataTexture(data, n, n, THREE.RGBAFormat, THREE.UnsignedByteType);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.generateMipmaps = true;
+  tex.colorSpace = THREE.NoColorSpace; // data, not colour
+  tex.name = `groundDetail:${kind}`;
+  tex.needsUpdate = true;
+  _detailTiles.set(kind, tex);
+  return tex;
+}
+
+/**
+ * Release the GPU copies of the cached detail tiles (CPU data is kept, so the
+ * next run re-uploads instead of rebuilding). Also detaches the old renderer's
+ * dispose listener, which would otherwise pin that renderer in memory.
+ */
+export function disposeGroundDetailTextures(): void {
+  _detailTiles.forEach((tex) => tex.dispose());
 }
 
 // ── Shared GLSL: noise helpers + the precision-stable height field ──────────
@@ -304,6 +706,10 @@ const TERRAIN_FRAG_COMMON = /* glsl */ `
   uniform vec3  uTWaterCol;
   uniform float uTCrackGlow;
   uniform vec3  uTCrackCol;
+  uniform sampler2D uTDetailTex;
+  uniform float uTDetailTexStr;
+  uniform float uTDetailNrm;
+  uniform vec3  uTDetailTint;
 
   varying vec3  vGroundWorldPos;
   varying float vTerrainSlope;
@@ -413,6 +819,7 @@ export function applyGroundTerrainShader(
     float gMicro = 0.0;   // antialiased micro-detail visibility (set below)
     float gWet = 0.0;
     float gCrackMask = 0.0;
+    vec2 gDetailSlope = vec2(0.0); // detail-tile relief, consumed by the normal chunk
     {
       vec2 gWP = vGroundWorldPos.xz;
 
@@ -459,6 +866,24 @@ export function applyGroundTerrainShader(
         diffuseColor.rgb *= 1.0 + (gStrata - 0.5) * 0.16 * uTQuality;
         float gFine = gNoise(gWP * uTDetailScale * 6.1 + 3.7);
         diffuseColor.rgb += (gFine - 0.5) * 0.05 * gMicro * uTQuality * uTDetailCol;
+
+        // ── DETAIL TILE ── the crisp near-field micro-surface (turf blades /
+        // leaf litter / gravel / sand grain / snow crust — see
+        // getGroundDetailTexture). Two scales, the coarse one rotated so the
+        // tiling never lines up; both fade with distance (and the tile's mip
+        // tail is neutral anyway, so nothing pops).
+        float gDist = length(vViewPosition);
+        float gDW = uTDetailTexStr * uTQuality;
+        float gWA = gDW * (1.0 - smoothstep(8.0, 42.0, gDist));
+        float gWB = gDW * 0.6 * (1.0 - smoothstep(28.0, 120.0, gDist));
+        const mat2 gRot = mat2(0.8, -0.6, 0.6, 0.8);
+        vec4 gDA = texture2D(uTDetailTex, gWP * (0.45 * uTDetailScale));
+        vec4 gDB = texture2D(uTDetailTex, gRot * gWP * (0.13 * uTDetailScale) + vec2(0.37, 0.61));
+        diffuseColor.rgb *= 1.0 + ((gDA.b - 0.5) * gWA + (gDB.b - 0.5) * gWB) * 0.8;
+        float gDMat = clamp(gDA.a * gWA + gDB.a * gWB * 0.8, 0.0, 1.0);
+        diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * uTDetailTint, gDMat);
+        // Slope back to world XZ (the coarse layer's UVs are rotated: v * M = Mᵀv).
+        gDetailSlope = ((gDA.rg - 0.5) * gWA + ((gDB.rg - 0.5) * gRot) * gWB) * 2.0;
       }
 
       // Slope → talus rock. Steep terrain (far hills/dunes) reveals bare rock.
@@ -539,7 +964,13 @@ export function applyGroundTerrainShader(
         vec3 rdir = vec3(uTRippleDir.x, 0.0, uTRippleDir.y);
         gPerturb += rdir * (cos(rp) + 0.3 * cos(rp2)) * uTRippleScale * uTRippleStr * gMicro;
       }
-      normal = normalize(normal + gPerturb);
+      // Detail-tile relief (zero on the tiers that skip the tile).
+      gPerturb += vec3(gDetailSlope.x, 0.0, gDetailSlope.y) * uTDetailNrm;
+      // gPerturb is a WORLD-space tangent offset, but \`normal\` is VIEW space
+      // here — rotate it in first. (It used to be added raw: the relief swung
+      // with the camera, lit from a different side at every yaw, and all but
+      // vanished when looking down, which read as a blurry floor.)
+      normal = normalize(normal + (viewMatrix * vec4(gPerturb, 0.0)).xyz);
     }`,
   );
 
@@ -561,8 +992,19 @@ export function applyGroundTerrainShader(
     '#include <lights_fragment_end>',
     `#include <lights_fragment_end>
     {
-      vec3 sunDir = normalize(uSunDirection);
-      float sunDot = max(dot(normal, sunDir), 0.0);
+      // Every term below is SUNLIGHT, so it must respect the sun's shadow.
+      // (It used to be added unshadowed — shaded ground still caught the sun
+      // glint and diffuse boost, which washed every cast shadow out.)
+      #ifdef FS_SUN_SHADOW
+      float gSunVis = fsSunShadow;
+      #else
+      float gSunVis = 1.0;
+      #endif
+      // Everything below is VIEW space (normal, viewDir): bring the world-space
+      // sun direction across. It used to be mixed in raw, so the diffuse boost
+      // drifted with camera pitch and the sun glint sat in the wrong place.
+      vec3 sunDir = normalize((viewMatrix * vec4(uSunDirection, 0.0)).xyz);
+      float sunDot = max(dot(normal, sunDir), 0.0) * gSunVis;
       float baseLuma = dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722));
       float lumaDamp = clamp(1.0 - baseLuma * 1.2, 0.20, 1.0);
 
@@ -635,16 +1077,30 @@ export function applyGroundTerrainShader(
       }
       #endif
 
-      // Sparkle — sparse view-dependent glints on snow / sand. Gated by the
-      // antialiased gMicro so the sharp glints never become shimmering noise.
+      // Sparkle — glitter on snow / sand. A hash cell may hold ONE crystal: a
+      // tiny round antialiased point jittered inside the cell, with its own
+      // randomly tilted facet, so crystals flash one by one as the view moves.
+      // (The old version lit whole 9 cm cells at the exact mirror angle, which
+      // read as scattered white squares.) Gated by gMicro so distant glints
+      // never shimmer.
       if (uTSparkle > 0.001) {
-        float spk = gHash(floor(vGroundWorldPos.xz * 11.0));
-        float twinkle = step(0.94, spk) * pow(max(dot(normal, halfVec), 0.0), 220.0);
-        reflectedLight.directSpecular += uSunColor * twinkle * uTSparkle * gMicro * (1.0 - uIsNight);
+        vec2 spP = vGroundWorldPos.xz * 11.0;
+        float spPx = max(fwidth(spP.x), fwidth(spP.y)); // uniform flow: before the branch
+        vec2 spCell = floor(spP);
+        if (gHash(spCell) > 0.88) {
+          vec2 spJit = vec2(gHash(spCell + 1.7), gHash(spCell + 3.1)) * 0.6 + 0.2;
+          float spR = clamp(spPx * 1.1, 0.04, 0.35);
+          float spCore = 1.0 - smoothstep(spR * 0.35, spR, length(fract(spP) - spJit));
+          vec3 spTilt = vec3(gHash(spCell + 5.3) - 0.5, 0.0, gHash(spCell + 7.9) - 0.5) * 0.9;
+          vec3 spN = normalize(normal + (viewMatrix * vec4(spTilt, 0.0)).xyz);
+          float spGlint = pow(max(dot(spN, halfVec), 0.0), 64.0);
+          reflectedLight.directSpecular += uSunColor * spGlint * spCore * uTSparkle * 2.2
+            * gMicro * (1.0 - uIsNight) * gSunVis;
+        }
       }
 
       // Subtle subsurface back-spill at grazing-toward-sun angles (day only).
-      float backSpill = pow(max(dot(-sunDir, viewDir), 0.0), 8.0) * 0.14 * (1.0 - uIsNight) * lumaDamp;
+      float backSpill = pow(max(dot(-sunDir, viewDir), 0.0), 8.0) * 0.14 * (1.0 - uIsNight) * lumaDamp * gSunVis;
       reflectedLight.indirectDiffuse += diffuseColor.rgb * backSpill;
     }`,
   );

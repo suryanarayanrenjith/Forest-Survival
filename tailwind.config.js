@@ -6,6 +6,17 @@ export default {
   ],
   theme: {
     extend: {
+      // PARTIAL-ROUNDED design language (game-wide): a two-value radius rounds
+      // the top-left + bottom-right corners and keeps the other two near-square,
+      // so every card, button and field reads as straight-edged with a soft
+      // diagonal accent. rounded / rounded-sm / rounded-full are untouched.
+      borderRadius: {
+        md: '7px 2px',
+        lg: '9px 2px',
+        xl: '12px 3px',
+        '2xl': '16px 4px',
+        '3xl': '22px 5px',
+      },
       animation: {
         'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
         'fadeIn': 'fadeIn 0.3s ease-in',

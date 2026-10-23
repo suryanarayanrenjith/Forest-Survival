@@ -413,7 +413,7 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onClose }) => {
                     <Monitor className={ICON_CLS} strokeWidth={2.25} />
                     <span className={LABEL_CLS}>Graphics Quality</span>
                   </div>
-                  <span className={`font-hud text-[9px] font-bold uppercase tracking-wider rounded-full px-2 py-0.5 border transition-colors ${
+                  <span className={`font-hud text-[9px] font-bold uppercase tracking-wider rounded-lg px-2 py-0.5 border transition-colors ${
                     graphics.preset === 'custom'
                       ? 'text-amber-300 bg-amber-400/10 border-amber-400/40'
                       : 'text-gray-500 bg-white/[0.02] border-white/10'

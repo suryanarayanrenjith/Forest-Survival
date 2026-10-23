@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { AlertTriangle, RefreshCw, ArrowRightCircle, Crosshair, Check, Loader2 } from 'lucide-react';
+import { AlertTriangle, RefreshCw, ArrowRightCircle, Crosshair, Check, Loader2, Lightbulb } from 'lucide-react';
 import { detectIsTouch } from '../hooks/useDeviceInfo';
 
 // Touch devices run in (short) landscape, where the tall vertical loader layout
@@ -21,6 +21,20 @@ const PHASES = [
   { label: 'Spawning the world',      hint: 'Terrain · Lighting · Weather' },
 ];
 
+/** Field tips rotated on the desktop loader. Keep every line TRUE to the
+ *  shipped game (default key bindings, real mechanics) — no aspirational copy. */
+const TIPS = [
+  'Headshots deal double damage — aim for the robots\u2019 heads.',
+  'Shoot an explosive barrel to wipe out a cluster of robots. Keep your distance.',
+  'Looted powers are held until you need them — press E to trigger one.',
+  'Sprinting drains stamina. Let it refill before you need to break away.',
+  'Press M to open the tactical radar.',
+  'New weapons unlock as your score climbs — switch with the number keys or the mouse wheel.',
+  'Clearing a wave earns a mystery box perk.',
+  'Robots too close? Press V for a melee strike.',
+  'Wading through bushes slows you down — mind your footing when retreating.',
+];
+
 /** Surfaced to the player when warmup fails. `recoverable` controls
  *  whether "Continue Anyway" is offered. */
 export interface WarmupErrorInfo {
@@ -39,6 +53,14 @@ interface ShaderProcessingScreenProps {
 const ShaderProcessingScreen = ({ visible, error, onContinueAnyway }: ShaderProcessingScreenProps) => {
   const [progress, setProgress] = useState(0);
   const progressRef = useRef(0);
+  const [tipIndex, setTipIndex] = useState(() => Math.floor(Math.random() * TIPS.length));
+
+  // Rotate the field tip while the loader is up (desktop layout only renders it).
+  useEffect(() => {
+    if (!visible || error) return;
+    const id = window.setInterval(() => setTipIndex((i) => (i + 1) % TIPS.length), 4800);
+    return () => window.clearInterval(id);
+  }, [visible, error]);
 
   useEffect(() => {
     if (!visible) {
@@ -80,11 +102,6 @@ const ShaderProcessingScreen = ({ visible, error, onContinueAnyway }: ShaderProc
   const progressValue = Math.min(99, Math.round(progress));
   // Active phase derived from progress so the checklist fills monotonically.
   const activePhase = progress >= 75 ? 3 : progress >= 50 ? 2 : progress >= 25 ? 1 : 0;
-
-  // Circular progress ring geometry.
-  const R = 62;
-  const CIRC = 2 * Math.PI * R;
-  const dashOffset = CIRC * (1 - Math.min(100, progress) / 100);
 
   // ── ERROR STATE — compact card ─────────────────────────────────────────────
   if (isError) {
@@ -235,96 +252,106 @@ const ShaderProcessingScreen = ({ visible, error, onContinueAnyway }: ShaderProc
     );
   }
 
-  // ── LOADING STATE — centred ring + aligned phase checklist ──────────────────
+  // ── LOADING STATE — cinematic key-art loading screen ────────────────────────
   return (
-    <div className="fixed inset-0 z-[90] flex items-center justify-center overflow-hidden bg-[#05080a]">
-      {/* Soft brand glow */}
+    <div className="fixed inset-0 z-[90] overflow-hidden bg-[#030605] select-none">
+      {/* Key art: softly blurred, darkened, slowly drifting (compositor-only
+          transform animation, so it stays smooth while warmup hogs the main
+          thread). Cropped low toward the robots; the grade hides the rest. */}
       <div
-        className="absolute inset-0 sps-glow"
-        style={{ background: `radial-gradient(ellipse 50% 42% at center, ${accentSoft} 0%, ${accentFaint} 38%, transparent 70%)` }}
+        className="sps-kenburns absolute -inset-[5%]"
+        style={{
+          backgroundImage: 'url(/og-image.jpg)',
+          backgroundSize: 'cover',
+          backgroundPosition: 'center 78%',
+          filter: 'blur(4px) saturate(0.85) brightness(0.5)',
+        }}
+      />
+      <div
+        className="absolute inset-0"
+        style={{ background: 'linear-gradient(180deg, rgba(3,6,5,0.96) 0%, rgba(3,6,5,0.7) 26%, rgba(3,6,5,0.42) 52%, rgba(3,6,5,0.9) 82%, rgba(3,6,5,0.98) 100%)' }}
+      />
+      <div className="absolute inset-0" style={{ background: 'radial-gradient(120% 95% at 50% 42%, transparent 38%, rgba(0,0,0,0.62) 100%)' }} />
+      <div
+        className="pointer-events-none absolute inset-0 opacity-[0.06]"
+        style={{ backgroundImage: 'repeating-linear-gradient(0deg, rgba(255,255,255,0.6) 0 1px, transparent 1px 3px)' }}
       />
 
-      <div className="relative flex w-full max-w-sm flex-col items-center px-6 text-center">
-        {/* Brand wordmark — game title (biome-neutral), abstract emerald mark */}
-        <div className="mb-8 flex items-center gap-2.5">
-          <span className="relative flex h-2.5 w-2.5">
-            <span className="absolute inline-flex h-full w-full rounded-sm bg-emerald-400/60 sps-glow" />
-            <span className="relative inline-flex h-2.5 w-2.5 rotate-45 rounded-sm bg-emerald-400 shadow-[0_0_12px_rgba(52,211,153,0.8)]" />
-          </span>
-          <span className="text-[12px] font-bold uppercase tracking-[0.5em] text-gray-300/90">
+      {/* Top bar — brand + live status */}
+      <div className="absolute inset-x-10 top-8 flex items-center justify-between">
+        <div className="flex items-center gap-2.5">
+          <span className="relative inline-flex h-2.5 w-2.5 rotate-45 bg-emerald-400 shadow-[0_0_12px_rgba(52,211,153,0.8)]" />
+          <span className="font-hud text-[11px] font-bold uppercase tracking-[0.5em] text-white/80">
             Forest <span className="text-emerald-300">Survival</span>
           </span>
         </div>
+        <div className="font-hud flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.4em] text-emerald-300/80">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2.5} />
+          Shader Warmup
+        </div>
+      </div>
 
-        {/* Progress ring */}
-        <div className="relative" style={{ width: 168, height: 168 }}>
-          <svg viewBox="0 0 160 160" className="h-full w-full -rotate-90">
-            <circle cx="80" cy="80" r={R} fill="none" stroke="rgba(255,255,255,0.07)" strokeWidth="3" />
-            <circle
-              cx="80" cy="80" r={R} fill="none" stroke={accent} strokeWidth="3" strokeLinecap="round"
-              strokeDasharray={CIRC} strokeDashoffset={dashOffset}
-              style={{ transition: 'stroke-dashoffset 140ms linear', filter: `drop-shadow(0 0 6px ${accentSoft})` }}
-            />
-          </svg>
-          <div className="absolute inset-0 flex flex-col items-center justify-center">
-            <Crosshair className="sps-reticle mb-1.5 h-6 w-6" style={{ color: accent }} strokeWidth={1.75} />
-            <div className="flex items-baseline">
-              <span className="text-4xl font-black leading-none tabular-nums tracking-tight text-white">{progressValue}</span>
-              <span className="ml-0.5 text-base font-bold text-gray-500">%</span>
+      {/* Bottom block */}
+      <div className="absolute inset-x-10 bottom-9">
+        <div className="flex items-end justify-between gap-10">
+          <div className="min-w-0 max-w-2xl">
+            <p className="font-hud flex items-center gap-3 text-[10px] font-semibold uppercase tracking-[0.45em] text-emerald-300/85">
+              <span className="h-px w-8 bg-gradient-to-r from-transparent to-emerald-300/80" />
+              Deploying
+            </p>
+            <h2 className="font-display mt-2 text-[clamp(2.2rem,4.4vw,3.8rem)] font-semibold uppercase leading-[0.95] tracking-wide text-white">
+              Preparing the battlefield
+            </h2>
+            <div key={tipIndex} className="sps-tip mt-4 flex max-w-xl items-start gap-3">
+              <Lightbulb className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-300/90" strokeWidth={2} />
+              <p className="font-hud text-[13px] leading-relaxed text-white/70">
+                <span className="mr-2 text-[10px] font-bold uppercase tracking-[0.3em] text-amber-300/90">Tip</span>
+                {TIPS[tipIndex]}
+              </p>
             </div>
+          </div>
+          <div className="flex-shrink-0 text-right">
+            <div className="hud-num text-[72px] text-white" style={{ textShadow: '0 0 30px rgba(46,232,180,0.25)' }}>
+              {progressValue}
+              <span className="ml-1 text-[26px] text-white/45">%</span>
+            </div>
+            <p className="hud-label mt-2" style={{ color: 'rgba(46,232,180,0.85)' }}>{PHASES[activePhase].label}</p>
           </div>
         </div>
 
-        {/* Copy */}
-        <p className="mt-7 text-[10px] font-bold uppercase tracking-[0.45em] text-emerald-300/80">Shader Warmup</p>
-        <h2 className="mt-2 text-2xl font-black tracking-tight text-white sm:text-3xl">Preparing the battlefield</h2>
-
-        {/* Slim bar */}
-        <div className="mt-5 h-1 w-full overflow-hidden rounded-full bg-white/[0.06]">
+        {/* Slim full-width progress bar with a hot leading edge */}
+        <div className="relative mt-6 h-[3px] w-full overflow-hidden bg-white/[0.09]">
           <div
-            className="h-full rounded-full"
+            className="absolute inset-y-0 left-0"
             style={{
               width: `${Math.min(100, progress)}%`,
-              background: 'linear-gradient(90deg, #15803d, #34d399 60%, #22d3ee)',
-              boxShadow: '0 0 12px rgba(52,211,153,0.5)',
+              background: 'linear-gradient(90deg, rgba(21,128,61,0.9), #2ee8b4 70%, #b8fff0)',
+              boxShadow: '0 0 14px rgba(46,232,180,0.65)',
               transition: 'width 140ms linear',
             }}
           />
         </div>
 
-        {/* Phase checklist — fills top-to-bottom as warmup advances */}
-        <ul className="mt-6 w-full space-y-1.5 text-left">
+        {/* Phase steps */}
+        <ul className="mt-3.5 grid grid-cols-4 gap-6">
           {PHASES.map((phase, index) => {
             const state = index < activePhase ? 'done' : index === activePhase ? 'active' : 'pending';
             return (
-              <li
-                key={phase.label}
-                className={`flex items-center gap-3 rounded-lg border px-3 py-2 transition-colors duration-300 ${
-                  state === 'active'
-                    ? 'border-emerald-400/25 bg-emerald-500/[0.06]'
-                    : 'border-transparent bg-transparent'
-                }`}
-              >
-                <span className="flex h-5 w-5 shrink-0 items-center justify-center">
+              <li key={phase.label} className="flex min-w-0 items-start gap-2.5">
+                <span className="mt-[1px] flex h-4 w-4 flex-shrink-0 items-center justify-center">
                   {state === 'done' ? (
-                    <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500/20">
-                      <Check className="h-3 w-3 text-emerald-300" strokeWidth={3} />
-                    </span>
+                    <Check className="h-3.5 w-3.5 text-emerald-300" strokeWidth={3} />
                   ) : state === 'active' ? (
-                    <Loader2 className="h-4 w-4 animate-spin text-emerald-300" strokeWidth={2.5} />
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-300" strokeWidth={2.5} />
                   ) : (
-                    <span className="h-1.5 w-1.5 rounded-full bg-white/15" />
+                    <span className="h-1.5 w-1.5 bg-white/20" />
                   )}
                 </span>
-                <span className="min-w-0 flex-1">
-                  <span
-                    className={`block text-[12px] font-semibold leading-tight transition-colors duration-300 ${
-                      state === 'pending' ? 'text-gray-600' : 'text-gray-200'
-                    }`}
-                  >
+                <span className="min-w-0">
+                  <span className={`font-hud block truncate text-[11px] font-semibold uppercase tracking-[0.16em] transition-colors duration-300 ${state === 'pending' ? 'text-white/30' : 'text-white/85'}`}>
                     {phase.label}
                   </span>
-                  <span className="block truncate text-[10px] leading-tight text-gray-600">{phase.hint}</span>
+                  <span className="font-hud block truncate text-[10px] text-white/35">{phase.hint}</span>
                 </span>
               </li>
             );
@@ -333,10 +360,10 @@ const ShaderProcessingScreen = ({ visible, error, onContinueAnyway }: ShaderProc
       </div>
 
       <style>{`
-        @keyframes sps-glow-pulse { 0%,100% { opacity: 0.75; } 50% { opacity: 1; } }
-        .sps-glow { animation: sps-glow-pulse 3.6s ease-in-out infinite; will-change: opacity; }
-        @keyframes sps-reticle-pulse { 0%,100% { transform: scale(1); opacity: 0.9; } 50% { transform: scale(1.08); opacity: 1; } }
-        .sps-reticle { animation: sps-reticle-pulse 2.4s ease-in-out infinite; will-change: transform, opacity; }
+        @keyframes sps-kenburns { 0% { transform: scale(1.04) translate3d(0, 0, 0); } 100% { transform: scale(1.12) translate3d(-1.5%, -1%, 0); } }
+        .sps-kenburns { animation: sps-kenburns 22s ease-out forwards; will-change: transform; }
+        @keyframes sps-tip-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+        .sps-tip { animation: sps-tip-in 0.45s cubic-bezier(0.16, 1, 0.3, 1) both; }
       `}</style>
     </div>
   );

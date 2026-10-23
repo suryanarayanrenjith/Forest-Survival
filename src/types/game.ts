@@ -220,6 +220,11 @@ export interface Enemy {
   muzzle?: THREE.Object3D;
   muzzleGlow?: THREE.Mesh;
   weaponGlow?: THREE.Mesh;
+  /** Articulated robot claws (finger + thumb pivots) and their smoothed curl. */
+  leftClaw?: { fingers: THREE.Object3D; thumb: THREE.Object3D };
+  rightClaw?: { fingers: THREE.Object3D; thumb: THREE.Object3D };
+  clawCurl?: number;
+  clawPhase?: number;
   /** 0..1 charge fill for the shot currently spinning up. Drives the coil
    *  glow, the aperture swell and the aim pose; reset on fire. */
   aimBlend?: number;

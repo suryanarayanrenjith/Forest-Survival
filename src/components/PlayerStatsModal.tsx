@@ -65,7 +65,7 @@ const PlayerStatsModal = ({ username, onClose }: PlayerStatsModalProps) => {
                   {/* Inline rank chip — replaces the floating hexagon badge that
                       used to overlap the header in tight lobby cards. */}
                   <span
-                    className="mt-1.5 inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide"
+                    className="mt-1.5 inline-flex items-center gap-1.5 rounded-lg px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide"
                     style={{ color: profile.rank.color, background: `${profile.rank.color}1f`, border: `1px solid ${profile.rank.color}55` }}
                   >
                     {profile.rank.tierName} · Lvl {profile.rank.level}

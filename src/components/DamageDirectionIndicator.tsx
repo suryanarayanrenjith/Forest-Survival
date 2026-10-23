@@ -47,6 +47,10 @@ export const clearDamageDirections = () => {
 };
 
 const DamageDirectionIndicator = ({ isVisible }: { isVisible: boolean }) => {
+  // Opt OUT of the React Compiler: `arcs` is module-level state the compiler
+  // treats as a constant, so it memoised the JSX on the first (empty) render
+  // and forceRender() never showed a single damage arc.
+  'use no memo';
   const [, forceRender] = useReducer((c: number) => (c + 1) % 1_000_000, 0);
   const rafRef = useRef<number | null>(null);
 

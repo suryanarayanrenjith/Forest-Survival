@@ -44,6 +44,10 @@ export const clearHitMarkers = () => {
 };
 
 const HitMarkers = () => {
+  // Opt OUT of the React Compiler. The markers live in a module-level array the
+  // compiler treats as a constant, so it memoised the JSX on the first (empty)
+  // render and every forceRender() re-used it — hit markers never appeared.
+  'use no memo';
   // Module arrays are the source of truth; this just kicks React to re-read
   // them. A requestAnimationFrame loop drives the animation at a buttery 60fps
   // instead of the old 20fps setInterval(50ms) stepping. It stays armed for the
@@ -101,47 +105,57 @@ const HitMarkers = () => {
     <>
       <div className="fixed inset-0 pointer-events-none z-50 flex items-center justify-center">
         {hitMarkers.map((marker) => {
-          // A kill confirm reads red + bigger with a sweeping ring; a headshot
-          // is red with a skull; a plain hit is a quick white tick.
-          const armColor = marker.isKill ? 'bg-red-500' : marker.isHeadshot ? 'bg-red-500' : 'bg-white';
-          const size = marker.isKill ? 'w-12 h-12' : 'w-8 h-8';
-          const armLong = marker.isKill ? 'h-4' : 'h-3';
-          const armWide = marker.isKill ? 'w-4' : 'w-3';
-          const armThick = marker.isKill ? 'w-[3px]' : 'w-0.5';
-          const armThickH = marker.isKill ? 'h-[3px]' : 'h-0.5';
+          // Diagonal ticks (the AAA hit-marker read, distinct from any
+          // crosshair style): white = hit, gold = headshot, red + confirm
+          // ring + skull = kill.
+          const kill = !!marker.isKill;
+          const head = marker.isHeadshot && !kill;
+          const color = kill ? '#ff4b4f' : head ? '#ffc861' : '#ffffff';
+          const size = kill ? 46 : head ? 36 : 30;
+          const inner = kill ? 9 : 7;   // gap from centre (px)
+          const outer = size / 2;       // tick end (px)
+          const stroke = kill ? 3.2 : head ? 2.8 : 2.2;
+          const c = size / 2;
+          const d = (r: number) => r * 0.7071;
           return (
             <div
               key={marker.id}
-              className={`absolute ${marker.isHeadshot || marker.isKill ? 'text-red-500' : 'text-white'}`}
+              className="absolute"
               style={{
-                animation: (marker.isHeadshot || marker.isKill)
-                  ? 'hitMarkerPop 0.3s cubic-bezier(0.22, 1, 0.36, 1)'
-                  : 'hitMarkerFade 0.3s ease-out',
-                filter: (marker.isHeadshot || marker.isKill)
-                  ? 'drop-shadow(0 0 5px rgba(239,68,68,0.95))'
-                  : 'drop-shadow(0 0 3px rgba(0,0,0,0.85))',
+                animation: kill
+                  ? 'hitMarkerKill 0.46s cubic-bezier(0.22, 1, 0.36, 1) forwards'
+                  : 'hitMarkerPop 0.22s cubic-bezier(0.22, 1, 0.36, 1) forwards',
+                filter: kill
+                  ? 'drop-shadow(0 0 6px rgba(255,75,79,0.9)) drop-shadow(0 0 1px rgba(0,0,0,0.9))'
+                  : head
+                    ? 'drop-shadow(0 0 5px rgba(255,200,97,0.85)) drop-shadow(0 0 1px rgba(0,0,0,0.9))'
+                    : 'drop-shadow(0 0 1.5px rgba(0,0,0,0.95))',
               }}
             >
-              <div className={`relative ${size}`}>
-                {marker.isKill && (
+              <div className="relative" style={{ width: size, height: size }}>
+                {kill && (
                   <div
-                    className="absolute inset-0 rounded-full border-2 border-red-500"
-                    style={{ animation: 'killRing 0.46s ease-out forwards' }}
+                    className="absolute inset-0 rounded-full"
+                    style={{ border: `2px solid ${color}`, animation: 'killRing 0.46s ease-out forwards' }}
                   />
                 )}
-                <div className={`absolute top-0 left-1/2 ${armThick} ${armLong} ${armColor} -translate-x-1/2`}></div>
-                <div className={`absolute bottom-0 left-1/2 ${armThick} ${armLong} ${armColor} -translate-x-1/2`}></div>
-                <div className={`absolute left-0 top-1/2 ${armWide} ${armThickH} ${armColor} -translate-y-1/2`}></div>
-                <div className={`absolute right-0 top-1/2 ${armWide} ${armThickH} ${armColor} -translate-y-1/2`}></div>
-
-                {marker.isHeadshot && !marker.isKill && (
+                <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="absolute inset-0" aria-hidden="true">
+                  {[[-1, -1], [1, -1], [-1, 1], [1, 1]].map(([sx, sy]) => (
+                    <line
+                      key={`${sx}${sy}`}
+                      x1={c + sx * d(inner)}
+                      y1={c + sy * d(inner)}
+                      x2={c + sx * d(outer)}
+                      y2={c + sy * d(outer)}
+                      stroke={color}
+                      strokeWidth={stroke}
+                      strokeLinecap="square"
+                    />
+                  ))}
+                </svg>
+                {kill && (
                   <div className="absolute inset-0 flex items-center justify-center">
-                    <Skull className="w-3 h-3 text-red-500" strokeWidth={2.5} />
-                  </div>
-                )}
-                {marker.isKill && (
-                  <div className="absolute inset-0 flex items-center justify-center">
-                    <Skull className="w-4 h-4 text-red-500" strokeWidth={2.5} />
+                    <Skull className="w-3.5 h-3.5" style={{ color }} strokeWidth={2.5} />
                   </div>
                 )}
               </div>
@@ -151,29 +165,15 @@ const HitMarkers = () => {
       </div>
 
       <style>{`
-        @keyframes hitMarkerFade {
-          0% {
-            opacity: 1;
-            transform: scale(1.5);
-          }
-          100% {
-            opacity: 0;
-            transform: scale(0.8);
-          }
-        }
         @keyframes hitMarkerPop {
-          0% {
-            opacity: 1;
-            transform: scale(1.9) rotate(0deg);
-          }
-          60% {
-            opacity: 1;
-            transform: scale(1.05) rotate(45deg);
-          }
-          100% {
-            opacity: 0;
-            transform: scale(0.85) rotate(45deg);
-          }
+          0% { opacity: 1; transform: scale(1.35); }
+          55% { opacity: 1; transform: scale(1); }
+          100% { opacity: 0; transform: scale(0.92); }
+        }
+        @keyframes hitMarkerKill {
+          0% { opacity: 1; transform: scale(1.6); }
+          40% { opacity: 1; transform: scale(1); }
+          100% { opacity: 0; transform: scale(0.95); }
         }
         @keyframes killRing {
           0% { opacity: 0.95; transform: scale(0.35); }

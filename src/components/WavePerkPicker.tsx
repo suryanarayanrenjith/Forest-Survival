@@ -223,7 +223,7 @@ const WavePerkPicker = ({
                     style={{ boxShadow: `0 0 36px ${style.glow}`, animation: isPicked ? 'perkBoxPop 0.45s ease-out' : 'perkBoxReveal 0.4s ease-out' }}
                   >
                     {isPicked && (
-                      <span className="absolute -top-2 left-1/2 -translate-x-1/2 rounded-full border border-emerald-400/60 bg-emerald-500/25 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-[0.18em] text-emerald-100">
+                      <span className="absolute -top-2 left-1/2 -translate-x-1/2 rounded-lg border border-emerald-400/60 bg-emerald-500/25 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-[0.18em] text-emerald-100">
                         You Picked!
                       </span>
                     )}
@@ -252,7 +252,7 @@ const WavePerkPicker = ({
                   style={{ animation: isPicked ? 'perkBoxPop 0.45s ease-out' : 'perkBoxReveal 0.4s ease-out' }}
                 >
                   {isPicked && (
-                    <span className="absolute -top-2 left-1/2 -translate-x-1/2 rounded-full border border-rose-400/55 bg-rose-500/20 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-[0.18em] text-rose-100">
+                    <span className="absolute -top-2 left-1/2 -translate-x-1/2 rounded-lg border border-rose-400/55 bg-rose-500/20 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-[0.18em] text-rose-100">
                       You Picked!
                     </span>
                   )}
@@ -342,7 +342,7 @@ const WavePerkPicker = ({
             haven't touched the tree in a while. */}
         {skillPointsAvailable !== undefined && skillPointsAvailable > 0 && !revealed && (
           <div className="mt-6 flex items-center justify-center">
-            <div className="flex items-center gap-2.5 rounded-full border border-amber-400/30 bg-amber-950/70 px-3.5 py-1.5">
+            <div className="flex items-center gap-2.5 rounded-lg border border-amber-400/30 bg-amber-950/70 px-3.5 py-1.5">
               <GraduationCap className="h-3.5 w-3.5 text-amber-300" strokeWidth={2.25} />
               <span className="text-[11px] font-bold uppercase tracking-[0.15em] text-amber-200">
                 {skillPointsAvailable} Skill Point{skillPointsAvailable === 1 ? '' : 's'} to spend
@@ -357,7 +357,7 @@ const WavePerkPicker = ({
         {/* Bottom legend — touch shows a tap hint; desktop shows the keys. */}
         {!revealed && IS_TOUCH && (
           <div className="mt-5 flex items-center justify-center text-[11px] text-gray-500">
-            <span className="rounded-full border border-white/10 bg-white/[0.03] px-3.5 py-1.5 font-semibold tracking-wide text-gray-400">
+            <span className="rounded-lg border border-white/10 bg-white/[0.03] px-3.5 py-1.5 font-semibold tracking-wide text-gray-400">
               Tap a box to open it
             </span>
           </div>

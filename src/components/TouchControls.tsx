@@ -307,7 +307,7 @@ const TouchControls = ({
           so there is no separate aim button. The badge advertises that. ── */}
       <Positioned id="fire" layout={layout}>
         <div className="pointer-events-none relative flex flex-col items-center">
-          <span className="mb-1.5 flex items-center gap-1 rounded-full border border-emerald-400/40 bg-black/70 px-2 py-0.5 text-[8px] font-bold uppercase tracking-widest text-emerald-300">
+          <span className="mb-1.5 flex items-center gap-1 rounded-lg border border-emerald-400/40 bg-black/70 px-2 py-0.5 text-[8px] font-bold uppercase tracking-widest text-emerald-300">
             <Crosshair className="h-2.5 w-2.5" strokeWidth={2.5} />
             Auto-Aim
           </span>

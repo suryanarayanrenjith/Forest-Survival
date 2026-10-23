@@ -145,7 +145,7 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     ambientLightIntensity: 0.58,
     directionalLightColor: 0xe9f4c2,
     directionalLightIntensity: 0.95,
-    groundColor: 0x1a4a1a,
+    groundColor: 0x23461f,
     groundEmissive: 0x0a2a0a,
     groundSize: 640,
     treeDensityMult: 1.3,
@@ -205,6 +205,7 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       rockColor: 0x3a4a32,
       detailColor: [0.95, 1.0, 0.82],
       detailScale: 1.15,
+      groundDetail: 'turf',            // tufted grass blades + straw over humus
     },
   },
 
@@ -280,6 +281,8 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       detailScale: 1.25,
       crackGlow: 1.9,                  // magma seams read from further out
       crackColor: 0xff4a12,
+      groundDetail: 'grit',            // cinder gravel
+      groundDetailTint: [0.62, 0.56, 0.54], // dark obsidian chips, not pale pebbles
     },
   },
 
@@ -327,13 +330,15 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     renderProfile: {
       atmosphereWeight: 0.86,
       nightAtmosphereWeight: 0.42,
-      exposure: 0.72,                     // brightness control lever #1
+      // Re-levelled for the fitted-ACES HDR pipeline: its soft shoulder holds
+      // snow detail on its own, so the old blow-out clamp read as dusk at noon.
+      exposure: 1.0,                      // brightness control lever #1
       saturation: 0.78,                   // cold but no longer grey-dead
       contrast: 0.98,
       bloomStrength: 0.72,
       godRayStrength: 0.96,               // cold shafts pour between frozen pines
       aerialPerspective: 0.3,
-      highlightRecovery: 0.78,            // brightness control lever #2
+      highlightRecovery: 0.5,             // brightness control lever #2
       highlightDesaturation: 0.6,
       vibrance: 0.92,                     // sky blues + pine teals at showcase parity
       shadowLift: 0.9,
@@ -369,6 +374,7 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       rippleScale: 0.5,
       rippleStrength: 0.26,               // crisper drift ridges under the low sun
       sparkle: 0.85,                      // denser crystalline glint field
+      groundDetail: 'snow',               // wind crust + icy patches
     },
   },
 
@@ -415,13 +421,13 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
     renderProfile: {
       atmosphereWeight: 0.84,
       nightAtmosphereWeight: 0.38,
-      exposure: 0.74,                     // brightness control lever #1
+      exposure: 0.88,                     // brightness control lever #1 (re-levelled for fitted ACES)
       saturation: 0.74,
       contrast: 0.98,
       bloomStrength: 0.74,
       godRayStrength: 1.0,                // harsh sun shafts rake off the mesas
       aerialPerspective: 0.42,            // golden distance tint (Mie scatter)
-      highlightRecovery: 0.72,            // brightness control lever #2
+      highlightRecovery: 0.55,            // brightness control lever #2
       highlightDesaturation: 0.58,
       vibrance: 0.86,                     // richer terracotta strata, still sun-bleached
       shadowLift: 0.86,
@@ -457,6 +463,7 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       rippleScale: 0.62,
       rippleStrength: 0.34,               // deeper wind ripples under the raking sun
       sparkle: 0.32,
+      groundDetail: 'sand',               // fine grain + dark mineral flecks
     },
   },
 
@@ -548,6 +555,9 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       // 0x2fc356, which under bloom read as radioactive slime rather than
       // realistic standing water with dissolved toxins.
       waterColor: 0x1e7a38,
+      groundDetail: 'turf',            // moss on the silt banks
+      groundDetailStrength: 0.75,
+      groundDetailTint: [1.2, 1.15, 0.72],
     },
   },
 
@@ -626,6 +636,7 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       rockColor: 0x3c3c38,
       detailColor: [1.0, 0.98, 0.92],
       detailScale: 1.35,
+      groundDetail: 'grit',            // compacted gravel
     },
   },
 
@@ -708,6 +719,8 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       rockColor: 0x271836,
       detailColor: [0.94, 0.86, 1.1],
       detailScale: 1.0,
+      groundDetail: 'litter',          // fallen leaves in the vale
+      groundDetailTint: [1.45, 0.9, 1.3], // rose-violet leaves on the purple floor
     },
   },
 
@@ -786,6 +799,7 @@ export const MAP_CONFIGS: Record<MapType, MapConfig> = {
       rockColor: 0x4c4840,
       detailColor: [1.0, 0.98, 0.9],
       detailScale: 1.3,
+      groundDetail: 'grit',            // weathered stone chips + dust
     },
   },
 };

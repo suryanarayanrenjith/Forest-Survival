@@ -113,7 +113,7 @@ const PhotoMode = ({ photoCount, maxPhotos, onFilterChange, onCapture, onExit }:
           stays compact instead of overflowing with irrelevant key hints. */}
       <div className="m-safe flex justify-center pt-5">
         {IS_TOUCH ? (
-          <div className="pointer-events-auto flex items-center gap-2 rounded-full border border-white/10 bg-black/55 px-4 py-2 text-[12px] text-gray-300 backdrop-blur-md">
+          <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-white/10 bg-black/55 px-4 py-2 text-[12px] text-gray-300 backdrop-blur-md">
             <Camera className="h-4 w-4 text-emerald-300" strokeWidth={2.2} />
             <span className="font-hud font-bold tracking-[0.22em] text-white">PHOTO MODE</span>
             <span className="text-gray-500">·</span>
@@ -121,7 +121,7 @@ const PhotoMode = ({ photoCount, maxPhotos, onFilterChange, onCapture, onExit }:
             <span>Drag to look around</span>
           </div>
         ) : (
-          <div className="pointer-events-auto flex items-center gap-2.5 rounded-full border border-white/10 bg-black/55 px-4 py-2 text-[12px] text-gray-300 backdrop-blur-md">
+          <div className="pointer-events-auto flex items-center gap-2.5 rounded-lg border border-white/10 bg-black/55 px-4 py-2 text-[12px] text-gray-300 backdrop-blur-md">
             <Camera className="h-4 w-4 text-emerald-300" strokeWidth={2.2} />
             <span className="font-hud font-bold tracking-[0.22em] text-white">PHOTO MODE</span>
             <span className="text-gray-500">·</span>
@@ -162,7 +162,7 @@ const PhotoMode = ({ photoCount, maxPhotos, onFilterChange, onCapture, onExit }:
                 View captures in <span className="text-gray-300">Profile → Photos</span>
               </span>
               <span
-                className={`rounded-full border px-2.5 py-1 text-[11px] font-bold tabular-nums ${
+                className={`rounded-lg border px-2.5 py-1 text-[11px] font-bold tabular-nums ${
                   full ? 'border-rose-400/40 bg-rose-500/10 text-rose-200' : 'border-emerald-400/30 bg-emerald-500/10 text-emerald-200'
                 }`}
               >

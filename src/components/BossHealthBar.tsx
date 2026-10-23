@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { Crown, Flame } from 'lucide-react';
 
 /**
  * Top-centre boss health bar.
@@ -13,6 +14,10 @@ import { useEffect, useRef, useState } from 'react';
  * Minimap/HitMarkers pattern: the loop pushes at 60fps and this component
  * throttles itself, so tracking a boss never triggers a React re-render storm
  * in App (which re-renders the whole tree).
+ *
+ * Layout: it owns the slot directly under the FPS pill and PUBLISHES its
+ * bottom edge (subscribeBossBar / getBossBarBottom) so the combo/streak stack
+ * can drop beneath it — the two used to overlap in the top-centre lane.
  *
  * No backdrop-filter — the project bans it in-game for performance.
  */
@@ -29,6 +34,22 @@ interface BossState {
 let pushState: ((s: BossState | null) => void) | null = null;
 let lastPhase = 0;
 let phaseToken = 0;
+
+// ── Published layout (external store for the top-centre lane) ──────────────
+let barBottom = 0;
+const barListeners = new Set<() => void>();
+const publishBarBottom = (px: number) => {
+  if (px === barBottom) return;
+  barBottom = px;
+  barListeners.forEach((l) => l());
+};
+/** useSyncExternalStore subscribe: fires only when the bar appears/moves/hides. */
+export const subscribeBossBar = (listener: () => void) => {
+  barListeners.add(listener);
+  return () => { barListeners.delete(listener); };
+};
+/** Bottom edge of the boss bar in px from the viewport top (0 = not shown). */
+export const getBossBarBottom = () => barBottom;
 
 /**
  * Report the currently-tracked boss, or `null` when none is alive.
@@ -50,7 +71,12 @@ export const setBossHealth = (
   pushState({ name, health, maxHealth, phase, phaseToken });
 };
 
-const BossHealthBar = ({ isTouch = false }: { isTouch?: boolean }) => {
+// Label row + bar + breathing room; what the combo stack clears.
+const BLOCK_H = 40;
+const BAR_SHAPE = '7px 2px';
+const BAR_SHAPE_INNER = '6px 1.5px';
+
+const BossHealthBar = ({ isTouch = false, fpsVisible = false }: { isTouch?: boolean; fpsVisible?: boolean }) => {
   const [state, setState] = useState<BossState | null>(null);
   // Throttle the 60fps push down to ~15fps of actual React work — the bar is
   // a smooth CSS width transition, so it reads as continuous regardless.
@@ -76,69 +102,84 @@ const BossHealthBar = ({ isTouch = false }: { isTouch?: boolean }) => {
         setState(s);
       }
     };
-    return () => { pushState = null; };
+    return () => { pushState = null; publishBarBottom(0); };
   }, []);
+
+  // Touch keeps its original slot (the top-centre is its only safe lane);
+  // desktop sits right under the FPS pill when that is on.
+  const top = isTouch ? 56 : fpsVisible ? 40 : 12;
+  const shown = state !== null;
+  useEffect(() => {
+    publishBarBottom(shown ? top + BLOCK_H : 0);
+  }, [shown, top]);
 
   if (!state) return null;
 
   const frac = Math.max(0, Math.min(1, state.health / Math.max(1, state.maxHealth)));
   const enraged = state.phase >= 2;
+  const accent = enraged ? '#ff5a5f' : '#e07bff';
+  const fill = enraged
+    ? 'linear-gradient(90deg, #7a1418 0%, #e0343b 60%, #ff8a7a 100%)'
+    : 'linear-gradient(90deg, #5a1a8c 0%, #b23be0 60%, #f0a8ff 100%)';
+  const Icon = enraged ? Flame : Crown;
 
   return (
     <div
-      className={`pointer-events-none fixed left-1/2 -translate-x-1/2 z-[46] ${isTouch ? 'top-14' : 'top-6'}`}
-      style={{ width: isTouch ? 'min(78vw, 380px)' : 'min(46vw, 560px)' }}
+      className="pointer-events-none fixed left-1/2 z-[46] -translate-x-1/2 select-none hud-ink"
+      style={{ top, width: isTouch ? 'min(78vw, 380px)' : 'min(46vw, 560px)' }}
     >
-      <div className="flex items-baseline justify-between px-0.5 pb-1">
-        <span
-          className={`text-[11px] font-black uppercase tracking-[0.28em] ${
-            enraged ? 'text-red-300' : 'text-fuchsia-200'
-          }`}
-          style={{ textShadow: '0 1px 4px rgba(0,0,0,0.9)' }}
-        >
-          {state.name}
-        </span>
-        <span
-          className={`text-[10px] font-bold uppercase tracking-[0.2em] ${
-            enraged ? 'text-red-400/90' : 'text-fuchsia-300/70'
-          }`}
-          style={{ textShadow: '0 1px 4px rgba(0,0,0,0.9)' }}
-        >
+      {/* Name + phase */}
+      <div className="flex items-end justify-between px-0.5 pb-1.5">
+        <div className="flex min-w-0 items-center gap-2">
+          <Icon className="h-3.5 w-3.5 flex-shrink-0" style={{ color: accent, filter: `drop-shadow(0 0 5px ${accent})` }} strokeWidth={2.4} />
+          <span
+            className="font-display truncate text-[15px] font-semibold uppercase leading-none text-white"
+            style={{ letterSpacing: '0.18em', textShadow: '0 1px 6px rgba(0,0,0,0.9)' }}
+          >
+            {state.name}
+          </span>
+        </div>
+        <span className="hud-label flex-shrink-0" style={{ color: accent, textShadow: '0 1px 4px rgba(0,0,0,0.95), 0 0 10px rgba(0,0,0,0.6)' }}>
           {enraged ? 'Enraged' : `Phase ${state.phase}`}
         </span>
       </div>
 
+      {/* Bar: partial-rounded frame → lagging damage chip → live fill → ticks. The glow + phase flash live on the wrapper. */}
       <div
-        className="relative h-2.5 w-full overflow-hidden rounded-full border"
-        style={{
-          borderColor: enraged ? 'rgba(248,113,113,0.55)' : 'rgba(232,122,255,0.45)',
-          background: 'rgba(8,6,14,0.82)',
-          boxShadow: enraged
-            ? '0 0 18px rgba(248,113,113,0.35)'
-            : '0 0 16px rgba(232,90,255,0.25)',
-          animation: `bossPhaseFlash 0.5s ease-out ${state.phaseToken}`,
-        }}
+        key={state.phaseToken}
+        className="relative h-[11px] w-full"
+        style={{ animation: 'bossPhaseFlash 0.55s ease-out', filter: `drop-shadow(0 0 10px ${accent}55)` }}
       >
-        <div
-          className="h-full rounded-full transition-[width] duration-200 ease-out"
-          style={{
-            width: `${frac * 100}%`,
-            background: enraged
-              ? 'linear-gradient(90deg, #7f1d1d 0%, #ef4444 55%, #fca5a5 100%)'
-              : 'linear-gradient(90deg, #6b21a8 0%, #c026d3 55%, #f0abfc 100%)',
-          }}
-        />
-        {/* Half-way pip — where phase 2 triggers, so the spike is telegraphed. */}
-        <div
-          className="absolute top-0 h-full w-px"
-          style={{ left: '50%', background: 'rgba(255,255,255,0.4)' }}
-        />
+        <div className="absolute inset-0" style={{ borderRadius: BAR_SHAPE, background: `${accent}80` }} />
+        <div className="absolute inset-[1px]" style={{ borderRadius: BAR_SHAPE_INNER, background: 'rgba(7,6,12,0.92)' }}>
+          {/* Recent-damage chip: trails the live fill so every chunk reads. */}
+          <div
+            className="absolute inset-y-0 left-0"
+            style={{
+              width: `${frac * 100}%`,
+              background: 'rgba(255,236,214,0.78)',
+              transition: 'width 0.6s cubic-bezier(0.4, 0, 0.2, 1) 0.28s',
+            }}
+          />
+          <div
+            className="absolute inset-y-0 left-0"
+            style={{ width: `${frac * 100}%`, background: fill, transition: 'width 0.14s ease-out' }}
+          />
+          {/* Quarter ticks; the half-way tick is where phase 2 triggers. */}
+          {[25, 50, 75].map((p) => (
+            <div
+              key={p}
+              className="absolute inset-y-0 w-px"
+              style={{ left: `${p}%`, background: p === 50 ? 'rgba(255,255,255,0.55)' : 'rgba(255,255,255,0.18)' }}
+            />
+          ))}
+        </div>
       </div>
 
       <style>{`
         @keyframes bossPhaseFlash {
-          0%   { filter: brightness(2.4); }
-          100% { filter: brightness(1); }
+          0%   { filter: brightness(2.4) drop-shadow(0 0 14px ${accent}); }
+          100% { filter: brightness(1) drop-shadow(0 0 10px ${accent}55); }
         }
       `}</style>
     </div>

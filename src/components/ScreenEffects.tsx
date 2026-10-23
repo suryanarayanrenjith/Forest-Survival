@@ -251,7 +251,7 @@ const ScreenEffects = ({ health, maxHealth = 100, isVisible }: ScreenEffectsProp
       {isCriticalHealth && (
         <div className="fixed bottom-28 left-1/2 transform -translate-x-1/2 pointer-events-none z-30">
           <div
-            className="bg-red-950/90 border border-red-500/60 rounded-full px-4 py-1.5"
+            className="bg-red-950/90 border border-red-500/60 rounded-lg px-4 py-1.5"
             style={{ animation: 'pulse 0.8s ease-in-out infinite', willChange: 'opacity' }}
           >
             <div className="text-red-400 font-bold text-xs tracking-[0.15em] uppercase flex items-center gap-2">

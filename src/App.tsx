@@ -4,19 +4,24 @@
 // Moving it (or letting a formatter sort the imports) silently drops every
 // eagerly-built texture back to unfiltered. See utils/textureDefaults.ts.
 import './utils/textureDefaults';
+// MUST STAY SECOND. Installs the global shader-chunk patches (contact-hardening
+// cascaded sun shadows, height + sun-scatter fog, point-light early-out) before
+// any material can compile. See utils/AdvancedLighting.ts.
+import { configureSunShadows, setAtmosphericFog, resetAtmosphericFog, sunShadowUniforms } from './utils/AdvancedLighting';
 import { useRef, useEffect, useState, useCallback, type CSSProperties } from 'react';
 import * as THREE from 'three';
 import { GraduationCap, Play, Home, MousePointerClick, ShieldAlert } from 'lucide-react';
 import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
 import { GunModel, MELEE_CAPABLE_WEAPONS, type WeaponType as GunWeaponType, type ReloadCue, type ReloadStyle, SCOPE_TAKEOVER, OVERCLOCK_DURATION } from './utils/GunModel';
-import { MuzzleFlash, MuzzleSmoke, BulletTracer, ImpactEffect, RobotHitSparks, ExplosionEffect, FireNovaEffect, NukeEffect, AbilityCastEffect, ImpactBurst, setMuzzleLightPool, setExplosionLightPool, clearParticleGeometryPools, clearTracerGeometryPool, clearFlashSpritePool, clearSmokeSpritePool, clearExplosionRigPool, clearCastRigPool, clearBurstPairPool, getSoftSparkTexture } from './utils/Effects';
+import { MuzzleFlash, MuzzleSmoke, BulletTracer, ImpactEffect, RobotHitSparks, ExplosionEffect, FireNovaEffect, NukeEffect, AbilityCastEffect, ImpactBurst, setImpactBurstCamera, setMuzzleLightPool, setExplosionLightPool, clearParticleGeometryPools, clearTracerGeometryPool, clearFlashSpritePool, clearSmokeSpritePool, clearExplosionRigPool, clearCastRigPool, clearBurstPairPool, getSoftSparkTexture } from './utils/Effects';
 import { HackBeam, buildHackVisuals, updateHackVisuals, disposeHackVisuals } from './utils/HackVisuals';
 import { soundManager } from './utils/SoundManager';
 import { ambientMusic } from './utils/AmbientMusicSystem';
 import { gameSettingsManager, defaultUserSettings, defaultKeyBindings, type UserSettings, type KeyBindings } from './utils/GameSettingsManager';
 import { detectHardwareTier } from './utils/hardwareDetect';
 import { PostProcessingPipeline } from './utils/PostProcessing';
+import { getAtmosphereProfile } from './utils/AtmosphereProfiles';
 import { SpatialGrid } from './utils/SpatialGrid';
 import { AIBehaviorSystem } from './utils/AIBehaviorSystem';
 import { EnemyPerception } from './utils/EnemyPerception';
@@ -25,10 +30,11 @@ import { BulletDodging } from './utils/BulletDodging';
 import { WeatherSystem } from './utils/WeatherSystem';
 import { BiomeSystem } from './utils/BiomeSystem';
 import { MapAmbience } from './utils/MapAmbience';
+import { Wildlife } from './utils/Wildlife';
 import { BulletDecalSystem } from './utils/BulletDecals';
 import { createAtmosphericHazeMaterial, createSkyDomeMaterial, updateShaderTime } from './utils/Shaders';
 import { getMapConfig, getRandomMap, DEFAULT_MAP, type MapConfig, type MapType } from './utils/MapSystem';
-import { applyGroundTerrainShader, createTerrainSeed, createTerrainUniforms, resolveTerrainProfile, terrainQualityFor, terrainSegments } from './utils/TerrainSystem';
+import { applyGroundTerrainShader, createTerrainSeed, createTerrainUniforms, disposeGroundDetailTextures, resolveTerrainProfile, terrainQualityFor, terrainSegments } from './utils/TerrainSystem';
 import { TerrainInstancer } from './utils/TerrainInstancer';
 import { getHDRIEnvironmentIntensity, getHDRIEnvironmentProfile, loadHDRIEnvironment, type HDRIEnvironmentProfile } from './utils/HDRIEnvironment';
 import { MultiplayerManager, type PlayerData as MpPlayerData, type NetworkMessage, type EnemyWire } from './utils/MultiplayerManager';
@@ -1617,7 +1623,7 @@ const ForestSurvivalGame = () => {
         // "world ends here" band. The new 5×5 chunk grid loads further out
         // (~350m corner) and this density gives ~30% visibility at 350m —
         // far enough to read action, dense enough to hide pop-in.
-        fogDensity: mapConfig.hasSpecialWeather ? getSpecialFogDensity() : atmosphericSettings.fogDensity * 1.7,
+        fogDensity: mapConfig.hasSpecialWeather ? getSpecialFogDensity() : atmosphericSettings.fogDensity * 1.45,
         ambientColor: blendHexColor(atmosphericSettings.ambientColor, mapConfig.ambientLightColor, mapWeight),
         ambientIntensity: THREE.MathUtils.lerp(
           atmosphericSettings.ambientIntensity,
@@ -1955,7 +1961,16 @@ const ForestSurvivalGame = () => {
     // dead flat. Those tiers get a higher floor so the world stays legible —
     // this is the ONLY place the two lighting models differ, and it keeps
     // ULTRA LOW looking deliberate rather than broken.
-    const AMBIENT_FLOOR = graphicsPreset.shadowsEnabled ? 0.30 : 0.55;
+    //
+    // DEEP-SHADOW PASS: with contact-hardening cascades + SSAO + shadowed
+    // volumetrics carrying the form, the unshadowed fill terms were the last
+    // thing lifting shadows to grey. Ambient, sky and IBL fill all drop on the
+    // shadowed tiers so a shadow reads ~10× darker than sunlit ground — the
+    // Cyberpunk / Control direct-to-indirect ratio. Shadowless tiers keep the
+    // higher floor (nothing to protect, and a lone key would read dead flat).
+    const AMBIENT_FLOOR = graphicsPreset.shadowsEnabled ? 0.1 : 0.55;
+    // Image-based light is unshadowed too: scale its diffuse + specular fill.
+    const ENV_FILL_SCALE = graphicsPreset.shadowsEnabled ? 0.52 : 1.0;
     const ambientLight = new THREE.AmbientLight(
       renderAtmosphere.ambientColor,
       renderAtmosphere.ambientIntensity * AMBIENT_FLOOR,
@@ -1979,41 +1994,135 @@ const ForestSurvivalGame = () => {
     );
     mainLight.castShadow = graphicsPreset.shadowsEnabled;
 
-    // Shadow settings based on graphics quality. Bias values restored to
-    // SAFER ranges — the previous tighter values were causing shadow acne
-    // on dynamic enemies (random black patches on robot bodies as they
-    // moved through the shadow frustum). Keep PCF soft penumbra for that
-    // AAA "sun directional shadow" feel.
-    mainLight.shadow.camera.near = 1;
-    mainLight.shadow.camera.far = graphicsPreset.viewDistance * 2;
-    // Shadow frustum size derived from the EFFECTIVE shadow-map resolution so a
-    // CUSTOM mix stays coherent (a bigger map covers more ground at the same
-    // texel density): 4096→120, 2048→100, 1024→72, ≤512→48.
+    // ── CASCADED CONTACT-HARDENING SUN SHADOWS ───────────────────────────
+    // Crispness is texel DENSITY (map resolution over the ground it covers),
+    // so one big frustum is always either blurry up close or clipped far out.
+    // High / Ultra now split it: the key light renders a TIGHT near cascade
+    // (~2 cm texels on High) filtered with PCSS — razor contact where a trunk
+    // meets the ground, wide soft penumbrae under a tall canopy — and a
+    // zero-intensity twin light renders a WIDE far cascade for the distant
+    // forest. The shader patch in AdvancedLighting.ts shades the twin's map
+    // only; its BRDF is never evaluated, so this is NOT a fill light (see the
+    // KEY + SKY note below — that invariant still holds). Medium keeps a
+    // single, tighter cascade with a rotated soft filter; Low keeps the stock
+    // basic map. Everything keys off the EFFECTIVE map size so custom mixes
+    // stay coherent.
     const sms = graphicsPreset.shadowMapSize;
-    // TIGHTENED ~20% across every tier (was 120/100/72/48). Shadow crispness is
-    // texel DENSITY — map resolution divided by the world area it covers — so
-    // shrinking the frustum at a fixed map size buys ~55% more texels per metre
-    // for exactly zero additional cost. That is the other half of "the shadows
-    // feel faded": they were both washed out by the old fill lights AND
-    // under-sampled. Shrinking it further would start clipping shadows of tall
-    // trees out of the frustum at the edges of the visible range.
-    const shadowRange = sms >= 4096 ? 96 : sms >= 2048 ? 80 : sms >= 1024 ? 58 : 40;
-    mainLight.shadow.camera.left = -shadowRange;
-    mainLight.shadow.camera.right = shadowRange;
-    mainLight.shadow.camera.top = shadowRange;
-    mainLight.shadow.camera.bottom = -shadowRange;
-    mainLight.shadow.mapSize.width = graphicsPreset.shadowMapSize;
-    mainLight.shadow.mapSize.height = graphicsPreset.shadowMapSize;
-    mainLight.shadow.bias = -0.00022;
-    mainLight.shadow.normalBias = 0.04;
-    // Tighter shadow radius (less penumbra) = harder, more defined shadow
-    // edges — the AAA "crisp directional shadow" look. Scaled with the map size
-    // (same source as the frustum) so custom mixes stay consistent.
+    const shadowTierUltra = sms >= 4096;
+    const shadowTierHigh = sms >= 2048;
+    const useFarCascade = graphicsPreset.shadowsEnabled && shadowTierHigh && !lowTier;
+    // The light sits SHADOW_DISTANCE back along its own direction from a
+    // texel-snapped focus point; the shadow camera spans SHADOW_DEPTH.
+    const SHADOW_DISTANCE = 260;
+    const SHADOW_DEPTH = 520;
+    const shadowNearExtent = shadowTierUltra ? 30 : shadowTierHigh ? 24 : sms >= 1024 ? 46 : 40;
+    const shadowFarExtent = shadowTierUltra ? 150 : 118;
+    const shadowFarSize = 2048;
+    mainLight.shadow.camera.near = 1;
+    mainLight.shadow.camera.far = SHADOW_DEPTH;
+    mainLight.shadow.camera.left = -shadowNearExtent;
+    mainLight.shadow.camera.right = shadowNearExtent;
+    mainLight.shadow.camera.top = shadowNearExtent;
+    mainLight.shadow.camera.bottom = -shadowNearExtent;
+    mainLight.shadow.mapSize.width = sms;
+    mainLight.shadow.mapSize.height = sms;
+    // Receiver-plane bias in the patched filter handles slope acne, so the
+    // constant bias can stay tight (no peter-panning under robots' feet).
+    mainLight.shadow.bias = useFarCascade ? -0.0002 : -0.00022;
+    mainLight.shadow.normalBias = useFarCascade ? 0.025 : 0.04;
+    // Only read by the stock filter (Low tier's basic map ignores it too).
     mainLight.shadow.radius = sms >= 4096 ? 1.6 : sms >= 2048 ? 1.3 : sms >= 1024 ? 1.0 : 0.7;
     mainLight.shadow.camera.updateProjectionMatrix();
     scene.add(mainLight);
     // Target follows player so directional shadows stay centered on the camera
     scene.add(mainLight.target);
+    // Far cascade owner — added straight after the sun so three orders it as
+    // shadow #1 (light #0 must be the sun: the patched chunk shades index 0).
+    let farShadowLight: THREE.DirectionalLight | null = null;
+    if (useFarCascade) {
+      farShadowLight = new THREE.DirectionalLight(0x000000, 0);
+      farShadowLight.castShadow = true;
+      farShadowLight.shadow.mapSize.set(shadowFarSize, shadowFarSize);
+      const fc = farShadowLight.shadow.camera;
+      fc.left = -shadowFarExtent;
+      fc.right = shadowFarExtent;
+      fc.top = shadowFarExtent;
+      fc.bottom = -shadowFarExtent;
+      fc.near = 1;
+      fc.far = SHADOW_DEPTH;
+      fc.updateProjectionMatrix();
+      farShadowLight.shadow.bias = -0.0006;
+      farShadowLight.shadow.normalBias = 0.12;
+      // Refreshed every other frame from the render loop (it changes slowly).
+      farShadowLight.shadow.autoUpdate = false;
+      farShadowLight.shadow.needsUpdate = true;
+      scene.add(farShadowLight);
+      scene.add(farShadowLight.target);
+    }
+    configureSunShadows({
+      nearExtent: shadowNearExtent,
+      nearSize: sms,
+      farSize: useFarCascade ? shadowFarSize : 0,
+      depthRange: SHADOW_DEPTH - 1,
+      // PCSS on High / Ultra only; Medium gets a fixed ~1.4-texel soft filter.
+      angularRadius: useFarCascade ? (shadowTierUltra ? 0.011 : 0.012) : 0,
+      minRadiusTexels: useFarCascade ? 1.0 : 1.4,
+      blockerTaps: shadowTierUltra ? 16 : 12,
+      filterTaps: shadowTierUltra ? 24 : useFarCascade ? 18 : 12,
+      farTaps: shadowTierUltra ? 8 : 6,
+    });
+    // Texel-snapped cascade placement: each cascade's origin is quantised to
+    // its own shadow-texel grid in light space so shadows never shimmer or
+    // crawl while the player moves. Allocation-free (runs every frame).
+    const _shadowRight = new THREE.Vector3();
+    const _shadowUp = new THREE.Vector3();
+    const _shadowSnap = new THREE.Vector3();
+    const _shadowLightDir = new THREE.Vector3();
+    const _worldUp = new THREE.Vector3(0, 1, 0);
+    let farShadowFrame = 0;
+    const placeShadowLight = (
+      light: THREE.DirectionalLight,
+      focusX: number,
+      focusZ: number,
+      extent: number,
+      mapSize: number,
+    ) => {
+      const texel = (extent * 2) / Math.max(1, mapSize);
+      _shadowRight.crossVectors(_worldUp, _shadowLightDir);
+      if (_shadowRight.lengthSq() < 1e-6) _shadowRight.set(1, 0, 0);
+      _shadowRight.normalize();
+      _shadowUp.crossVectors(_shadowLightDir, _shadowRight).normalize();
+      _shadowSnap.set(focusX, 0, focusZ);
+      const fr = Math.round(_shadowSnap.dot(_shadowRight) / texel) * texel;
+      const fu = Math.round(_shadowSnap.dot(_shadowUp) / texel) * texel;
+      const fd = _shadowSnap.dot(_shadowLightDir);
+      _shadowSnap.set(0, 0, 0)
+        .addScaledVector(_shadowRight, fr)
+        .addScaledVector(_shadowUp, fu)
+        .addScaledVector(_shadowLightDir, fd);
+      light.target.position.copy(_shadowSnap);
+      light.position.copy(_shadowSnap).addScaledVector(_shadowLightDir, SHADOW_DISTANCE);
+      light.target.updateMatrixWorld();
+    };
+    const updateShadowCascades = (focusX: number, focusZ: number) => {
+      _shadowLightDir.set(
+        renderAtmosphere.lightPosition.x,
+        renderAtmosphere.lightPosition.y,
+        renderAtmosphere.lightPosition.z,
+      ).normalize();
+      placeShadowLight(mainLight, focusX, focusZ, shadowNearExtent, sms);
+      if (farShadowLight) {
+        // Far cascade: refresh every other frame (it changes slowly).
+        farShadowFrame++;
+        if ((farShadowFrame & 1) === 0) {
+          placeShadowLight(farShadowLight, focusX, focusZ, shadowFarExtent, shadowFarSize);
+          farShadowLight.shadow.needsUpdate = true;
+        }
+      }
+    };
+    updateShadowCascades(camera.position.x, camera.position.z);
+    // The volumetric pass samples these same maps to carve the light shafts.
+    postFX?.setShadowLights(graphicsPreset.shadowsEnabled ? mainLight : null, farShadowLight);
 
     // ── SKY / INDIRECT ────────────────────────────────────────────────────
     // The hemisphere is now the whole indirect model, and it does the job the
@@ -2032,7 +2141,7 @@ const ForestSurvivalGame = () => {
       .lerp(skyColor, 0.45)
       .multiplyScalar(0.42 * groundBounceScale);
     // Carries the indirect budget the old ambient used to waste on flat fill.
-    const SKY_FILL_SCALE = 1.15;
+    const SKY_FILL_SCALE = graphicsPreset.shadowsEnabled ? 0.58 : 1.15;
     const skyLight = new THREE.HemisphereLight(
       skyColor.getHex(),
       groundColor.getHex(),
@@ -2110,11 +2219,16 @@ const ForestSurvivalGame = () => {
     // disc on whatever surface is in front of the player. On LOW the
     // gun reads fine with ambient + hemisphere alone.
     const enableGunFillLights = !lowTier;
-    const gunKeyLight = new THREE.PointLight(0xffe2b2, enableGunFillLights ? 1.0 : 0, 2.4, 2.0);
+    // The viewmodel's steel is physically lit now (see GunModel correctGunPbr),
+    // so these fills only need to lift the grip/receiver a touch. At their old
+    // strength the key sat ~20 cm from the grip and inverse-square blew the
+    // polymer out to a beige hot spot.
+    const GUN_FILL_SCALE = 0.3;
+    const gunKeyLight = new THREE.PointLight(0xffe2b2, enableGunFillLights ? 1.0 * GUN_FILL_SCALE : 0, 2.4, 2.0);
     gunKeyLight.position.set(0.35, -0.15, -0.4);
     camera.add(gunKeyLight);
     // Cool rim from the other side gives the gun a clean two-light setup.
-    const gunRimLight = new THREE.PointLight(0xb8d6ff, enableGunFillLights ? 0.45 : 0, 2.2, 2.0);
+    const gunRimLight = new THREE.PointLight(0xb8d6ff, enableGunFillLights ? 0.45 * GUN_FILL_SCALE : 0, 2.2, 2.0);
     gunRimLight.position.set(-0.3, 0.05, -0.5);
     camera.add(gunRimLight);
 
@@ -2136,27 +2250,27 @@ const ForestSurvivalGame = () => {
       switch (weaponType) {
         case 'pistol':
           gunKeyLight.position.set(0.30, -0.15, -0.40);
-          gunKeyLight.intensity = 1.0;
+          gunKeyLight.intensity = 1.0 * GUN_FILL_SCALE;
           gunKeyLight.distance = 2.4;
           gunRimLight.position.set(-0.28, 0.05, -0.50);
-          gunRimLight.intensity = 0.45;
+          gunRimLight.intensity = 0.45 * GUN_FILL_SCALE;
           break;
         case 'rifle':
         case 'smg':
         case 'subverter':
           gunKeyLight.position.set(0.32, -0.12, -0.10);
-          gunKeyLight.intensity = 0.55;
+          gunKeyLight.intensity = 0.55 * GUN_FILL_SCALE;
           gunKeyLight.distance = 1.9;
           gunRimLight.position.set(-0.28, 0.05, -0.20);
-          gunRimLight.intensity = 0.25;
+          gunRimLight.intensity = 0.25 * GUN_FILL_SCALE;
           break;
         case 'shotgun':
         case 'sniper':
           gunKeyLight.position.set(0.30, -0.10, 0.05);
-          gunKeyLight.intensity = 0.42;
+          gunKeyLight.intensity = 0.42 * GUN_FILL_SCALE;
           gunKeyLight.distance = 1.7;
           gunRimLight.position.set(-0.26, 0.05, -0.05);
-          gunRimLight.intensity = 0.20;
+          gunRimLight.intensity = 0.20 * GUN_FILL_SCALE;
           break;
         case 'minigun':
         case 'launcher':
@@ -2164,24 +2278,19 @@ const ForestSurvivalGame = () => {
           // it lights the receiver from behind and never touches the
           // long muzzle. Lowest intensity of the lot.
           gunKeyLight.position.set(0.28, -0.10, 0.18);
-          gunKeyLight.intensity = 0.35;
+          gunKeyLight.intensity = 0.35 * GUN_FILL_SCALE;
           gunKeyLight.distance = 1.5;
           gunRimLight.position.set(-0.26, 0.05, 0.10);
-          gunRimLight.intensity = 0.18;
+          gunRimLight.intensity = 0.18 * GUN_FILL_SCALE;
           break;
       }
     };
 
-    // Precompute base light offsets so lights can follow the player
-    const mainLightBaseOffset = new THREE.Vector3(
-      renderAtmosphere.lightPosition.x,
-      renderAtmosphere.lightPosition.y,
-      renderAtmosphere.lightPosition.z
-    );
     // Scratch colour for the per-frame hemisphere sync — the ground-bounce
     // tint is a blend of two colours, and doing it in place keeps that sync
     // allocation-free (it runs every frame).
     const _skyScratch = new THREE.Color();
+    const _wildSun = new THREE.Vector3(); // scratch for the wildlife sun vector
 
     // ── TERRAIN SHAPE + GROUND-TEXTURE IDENTITY (per map, per run) ─────────
     // A seeded, WORLD-LOCKED height field (TerrainSystem) displaces the ground
@@ -2240,7 +2349,7 @@ const ForestSurvivalGame = () => {
       uSunDirection: { value: initialSunDirection.clone() },
       uSunColor: { value: new THREE.Color(1.0, 0.94, 0.78) },
       uIncidentBoost: { value: (isDay ? 0.12 : 0.04) * (renderProfile.groundSpecular ?? 1.0) },
-      uSpecularStrength: { value: (isDay ? 0.42 : 0.14) * (renderProfile.groundSpecular ?? 1.0) },
+      uSpecularStrength: { value: (isDay ? 0.16 : 0.06) * (renderProfile.groundSpecular ?? 1.0) },
       uNormalStrength: { value: 0.26 * (renderProfile.groundNormal ?? 1.0) },
       uPatchScale: { value: 0.035 },
       uPatchStrength: { value: 0.18 * (renderProfile.groundPatch ?? 1.0) },
@@ -2403,7 +2512,7 @@ const ForestSurvivalGame = () => {
         fallbackEnvProfile,
         renderAtmosphere.sunVisible,
         renderAtmosphere.ambientIntensity,
-      ) * (renderProfile.environmentIntensity ?? 1.0);
+      ) * (renderProfile.environmentIntensity ?? 1.0) * ENV_FILL_SCALE;
       pmrem.dispose();
     } catch (err) {
       console.warn('[App] Environment map generation failed:', err);
@@ -2432,7 +2541,7 @@ const ForestSurvivalGame = () => {
           loadedEnvironment.profile,
           renderAtmosphere.sunVisible,
           renderAtmosphere.ambientIntensity,
-        ) * (renderProfile.environmentIntensity ?? 1.0);
+        ) * (renderProfile.environmentIntensity ?? 1.0) * ENV_FILL_SCALE;
       })
       .catch((err) => {
         console.warn('[App] HDRI environment loading failed; using generated sky IBL fallback:', err);
@@ -3458,8 +3567,11 @@ const ForestSurvivalGame = () => {
     // paths above so the gun fill always matches the active weapon.
     setGunFillForWeapon('pistol');
 
-    // Add gun light
-    const gunLight = new THREE.PointLight(0xffffff, 0, 5);
+    // Add gun light — a warm, short-reach flash on the hands and whatever is
+    // right in front of the barrel (2 cd; it was a white 5 cd that, with the
+    // muzzle light, washed point-blank targets out to white).
+    const GUN_FLASH_INTENSITY = 2;
+    const gunLight = new THREE.PointLight(0xffd2a0, 0, 4);
     gunLight.position.set(0.3, -0.3, -0.5);
     camera.add(gunLight);
 
@@ -3586,6 +3698,45 @@ const ForestSurvivalGame = () => {
       );
       grip.position.set(0.12, 0, 0.12);
       shieldMesh.add(grip);
+
+      // The hand that HOLDS it. While the shield is braced the support arm is
+      // off the weapon (one-handed carry), so the left glove has to be on this
+      // grip — seen through the polycarbonate, fist closed round the handle,
+      // forearm running back out of frame. Same glove/sleeve tones as the
+      // viewmodel arms so the two read as one person.
+      {
+        const gloveMat = new THREE.MeshStandardMaterial({ color: 0x15171b, metalness: 0.28, roughness: 0.55 });
+        const sleeveMat = new THREE.MeshStandardMaterial({ color: 0x2b2e26, metalness: 0.12, roughness: 0.84 });
+        shieldFoldMats.push(gloveMat, sleeveMat);
+        const hand = new THREE.Group();
+        hand.position.set(0.12, -0.02, 0.15);
+        const fist = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.12, 0.085), gloveMat);
+        hand.add(fist);
+        // Four finger rolls wrapped round the handle + thumb over the top.
+        for (let fi = 0; fi < 4; fi++) {
+          const f = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.028, 0.06), gloveMat);
+          f.position.set(-0.05, 0.042 - fi * 0.028, -0.012);
+          f.rotation.y = 0.35;
+          hand.add(f);
+        }
+        const thumb = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.06, 0.032), gloveMat);
+        thumb.position.set(-0.035, 0.075, 0.02);
+        thumb.rotation.z = 0.5;
+        hand.add(thumb);
+        const knuckle = new THREE.Mesh(
+          new THREE.BoxGeometry(0.095, 0.11, 0.02),
+          new THREE.MeshStandardMaterial({ color: 0x0b0c0e, metalness: 0.35, roughness: 0.36 }),
+        );
+        shieldFoldMats.push(knuckle.material as THREE.Material);
+        knuckle.position.set(-0.03, 0, -0.045);
+        hand.add(knuckle);
+        const forearm = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.065, 0.62, 12), sleeveMat);
+        forearm.rotation.x = Math.PI / 2 - 0.35;
+        forearm.rotation.z = -0.35;
+        forearm.position.set(0.11, -0.1, 0.3);
+        hand.add(forearm);
+        shieldMesh.add(hand);
+      }
 
       // ── FOLDING SECTIONS ────────────────────────────────────────────────
       // Two side wings hinged on the frame's vertical edges plus a bottom skirt
@@ -3730,6 +3881,12 @@ const ForestSurvivalGame = () => {
         scene, selectedMap, graphicsPreset.particleDensity, graphicsPreset.pixelRatio,
       );
     }
+    // Wildlife: bird flocks circling overhead (every tier with post-processing
+    // — a few dozen vertices) and falling leaves on the wooded maps (High /
+    // Ultra). Built here, before the warmup compile, like the ambience above.
+    const wildlife: Wildlife | null = graphicsPreset.postProcessing
+      ? new Wildlife(scene, selectedMap, graphicsPreset.terrainDetail >= 1.0)
+      : null;
 
     // === RUN MODIFIER (single-run mutator) ===
     // Read once on scene init. The modifier is locked for the whole run so
@@ -3888,6 +4045,8 @@ const ForestSurvivalGame = () => {
     // Game state. Ammo starts at the pistol's max-ammo cap, with the
     // One-in-the-Chamber modifier (if active) clamping it to 1.
     let health = 100;
+    // Dev-only invulnerability for automated visual checks (see window.__fs).
+    const devTest: { god: boolean; fakeBoss: { hp: number; phase: number } | null } = { god: false, fakeBoss: null };
     let ammo = runMods.startAmmoMax ?? 12;
     let score = 0;
     let enemiesKilled = 0;
@@ -4212,8 +4371,33 @@ const ForestSurvivalGame = () => {
     };
 
     // Camera shake system
+    // TRAUMA SHAKE ("juicing your cameras", Eiserloh, GDC 2016): hits add
+    // TRAUMA (cameraShakeIntensity, capped ~0.32), and the camera ROTATES by
+    // smooth noise scaled by trauma² — small arms barely move the view, a
+    // close explosion really rocks it — while trauma decays with real time.
+    // The old version jittered camera POSITION with per-frame white noise:
+    // that read as a cheap rattle, decayed faster on high-refresh screens, and
+    // its random offsets accumulated into the player's position (tiny drift).
     let cameraShakeIntensity = 0;
-    const cameraShakeDecay = 0.9;
+    const SHAKE_TRAUMA_MAX = 0.32;
+    let shakeTime = 0;
+    const _shakeHash = (n: number) => {
+      const x = Math.sin(n * 127.1 + 311.7) * 43758.5453;
+      return x - Math.floor(x);
+    };
+    // Smooth 1-D value noise in [-1, 1] (quintic fade) — allocation-free.
+    const shakeNoise = (t: number, seed: number) => {
+      const i = Math.floor(t);
+      const f = t - i;
+      const u = f * f * f * (f * (f * 6 - 15) + 10);
+      const a = _shakeHash(i + seed);
+      const b = _shakeHash(i + 1 + seed);
+      return (a + (b - a) * u) * 2 - 1;
+    };
+    // 0..1 eased sprint state (updated by the movement block, read by the FOV
+    // block next frame) — drives the sprint FOV widen.
+    let sprintFovBlend = 0;
+    const SPRINT_FOV_BOOST = 6;
 
     // Game objects
     const enemies: Enemy[] = [];
@@ -4835,7 +5019,7 @@ const ForestSurvivalGame = () => {
         mesh: enemyGroup, body: torso, leftArm, rightArm, leftLeg, rightLeg, head, poolId,
         // Shooter archetypes only — the energy lance's bore anchor and its
         // emissive charge set (undefined on every melee archetype).
-        muzzle, muzzleGlow, weaponGlow,
+        muzzle, muzzleGlow, weaponGlow, leftClaw, rightClaw,
       } = acquiredMesh;
 
       // A recycled pooled mesh may still carry a frost-shell child (Cryo Freeze)
@@ -5088,6 +5272,10 @@ const ForestSurvivalGame = () => {
         muzzle,
         muzzleGlow,
         weaponGlow,
+        leftClaw,
+        rightClaw,
+        clawCurl: 0.45,
+        clawPhase: Math.random() * 100,
         // AI state - prevent clumping
         targetPosition: new THREE.Vector3(x, 0, z),
         spreadOffset: new THREE.Vector2(
@@ -5293,6 +5481,8 @@ const ForestSurvivalGame = () => {
       scene.add(ml);
       muzzleLightPool.push({ light: ml, inUse: false });
     }
+    // Impact bursts shrink + dim right in front of the lens (see Effects).
+    setImpactBurstCamera(camera);
     setMuzzleLightPool(
       () => {
         for (const slot of muzzleLightPool) {
@@ -8468,7 +8658,7 @@ const ForestSurvivalGame = () => {
         const bulletsToFire = currentWeapon === 'shotgun' ? 5 : 1;
 
         // Gun flash — timestamp cutoff, cleared in the render loop (no timer).
-        gunLight.intensity = 5;
+        gunLight.intensity = GUN_FLASH_INTENSITY;
         gunLightOffAt = nowShot + 50;
 
         const isLauncher = currentWeapon === 'launcher';
@@ -9761,6 +9951,7 @@ const ForestSurvivalGame = () => {
     // are its feedback. Death, spectate and MP bookkeeping stay identical.
     const takeEnemyDamage = (incoming: number, enemyLabel: string, enemyPos: THREE.Vector3 | null, isRadiation = false) => {
       if ((phantomActive && !isRadiation) || invincibleActive || isTutorialMode || playerEliminated) return;
+      if (import.meta.env.DEV && devTest.god) return;
       // Second Wind grace window — briefly immune after cheating death so the
       // player isn't instantly re-killed by the same swarm. Radiation ignores it.
       if (!isRadiation && Date.now() < secondWindInvulnUntil) return;
@@ -11254,6 +11445,160 @@ const ForestSurvivalGame = () => {
       }
     };
 
+    // ── VOLUMETRIC ATMOSPHERE (per frame, allocation-free) ────────────────
+    // Feeds the participating medium: the raymarched pass in PostProcessing
+    // (Medium+) gets the sun's radiance + its cascaded shadow maps, so the
+    // canopy carves real light shafts through the haze and shadowed air stays
+    // dark — the Frostbite / Cyberpunk volumetric look. The material fog (every
+    // tier, including Low) gets analytic height fog + a sun-tinted forward
+    // scatter. Map identity comes from AtmosphereProfiles; the weather front
+    // and night modulate it live.
+    const atmosphereProfile = getAtmosphereProfile(selectedMap);
+    const _fogSunTint = new THREE.Color();
+    const _glowWorld = new THREE.Vector3();
+    let volWindT = 0;
+    const updateVolumetricAtmosphere = (delta: number, sunDirection: THREE.Vector3) => {
+      const ap = atmosphereProfile;
+      const night = !renderAtmosphere.sunVisible;
+      // Canopy translucency follows the live key light (sun or moon).
+      biomeSystem.setFoliageSun(sunDirection, mainLight.color, mainLight.intensity);
+      const thick = THREE.MathUtils.clamp(weatherMods.fogDensityMult, 0.5, 3.0);
+      const shafts = THREE.MathUtils.clamp(weatherMods.godRayMult, 0.15, 1.3);
+      const fogColor = (scene.fog as THREE.FogExp2).color;
+      // Material fog glows toward the key light, tinted by it.
+      _fogSunTint.copy(fogColor).lerp(mainLight.color, 0.62).multiplyScalar(night ? 1.05 : 1.3);
+      setAtmosphericFog(
+        ap.heightFalloff,
+        ap.heightFog * thick * (night ? 1.2 : 1.0),
+        -1.5,
+        ap.fogSun * shafts * (night ? 0.4 : 1.0),
+        sunDirection,
+        _fogSunTint,
+      );
+
+      if (!postFX) return;
+      const vol = postFX.volumetricInputs;
+      vol.enabled = postFX.volumetricsAvailable && !photoModeRef.current;
+      if (!vol.enabled) return;
+      volWindT += delta * (0.6 + weatherMods.rainAmount * 0.8 + weatherMods.tintStrength * 1.2);
+      vol.sunDir.copy(sunDirection);
+      vol.sunRadiance.copy(mainLight.color).multiplyScalar(
+        mainLight.intensity * ap.sunScatter * shafts * (night ? 0.55 : 1.0),
+      );
+      // In-scattered sky radiance = the map's own fog colour, so the haze body
+      // converges to exactly the tone the material fog fades to.
+      vol.ambient.copy(fogColor).multiplyScalar(ap.ambientScatter * (night ? 0.95 : 0.85));
+      vol.density = ap.density * thick * (night ? 1.12 : 1.0);
+      vol.heightDensity = ap.groundFog * Math.sqrt(thick) * (night ? 1.25 : 1.0);
+      vol.heightFalloff = ap.groundFalloff;
+      vol.baseHeight = 0;
+      vol.anisotropy = night ? Math.min(ap.anisotropy, 0.6) : ap.anisotropy;
+      vol.noiseStrength = ap.noise;
+      vol.wind.set(volWindT * 0.0045, volWindT * 0.0019);
+      vol.maxDistance = postFX.volumetricRange;
+
+      // Local lights that scatter in the haze: explosions first (biggest),
+      // then muzzle flashes, then the brightest nearby pickup glows.
+      let slot = 0;
+      const pushGlow = (light: THREE.PointLight, k: number) => {
+        if (slot >= vol.glows.length || light.intensity <= 0.05) return;
+        light.getWorldPosition(_glowWorld);
+        if (_glowWorld.distanceToSquared(camera.position) > 70 * 70) return;
+        const g = vol.glows[slot++];
+        g.position.copy(_glowWorld);
+        g.color.copy(light.color);
+        g.energy = light.intensity * k;
+      };
+      for (const s of explosionLightPool) if (s.inUse) pushGlow(s.light, 0.9);
+      // (Factors compensate the tamed surface intensities — muzzle 20→6 cd,
+      // gun flash 5→2 cd — so the flash still blooms in the air as before.)
+      for (const s of muzzleLightPool) if (s.inUse) pushGlow(s.light, 5.3);
+      pushGlow(gunLight, 5.0);
+      for (const s of pickupLightPool) if (s.inUse) pushGlow(s.light, 1.2);
+      for (let i = slot; i < vol.glows.length; i++) vol.glows[i].energy = 0;
+    };
+    // Prime once so the warmup frames already render the final atmosphere.
+    updateVolumetricAtmosphere(0, computeSunDirection());
+
+    // ── DEV-ONLY TEST HOOKS ────────────────────────────────────────────────
+    // Deterministic camera / invulnerability / clock control for automated
+    // visual checks (window.__fs in the console). `import.meta.env.DEV` is a
+    // build-time constant, so production bundles drop this block entirely.
+    if (import.meta.env.DEV) {
+      (window as unknown as { __fs?: unknown }).__fs = {
+        view: (yawDeg: number, pitchDeg = 0) => {
+          euler.y = THREE.MathUtils.degToRad(yawDeg);
+          euler.x = THREE.MathUtils.degToRad(pitchDeg);
+        },
+        god: (on = true) => { devTest.god = on; },
+        time: (hour: number) => { dayCycleSystem.setTime(hour); },
+        // A/B switches for visual debugging: PCSS ↔ fixed PCF, and raw
+        // overrides of the ground shader's numeric terrain uniforms.
+        pcss: (on = true) => {
+          const p = sunShadowUniforms.fsSunPcss as { x: number; savedX?: number };
+          if (!on) { p.savedX = p.savedX ?? p.x; p.x = 0; } else if (p.savedX !== undefined) p.x = p.savedX;
+        },
+        terrain: (name: string, value: number) => {
+          const u = terrainUniforms[name];
+          if (u && typeof u.value === 'number') u.value = value;
+        },
+        hitMarker: (kill = false) => addHitMarker(false, kill),
+        // Viewmodel checks: equip a weapon, raise the riot shield, start a
+        // reload ('dry' = empty mag), freeze the reload playhead (null = run).
+        weapon: (w: string) => {
+          if (!WEAPONS[w]) return false;
+          if (!unlockedWeapons.includes(w)) unlockedWeapons.push(w);
+          currentWeapon = w;
+          ammo = effectiveMaxAmmo(w);
+          gunModel.switchWeapon(w as GunWeaponType);
+          setGunFillForWeapon(w);
+          return true;
+        },
+        shield: (on = true) => {
+          shieldActive = on;
+          shieldEndTime = Date.now() + (on ? 600000 : 0);
+          shieldAbsorb = SHIELD_ABSORB_MAX;
+        },
+        reload: (dry = true) => {
+          if (dry) ammo = 0; else ammo = Math.max(1, Math.floor(effectiveMaxAmmo(currentWeapon) / 2));
+          return startReload();
+        },
+        reloadAt: (ra: number | null) => { gunModel.debugReloadAt = ra; },
+        // Overlay previews: fake boss bar (hp 0..1, 0 = off), intro card, achievement.
+        boss: (hp = 0.62, phase = 1) => { devTest.fakeBoss = hp > 0 ? { hp, phase } : null; },
+        intro: () => setEnemyIntro({
+          id: Date.now(), name: 'Bulwark', tag: 'SHIELDED · SLOW', accent: '#5fd8ff', icon: 'shield',
+          blurb: 'Frontal shield soaks your rounds — flank it or blow it open.',
+        }),
+        achievement: () => setAchievementQueue((prev) => [...prev, {
+          id: 'dev_preview', name: 'Untouchable', description: 'Clear a wave without taking damage.',
+          icon: '', unlocked: true, progress: 1, target: 1, reward: '+500 XP', rarity: 'epic', queueId: Date.now(),
+        }]),
+        // Point the view at the nearest live enemy's chest; returns its distance.
+        aimNearest: () => {
+          let best: Enemy | null = null;
+          let bestD = Infinity;
+          for (const e of enemies) {
+            if (e.dead) continue;
+            const d = e.mesh.position.distanceToSquared(camera.position);
+            if (d < bestD) { bestD = d; best = e; }
+          }
+          if (!best) return -1;
+          const dx = best.mesh.position.x - camera.position.x;
+          const dz = best.mesh.position.z - camera.position.z;
+          const dy = best.mesh.position.y + 1.2 - camera.position.y;
+          euler.y = Math.atan2(-dx, -dz);
+          euler.x = Math.atan2(dy, Math.hypot(dx, dz));
+          return +Math.sqrt(bestD).toFixed(1);
+        },
+        state: () => ({
+          health, wave, enemies: enemies.length, score, kills: enemiesKilled,
+          x: +camera.position.x.toFixed(2), z: +camera.position.z.toFixed(2),
+          hour: +dayCycleSystem.getCurrentTime().toFixed(2),
+        }),
+      };
+    }
+
     const animate = () => {
       animationId = requestAnimationFrame(animate);
 
@@ -11497,10 +11842,15 @@ const ForestSurvivalGame = () => {
       // crosses the bloom threshold uniformly. Rain pushes it further so a
       // downpour leaves the whole arena reading as slick, reflective wet
       // ground (and gloom leaves a damp sheen).
+      // Dry values are a third of the old ones: the glint's half-vector used
+      // to be built from mismatched spaces, so it rarely showed and was tuned
+      // hot. Computed correctly it sits exactly where you look toward the sun,
+      // and at the old strength dry grass read as wet plastic. The wet
+      // multiplier is raised to match, so a soaked floor glints as before.
       groundShaderUniforms.uSpecularStrength.value = (isNightShader
-        ? 0.14 * (renderProfile.groundSpecular ?? 1.0)
-        : (0.28 + sunAlt * 0.26) * (renderProfile.groundSpecular ?? 1.0))
-        * (1 + groundWetness * 1.6);
+        ? 0.06 * (renderProfile.groundSpecular ?? 1.0)
+        : (0.08 + sunAlt * 0.1) * (renderProfile.groundSpecular ?? 1.0))
+        * (1 + groundWetness * 6.5);
       groundShaderUniforms.uNormalStrength.value = 0.26 * (renderProfile.groundNormal ?? 1.0);
       groundShaderUniforms.uPatchStrength.value = 0.18 * (renderProfile.groundPatch ?? 1.0);
       groundShaderUniforms.uIsNight.value = isNightShader ? 1.0 : 0.0;
@@ -11519,23 +11869,14 @@ const ForestSurvivalGame = () => {
       biomeSystem.updateGroundMaterial(ground, mapConfig.primaryBiome, getGroundOverride());
       groundMaterial.emissiveIntensity = renderAtmosphere.sunVisible ? 0.0 : 0.12;
 
-      // Update main light — position follows player so shadow frustum stays on-screen.
-      // Multiplier matches the init-time 1.6× so the bright-sun look is
-      // preserved across day-cycle transitions (don't overwrite!).
+      // Update main light. The multiplier MUST match the build-time
+      // KEY_INTENSITY_SCALE × keyBoost: this used to reset the key to 1.6×
+      // after the first frame, silently running the sun ~25% dimmer than the
+      // KEY + SKY rig was balanced for (a big part of the flat, faded look).
       mainLight.color.setHex(renderAtmosphere.lightColor);
-      mainLight.intensity = renderAtmosphere.lightIntensity * 1.6;
-      mainLightBaseOffset.set(
-        renderAtmosphere.lightPosition.x,
-        renderAtmosphere.lightPosition.y,
-        renderAtmosphere.lightPosition.z
-      );
-      mainLight.position.set(
-        camera.position.x + mainLightBaseOffset.x,
-        mainLightBaseOffset.y,
-        camera.position.z + mainLightBaseOffset.z
-      );
-      mainLight.target.position.set(camera.position.x, 0, camera.position.z);
-      mainLight.target.updateMatrixWorld();
+      mainLight.intensity = renderAtmosphere.lightIntensity * KEY_INTENSITY_SCALE * keyBoost;
+      // Cascades follow the player, snapped to their shadow-texel grids.
+      updateShadowCascades(camera.position.x, camera.position.z);
 
       // (The volumetric / fill / rim lights this block used to steer no longer
       //  exist — see the KEY + SKY note at the light rig. Three fewer lights
@@ -11578,8 +11919,10 @@ const ForestSurvivalGame = () => {
           renderAtmosphere.lightPosition.z
         );
         hazeMaterial.uniforms.isNight.value = !renderAtmosphere.sunVisible;
+        // Thinner than before: the volumetric medium now carries the depth
+        // haze, and stacking both read as a milky veil over everything.
         hazeMaterial.uniforms.density.value =
-          (graphicsQuality === 'ultra' ? 0.10 : graphicsQuality === 'high' ? 0.08 : 0.06) *
+          (graphicsQuality === 'ultra' ? 0.065 : graphicsQuality === 'high' ? 0.052 : 0.045) *
           (renderProfile.hazeDensity ?? 1.0) *
           (renderAtmosphere.sunVisible ? 1.0 : 0.82);
       }
@@ -11589,7 +11932,7 @@ const ForestSurvivalGame = () => {
           hdriEnvironmentProfile,
           renderAtmosphere.sunVisible,
           renderAtmosphere.ambientIntensity,
-        ) * (renderProfile.environmentIntensity ?? 1.0);
+        ) * (renderProfile.environmentIntensity ?? 1.0) * ENV_FILL_SCALE;
       }
 
       // Push live grading into the post-processing chain so dusk/dawn/night
@@ -11612,6 +11955,8 @@ const ForestSurvivalGame = () => {
         vibranceScale: renderProfile.vibrance,
         shadowLiftScale: renderProfile.shadowLift,
       });
+      // Participating medium: sun shafts, ground mist, height fog, local-light haze.
+      updateVolumetricAtmosphere(rawDelta, sunDirection);
 
       // Update sky dome shader
       if (skyMaterial.uniforms.time) {
@@ -12143,6 +12488,19 @@ const ForestSurvivalGame = () => {
           THREE.MathUtils.clamp(atmosphericSettings.starIntensity, 0, 1),
         );
       }
+      if (wildlife) {
+        wildlife.update(
+          windElapsed, rawDelta, camera.position,
+          atmosphericSettings.sunVisible ? 1 - THREE.MathUtils.clamp(atmosphericSettings.starIntensity, 0, 1) : 0,
+          _wildSun.set(
+            renderAtmosphere.lightPosition.x, renderAtmosphere.lightPosition.y, renderAtmosphere.lightPosition.z,
+          ),
+          // Leaves are lit by the SUN: dim with the day, not just with the key
+          // light (the moon is also a key light, and lit them like noon).
+          atmosphericSettings.sunVisible ? THREE.MathUtils.clamp(mainLight.intensity / 3.5, 0.3, 1.2) * (1 - THREE.MathUtils.clamp(atmosphericSettings.starIntensity, 0, 1) * 0.7) : 0.16,
+          windGust - 1,
+        );
+      }
 
       // Age / fade / cull the environment bullet marks. Cheap per-frame pass
       // (≤ cap live meshes): fades expired marks out, and reclaims any that fell
@@ -12321,17 +12679,19 @@ const ForestSurvivalGame = () => {
       }
 
       // Aiming zoom — a consistent ~22° zoom relative to the chosen FOV
+      // Sprint widens the view a touch (speed cue, CoD/Apex convention).
       const targetFov = aimingActive
         ? Math.max(40, baseFOV - 22)
-        : baseFOV;
-      camera.fov = THREE.MathUtils.lerp(camera.fov, targetFov + fovPunch, delta * 8);
+        : baseFOV + SPRINT_FOV_BOOST * sprintFovBlend;
+      camera.fov = THREE.MathUtils.lerp(camera.fov, targetFov + fovPunch, Math.min(1, delta * 8));
       camera.updateProjectionMatrix();
       // Keep the first-person weapon a constant on-screen size despite the ADS
       // FOV zoom (it's a camera child, so zoom would otherwise magnify it into
       // a screen-filling blob).
       gunModel.setViewmodelFovScale(camera.fov, baseFOV);
-      // Decay FOV punch
-      fovPunch *= 0.92;
+      // Decay FOV punch with real time (was 0.92 per FRAME — twice as fast
+      // on a 120 Hz screen as on 60 Hz).
+      fovPunch *= Math.exp(-rawDelta * 5);
 
       // === CAMERA RECOIL ===
       // Recover the recoil kick smoothly, then compose (base aim + recoil)
@@ -12343,10 +12703,21 @@ const ForestSurvivalGame = () => {
       const abilityRecover = Math.min(1, rawDelta * 6.5);
       abilityKickPitch += (0 - abilityKickPitch) * abilityRecover;
       abilityKickRoll += (0 - abilityKickRoll) * abilityRecover;
+      let shakePitch = 0;
+      let shakeYaw = 0;
+      let shakeRoll = 0;
+      if (screenShakeOn && cameraShakeIntensity > 0.001) {
+        const trauma = Math.min(1, cameraShakeIntensity / SHAKE_TRAUMA_MAX);
+        const k = trauma * trauma;
+        shakeTime += rawDelta * 26;
+        shakePitch = k * 0.024 * shakeNoise(shakeTime, 0);
+        shakeYaw = k * 0.024 * shakeNoise(shakeTime, 41.3);
+        shakeRoll = k * 0.034 * shakeNoise(shakeTime * 0.8, 87.9);
+      }
       _recoilEuler.set(
-        Math.max(-PI_2, Math.min(PI_2, euler.x + recoilPitch + abilityKickPitch + wiringPitch)),
-        euler.y + recoilYaw,
-        abilityKickRoll,
+        Math.max(-PI_2, Math.min(PI_2, euler.x + recoilPitch + abilityKickPitch + wiringPitch + shakePitch)),
+        euler.y + recoilYaw + shakeYaw,
+        abilityKickRoll + shakeRoll,
         'YXZ',
       );
       camera.quaternion.setFromEuler(_recoilEuler);
@@ -12439,14 +12810,19 @@ const ForestSurvivalGame = () => {
       // long as a bomb is live); the rest are raised by their own choreography.
       if (abilityProp) {
         if (abilityProp.kind === 'detonator') {
-          abilityProp.setHeld(!!armedBomb && !wiringOn);
+          // Lowered (not dropped) for a reload that needs both hands — a
+          // minigun / launcher, or one started before the device came up.
+          abilityProp.setHeld(!!armedBomb && !wiringOn && !gunModel.supportHandBusy);
         }
         // Hidden alongside the weapon (photo mode hides the whole viewmodel).
         abilityProp.update(rawDelta, gunModel.group.visible);
-        // The prop owns the support hand: take the arm off the gun and roll the
-        // weapon into a one-handed carry for as long as it's up.
-        gunModel.setOneHanded(abilityProp.handBlend > 0.15);
       }
+      // The support hand is taken by the ability prop OR the braced riot
+      // shield: take the arm off the gun and roll the weapon into a one-handed
+      // carry. A reload started in this state runs the ONE-HANDED drill.
+      gunModel.setOneHanded(
+        (abilityProp?.handBlend ?? 0) > 0.15 || (shieldActive && shieldRaise > 0.35),
+      );
 
       // Update dash timer
       if (isDashing) {
@@ -12524,7 +12900,9 @@ const ForestSurvivalGame = () => {
         // that) but it visually gets out of the way for the ~1s the prop is in
         // frame, then comes straight back up — no two objects in one hand.
         const propInHand = (abilityProp?.handBlend ?? 0) > 0.2;
-        const raiseTarget = shieldActive && !propInHand ? 1 : 0;
+        // Also slung for a two-handed reload (minigun / launcher) — you cannot
+        // feed a belt with a shield on your arm.
+        const raiseTarget = shieldActive && !propInHand && !gunModel.supportHandBusy ? 1 : 0;
         shieldRaise += (raiseTarget - shieldRaise) * Math.min(1, delta * 12);
         const visible = shieldRaise > 0.02 || shieldBreakFlash > 0.01;
         shieldMesh.visible = visible;
@@ -12703,6 +13081,7 @@ const ForestSurvivalGame = () => {
       // Aiming down sights cancels the sprint (COD-style) so the two poses
       // never fight each other — release aim to sprint again.
       const isRunning = wantsToSprint && isMoving && !staminaExhausted && !aimingActive;
+      sprintFovBlend += ((isRunning ? 1 : 0) - sprintFovBlend) * Math.min(1, rawDelta * 6);
 
       // ── GUIDED TUTORIAL — walk/sprint practice + the touch "not yet" notice.
       // The joystick has no keydown to hang an explanation on (that path is
@@ -13508,16 +13887,11 @@ const ForestSurvivalGame = () => {
       // toggle is off we skip the positional jitter entirely (and zero the
       // accumulator so it can't build up while disabled), so the setting now
       // actually does something. Recoil pitch + FOV punch are unaffected.
+      // The shake itself is ROTATIONAL and applied in the camera composition
+      // above (no positional offset — that used to drift the player). Here the
+      // trauma only decays, with real time (~0.9/frame at 60 FPS, as before).
       if (screenShakeOn && cameraShakeIntensity > 0.001) {
-        const shakeX = (Math.random() - 0.5) * cameraShakeIntensity;
-        const shakeY = (Math.random() - 0.5) * cameraShakeIntensity;
-        const shakeZ = (Math.random() - 0.5) * cameraShakeIntensity;
-
-        camera.position.x += shakeX;
-        camera.position.y += shakeY;
-        camera.position.z += shakeZ;
-
-        cameraShakeIntensity *= cameraShakeDecay; // Decay shake over time
+        cameraShakeIntensity *= Math.exp(-rawDelta * 6.3);
       } else {
         cameraShakeIntensity = 0;
       }
@@ -14789,11 +15163,11 @@ const ForestSurvivalGame = () => {
           // the same satisfying impact.
           if (enemy.damageFlashTime > 0) {
             enemy.damageFlashTime -= delta;
-            const r = Math.min(1, enemy.damageFlashTime / 0.3);
+            const r = Math.max(0, Math.min(1, enemy.damageFlashTime / 0.3));
             const e2 = 1 - r;
-            enemy.mesh.rotation.x = -Math.cos(e2 * 8) * r * 0.34;
-            enemy.mesh.scale.setScalar(baseScale * (1 + r * 0.16));
-            if (enemy.torso) enemy.torso.scale.setScalar(1 + r * 0.22);
+            enemy.mesh.rotation.x = -Math.cos(e2 * 8) * r * 0.3;
+            const sq = r * r;
+            enemy.mesh.scale.set(baseScale * (1 + sq * 0.035), baseScale * (1 - sq * 0.06), baseScale * (1 + sq * 0.035));
           } else {
             if (enemy.mesh.rotation.x !== 0) enemy.mesh.rotation.x = 0;
             if (enemy.torso && enemy.torso.scale.x !== 1) enemy.torso.scale.setScalar(1);
@@ -16124,19 +16498,69 @@ const ForestSurvivalGame = () => {
         // damageFlashTime so every damage source feeds it. This block is the
         // authoritative writer of mesh.scale/rotation.x for living enemies (runs
         // last), so it cleanly overrides the lighter pulses set earlier.
+        //
+        // DIRECTIONAL FLINCH: the chassis rocks AWAY from the shot — pitch for
+        // front/back hits, roll (+ a sharper head snap) for side hits — read
+        // from the last hit direction (hitImpulse). Damage without a direction
+        // (burns, hazards) rocks straight back. A slight impact SQUASH replaces
+        // the old 16–22% scale-up, which read as the robot inflating.
         if (enemy.damageFlashTime > 0) {
           enemy.damageFlashTime -= delta;
-          const r = Math.min(1, enemy.damageFlashTime / 0.3); // 1 at impact → 0
+          const r = Math.max(0, Math.min(1, enemy.damageFlashTime / 0.3)); // 1 at impact → 0
           const e2 = 1 - r;
           // Damped rock: hardest kick at impact, ~1.3 oscillations as it decays.
-          enemy.mesh.rotation.x = -Math.cos(e2 * 8) * r * 0.34;
-          enemy.mesh.scale.setScalar(baseScale * (1 + r * 0.16));
-          if (enemy.torso) enemy.torso.scale.setScalar(1 + r * 0.22);
-        } else if (enemy.mesh.rotation.x !== 0 || enemy.mesh.scale.x !== baseScale) {
+          const wave = Math.cos(e2 * 8) * r;
+          let hitFwd = -1;
+          let hitSide = 0;
+          const hi = enemy.hitImpulse;
+          if (hi && (hi.x !== 0 || hi.z !== 0)) {
+            // Local frame: +Z faces the target (rotation.y = atan2(dx, dz)).
+            const sy = Math.sin(enemy.mesh.rotation.y);
+            const cy = Math.cos(enemy.mesh.rotation.y);
+            hitFwd = hi.x * sy + hi.z * cy;   // −1 = shot from the front
+            hitSide = hi.x * cy - hi.z * sy;  // shot travelling toward local +X
+          }
+          enemy.mesh.rotation.x = hitFwd * wave * 0.3;
+          enemy.mesh.rotation.z = -hitSide * wave * 0.22;
+          if (enemy.head) enemy.head.rotation.z = -hitSide * wave * 0.38;
+          const sq = r * r;
+          enemy.mesh.scale.set(baseScale * (1 + sq * 0.035), baseScale * (1 - sq * 0.06), baseScale * (1 + sq * 0.035));
+          if (enemy.torso && enemy.torso.scale.x !== 1) enemy.torso.scale.setScalar(1);
+        } else if (enemy.mesh.rotation.x !== 0 || enemy.mesh.rotation.z !== 0 || enemy.mesh.scale.y !== baseScale) {
           // Settle back to rest once the reaction is done.
           enemy.mesh.rotation.x = 0;
+          enemy.mesh.rotation.z = 0;
           enemy.mesh.scale.setScalar(baseScale);
+          if (enemy.head) enemy.head.rotation.z = 0;
           if (enemy.torso && enemy.torso.scale.x !== 1) enemy.torso.scale.setScalar(1);
+        }
+
+        // ── CLAWS — robot hands that do something ──
+        // Relaxed half-open while walking, with a servo idle (small, stepped
+        // flexes — machines twitch, they don't breathe). Opened wide as a melee
+        // swing cocks, clamped shut on the strike; a shooter's weapon hand is
+        // locked on the grip, its other hand flexing with the charge. A hit
+        // makes both spasm open; a hacked unit's hands glitch.
+        if (enemy.leftClaw && enemy.rightClaw && !enemy.dead) {
+          const ph = (enemy.clawPhase ?? 0) + frameNowMs * 0.001;
+          // Servo idle: a quantised flex every ~1.5 s, unique per robot.
+          const servo = (Math.floor(ph * 0.7) % 3 === 0 ? 0.18 : 0) * Math.max(0, Math.sin(ph * 4.4));
+          let target = 0.42 + servo;
+          if (enemy.attackSystem?.isAttacking()) {
+            // Open as the swing cocks, clamped shut as it lands.
+            target = enemy.attackSystem.getLungeDrive() > 0.12 ? 1.1 : -0.35;
+          }
+          if (enemy.damageFlashTime > 0.12) target = -0.45 + Math.sin(ph * 37) * 0.15;
+          if (enemy.hacked) target = 0.3 + Math.sin(ph * 23) * 0.6;
+          const c = (enemy.clawCurl ?? 0.42) + (target - (enemy.clawCurl ?? 0.42)) * Math.min(1, delta * 14);
+          enemy.clawCurl = c;
+          const shooter = enemy.type === 'ranged' || enemy.type === 'revenant';
+          const right = shooter ? 1.1 : c;
+          const left = shooter ? 0.35 + (enemy.aimBlend ?? 0) * 0.55 + servo * 0.5 : c * 0.94 + servo * 0.2;
+          enemy.leftClaw.fingers.rotation.x = -left * 0.95;
+          enemy.leftClaw.thumb.rotation.x = left * 0.85;
+          enemy.rightClaw.fingers.rotation.x = -right * 0.95;
+          enemy.rightClaw.thumb.rotation.x = right * 0.85;
         }
 
         // ── INSTABILITY TWITCH (hacked / overclocked) ──
@@ -16353,7 +16777,9 @@ const ForestSurvivalGame = () => {
           if (e.type !== 'boss' && !e.isMiniBoss) continue;
           if (!tracked || e.health / e.maxHealth < tracked.health / tracked.maxHealth) tracked = e;
         }
-        if (tracked) {
+        if (import.meta.env.DEV && devTest.fakeBoss) {
+          setBossHealth('Overlord', devTest.fakeBoss.hp, 1, devTest.fakeBoss.phase);
+        } else if (tracked) {
           setBossHealth(
             tracked.type === 'boss' ? 'Overlord' : 'Crowned Elite',
             tracked.health, tracked.maxHealth, tracked.bossPhase ?? 1,
@@ -16610,6 +17036,26 @@ const ForestSurvivalGame = () => {
           (err) => { if (!settled) { settled = true; window.clearTimeout(timer); reject(err); } },
         );
       });
+    // three's compileAsync polls `currentProgram.isReady()` on every material
+    // it compiled and THROWS — wedging its promise forever — if one of them is
+    // disposed before its program reports ready (the warmup spawns and frees
+    // effects while this runs). That is why "Compile pistol" always burned its
+    // full 4 s watchdog. This variant skips materials whose program is gone, so
+    // the await resolves the moment the driver has actually finished.
+    const compileSceneAsync = (target: THREE.Scene, cam: THREE.Camera): Promise<void> => {
+      const materials = renderer.compile(target, cam);
+      return new Promise<void>((resolve) => {
+        const check = () => {
+          materials.forEach((m) => {
+            const program = (renderer.properties.get(m) as { currentProgram?: { isReady: () => boolean } }).currentProgram;
+            if (!program || program.isReady()) materials.delete(m);
+          });
+          if (materials.size === 0) resolve();
+          else window.setTimeout(check, 10);
+        };
+        check();
+      });
+    };
     // ── PROGRESS-AWARE WATCHDOG ────────────────────────────────────────
     // The old backstop was a single hard 12s cap on the WHOLE warmup. On a
     // cold shader cache (fresh driver / browser update) the compile stages
@@ -16652,6 +17098,7 @@ const ForestSurvivalGame = () => {
       // Honour an in-flight Continue-Anyway or a fired watchdog: skip
       // remaining stages (the chain still falls through to its teardown).
       if (continueAnywayRef.current || warmupHeartbeat.aborted) return null;
+      const stageStart = performance.now();
       try {
         return await fn();
       } catch (err) {
@@ -16671,11 +17118,18 @@ const ForestSurvivalGame = () => {
         // A finished stage (even a failed one) is pipeline progress — feed the
         // watchdog so a slow-but-moving warmup is never abandoned mid-way.
         warmupHeartbeat.lastProgressAt = performance.now();
+        if (import.meta.env.DEV) {
+          console.log(`[Warmup] ${name}: ${Math.round(warmupHeartbeat.lastProgressAt - stageStart)} ms`);
+        }
       }
     };
 
     const warmUpShaders = async (): Promise<void> => {
       const warmupStart = performance.now();
+      // Start linking every post-processing program NOW, in parallel on the
+      // driver's threads, so the whole post chain compiles behind the stages
+      // below instead of serially on the first composed frame.
+      const postCompile: Promise<void> = postFX ? postFX.compileAsync().catch(() => undefined) : Promise.resolve();
       const wp = camera.position.clone();
       wp.z -= 4; // just in front of the camera
       const warm: THREE.Object3D[] = [];
@@ -16965,18 +17419,11 @@ const ForestSurvivalGame = () => {
       // the compiled programs match what the live render uses.
       const allWeapons: GunWeaponType[]
         = ['pistol', 'rifle', 'shotgun', 'smg', 'sniper', 'minigun', 'launcher', 'subverter'];
-      const rGun = renderer as THREE.WebGLRenderer & {
-        compileAsync?: (scene: THREE.Scene, camera: THREE.Camera) => Promise<unknown>;
-      };
       for (const w of allWeapons) {
         if (continueAnywayRef.current || warmupHeartbeat.aborted) break;
         await stage(`Weapon: ${w}`, false, async () => {
           gunModel.switchWeapon(w);
-          if (typeof rGun.compileAsync === 'function') {
-            await withTimeout(rGun.compileAsync(scene, camera), 4000, `Compile ${w}`);
-          } else {
-            renderer.compile(scene, camera);
-          }
+          await withTimeout(compileSceneAsync(scene, camera), 4000, `Compile ${w}`);
         });
         await yieldFrame();
       }
@@ -16996,17 +17443,10 @@ const ForestSurvivalGame = () => {
       // want the user to see a real error rather than launching into a
       // broken scene.
       await stage('Shader Compile', true, async () => {
-        const r = renderer as THREE.WebGLRenderer & {
-          compileAsync?: (scene: THREE.Scene, camera: THREE.Camera) => Promise<unknown>;
-        };
-        if (typeof r.compileAsync === 'function') {
-          // 6s cap: long enough for a heavy multiplayer scene (remote-player
-          // avatars + nameplate/health sprites) to compile normally, short
-          // enough that a driver stall doesn't strand the player on the loader.
-          await withTimeout(r.compileAsync(scene, camera), 6000, 'Shader Compile');
-        } else {
-          renderer.compile(scene, camera);
-        }
+        // 6s cap: long enough for a heavy multiplayer scene (remote-player
+        // avatars + nameplate/health sprites) to compile normally, short
+        // enough that a driver stall doesn't strand the player on the loader.
+        await withTimeout(compileSceneAsync(scene, camera), 6000, 'Shader Compile');
       });
       await yieldFrame();
 
@@ -17047,7 +17487,13 @@ const ForestSurvivalGame = () => {
       // Failure here usually means a post-FX pass blew up — recoverable
       // by skipping post-FX (the game will still render via the renderer's
       // direct path because postFX is null-checked in composePostFX).
-      await stage('Post-processing', true, () => {
+      await stage('Post-processing', true, async () => {
+        // Programs were issued at the start of warmup; wait (capped) for the
+        // driver to finish them, then run EVERY post pass once (incl. the
+        // conditional god-ray, volumetric and AO passes) so nothing compiles
+        // mid-fight.
+        await withTimeout(postCompile, 12000, 'Post-processing compile');
+        postFX?.prewarm();
         composePostFX(0.016);
       });
       await yieldFrame();
@@ -17327,9 +17773,15 @@ const ForestSurvivalGame = () => {
       // .remove() detaches the element from wherever it is and never throws.
       renderer.domElement?.remove();
 
-      // Cleanup post-processing — EffectComposer.dispose() walks every pass
-      // and effect for us, freeing render targets and shaders.
+      // Cleanup post-processing — frees every render target + pass material.
       postFX?.dispose();
+      // The fog chunk's height/sun terms are global (shared uniforms): put
+      // them back to stock so the menu backdrop renders exactly as authored.
+      resetAtmosphericFog();
+      // Session-cached ground detail tile: free this renderer's GPU copy (the
+      // CPU data stays, so the next run just re-uploads it).
+      disposeGroundDetailTextures();
+      if (import.meta.env.DEV) delete (window as unknown as { __fs?: unknown }).__fs;
 
       // Cleanup shared bullet resources
       sharedBulletCoreGeo.dispose();
@@ -17398,6 +17850,7 @@ const ForestSurvivalGame = () => {
       // Cleanup the signature per-map ambience field (High/Ultra only; null
       // elsewhere). Its single geometry + shader material are freed here.
       mapAmbience?.dispose();
+      wildlife?.dispose();
 
       // Free every cached weapon rig (the session-long build-once cache that
       // makes weapon switches attach/detach instead of rebuild).
@@ -17445,6 +17898,7 @@ const ForestSurvivalGame = () => {
       clearParticleGeometryPools();
       clearTracerGeometryPool();
       clearFlashSpritePool();
+      setImpactBurstCamera(null);
 
       // Free the pooled + live crater rigs (their geometries are the shared
       // sharedCrater* set disposed just below).
@@ -18073,7 +18527,7 @@ const ForestSurvivalGame = () => {
           slow connection from looking like an empty, broken world. */}
       {mpWaitingForHost && !showShaderProcessing && !photoMode && (
         <div className="pointer-events-none absolute left-1/2 top-[18%] z-20 -translate-x-1/2">
-          <div className="flex items-center gap-2.5 rounded-full border border-emerald-400/30 bg-black/75 px-4 py-2">
+          <div className="flex items-center gap-2.5 rounded-lg border border-emerald-400/30 bg-black/75 px-4 py-2">
             <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-emerald-300/40 border-t-emerald-300" />
             <span className="text-[12px] font-semibold uppercase tracking-[0.18em] text-emerald-200/90">Syncing with host…</span>
           </div>
@@ -18267,7 +18721,7 @@ const ForestSurvivalGame = () => {
                 />
               </svg>
               <span
-                className="mt-0.5 rounded-full border border-white/15 bg-black/70 px-1.5 font-mono text-[10px] font-bold tabular-nums text-white"
+                className="mt-0.5 rounded-lg border border-white/15 bg-black/70 px-1.5 font-mono text-[10px] font-bold tabular-nums text-white"
                 style={{ textShadow: '0 1px 2px rgba(0,0,0,0.8)' }}
               />
             </div>
@@ -18283,15 +18737,16 @@ const ForestSurvivalGame = () => {
           style={{ pointerEvents: 'none' }}
         >
           <div
-            className="px-3 py-1 rounded-lg"
+            className="flex items-baseline gap-1.5 px-2.5 py-1 hud-ink"
             style={{
-              background: 'rgba(0,0,0,0.65)',
-              border: '1px solid rgba(255,255,255,0.1)',
+              background: 'rgba(5,9,8,0.62)',
+              borderBottom: '1px solid rgba(214,228,220,0.16)',
             }}
           >
-            <span className="text-sm font-mono font-bold" style={{ color: currentFPS >= 50 ? '#4ade80' : currentFPS >= 30 ? '#facc15' : '#f87171' }}>
-              {currentFPS} FPS
+            <span className="hud-num text-[15px]" style={{ color: currentFPS >= 50 ? '#2ee8b4' : currentFPS >= 30 ? '#ffb265' : '#ff5a5f' }}>
+              {currentFPS}
             </span>
+            <span className="hud-label" style={{ fontSize: 8.5 }}>FPS</span>
           </div>
         </div>
       )}
@@ -18404,7 +18859,7 @@ const ForestSurvivalGame = () => {
             className="absolute left-1/2 top-1/2 select-none"
             style={{ transform: 'translate(-50%, 26px)' }}
           >
-            <div className={`flex items-center gap-1.5 rounded-full border bg-black/75 px-2.5 py-1 ${
+            <div className={`flex items-center gap-1.5 rounded-lg border bg-black/75 px-2.5 py-1 ${
               reloadPerfectUI ? 'border-emerald-400/60' : 'border-amber-400/30'}`}
             >
               <div className="relative w-5 h-5">
@@ -18467,7 +18922,7 @@ const ForestSurvivalGame = () => {
             className="pointer-events-none absolute left-1/2 z-30 -translate-x-1/2"
             style={{ top: userSettings.showFPS ? 38 : 6 }}
           >
-            <div className="flex items-center gap-2 rounded-full border border-rose-400/40 bg-rose-950/75 px-3 py-1">
+            <div className="flex items-center gap-2 rounded-lg border border-rose-400/40 bg-rose-950/75 px-3 py-1">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-rose-300" />
               <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-rose-200">
                 {activeRunModifierRef.current.name} · ×{activeRunModifierRef.current.scoreMult.toFixed(2)}
@@ -18498,20 +18953,20 @@ const ForestSurvivalGame = () => {
               {visiblePerks.map((id, idx) => {
                 const perk = WAVE_PERKS[id];
                 if (!perk) return null;
-                const color = perk.rarity === 'epic' ? 'border-purple-400/45 bg-purple-500/12 text-purple-200'
+                const color = perk.rarity === 'epic' ? 'border-purple-400/45 bg-purple-500/[0.12] text-purple-200'
                   : perk.rarity === 'rare' ? 'border-cyan-400/40 bg-cyan-500/10 text-cyan-200'
                   : 'border-white/15 bg-white/[0.04] text-gray-200';
                 return (
                   <span
                     key={`${id}-${idx}`}
-                    className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${color}`}
+                    className={`rounded-lg border px-2 py-0.5 text-[10px] font-bold ${color}`}
                   >
                     {perk.name}
                   </span>
                 );
               })}
               {overflow > 0 && (
-                <span className="rounded-full border border-white/15 bg-white/[0.04] px-2 py-0.5 text-[10px] font-bold text-gray-300">
+                <span className="rounded-lg border border-white/15 bg-white/[0.04] px-2 py-0.5 text-[10px] font-bold text-gray-300">
                   +{overflow}
                 </span>
               )}
@@ -18559,9 +19014,9 @@ const ForestSurvivalGame = () => {
 
       {/* Tactical map for Solo & Tutorial — same radar as multiplayer, but it
           only shows enemies (no other players). Desktop docks a compact radar
-          below the top-right stats panel (the HUD Score panel at right-4 top-4
-          w-44 runs to ~129px tall, so top-[152px] leaves a clean ~24px gap
-          above the map). A kills/headshots readout used to sit under it; it
+          below the top-right score block (the HUD score at right-7 top-5 runs
+          to ~112px, so top-[132px] leaves a clean ~20px gap above the map and
+          the right edges align). A kills/headshots readout used to sit under it; it
           duplicated the kill counter the Score panel already shows, so it was
           removed rather than kept in two places. Touch uses a right-edge
           toggle instead (no room for a docked stack). Press M (or the
@@ -18571,7 +19026,7 @@ const ForestSurvivalGame = () => {
         isTouch
           ? <Minimap isTouch soloMode />
           : (
-            <div className="pointer-events-none absolute right-4 top-[152px] z-[12] flex w-44 flex-col gap-2">
+            <div className="pointer-events-none absolute right-7 top-[132px] z-[12] flex w-44 flex-col gap-2">
               <Minimap soloMode />
             </div>
           )
@@ -18707,7 +19162,7 @@ const ForestSurvivalGame = () => {
       {/* Boss health bar — mounted for the whole run; it renders nothing until
           the loop reports a living boss via setBossHealth(). */}
       {gameStarted && !gameState.isGameOver && !photoMode && (
-        <BossHealthBar isTouch={isTouch} />
+        <BossHealthBar isTouch={isTouch} fpsVisible={userSettings.showFPS} />
       )}
 
 
@@ -18744,12 +19199,14 @@ const ForestSurvivalGame = () => {
         />
       )}
 
-      {/* Tutorial "New Threat" banner — announces each enemy species the
-          Tutorial Enemy Director unlocks. Kills only happen during active play
-          (a blocking tutorial card freezes the sim), so this safely coexists
-          with the tutorial flow; we only hide it on pause / game-over / the
-          completion modal so it never stacks on those. */}
-      {gameMode === 'tutorial' && gameStarted && !gameState.isGameOver && !isPaused && !tutorialComplete && (
+      {/* "New Threat" banner — announces each enemy species the Tutorial Enemy
+          Director unlocks AND the solo threat cards (Sniper at wave 4, the first
+          Overlord, ARK-07 uplink / surge / null-wave lore). It used to mount in
+          the tutorial only, so every solo card was set but never shown. Kills
+          only happen during active play (a blocking tutorial card freezes the
+          sim), so it safely coexists with the tutorial flow; hidden on pause /
+          game-over / photo mode / the tutorial completion modal. */}
+      {gameStarted && !gameState.isGameOver && !isPaused && !photoMode && !(gameMode === 'tutorial' && tutorialComplete) && (
         <EnemyIntroBanner intro={enemyIntro} onDone={() => setEnemyIntro(null)} />
       )}
 

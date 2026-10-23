@@ -252,44 +252,53 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode, onSkillTre
         </a>
       )}
 
-      {/* Main Screen — fills exactly one viewport. A responsive two-column
-          layout (identity left / actions right) on large screens keeps every
-          state (incl. signed-in + daily challenge) on a single page; it
-          collapses to a compact, centered single column below lg. The wrapper
-          is m-auto centered with overflow-y-auto as a no-overlap safety net for
-          extreme short/landscape viewports. */}
+      {/* Main Screen — fills exactly one viewport. Cinematic two-column
+          composition that matches the live backdrop: the WORDMARK + trailer
+          tile sit on the sunlit left (the scene's hot light frames the title),
+          the actions on the calm deep forest to the right. Collapses to one
+          centred column below lg. m-auto inside a min-h-full flex column with
+          overflow-y-auto stays the no-overlap safety net for short viewports. */}
       {!showSettings && (
         <div className="relative z-10 h-dvh overflow-y-auto overscroll-contain">
         <div className={`m-safe flex min-h-full flex-col ${isTouch ? 'px-4 py-4' : 'px-5 sm:px-8 py-5 sm:py-6'}`}>
-          <div className={`m-auto w-full ${isTouch ? 'max-w-md md:max-w-4xl' : 'max-w-md lg:max-w-5xl'}`}>
+          <div className={`m-auto w-full ${isTouch ? 'max-w-md md:max-w-4xl' : 'max-w-md lg:max-w-6xl'}`}>
             <div className={isTouch
-              ? 'md:grid md:grid-cols-[1fr_minmax(0,23rem)] md:gap-7 md:items-center'
-              : 'lg:grid lg:grid-cols-[1.05fr_minmax(0,27rem)] lg:gap-12 lg:items-center'}>
+              ? 'md:grid md:grid-cols-[1fr_minmax(0,23rem)] md:gap-8 md:items-center'
+              : 'lg:grid lg:grid-cols-[1.1fr_minmax(0,27rem)] lg:gap-16 lg:items-center'}>
 
-              {/* ── Trailer feature ─────────────────────────────────── */}
-              <div className={`title-reveal relative flex justify-center ${isTouch ? 'mb-4 md:mb-0' : 'mb-6 lg:mb-0'}`}>
-                {/* The trailer is the complete feature on this side of the
-                    menu. Its compact width and centered placement balance the
-                    taller action stack without competing with a second hero. */}
-                <section className="w-full max-w-[31rem] overflow-hidden rounded-2xl border border-emerald-400/20 bg-[#07100c]/80 text-left shadow-[0_20px_56px_rgba(0,0,0,0.3)] backdrop-blur-sm">
-                  <div className="flex items-center gap-2.5 border-b border-white/[0.07] px-3.5 py-2.5 sm:px-4">
-                    <span className="flex h-8 w-8 flex-none items-center justify-center rounded-lg border border-emerald-400/25 bg-emerald-500/[0.08]">
-                      <Clapperboard className="h-4 w-4 text-emerald-300" strokeWidth={2.15} />
-                    </span>
-                    {/* The wordmark is the document's single <h1>. Before this it
-                        was a plain <span>, which left the rendered page with no
-                        H1 at all — the only headings Google saw were session
-                        chrome like "Playing as guest". Styling is unchanged; the
-                        parent is a <div> because an <h1> cannot legally nest
-                        inside a <span>. */}
-                    <div className="min-w-0">
-                      <h1 className="font-display block text-base font-semibold uppercase leading-none tracking-wide text-white">
-                        Forest Survival
-                      </h1>
-                      <span className="font-hud mt-1 block text-[9px] font-bold uppercase tracking-[0.24em] text-emerald-300/80">
-                        Official Trailer
-                      </span>
-                    </div>
+              {/* ── Identity: wordmark + trailer ───────────────────────── */}
+              <div className={`relative flex flex-col ${isTouch ? 'mb-5 items-center text-center md:mb-0 md:items-start md:text-left' : 'mb-7 items-center text-center lg:mb-0 lg:items-start lg:text-left'}`}>
+                <div className="title-reveal" style={{ textShadow: '0 1px 2px rgba(0,0,0,0.75), 0 0 18px rgba(0,0,0,0.35)' }}>
+                  <p
+                    className="font-hud flex items-center gap-3 text-[10px] font-bold uppercase tracking-[0.42em] text-emerald-100 sm:text-[11px]"
+                    style={{ textShadow: '0 1px 2px rgba(0,0,0,0.95), 0 0 12px rgba(0,0,0,0.7)' }}
+                  >
+                    <span className="h-px w-8 bg-gradient-to-r from-transparent to-emerald-300/70" />
+                    Wave-Based Survival FPS
+                  </p>
+                  {/* The wordmark is the document's single <h1> (SEO: it used
+                      to be a span, leaving the page with no H1 at all). */}
+                  <h1
+                    className={`title-bio font-display mt-3 font-bold uppercase leading-[0.86] ${isTouch ? 'text-[clamp(2.6rem,11vw,3.6rem)]' : 'text-[clamp(2.9rem,11vw,4rem)] lg:text-[clamp(4.2rem,6.4vw,6.4rem)]'}`}
+                    style={{ ['--title-tracking' as string]: '0.015em', letterSpacing: '0.015em', textShadow: 'none' } as CSSProperties}
+                  >
+                    Forest<br />Survival
+                  </h1>
+                  <div className={`aurora-rule mt-4 h-px w-56 bg-gradient-to-r from-emerald-300/70 via-cyan-300/40 to-transparent ${isTouch ? 'mx-auto md:mx-0' : 'mx-auto lg:mx-0'}`} />
+                  <p className="font-hud mt-3 max-w-sm text-[12px] leading-relaxed tracking-wide text-white/70 sm:text-[13px]">
+                    Hold the forest against endless robot waves. Eight maps, eight weapons, one last stand.
+                  </p>
+                </div>
+
+                {/* Trailer tile — a framed media card, not a second hero. */}
+                <section
+                  className={`hud-frame mt-6 w-full max-w-[25rem] overflow-hidden border border-white/[0.12] bg-[#050a08]/85 text-left shadow-[0_24px_60px_rgba(0,0,0,0.45)] ${isTouch ? '' : 'lg:max-w-[26rem]'}`}
+                  style={{ borderRadius: '14px 3.5px' }}
+                >
+                  <div className="flex items-center gap-2.5 border-b border-white/[0.08] px-4 py-2.5">
+                    <Clapperboard className="h-3.5 w-3.5 text-emerald-300" strokeWidth={2.15} />
+                    <span className="font-hud text-[10px] font-bold uppercase tracking-[0.3em] text-white/80">Official Trailer</span>
+                    <span className="ml-auto font-hud text-[9px] font-semibold uppercase tracking-[0.3em] text-emerald-300/70">0:57</span>
                   </div>
                   <video
                     className="block aspect-video w-full bg-black object-cover"
@@ -308,28 +317,30 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode, onSkillTre
               {/* ── Actions column ──────────────────────────────────── */}
               <div className={`menu-stagger flex w-full max-w-md flex-col gap-2.5 ${isTouch ? 'mx-auto md:mx-0' : 'mx-auto lg:mx-0'}`}>
                 {accessCard && (
-                  <div className="hud-frame w-full rounded-2xl border border-amber-400/20 bg-white/[0.045] px-5 py-3.5 text-left shadow-[0_18px_50px_rgba(0,0,0,0.3)] backdrop-blur-md"
-                    style={{ '--hud-bracket': 'rgba(245,158,11,0.5)' } as CSSProperties}>
-                    <div className="flex items-start gap-3.5">
-                      <div className="flex items-center justify-center w-10 h-10 rounded-xl border border-amber-400/25 bg-amber-500/12 flex-shrink-0">
-                        <LockKeyhole className="w-[18px] h-[18px] text-amber-300" strokeWidth={2.2} />
-                      </div>
+                  <div
+                    className="w-full border border-amber-300/20 bg-[#0b0905]/80 px-4 py-3 text-left shadow-[0_18px_50px_rgba(0,0,0,0.35)]"
+                    style={{ borderRadius: '10px 2.5px' }}
+                  >
+                    <div className="flex items-start gap-3">
+                      <LockKeyhole className="mt-0.5 w-4 h-4 flex-shrink-0 text-amber-300" strokeWidth={2.2} />
                       <div className="min-w-0">
-                        <p className="font-hud text-[10px] tracking-[0.34em] font-semibold uppercase text-amber-300/90">
+                        <p className="font-hud text-[9px] tracking-[0.36em] font-semibold uppercase text-amber-300/90">
                           {accessCard.tag}
                         </p>
-                        {/* Session-state label ("Playing as guest") — a <p>, not a
-                            heading. As an <h2> it used to outrank the real title
-                            in the document outline. Classes unchanged. */}
-                        <p className="font-display text-base font-semibold uppercase tracking-wide text-white mt-0.5">{accessCard.title}</p>
-                        <p className="mt-1 text-xs leading-relaxed text-gray-300/80">{accessCard.copy}</p>
+                        {/* Session-state label — a <p>, not a heading (it used
+                            to outrank the real title in the document outline). */}
+                        <p className="font-display text-[15px] font-semibold uppercase tracking-wide text-white mt-0.5">{accessCard.title}</p>
+                        <p className="font-hud mt-1 text-[11px] leading-relaxed text-white/60">{accessCard.copy}</p>
                       </div>
                     </div>
                   </div>
                 )}
 
                 {isAuthenticated && (
-                  <div className="hud-frame w-full rounded-2xl border border-emerald-400/15 bg-white/[0.045] px-5 py-3.5 shadow-[0_18px_50px_rgba(0,0,0,0.3)] backdrop-blur-md">
+                  <div
+                    className="w-full border border-emerald-300/15 bg-[#050c09]/80 px-4 py-3 shadow-[0_18px_50px_rgba(0,0,0,0.35)]"
+                    style={{ borderRadius: '10px 2.5px' }}
+                  >
                     <div className="flex items-center gap-3.5">
                       <UserAvatar
                         name={currentUser?.name}
@@ -340,26 +351,25 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode, onSkillTre
                         className="border-emerald-400/20 shadow-[0_0_0_4px_rgba(16,185,129,0.08)]"
                       />
                       <div className="min-w-0 flex-1">
-                        <p className="font-hud text-[10px] tracking-[0.34em] text-emerald-300/90 font-semibold uppercase">
+                        <p className="font-hud text-[9px] tracking-[0.36em] text-emerald-300/90 font-semibold uppercase">
                           Operative Online
                         </p>
                         {profileLoading ? (
                           <div className="mt-2 space-y-2">
                             <div className="h-4 w-32 rounded-full bg-white/10" />
-                            <div className="h-3 w-24 rounded-full bg-white/8" />
+                            <div className="h-3 w-24 rounded-full bg-white/[0.08]" />
                           </div>
                         ) : (
                           <>
-                            {/* The signed-in player's name — a <p>, not a heading,
-                                for the same reason as the access card above. */}
+                            {/* The signed-in player's name — a <p>, not a heading. */}
                             <p className="font-display mt-0.5 truncate text-xl font-semibold tracking-wide text-white">
                               {displayName}
                             </p>
                             <div className="flex items-center gap-2 flex-wrap">
-                              <p className="font-hud truncate text-[13px] text-gray-300">{handle}</p>
+                              <p className="font-hud truncate text-[12px] text-white/60">{handle}</p>
                               {menuRank && (
                                 <span
-                                  className="font-hud inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide"
+                                  className="font-hud inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide"
                                   style={{ color: menuRank.color, background: `${menuRank.color}1a`, border: `1px solid ${menuRank.color}44` }}
                                 >
                                   <Trophy className="w-2.5 h-2.5" strokeWidth={2.5} /> {menuRank.tierName} · Lvl {menuRank.level}
@@ -372,7 +382,7 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode, onSkillTre
                       <div className="hidden sm:flex">
                         <button
                           onClick={handleSignOut}
-                          className="font-hud inline-flex items-center justify-center rounded-lg border border-white/10 bg-white/[0.03] px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-white transition-colors hover:bg-white/[0.06]"
+                          className="font-hud inline-flex items-center justify-center border border-white/10 bg-white/[0.03] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-white/80 transition-colors hover:bg-white/[0.07] hover:text-white"
                         >
                           Sign Out
                         </button>
@@ -385,31 +395,45 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode, onSkillTre
                 {isAuthenticated && <DailyChallengeCard />}
 
                 {/* ── Mode selection ──────────────────────────────────── */}
-                {modes.map((mode) => {
+                {modes.map((mode, index) => {
                   const Icon = mode.icon;
                   return (
                     <button
                       key={mode.key}
                       onClick={() => launchMode(mode.onClick, mode.requiresAuth)}
-                      className={`group flex items-center gap-4 w-full rounded-2xl py-3.5 px-4 text-left
-                        border backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 active:translate-y-0
+                      className={`group relative flex w-full items-center gap-4 overflow-hidden py-3.5 pl-5 pr-4 text-left
+                        border transition-all duration-300 hover:-translate-y-0.5 active:translate-y-0
                         ${mode.primary
-                          ? 'border-emerald-400/30 bg-emerald-500/[0.06] hover:bg-emerald-500/[0.1] hover:border-emerald-300/50'
-                          : 'border-white/10 bg-white/[0.03] hover:bg-white/[0.06] hover:border-white/20'}`}
+                          ? 'border-emerald-300/40 bg-[#062018]/85 hover:border-emerald-200/65'
+                          : 'border-white/[0.09] bg-[#060b09]/80 hover:border-white/25 hover:bg-[#0a120f]/90'}`}
+                      style={{ borderRadius: '12px 3px' }}
                     >
-                      <span className={`flex items-center justify-center w-12 h-12 rounded-xl border flex-shrink-0 transition-colors duration-300 ${accentTile[mode.accent]}`}>
-                        <Icon className={`w-6 h-6 ${accentIcon[mode.accent]}`} strokeWidth={1.85} />
+                      {/* Accent spine — grows on hover; always lit on the primary mode. */}
+                      <span
+                        className={`absolute left-0 top-0 h-full w-[3px] origin-center transition-transform duration-300 ${mode.primary ? 'scale-y-100' : 'scale-y-0 group-hover:scale-y-100'}`}
+                        style={{ background: mode.accent === 'emerald' ? '#2ee8b4' : mode.accent === 'sky' ? '#39b8e6' : '#ffb265' }}
+                      />
+                      {/* Sweep highlight on hover. */}
+                      <span className="pointer-events-none absolute inset-0 bg-gradient-to-r from-white/[0.06] via-transparent to-transparent opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
+                      <span aria-hidden="true" className="font-display w-7 flex-shrink-0 text-sm font-semibold text-white/35 tabular-nums">
+                        {String(index + 1).padStart(2, '0')}
                       </span>
-                      <span className="flex-1 min-w-0">
-                        <span className="font-display block text-xl font-semibold uppercase tracking-wide text-white leading-none">
+                      <span className={`flex h-11 w-11 flex-shrink-0 items-center justify-center border transition-colors duration-300 ${accentTile[mode.accent]}`}>
+                        <Icon className={`h-[22px] w-[22px] ${accentIcon[mode.accent]}`} strokeWidth={1.85} />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="font-display block text-[22px] font-semibold uppercase leading-none tracking-wide text-white">
                           {mode.title}
                         </span>
-                        <span className="font-hud mt-1 block text-[11px] text-gray-400 truncate">
+                        <span className="font-hud mt-1.5 block truncate text-[11px] tracking-wide text-white/55">
                           {mode.desc}
                         </span>
                       </span>
+                      {mode.requiresAuth && !isAuthenticated && (
+                        <LockKeyhole className="h-3.5 w-3.5 flex-shrink-0 text-white/35" strokeWidth={2.2} />
+                      )}
                       <ChevronRight
-                        className="w-5 h-5 text-gray-600 transition-all duration-300 group-hover:text-gray-200 group-hover:translate-x-0.5"
+                        className="h-5 w-5 flex-shrink-0 text-white/30 transition-all duration-300 group-hover:translate-x-1 group-hover:text-white"
                         strokeWidth={2}
                       />
                     </button>
@@ -417,31 +441,31 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode, onSkillTre
                 })}
 
                 {/* Secondary actions — Settings · Credits · Account */}
-                <div className="grid grid-cols-3 gap-2">
+                <div className="mt-1 grid grid-cols-3 gap-2">
                   <button
                     onClick={() => setShowSettings(true)}
-                    className="font-hud group flex items-center justify-center gap-1.5 rounded-lg px-2 py-2.5
-                      text-[11px] font-semibold uppercase tracking-wider text-gray-400 border border-white/10 bg-white/[0.02]
-                      transition-all duration-300 hover:text-white hover:bg-white/[0.06] hover:border-white/20"
+                    className="font-hud group flex items-center justify-center gap-1.5 px-2 py-2.5
+                      text-[10px] font-semibold uppercase tracking-[0.2em] text-white/60 border border-white/[0.09] bg-[#060b09]/75
+                      transition-all duration-300 hover:text-white hover:border-white/25"
                   >
                     <Settings className="w-3.5 h-3.5 group-hover:rotate-90 transition-transform duration-500" strokeWidth={2} />
                     <span>Settings</span>
                   </button>
                   <button
                     onClick={() => setShowCredits(true)}
-                    className="font-hud group flex items-center justify-center gap-1.5 rounded-lg px-2 py-2.5
-                      text-[11px] font-semibold uppercase tracking-wider text-gray-400 border border-white/10 bg-white/[0.02]
-                      transition-all duration-300 hover:text-emerald-300 hover:bg-emerald-500/[0.06] hover:border-emerald-400/30"
+                    className="font-hud group flex items-center justify-center gap-1.5 px-2 py-2.5
+                      text-[10px] font-semibold uppercase tracking-[0.2em] text-white/60 border border-white/[0.09] bg-[#060b09]/75
+                      transition-all duration-300 hover:text-emerald-200 hover:border-emerald-300/35"
                   >
                     <Sparkles className="w-3.5 h-3.5 transition-transform duration-500 group-hover:scale-110" strokeWidth={2} fill="currentColor" />
                     <span>Credits</span>
                   </button>
                   <button
                     onClick={isAuthenticated ? openProfile : () => openAuth('signIn')}
-                    className={`font-hud group flex items-center justify-center gap-1.5 rounded-lg px-2 py-2.5 text-[11px] font-semibold uppercase tracking-wider border transition-all duration-300 ${
+                    className={`font-hud group flex items-center justify-center gap-1.5 px-2 py-2.5 text-[10px] font-semibold uppercase tracking-[0.2em] border transition-all duration-300 ${
                       isAuthenticated
-                        ? 'text-emerald-300 border-emerald-400/25 bg-emerald-500/[0.05] hover:text-white hover:bg-emerald-500/[0.1] hover:border-emerald-300/40'
-                        : 'text-sky-300 border-sky-400/25 bg-sky-500/[0.05] hover:text-white hover:bg-sky-500/[0.1] hover:border-sky-300/40'
+                        ? 'text-emerald-200 border-emerald-300/25 bg-[#062018]/70 hover:text-white hover:border-emerald-200/45'
+                        : 'text-sky-200 border-sky-300/25 bg-[#06121a]/70 hover:text-white hover:border-sky-200/45'
                     }`}
                   >
                     {isAuthenticated ? (
@@ -449,34 +473,25 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode, onSkillTre
                     ) : (
                       <LogIn className="w-3.5 h-3.5 transition-transform duration-500 group-hover:scale-110" strokeWidth={2} />
                     )}
-                    <span>{isAuthenticated ? 'Account' : 'Sign In / Up'}</span>
+                    <span>{isAuthenticated ? 'Account' : 'Sign In'}</span>
                   </button>
                 </div>
               </div>
             </div>
 
             {/* ── Site nav + utility footer ───────────────────────────────
-                Real <a href> links to the static content pages. This is the
-                ONLY crawl path out of the homepage in the RENDERED DOM — the
-                links in index.html's <noscript> block cover raw-HTML crawlers
-                (and every AI crawler, none of which run JS), but noscript
-                content is not part of the rendered DOM Googlebot indexes.
-                It must stay VISIBLE — a sr-only nav here would read as
-                cloaking. Anchor text is descriptive on purpose.
-
-                Both rows sit on ONE translucent surface because the backdrop is
-                a live 3D forest whose brightness changes with the time-of-day
-                and graphics settings. As bare `text-gray-600` these were
-                effectively invisible against sunlit grass. Text colours are
-                white-alpha (not a fixed grey) so they hold contrast against
-                every scene state, and the panel is the same
-                border/blur language as the cards above. */}
-            <div
-              className={`w-full rounded-xl border border-white/10 bg-black/45 backdrop-blur-md ${isTouch ? 'mt-5 px-3.5 py-2.5' : 'mt-6 px-4 py-3 lg:mt-8'}`}
-            >
+                Real <a href> links to the static content pages — the ONLY crawl
+                path out of the homepage in the RENDERED DOM (the index.html
+                <noscript> block covers raw-HTML / AI crawlers, but noscript is
+                not part of the rendered DOM Googlebot indexes). It must stay
+                VISIBLE — a sr-only nav would read as cloaking. Near-white text
+                with a tight + a soft shadow holds contrast over the sunlit
+                grass and every time-of-day / graphics state of the backdrop. */}
+            <div className={`w-full border-t border-white/[0.08] ${isTouch ? 'mt-5 pt-3' : 'mt-7 pt-4 lg:mt-10'}`}>
               <nav
                 aria-label="About Forest Survival"
-                className="font-hud flex flex-wrap justify-center gap-x-3.5 gap-y-1.5 text-[10px] font-medium tracking-[0.22em] text-white/70 uppercase"
+                className="font-hud flex flex-wrap justify-center gap-x-4 gap-y-1.5 text-[10px] font-semibold tracking-[0.24em] text-white/85 uppercase lg:justify-start"
+                style={{ textShadow: '0 1px 2px rgba(0,0,0,0.95), 0 0 10px rgba(0,0,0,0.6)' }}
               >
                 <a href="/guide" className="transition-colors hover:text-emerald-300">Guide</a>
                 <a href="/how-to-play" className="transition-colors hover:text-emerald-300">How to Play</a>
@@ -489,7 +504,10 @@ const MainMenu = ({ onClassicMode, onMultiplayerMode, onTutorialMode, onSkillTre
                 <a href="/about" className="transition-colors hover:text-emerald-300">About</a>
               </nav>
 
-              <div className="font-hud mt-2.5 flex items-center justify-center gap-2.5 border-t border-white/[0.08] pt-2.5 text-[10px] tracking-[0.3em] text-white/45 uppercase">
+              <div
+                className="font-hud mt-2.5 flex items-center justify-center gap-2.5 text-[10px] tracking-[0.3em] text-white/60 uppercase lg:justify-start"
+                style={{ textShadow: '0 1px 2px rgba(0,0,0,0.95), 0 0 10px rgba(0,0,0,0.6)' }}
+              >
                 <span>v2.0</span>
                 <span className="h-1 w-1 rounded-full bg-emerald-400/60 shadow-[0_0_6px_rgba(52,211,153,0.8)]" />
                 <button

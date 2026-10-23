@@ -46,7 +46,7 @@ const RankBadge = ({ rank }: RankBadgeProps) => {
         </div>
 
         <div
-          className="absolute -bottom-1.5 left-1/2 flex h-6 -translate-x-1/2 items-center justify-center rounded-full border-2 px-2 text-[11px] font-black leading-none tabular-nums shadow-[0_4px_12px_rgba(0,0,0,0.5)]"
+          className="absolute -bottom-1.5 left-1/2 flex h-6 -translate-x-1/2 items-center justify-center rounded-lg border-2 px-2 text-[11px] font-black leading-none tabular-nums shadow-[0_4px_12px_rgba(0,0,0,0.5)]"
           style={{ color: '#0b0f15', background: `linear-gradient(180deg, #fff, ${color})`, borderColor: '#0b0f15' }}
           title={`Account level ${rank.level}`}
         >

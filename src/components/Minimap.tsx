@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { Radar, Maximize2, X } from 'lucide-react';
 
@@ -272,7 +272,7 @@ const Legend = ({ className = '', soloMode = false }: { className?: string; solo
           className="w-2 h-2 rounded-full flex-shrink-0"
           style={{ backgroundColor: item.color, boxShadow: `0 0 5px ${item.color}88` }}
         />
-        <span className="text-[10px] font-medium text-gray-400">{item.label}</span>
+        <span className="hud-label" style={{ fontSize: 8.5, letterSpacing: '0.18em' }}>{item.label}</span>
       </span>
     ))}
   </div>
@@ -285,10 +285,10 @@ const Legend = ({ className = '', soloMode = false }: { className?: string; solo
  *  HUD. */
 const ExpandedRadar = ({ onClose, soloMode = false }: { onClose: () => void; soloMode?: boolean }) => createPortal(
   <div className="pointer-events-none fixed inset-0 z-[140] flex items-center justify-center p-4">
-    <div className="pointer-events-auto flex flex-col items-center gap-3 rounded-2xl border border-white/15 bg-[#0b0f15]/95 p-4 shadow-2xl backdrop-blur-sm">
+    <div className="pointer-events-auto flex flex-col items-center gap-3 border border-white/15 bg-[#070b0a]/95 p-4 shadow-2xl hud-frame">
       <div className="flex w-full items-center justify-between gap-6">
-        <span className="flex items-center gap-2 text-sm font-semibold tracking-[0.15em] text-gray-200 uppercase">
-          <Radar className="w-4 h-4 text-emerald-400" strokeWidth={2.25} />
+        <span className="hud-label flex items-center gap-2" style={{ fontSize: 12, color: 'var(--hud-ink)' }}>
+          <Radar className="w-4 h-4" style={{ color: 'var(--hud-accent)' }} strokeWidth={2.25} />
           Tactical Map
         </span>
         <button
@@ -305,15 +305,15 @@ const ExpandedRadar = ({ onClose, soloMode = false }: { onClose: () => void; sol
           its on-screen size is unambiguous — a big, easy-to-read radar that
           still leaves the action visible around its edges. */}
       <div
-        className="overflow-hidden rounded-xl ring-1 ring-emerald-400/10"
+        className="overflow-hidden ring-1 ring-emerald-400/15"
         style={{ width: 'min(420px, 84vw, 74dvh)', height: 'min(420px, 84vw, 74dvh)' }}
       >
         <RadarCanvas className="block h-full w-full" />
       </div>
       <div className="flex w-full items-center justify-between gap-4">
         <Legend soloMode={soloMode} />
-        <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-gray-500">
-          Range <span className="text-gray-300">{RANGE} m</span>
+        <span className="hud-label" style={{ fontSize: 9 }}>
+          Range <span className="hud-num" style={{ color: 'var(--hud-ink)', letterSpacing: 0 }}>{RANGE} m</span>
         </span>
       </div>
     </div>
@@ -352,17 +352,17 @@ const Minimap = ({ isTouch = false, soloMode = false }: { isTouch?: boolean; sol
 
   // ── Desktop: compact inline radar + expand affordance ──
   const panel = (
-    <div className="flex-shrink-0 rounded-xl border border-white/10 bg-black/80 overflow-hidden">
-      <div className="flex items-center justify-between px-3 py-2 border-b border-white/[0.07]">
-        <span className="flex items-center gap-1.5 text-[10px] font-semibold tracking-[0.15em] text-gray-400 uppercase">
-          <Radar className="w-3.5 h-3.5 text-emerald-400" strokeWidth={2.25} />
-          Tactical Map
+    <div className="w-[176px] flex-shrink-0 select-none hud-ink">
+      <div className="flex items-center justify-between pb-1.5">
+        <span className="hud-label flex items-center gap-1.5">
+          <Radar className="w-3 h-3" style={{ color: 'var(--hud-accent)' }} strokeWidth={2.4} />
+          Radar
         </span>
         {/* Press M to expand — clicking is impractical while the pointer is
             locked, so the button doubles as a keybind hint. */}
         <button
           onClick={() => setExpanded(true)}
-          className="pointer-events-auto flex items-center gap-1 rounded-md border border-white/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.1em] text-gray-500 transition-colors hover:border-emerald-400/40 hover:text-emerald-300"
+          className="pointer-events-auto flex items-center gap-1 rounded-[2px] border border-white/10 px-1.5 py-0.5 text-[color:var(--hud-dim)] transition-colors hover:border-emerald-400/40 hover:text-emerald-300"
           aria-label="Expand map (press M)"
           title="Expand map (M)"
         >
@@ -371,11 +371,14 @@ const Minimap = ({ isTouch = false, soloMode = false }: { isTouch?: boolean; sol
         </button>
       </div>
 
-      <div className="px-3 pt-3">
-        <RadarCanvas className="mx-auto block aspect-square w-full max-w-[148px]" />
+      <div
+        className="hud-frame p-2.5"
+        style={{ background: 'rgba(5,9,8,0.55)', border: '1px solid rgba(214,228,220,0.12)', ['--hud-bracket' as string]: 'rgba(46,232,180,0.6)' } as CSSProperties}
+      >
+        <RadarCanvas className="mx-auto block aspect-square w-full max-w-[150px]" />
       </div>
 
-      <Legend className="px-3 py-2" soloMode={soloMode} />
+      <Legend className="pt-1.5" soloMode={soloMode} />
     </div>
   );
 

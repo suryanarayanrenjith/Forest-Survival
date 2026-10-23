@@ -291,6 +291,37 @@ const _GUN_CAVITY_OBC = (shader: { fragmentShader: string }) => {
   );
 };
 
+// PHYSICALLY PLAUSIBLE BASE COLOURS (metalness workflow)
+//
+// For a metal the base colour IS its specular reflectance (F0). The rigs
+// authored gunmetal as near-black (0x0c–0x1c) at metalness 0.7–0.95, which
+// reflects ~1 % of incoming light: whatever the lighting did, the viewmodel
+// rendered as a black silhouette with one hot spot from the gun fill light.
+// Real blued / parkerised steel sits around F0 0.12–0.25 (linear), so metallic
+// parts are lifted to at least that reflectance with their hue preserved —
+// they now read as dark, coated steel that catches the sky and the sun.
+// Low-metalness parts (polymer, rubber, cloth, wood) are dielectrics: their
+// stray metalness only stole diffuse light, so it is mostly removed.
+const _pbrColor = new THREE.Color();
+const GUN_MIN_METAL_F0 = 0.13;
+function correctGunPbr(color: number, metalness: number): { color: number; metalness: number } {
+  if (metalness >= 0.5) {
+    _pbrColor.setHex(color);
+    const lum = 0.2126 * _pbrColor.r + 0.7152 * _pbrColor.g + 0.0722 * _pbrColor.b;
+    if (lum < GUN_MIN_METAL_F0) {
+      if (lum < 1e-4) _pbrColor.setRGB(GUN_MIN_METAL_F0, GUN_MIN_METAL_F0, GUN_MIN_METAL_F0);
+      else _pbrColor.multiplyScalar(GUN_MIN_METAL_F0 / lum);
+      _pbrColor.r = Math.min(1, _pbrColor.r);
+      _pbrColor.g = Math.min(1, _pbrColor.g);
+      _pbrColor.b = Math.min(1, _pbrColor.b);
+      return { color: _pbrColor.getHex(), metalness };
+    }
+    return { color, metalness };
+  }
+  if (metalness < 0.4) return { color, metalness: metalness * 0.35 };
+  return { color, metalness };
+}
+
 function _matKey(color: number, metalness: number, roughness: number, extra: Partial<THREE.MeshStandardMaterialParameters>): string {
   return [
     'std',
@@ -404,6 +435,9 @@ interface ReloadProps {
    * read during animation.
    */
   hold: { x: number; y: number; z: number };
+  /** The same, for the FIRING hand at the right-hip pouch — used by the
+   *  one-handed drill when the support hand is busy (shield / detonator). */
+  holdR: { x: number; y: number; z: number };
 }
 
 const emptyReloadProps = (): ReloadProps => ({
@@ -412,7 +446,34 @@ const emptyReloadProps = (): ReloadProps => ({
   beltLinks: [], drum: null, spentCart: null, freshCart: null,
   well: { x: 0, y: 0, z: 0 },
   hold: { x: 0, y: -4, z: 0 },
+  holdR: { x: 0, y: -4, z: 0 },
 });
+
+/**
+ * Weapons that cannot physically be reloaded with one hand: a belt-fed rotary
+ * cannon and a muzzle-loaded tube. When the support hand is busy (shield /
+ * detonator) App slings that item for the duration of these reloads instead.
+ */
+const TWO_HAND_RELOAD: ReadonlySet<WeaponType> = new Set(['minigun', 'launcher']);
+
+/**
+ * Articulated glove rig, stored on each arm wrapper's userData.hand. Proximal
+ * finger segments rotate about X to curl; each distal tip is a child, so the
+ * two can never separate. `curl` is the per-finger smoothed closure (0 = open
+ * flat, 1 = gripping), each finger chasing its target at a slightly different
+ * rate so a hand opens and closes as a ripple rather than as one plate.
+ */
+interface HandRig {
+  side: number;
+  fingers: THREE.Mesh[];
+  tips: THREE.Mesh[];
+  thumb: THREE.Mesh;
+  thumbTip: THREE.Mesh;
+  /** Index (trigger) finger — the one nearest the thumb. */
+  index: number;
+  curl: number[];
+  thumbCurl: number;
+}
 
 /** One intrusion chip on the Subverter deck (see subChips below). */
 interface SubChip {
@@ -609,7 +670,7 @@ export class GunModel {
   private supportGrip: { x: number; y: number; z: number } | null = null;
 
   // Animation offsets (accumulated and applied each frame)
-  private recoilOffset = { z: 0, rotX: 0, rotY: 0 };
+  private recoilOffset = { z: 0, rotX: 0, rotY: 0, rotZ: 0 };
   // Per-shot random lateral muzzle flick (sign + magnitude), so sustained fire
   // walks the viewmodel left/right organically instead of kicking dead-straight.
   private recoilFlick = 0;
@@ -665,6 +726,39 @@ export class GunModel {
   // the arm comes back for the drill and the pose releases.
   private oneHandTarget = 0;
   private oneHandAnim = 0;
+  // ONE-HANDED RELOAD: decided when a reload starts. If the support hand is
+  // holding something (shield, detonator) and the weapon CAN be worked with one
+  // hand, the firing hand runs the whole drill and the support arm stays off.
+  private reloadOneHanded = false;
+
+  // ── RECOIL SPRING ─────────────────────────────────────────────────────────
+  // Shots land as VELOCITY impulses on a damped spring rather than as a value
+  // that decays linearly: a real kick has an attack, overshoots its rest and
+  // settles, and a light pistol snaps back where a heavy rifle wallows.
+  private recoilSpring = { z: 0, rx: 0, ry: 0, rz: 0, vz: 0, vrx: 0, vry: 0, vrz: 0 };
+
+  // ── RELOAD SECONDARY MOTION ───────────────────────────────────────────────
+  // Every mechanical beat (a magazine slapped home, a slide slamming forward,
+  // a cover banged shut) puts an impulse into this spring, so the weapon
+  // physically jolts with the force that produced the sound instead of gliding
+  // along its authored pose like it's on rails. Applied in applyAnimations.
+  private reloadKick = { y: 0, z: 0, rx: 0, rz: 0, vy: 0, vz: 0, vrx: 0, vrz: 0 };
+
+  // ── LIVING HANDS ──────────────────────────────────────────────────────────
+  // How far each hand is opened (0 grip … 1 flat) this frame — written by the
+  // reload choreographies, eased per finger in animateHands.
+  private openSupport = 0;
+  private openTrigger = 0;
+  private fingerTime = 0;
+  private gripSqueeze = 0;   // recoil: the fingers clamp down on the grip
+  private triggerPull = 0;   // 1 the instant the trigger breaks, decays
+  private triggerOn = 1;     // index finger on the trigger (1) or indexed along the frame (0)
+  private regripIn = 6.5;    // seconds until the next idle re-grip
+  private regripT = -1;      // 0..1 progress of a re-grip, -1 = idle
+  private regripHand = 0;    // which hand re-grips (alternates)
+
+  /** Dev only: freeze the reload playhead at this fraction (null = run). */
+  debugReloadAt: number | null = null;
   // ── Operative OVERCLOCK — the weapon IS the mechanism ──
   // 1 on trigger, decays over OVERCLOCK_DURATION. Drives a four-beat retune of
   // the receiver (see animateOverclock / the pose block in applyAnimations).
@@ -848,8 +942,8 @@ export class GunModel {
   }
 
   private mat(
-    color: number,
-    metalness: number,
+    authoredColor: number,
+    authoredMetalness: number,
     roughness: number,
     extra: Partial<THREE.MeshStandardMaterialParameters> = {},
     finishOverride?: FinishName,
@@ -859,7 +953,8 @@ export class GunModel {
     // furniture can explicitly ask for wood grain. Derived from metalness when
     // not overridden; the resolved name is folded into the cache key, so the
     // six finishes cost cache entries but ZERO extra shader programs.
-    const finishName: FinishName = finishOverride ?? (metalness >= 0.55 ? 'metal' : 'polymer');
+    const finishName: FinishName = finishOverride ?? (authoredMetalness >= 0.55 ? 'metal' : 'polymer');
+    const { color, metalness } = correctGunPbr(authoredColor, authoredMetalness);
     const key = `${_matKey(color, metalness, roughness, extra)}:${finishName}`;
     const cached = _gunMaterialCache.get(key);
     if (cached) return cached;
@@ -2279,6 +2374,11 @@ export class GunModel {
     // from somewhere far below the frame.
     const g = this.supportGrip ?? this.triggerGrip;
     rp.hold = { x: g.x + 0.3, y: g.y - 2.25, z: g.z + 0.95 };
+    // The firing hand's pouch on the right hip, matched to setTriggerSwapHand's
+    // dive (x +0.6, y −2.1, z +0.42 from the grip) so the fresh magazine sits
+    // in the palm, not under it.
+    const tg = this.triggerGrip;
+    rp.holdR = { x: tg.x + 0.6, y: tg.y - 2.3, z: tg.z + 0.52 };
     // Two identical magazines: the one being thrown away and the one coming in.
     const pair = (w: number, h: number, d: number, body: THREE.Material, plate: THREE.Material, plateY: number) => {
       rp.spentMag = this.buildMagProp(w, h, d, body, plate, plateY);
@@ -2475,6 +2575,40 @@ export class GunModel {
     cuffMesh.position.copy(wrist);
     part(cuffMesh);
 
+    // Sleeve folds — fabric bunches where the forearm meets the cuff. Two soft
+    // rings break the sleeve from a perfect cylinder into cloth.
+    const axis = dir.clone().normalize();
+    const ringQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), axis);
+    for (const [along, r] of [[0.22, 0.6], [0.38, 0.64]] as const) {
+      const fold = new THREE.Mesh(new THREE.TorusGeometry(r, 0.07, 6, 18), sleeve);
+      fold.quaternion.copy(ringQuat);
+      fold.position.copy(wrist).addScaledVector(axis, -len * along);
+      part(fold);
+    }
+
+    // Left wrist: a ruggedised wrist display strapped over the cuff — the kind
+    // of small, specific kit that makes the arms read as an operator's.
+    if (side < 0) {
+      const watch = new THREE.Group();
+      watch.quaternion.copy(quat);
+      watch.position.copy(wrist).addScaledVector(axis, -0.42);
+      const band = new THREE.Mesh(new THREE.CylinderGeometry(0.6, 0.6, 0.2, 16, 1, true), cuff);
+      band.material = cuff;
+      watch.add(band);
+      const caseMesh = new THREE.Mesh(this.cbox(0.44, 0.16, 0.36, 0.05), this.mat(0x1b1e22, 0.7, 0.38));
+      caseMesh.position.set(0, 0, 0.6);
+      caseMesh.rotation.x = Math.PI / 2;
+      watch.add(caseMesh);
+      const face = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.3, 0.24),
+        this.mat(0x07120f, 0.1, 0.25, { emissive: 0x2ee8b4, emissiveIntensity: 0.55 }),
+      );
+      face.position.set(0, 0, 0.69);
+      watch.add(face);
+      watch.traverse((o) => { if (o instanceof THREE.Mesh) { o.castShadow = true; o.receiveShadow = true; } });
+      armGroup.add(watch);
+    }
+
     // Gloved fist — back of hand, knuckles, curled fingers, thumb
     const handGroup = new THREE.Group();
     handGroup.position.set(hand.x, hand.y, hand.z);
@@ -2491,10 +2625,24 @@ export class GunModel {
     const knuckles = new THREE.Mesh(this.cbox(0.84, 0.27, 0.36, 0.09), glove);
     knuckles.position.set(0, 0.16, -0.42);
     handGroup.add(knuckles);
+    // Hard-knuckle shell — the moulded guard on a tactical glove. Darker and
+    // glossier than the textile, so it catches a distinct highlight.
+    const shell = this.mat(0x0b0c0e, 0.35, 0.36);
+    const knuckleGuard = new THREE.Mesh(this.cbox(0.8, 0.1, 0.3, 0.04), shell);
+    knuckleGuard.position.set(0, 0.32, -0.4);
+    handGroup.add(knuckleGuard);
+    // Back-of-hand panel stitched onto the glove.
+    const backPanel = new THREE.Mesh(this.cbox(0.6, 0.06, 0.5, 0.025), shell);
+    backPanel.position.set(0, 0.27, 0.06);
+    handGroup.add(backPanel);
     // Wrist taper into the cuff, so the hand doesn't end in a flat slab.
     const wristBlock = new THREE.Mesh(this.cbox(0.7, 0.44, 0.34, 0.1), glove);
     wristBlock.position.set(0, -0.02, 0.5);
     handGroup.add(wristBlock);
+    // Hook-and-loop wrist strap wrapping the cuff of the glove.
+    const strap = new THREE.Mesh(this.cbox(0.76, 0.5, 0.16, 0.05), cuff);
+    strap.position.set(0, -0.01, 0.6);
+    handGroup.add(strap);
 
     // Four fingers curling over the front of the grip, each with a second
     // segment so they WRAP the weapon instead of jutting out as single slabs —
@@ -2502,15 +2650,21 @@ export class GunModel {
     // Each distal segment is a CHILD of its finger, positioned just past the
     // far end in finger-local space, so the two can never drift apart however
     // the hand is posed.
+    const fingers: THREE.Mesh[] = [];
+    const tips: THREE.Mesh[] = [];
     for (let i = 0; i < 4; i++) {
-      const finger = new THREE.Mesh(this.cbox(0.17, 0.5, 0.3, 0.06), glove);
+      // Real fingers are not one length: middle longest, little finger short.
+      const lenK = [0.9, 1.0, 0.96, 0.8][side > 0 ? 3 - i : i];
+      const finger = new THREE.Mesh(this.cbox(0.17, 0.5 * lenK, 0.3, 0.06), glove);
       finger.position.set(-0.3 + i * 0.2, -0.22, -0.5);
       finger.rotation.x = 0.92;
       handGroup.add(finger);
-      const tip = new THREE.Mesh(this.cbox(0.16, 0.32, 0.26, 0.06), glove);
-      tip.position.set(0, -0.3, -0.05);
+      const tip = new THREE.Mesh(this.cbox(0.16, 0.32 * lenK, 0.26, 0.06), glove);
+      tip.position.set(0, -0.3 * lenK, -0.05);
       tip.rotation.x = 0.9;
       finger.add(tip);
+      fingers.push(finger);
+      tips.push(tip);
     }
 
     // Thumb on the inboard side, with the same knuckle break
@@ -2523,6 +2677,14 @@ export class GunModel {
     thumbTip.position.set(0, -0.28, -0.04);
     thumbTip.rotation.x = 0.72;
     thumb.add(thumbTip);
+
+    const rig: HandRig = {
+      side, fingers, tips, thumb, thumbTip,
+      index: side > 0 ? 3 : 0,
+      curl: [1, 1, 1, 1],
+      thumbCurl: 1,
+    };
+    armGroup.userData.hand = rig;
 
     handGroup.traverse((o) => {
       if (o instanceof THREE.Mesh) {
@@ -2547,16 +2709,42 @@ export class GunModel {
       this.spinningPart.rotation.z += delta * spinSpeed;
     }
 
-    if (this.recoilAnimation > 0) {
-      this.recoilAnimation -= delta * 12; // snappy decay
-      this.recoilAnimation = Math.max(0, this.recoilAnimation);
+    // ── Recoil spring (see recoilSpring) ──
+    {
+      const dt = Math.min(delta, 0.05);
+      const m = this.weaponMass;
+      const k = 640 / (0.6 + m * 0.5);                   // light = snappy
+      const c = 2 * (0.5 - Math.min(0.14, m * 0.04)) * Math.sqrt(k);
+      const r = this.recoilSpring;
+      const steps = dt > 0.017 ? 2 : 1;
+      const h = dt / steps;
+      for (let i = 0; i < steps; i++) {
+        r.vz += (-k * r.z - c * r.vz) * h; r.z += r.vz * h;
+        r.vrx += (-k * r.rx - c * r.vrx) * h; r.rx += r.vrx * h;
+        r.vry += (-k * r.ry - c * r.vry) * h; r.ry += r.vry * h;
+        r.vrz += (-k * r.rz - c * r.vrz) * h; r.rz += r.vrz * h;
+      }
+      this.recoilOffset.z = THREE.MathUtils.clamp(r.z, -0.12, 0.42);
+      this.recoilOffset.rotX = THREE.MathUtils.clamp(r.rx, -0.95, 0.3);
+      this.recoilOffset.rotY = THREE.MathUtils.clamp(r.ry, -0.3, 0.3);
+      this.recoilOffset.rotZ = THREE.MathUtils.clamp(r.rz, -0.3, 0.3);
+    }
 
-      // Prominent kick — the weapon jolts back hard and muzzle-flips up sharply
-      // on each shot, then snaps back (snappy decay above). Tuned heavier for a
-      // weightier, more realistic feel across all weapons.
-      this.recoilOffset.z = this.recoilAnimation * 0.34;
-      this.recoilOffset.rotX = -this.recoilAnimation * 0.8;
-      this.recoilOffset.rotY = this.recoilAnimation * this.recoilFlick;
+    // ── Reload secondary-motion spring (see reloadKick) ──
+    {
+      const dt = Math.min(delta, 0.05);
+      const k = 190;
+      const c = 2 * 0.34 * Math.sqrt(k);
+      const q = this.reloadKick;
+      q.vy += (-k * q.y - c * q.vy) * dt; q.y += q.vy * dt;
+      q.vz += (-k * q.z - c * q.vz) * dt; q.z += q.vz * dt;
+      q.vrx += (-k * q.rx - c * q.vrx) * dt; q.rx += q.vrx * dt;
+      q.vrz += (-k * q.rz - c * q.vrz) * dt; q.rz += q.vrz * dt;
+    }
+
+    if (this.recoilAnimation > 0) {
+      this.recoilAnimation -= delta * 12; // snappy decay — drives the parts below
+      this.recoilAnimation = Math.max(0, this.recoilAnimation);
 
       // Slide / pump blowback
       if (this.slide) {
@@ -2567,10 +2755,6 @@ export class GunModel {
         this.bolt.position.z = this.boltRest + this.recoilAnimation * 1.2;
       }
     } else {
-      this.recoilOffset.z *= 0.85;
-      this.recoilOffset.rotX *= 0.85;
-      this.recoilOffset.rotY *= 0.85;
-
       if (this.slide) {
         this.slide.position.z += (this.slideRest - this.slide.position.z) * 0.3;
       }
@@ -2587,9 +2771,15 @@ export class GunModel {
     // thumbed past a loading gate, a belt fed under a hinged cover, a rocket
     // rammed down a tube, a chip cartridge swapped into a deck — each emitting
     // cues at the frame its parts make contact (see ReloadCue).
+    // The choreographies below say how open each hand is this frame; anything
+    // they don't write stays a closed grip.
+    this.openSupport = 0;
+    this.openTrigger = 0;
+
     if (this.isReloading) {
-      this.reloadAnimation += delta / this.reloadDuration;
-      this.panicTime += delta; // drives the tremor in setPose
+      if (this.debugReloadAt !== null) this.reloadAnimation = Math.min(0.999, this.debugReloadAt);
+      else this.reloadAnimation += delta / this.reloadDuration;
+      this.panicTime += delta; // drives the tremor + hand-held drift in setPose
       const ra = Math.min(1, this.reloadAnimation);
 
       // Whole-gun envelope — ease in, hold, ease out.
@@ -2597,7 +2787,17 @@ export class GunModel {
         : ra > 0.86 ? this.ss((1 - ra) / 0.14)
         : 1;
 
-      switch (this.currentWeaponType) {
+      if (this.reloadOneHanded) {
+        switch (this.currentWeaponType) {
+          case 'pistol': this.animateOneHandMagReload(ra, GunModel.ONE_HAND.pistol); break;
+          case 'rifle': this.animateOneHandMagReload(ra, GunModel.ONE_HAND.rifle); break;
+          case 'smg': this.animateOneHandMagReload(ra, GunModel.ONE_HAND.smg); break;
+          case 'sniper': this.animateSniperReload(ra); break;
+          case 'shotgun': this.animateShellReload(ra); break;
+          case 'subverter': this.animateSubverterReload(ra); break;
+          default: break;
+        }
+      } else switch (this.currentWeaponType) {
         case 'pistol': this.animatePistolReload(ra); break;
         case 'rifle': this.animateRifleReload(ra); break;
         case 'smg': this.animateSMGReload(ra); break;
@@ -2625,6 +2825,82 @@ export class GunModel {
     // after the reload ends (or is snapped short by an active reload) rather
     // than blinking out of existence in mid-air.
     this.updateMagFall(delta);
+
+    this.animateHands(delta);
+  }
+
+  /**
+   * LIVING HANDS — fingers that actually do things.
+   *
+   *  • The index finger rides the trigger and BREAKS it on every shot; it comes
+   *    off and lies along the frame (trigger discipline) while sprinting,
+   *    reloading, inspecting or working the action.
+   *  • Recoil makes the whole grip clamp down for a beat, then relax.
+   *  • Reload choreographies open a hand to reach, close it around a magazine
+   *    and flatten it for the palm-slap (openSupport / openTrigger).
+   *  • At rest the fingers never sit dead still: a slow, out-of-phase tension
+   *    drift, and every several seconds an idle RE-GRIP — one hand loosens and
+   *    re-settles its hold, finger by finger.
+   */
+  private animateHands(delta: number) {
+    this.fingerTime += delta;
+    this.gripSqueeze = Math.max(0, this.gripSqueeze - delta * 5.5);
+    this.triggerPull = Math.max(0, this.triggerPull - delta * 13);
+
+    const busy = this.isReloading || this.inspectActive || this.overclockAnim > 0 || this.meleeAnim > 0;
+    const wantOn = busy || this.sprintProgress > 0.5 || this.equipAnim > 0.4 ? 0 : 1;
+    this.triggerOn += (wantOn - this.triggerOn) * Math.min(1, delta * 11);
+
+    // Idle re-grip scheduler.
+    if (this.regripT >= 0) {
+      this.regripT += delta / 0.75;
+      if (this.regripT >= 1) this.regripT = -1;
+    } else if (!busy && this.aimProgress < 0.2 && this.recoilAnimation === 0) {
+      this.regripIn -= delta;
+      if (this.regripIn <= 0) {
+        this.regripT = 0;
+        this.regripHand = 1 - this.regripHand;
+        this.regripIn = 6 + Math.random() * 5;
+      }
+    }
+    const regrip = this.regripT >= 0 ? Math.sin(this.regripT * Math.PI) : 0;
+    const regripS = this.regripHand === 0 && this.supportHandGroup ? regrip : 0;
+    const regripT = this.regripHand === 1 || !this.supportHandGroup ? regrip : 0;
+
+    this.poseHand(this.supportHandGroup, Math.max(this.openSupport, regripS * 0.42), delta, false);
+    this.poseHand(this.triggerHandGroup, Math.max(this.openTrigger, regripT * 0.3), delta, true);
+  }
+
+  private poseHand(g: THREE.Group | null, open: number, delta: number, isTrigger: boolean) {
+    const h = g?.userData.hand as HandRig | undefined;
+    if (!g || !h || !g.visible) return;
+    const t = this.fingerTime;
+    const target = 1 - THREE.MathUtils.clamp(open, 0, 1);
+    const squeeze = this.gripSqueeze * (1 - open);
+    for (let i = 0; i < 4; i++) {
+      h.curl[i] += (target - h.curl[i]) * Math.min(1, delta * (14 - i * 1.8));
+      const c = h.curl[i];
+      // Slow out-of-phase tension drift — a held hand is never frozen.
+      const micro = (Math.sin(t * 1.3 + i * 1.7) * 0.016 + Math.sin(t * 2.7 + i * 0.9) * 0.008) * c;
+      let fr = 0.18 + 0.74 * c + squeeze * 0.12 + micro;
+      let tr = 0.12 + 0.78 * c + squeeze * 0.16 + micro * 1.4;
+      if (isTrigger && i === h.index) {
+        // On the trigger: less curled, reaching into the guard; the pull curls
+        // it hard. Off: straight along the frame.
+        const on = this.triggerOn * c;
+        const onF = 0.58 + this.triggerPull * 0.3;
+        const onT = 0.72 + this.triggerPull * 0.42;
+        fr = THREE.MathUtils.lerp(0.06 + (1 - c) * 0.12, onF, on);
+        tr = THREE.MathUtils.lerp(0.05, onT, on);
+      }
+      h.fingers[i].rotation.x = fr;
+      h.tips[i].rotation.x = tr;
+    }
+    h.thumbCurl += (target - h.thumbCurl) * Math.min(1, delta * 12);
+    const tc = h.thumbCurl;
+    h.thumb.rotation.z = -(0.25 + 0.45 * tc + squeeze * 0.06) * h.side;
+    h.thumb.rotation.x = 0.2 + 0.15 * tc;
+    h.thumbTip.rotation.x = 0.25 + 0.47 * tc + squeeze * 0.1;
   }
 
   /** Smooth 0→1 ramp helper (Hermite). */
@@ -2649,6 +2925,19 @@ export class GunModel {
   private setPose(x: number, y: number, z: number, rx: number, ry: number, rz: number) {
     const p = this.reloadPose;
     p.x = x; p.y = y; p.z = z; p.rx = rx; p.ry = ry; p.rz = rz;
+    // HAND-HELD DRIFT: a weapon being worked is held, not mounted on a rail —
+    // it wanders a few millimetres as the operator's grip and stance shift.
+    // Slow, layered and incommensurate, so it never reads as a loop. Braced
+    // weapons (one-handed drill: pinned against the body) drift less.
+    const d = this.reloadDip * (this.reloadOneHanded ? 0.6 : 1);
+    if (d > 0.001) {
+      const t = this.panicTime;
+      p.x += (Math.sin(t * 1.7) * 0.6 + Math.sin(t * 3.1 + 1.1) * 0.4) * 0.006 * d;
+      p.y += (Math.sin(t * 1.3 + 2.0) * 0.6 + Math.sin(t * 2.6) * 0.4) * 0.007 * d;
+      p.rx += Math.sin(t * 1.1 + 0.5) * 0.016 * d;
+      p.ry += Math.sin(t * 0.8 + 2.4) * 0.012 * d;
+      p.rz += Math.sin(t * 0.9 + 1.3) * 0.02 * d;
+    }
     const k = this.reloadPanic;
     if (k > 0.001) {
       const t = this.panicTime;
@@ -2685,7 +2974,50 @@ export class GunModel {
     if (this.firedCues.has(key)) return false;
     this.firedCues.add(key);
     this.onReloadCue?.(name, index);
+    this.kickFor(name);
     return true;
+  }
+
+  /** Add an impulse (velocity) to the reload secondary-motion spring. */
+  private kick(vy: number, vz: number, vrx: number, vrz = 0) {
+    const q = this.reloadKick;
+    q.vy += vy; q.vz += vz; q.vrx += vrx; q.vrz += vrz;
+  }
+
+  /**
+   * The force each beat puts through the weapon. A palm slap drives the gun UP
+   * and tips the muzzle; a slide or bolt slamming home kicks it BACK; dumping a
+   * magazine makes it momentarily lighter, so it rises a hair. Small numbers —
+   * centimetres and a few degrees — because these are felt, not watched.
+   */
+  private kickFor(name: ReloadCue) {
+    switch (name) {
+      case 'mag_release': this.kick(-0.06, 0, 0.25); break;
+      case 'mag_out': this.kick(0.14, 0, -0.35, 0.2); break;
+      case 'mag_stow': this.kick(0.07, 0, 0, -0.15); break;
+      case 'mag_in': this.kick(0.34, 0.06, 1.5, 0.5); break;
+      case 'mag_tug': this.kick(-0.16, 0, -0.45); break;
+      case 'slide_release': this.kick(0.08, 0.2, 1.1, -0.45); break;
+      case 'bolt_rack': this.kick(0.07, 0.22, 1.0, -0.5); break;
+      case 'bolt_lift': this.kick(0, 0, 0.1, -0.5); break;
+      case 'bolt_back': this.kick(0.02, 0.1, 0.25); break;
+      case 'bolt_forward': this.kick(0.03, -0.12, 0.3); break;
+      case 'bolt_lock': this.kick(0.05, 0.05, 0.35, 0.8); break;
+      case 'shell_insert': this.kick(0.08, -0.03, 0.28); break;
+      case 'pump_rack': this.kick(0.07, 0.24, 1.0); break;
+      case 'cover_open': this.kick(0.06, 0, 0.2, -0.2); break;
+      case 'belt_feed': this.kick(0.05, 0, 0, 0.25); break;
+      case 'cover_close': this.kick(-0.18, 0, -0.7, 0.35); break;
+      case 'spin_up': this.kick(0, 0.1, 0, 0.7); break;
+      case 'rocket_lift': this.kick(-0.08, 0, -0.2); break;
+      case 'rocket_slide': this.kick(0, -0.06, 0.15); break;
+      case 'rocket_seat': this.kick(-0.14, 0.16, -0.5); break;
+      case 'pin_pull': this.kick(0.04, 0, 0, -0.45); break;
+      case 'cartridge_out': this.kick(0.1, 0.05, -0.3); break;
+      case 'cartridge_in': this.kick(0.18, 0.05, 0.85); break;
+      case 'chip_seat': this.kick(0.02, 0, 0.12); break;
+      default: break;
+    }
   }
 
   /** Emit `name` once the playhead reaches `at`. */
@@ -2807,9 +3139,10 @@ export class GunModel {
     rockOut: number;  // tilt the empty picks up as it's stripped (radians)
     rockIn: number;   // nose-first angle the fresh one enters at (radians)
     tug?: number;     // optional downward tug-test to confirm the lock
-  }) {
+  }, hand: 'support' | 'trigger' = 'support') {
     const rp = this.rp;
     const w = rp.well;
+    const byTrigger = hand === 'trigger';
 
     // ── Strip: the empty slides down clear of the well ──
     this.cue(ra, t.release, 'mag_release');
@@ -2857,9 +3190,9 @@ export class GunModel {
       const live = ra >= t.free && stow < 1;
       rp.spentMag.visible = live;
       if (live) {
-        const h = rp.hold;
+        const h = byTrigger ? rp.holdR : rp.hold;
         rp.spentMag.position.set(
-          THREE.MathUtils.lerp(w.x, h.x - 0.55, stow),
+          THREE.MathUtils.lerp(w.x, h.x + (byTrigger ? 0.3 : -0.55), stow),
           THREE.MathUtils.lerp(this.magRestY - 1.3, h.y - 0.6, stow),
           THREE.MathUtils.lerp(w.z, h.z, stow),
         );
@@ -2877,7 +3210,7 @@ export class GunModel {
         // motion the player can actually see gets most of the running time.
         // A panicked hitch drags it back short of the well before it goes home.
         const p = Math.max(0, Math.pow(q, 0.62) - this.panicHitch(ra, t.seat) * 0.3);
-        const h = rp.hold;
+        const h = byTrigger ? rp.holdR : rp.hold;
         fresh.visible = true;
         fresh.position.set(
           THREE.MathUtils.lerp(h.x, w.x, p),
@@ -2902,14 +3235,35 @@ export class GunModel {
       }
     }
 
-    // ── Support hand: off the weapon → down to the pouch → back up with the
+    // ── Working hand: off the weapon → down to the pouch → back up with the
     // magazine → palm-slap → clear. One scalar "depth" drives the whole path.
-    const dive = this.ss(this.seg(ra, t.release, t.pouch));
+    // The firing hand can only let go once the empty is OUT (it was holding
+    // the gun while its thumb pressed the catch), and it has to get back on
+    // the grip quickly, so its clear window is shorter.
+    const diveFrom = byTrigger ? t.free - 0.02 : t.release;
+    const dive = this.ss(this.seg(ra, diveFrom, t.pouch));
     const ret = this.ss(this.seg(ra, t.carry, t.seat));
-    const clear = this.ss(this.seg(ra, t.seat + 0.04, Math.min(1, t.seat + 0.28)));
+    const clear = byTrigger
+      ? this.ss(this.seg(ra, t.seat + 0.03, Math.min(1, t.seat + 0.15)))
+      : this.ss(this.seg(ra, t.seat + 0.04, Math.min(1, t.seat + 0.28)));
     const depth = (dive - ret * 0.28) * (1 - clear);
     const slap = this.bump(ra, t.seat - 0.07, t.seat + 0.05);
-    this.setSwapHand(depth, slap);
+    // Hand shape along the way: it opens as it leaves the weapon and reaches,
+    // closes around the spare at the pouch and carries it gripped, flattens
+    // for the heel-of-the-palm slap, then closes back onto the weapon.
+    const open = Math.min(1,
+      this.bump(ra, diveFrom, t.pouch) * 0.65
+      + (ra > t.pouch && ra < t.seat - 0.05 ? 0.12 : 0)
+      + slap * 0.95);
+    if (byTrigger) {
+      this.openTrigger = Math.max(this.openTrigger, open);
+      // Thumb on the magazine catch while the hand still holds the grip.
+      const press = this.bump(ra, Math.max(0, t.release - 0.04), t.release + 0.06);
+      this.setTriggerSwapHand(depth, slap, 0, press * 0.06, 0, press * 0.08, 0, -press * 0.12);
+    } else {
+      this.openSupport = Math.max(this.openSupport, open);
+      this.setSwapHand(depth, slap);
+    }
     // Handed back so a weapon whose action-cycling overlaps the tail of the
     // swap can re-pose the hand as swap-path PLUS its own beat. Overwriting the
     // pose outright would snap the hand from mid-travel to the beat's origin.
@@ -2940,15 +3294,163 @@ export class GunModel {
     depth: number, slap: number,
     dx = 0, dy = 0, dz = 0, drx = 0, dry = 0, drz = 0,
   ) {
+    // A hand never travels on a straight rail: the elbow swings it OUT on the
+    // way down and back, and the wrist rolls through the arc.
+    const arc = Math.sin(THREE.MathUtils.clamp(depth, 0, 1) * Math.PI);
     this.setArmPose(
       this.supportHandGroup, this.supportHandRest,
-      depth * 0.3 + dx,
+      depth * 0.3 + arc * 0.24 + dx,
       -depth * 2.0 + slap * 0.5 + dy,
-      depth * 0.88 + dz,
-      depth * 0.72 + drx,
+      depth * 0.88 + arc * 0.12 + dz,
+      depth * 0.72 + arc * 0.1 + drx,
       -depth * 0.34 + dry,
-      depth * 0.26 + drz,
+      depth * 0.26 + arc * 0.16 + drz,
     );
+  }
+
+  /** The firing hand's magazine path: off the grip, down to the right-hip
+   *  pouch (rp.holdR) and back up to the well, arcing outboard. */
+  private setTriggerSwapHand(
+    depth: number, slap: number,
+    dx = 0, dy = 0, dz = 0, drx = 0, dry = 0, drz = 0,
+  ) {
+    // Down and OUT to the hip rather than back toward the face: the elbow sits
+    // just behind the lens, so a path that comes toward the camera sweeps the
+    // forearm across the whole view.
+    const arc = Math.sin(THREE.MathUtils.clamp(depth, 0, 1) * Math.PI);
+    this.setArmPose(
+      this.triggerHandGroup, this.triggerHandRest,
+      depth * 0.6 + arc * 0.26 + dx,
+      -depth * 2.1 + slap * 0.45 + dy,
+      depth * 0.42 + arc * 0.04 + dz,
+      depth * 0.6 + arc * 0.1 + drx,
+      depth * 0.3 + dry,
+      -depth * 0.26 - arc * 0.14 + drz,
+    );
+  }
+
+  // ── ONE-HANDED DRILL ─────────────────────────────────────────────────────
+  // Per-weapon tuning for animateOneHandMagReload. `pin` is the pose the
+  // weapon is clamped in (tucked against the body / the shield) while the
+  // firing hand is away fetching a magazine; `present` swings the magwell
+  // toward the incoming hand for the insert. Poses are [x, y, z, rx, ry, rz].
+  private static readonly ONE_HAND: Record<'pistol' | 'rifle' | 'smg', {
+    pin: number[]; present: number[];
+    t: { release: number; free: number; pouch: number; carry: number; seat: number };
+    rockOut: number; rockIn: number;
+    charge: 'hook' | 'catch' | 'handle';
+  }> = {
+    pistol: {
+      pin: [-0.1, 0.0, -0.06, -0.22, 0.38, 0.7],
+      present: [-0.15, 0.27, -0.18, -0.42, 0.3, 0.6],
+      t: { release: 0.06, free: 0.15, pouch: 0.31, carry: 0.4, seat: 0.6 },
+      rockOut: 0.42, rockIn: 0.5, charge: 'hook',
+    },
+    rifle: {
+      pin: [-0.06, -0.04, -0.14, 0.12, 0.2, 0.6],
+      present: [-0.1, 0.08, -0.22, 0.3, 0.24, 0.82],
+      t: { release: 0.06, free: 0.16, pouch: 0.32, carry: 0.42, seat: 0.63 },
+      rockOut: 0.22, rockIn: 0.38, charge: 'catch',
+    },
+    smg: {
+      pin: [-0.06, -0.04, -0.12, 0.12, 0.24, 0.66],
+      present: [-0.1, 0.04, -0.16, 0.3, 0.32, 0.9],
+      t: { release: 0.05, free: 0.14, pouch: 0.3, carry: 0.39, seat: 0.58 },
+      rockOut: 0.55, rockIn: 0.72, charge: 'handle',
+    },
+  };
+
+  /**
+   * ONE-HANDED MAGAZINE RELOAD — the support hand is holding something else
+   * (the riot shield, the Engineer's detonator), so the FIRING hand runs the
+   * entire drill. The weapon is first clamped against the body, the thumb
+   * dumps the empty, the hand lets go of the grip to fetch a magazine off the
+   * right hip, the gun is turned to present the well as it comes back, the
+   * heel of the hand drives it home, the hand re-takes the grip, and the action
+   * is charged one-handed:
+   *
+   *  • hook   — the pistol's rear sight is hooked on the shield edge / belt and
+   *             the gun is driven down to rack the slide.
+   *  • catch  — the rifle's bolt catch is swept with the firing thumb.
+   *  • handle — the SMG's charging handle is reached over the top and hauled.
+   */
+  private animateOneHandMagReload(ra: number, o: typeof GunModel.ONE_HAND.pistol) {
+    const dip = this.reloadDip;
+    const t = o.t;
+    const dry = this.reloadStyle === 'dry';
+
+    // Pose: clamp into the pin, swing to present the well as the magazine
+    // arrives, then relax to the light "regripped" pose for the charge.
+    const toPresent = this.ss(this.seg(ra, t.carry, t.seat));
+    const relax = this.ss(this.seg(ra, t.seat + 0.02, t.seat + 0.16));
+    const pose: number[] = [];
+    for (let i = 0; i < 6; i++) {
+      const v = o.pin[i] + (o.present[i] - o.pin[i]) * toPresent;
+      pose.push(v * (1 - relax * 0.55));
+    }
+
+    // ── Charging, after the hand is back on the grip ──
+    const cA = t.seat + 0.16, cB = t.seat + 0.28;
+    let hook = 0, swipe = 0, haul = 0, rackT = 0;
+    if (dry) {
+      if (o.charge === 'hook') {
+        // Drive DOWN and FORWARD against the hooked sight; the slide is
+        // held while the frame moves, then released and slams home.
+        hook = this.bump(ra, cA, cB);
+        pose[1] -= hook * 0.12;
+        pose[2] -= hook * 0.06;
+        pose[3] -= hook * 0.3;
+      } else if (o.charge === 'catch') {
+        swipe = this.bump(ra, cA, cA + 0.1);
+      } else {
+        haul = this.bump(ra, cA, cB + 0.08);
+        rackT = this.seg(ra, cA, cB + 0.08);
+      }
+    }
+    this.setPose(pose[0] * dip, pose[1] * dip, pose[2] * dip, pose[3] * dip, pose[4] * dip, pose[5] * dip);
+
+    // ── The magazine change, done by the firing hand ──
+    this.magSwap(ra, { ...t, rockOut: o.rockOut, rockIn: o.rockIn }, 'trigger');
+
+    // ── Action ──
+    const relT = cB - 0.03; // the instant the slide / bolt is let go
+    if (o.charge === 'hook') {
+      if (this.slide) {
+        const back = dry ? this.ss(this.seg(ra, 0, 0.1)) : 0;
+        const over = hook * 0.12;                             // pulled past the stop
+        const run = this.ss(this.seg(ra, relT, relT + 0.035));
+        this.slide.position.z = this.slideRest + (0.74 * back + over) * (1 - run);
+      }
+      if (dry) this.cue(ra, relT, 'slide_release');
+    } else if (o.charge === 'catch') {
+      if (this.bolt) {
+        const back = dry ? this.ss(this.seg(ra, 0, 0.12)) : 0;
+        const run = this.ss(this.seg(ra, cA + 0.05, cA + 0.08));
+        this.bolt.position.z = this.boltRest + 1.2 * back * (1 - run);
+      }
+      if (dry) this.cue(ra, cA + 0.05, 'bolt_rack');
+    } else if (this.bolt) {
+      // Grabbed ~35% into the haul, let go at ~75%.
+      const grabAt = cA + 0.07, letGo = cA + 0.15;
+      const pull = dry ? this.ss(this.seg(ra, grabAt, letGo)) : 0;
+      const fly = this.ss(this.seg(ra, letGo, letGo + 0.025));
+      this.bolt.position.z = this.boltRest + 1.0 * pull * (1 - fly);
+      if (dry) this.cue(ra, letGo, 'bolt_rack');
+    }
+
+    // ── Firing-hand extras layered after the swap has handed it back ──
+    if (swipe > 0.001) {
+      // Thumb sweeps forward over the catch.
+      this.setArmPose(this.triggerHandGroup, this.triggerHandRest,
+        -swipe * 0.12, swipe * 0.16, -swipe * 0.1, 0, 0, swipe * 0.22);
+    } else if (haul > 0.001) {
+      // Over the top to the handle on the receiver's left, haul, let go.
+      this.openTrigger = Math.max(this.openTrigger, haul * (rackT < 0.35 || rackT > 0.75 ? 0.7 : 0.1));
+      this.setArmPose(this.triggerHandGroup, this.triggerHandRest,
+        -haul * 0.6, haul * 0.35, haul * (-1.9 + rackT * 1.4), -haul * 0.2, haul * 0.4, haul * 0.35);
+    } else if (hook > 0.001) {
+      this.setArmPose(this.triggerHandGroup, this.triggerHandRest, 0, -hook * 0.04, 0, -hook * 0.05, 0, 0);
+    }
   }
 
   /**
@@ -2992,6 +3494,7 @@ export class GunModel {
     // Trigger-hand thumb: the magazine catch first, the slide stop later.
     const thumb = this.bump(ra, 0, 0.12) * 0.5 + (dry ? this.bump(ra, 0.64, 0.78) : 0);
     this.holdTriggerHand(thumb * 0.07, thumb * 0.06, -thumb * 0.08);
+    this.openTrigger = Math.max(this.openTrigger, thumb * 0.18);
   }
 
   /**
@@ -3003,10 +3506,13 @@ export class GunModel {
   private animateRifleReload(ra: number) {
     const dip = this.reloadDip;
     const work = dip * (1 - this.ss(this.seg(ra, 0.86, 1)) * 0.8);
-    // Up and out into the workspace so the whole swap is on screen.
+    // MUZZLE UP, STOCK DOWN (projected numerically): tipping the muzzle DOWN
+    // used to lever the stock up into the upper half of the frame as a slab a
+    // few centimetres from the lens. Rolling hard and lifting the muzzle keeps
+    // the magwell framed in the lower-middle while the stock tucks low-right.
     this.setPose(
-      -0.15 * work, 0.20 * work, -0.10 * work,
-      -0.40 * work, 0.28 * work, 0.52 * work,
+      -0.10 * work, 0.08 * work, -0.22 * work,
+      0.30 * work, 0.24 * work, 0.82 * work,
     );
 
     const swap = this.magSwap(ra, {
@@ -3028,6 +3534,7 @@ export class GunModel {
     // After the tug the support hand rises to the bolt release, then returns —
     // layered ON the swap path so it flows out of the tug rather than snapping.
     const paddle = dry ? this.bump(ra, 0.78, 0.92) : 0;
+    this.openSupport = Math.max(this.openSupport, paddle * 0.85); // flat hand slaps the paddle
     if (paddle > 0.001) {
       this.setSwapHand(
         swap.depth, swap.slap,
@@ -3046,10 +3553,13 @@ export class GunModel {
   private animateSMGReload(ra: number) {
     const dip = this.reloadDip;
     const work = dip * (1 - this.ss(this.seg(ra, 0.84, 1)) * 0.85);
-    // Up and out into the workspace, canted harder than the rifle.
+    // MUZZLE UP, STOCK DOWN (projected numerically): tipping the muzzle DOWN
+    // used to lever the stock up into the upper half of the frame as a slab a
+    // few centimetres from the lens. Rolling hard and lifting the muzzle keeps
+    // the magwell framed in the lower-middle while the stock tucks low-right.
     this.setPose(
-      -0.16 * work, 0.22 * work, -0.10 * work,
-      -0.34 * work, 0.32 * work, 0.70 * work,
+      -0.10 * work, 0.04 * work, -0.16 * work,
+      0.30 * work, 0.32 * work, 0.90 * work,
     );
 
     const swap = this.magSwap(ra, {
@@ -3075,6 +3585,8 @@ export class GunModel {
     // the swap path so it grows out of the mag slap instead of teleporting.
     const rack = this.seg(ra, 0.64, 0.80);
     const grab = dry ? Math.sin(rack * Math.PI) : 0;
+    // Open to reach the handle, pinch it for the haul, open as it's let go.
+    this.openSupport = Math.max(this.openSupport, grab * (rack < 0.3 || rack > 0.85 ? 0.7 : 0.15));
     if (grab > 0.001) {
       this.setSwapHand(
         swap.depth, swap.slap,
@@ -3104,9 +3616,13 @@ export class GunModel {
     // sits far enough back that pulling the rifle in would take the whole throw
     // behind the camera's near plane, where none of it would be visible. The
     // lift puts both the bolt AND the magwell on screen (see FRAMING note).
+    // MUZZLE UP, STOCK DOWN (projected numerically): tipping the muzzle DOWN
+    // used to lever the stock up into the upper half of the frame as a slab a
+    // few centimetres from the lens. Rolling hard and lifting the muzzle keeps
+    // the magwell framed in the lower-middle while the stock tucks low-right.
     this.setPose(
-      -0.13 * work, 0.18 * work, -0.12 * work,
-      -0.32 * work, 0.26 * work, 0.46 * work,
+      -0.10 * work, 0.0 * work, -0.30 * work,
+      0.30 * work, 0.26 * work, 0.88 * work,
     );
 
     // ── The bolt throw ──
@@ -3130,17 +3646,30 @@ export class GunModel {
     }
 
     // ── The magazine change, run while the action is open ──
-    this.magSwap(ra, {
-      release: 0.40, free: 0.50, pouch: 0.60, carry: 0.68, seat: 0.82,
-      rockOut: 0.3, rockIn: 0.42,
-    });
+    // One-handed: the bolt hand leaves the drawn-back bolt, does the swap
+    // itself, and goes back up to close the action.
+    const oneHand = this.reloadOneHanded;
+    this.magSwap(ra, oneHand
+      ? { release: 0.42, free: 0.46, pouch: 0.55, carry: 0.60, seat: 0.70, rockOut: 0.3, rockIn: 0.42 }
+      : { release: 0.40, free: 0.50, pouch: 0.60, carry: 0.68, seat: 0.82, rockOut: 0.3, rockIn: 0.42 },
+      oneHand ? 'trigger' : 'support');
+    if (oneHand) {
+      // Clamped against the body while the hand is away.
+      const pinned = this.ss(this.seg(ra, 0.36, 0.46)) * (1 - this.ss(this.seg(ra, 0.80, 0.86)));
+      this.reloadPose.y -= pinned * 0.06 * dip;
+      this.reloadPose.rz += pinned * 0.18 * dip;
+    }
 
     // ── The trigger hand does the bolt work: off the grip, up and back over
     // the receiver, then home. This is what makes a bolt gun read as a bolt gun.
     // On a tactical top-up it never leaves the grip.
     const onBolt = dry
-      ? this.ss(this.seg(ra, 0.04, 0.14)) * (1 - this.ss(this.seg(ra, 0.94, 1)))
+      ? (oneHand
+        ? this.ss(this.seg(ra, 0.04, 0.14)) * (1 - this.ss(this.seg(ra, 0.36, 0.44)))
+          + this.ss(this.seg(ra, 0.84, 0.88)) * (1 - this.ss(this.seg(ra, 0.94, 1)))
+        : this.ss(this.seg(ra, 0.04, 0.14)) * (1 - this.ss(this.seg(ra, 0.94, 1))))
       : 0;
+    if (oneHand && onBolt < 0.001 && ra > 0.36 && ra < 0.88) return; // the swap owns the hand
     const travel = draw - push;
     this.setArmPose(
       this.triggerHandGroup, this.triggerHandRest,
@@ -3169,9 +3698,13 @@ export class GunModel {
     const work = dip * (1 - level * 0.9);
     // Up and out so the loading port is on screen (see FRAMING note above) —
     // the shells were previously thumbed in below the bottom of the frame.
+    // MUZZLE UP, STOCK DOWN (projected numerically): tipping the muzzle DOWN
+    // used to lever the stock up into the upper half of the frame as a slab a
+    // few centimetres from the lens. Rolling hard and lifting the muzzle keeps
+    // the magwell framed in the lower-middle while the stock tucks low-right.
     this.setPose(
-      -0.12 * work, 0.16 * work, -0.08 * work,
-      -0.26 * work, 0.30 * work, 0.58 * work,
+      -0.10 * work, 0.04 * work, -0.16 * work,
+      0.30 * work, 0.32 * work, 0.50 * work,
     );
 
     if (ra < loadEnd) {
@@ -3187,12 +3720,19 @@ export class GunModel {
       // pushed through the gate (0.75–1.0).
       const carry = this.ss(this.seg(local, 0.3, 0.78));
       const push = this.ss(this.seg(local, 0.78, 1));
+      // Hand position along the trip. Between shells the hand has to travel
+      // back DOWN from the port to the carrier for the next round — it used to
+      // snap there in a single frame.
+      const back = idx > 0 ? 1 - this.ss(this.seg(local, 0, 0.26)) : 0;
+      const handT = Math.max(carry, back);
 
+      const oneHand = this.reloadOneHanded;
       if (rp.shell) {
-        const h = rp.hold;
+        const h = oneHand ? rp.holdR : rp.hold;
         // Port sits under the receiver, just ahead of the trigger guard.
         const portX = 0.16, portY = -0.62, portZ = 0.55;
-        rp.shell.visible = true;
+        // The next round only exists once the hand has come back for it.
+        rp.shell.visible = idx === 0 || local >= 0.24;
         rp.shell.position.set(
           THREE.MathUtils.lerp(h.x, portX, carry) + push * 0.05,
           THREE.MathUtils.lerp(h.y, portY, carry),
@@ -3214,19 +3754,37 @@ export class GunModel {
       // the start rather than teleporting it to the carrier on frame one.
       const engage = this.ss(this.seg(ra, 0, 0.1));
       const shove = this.bump(local, 0.78, 1) * 0.3;
-      // Down-y matched to `hold` (grip − 2.25) so the shell sits IN the fist
-      // rather than floating below it.
-      this.setArmPose(
-        this.supportHandGroup, this.supportHandRest,
-        engage * (-0.4 + carry * 0.5),
-        engage * (-2.15 + carry * 1.25),
-        engage * (0.9 + carry * 1.5) - shove,
-        engage * (0.62 - carry * 0.2),
-        engage * 0.36,
-        engage * (0.3 - carry * 0.16),
-      );
+      // Fingers: open to pluck, pinch the shell up, flat thumb to push it in.
+      const pinch = (1 - carry) * this.bump(local, 0.05, 0.32) * 0.6 + push * 0.4;
+      if (oneHand) {
+        // The firing hand feeds the tube; the gun is clamped under the arm,
+        // port turned up to it.
+        this.openTrigger = Math.max(this.openTrigger, pinch);
+        this.setArmPose(
+          this.triggerHandGroup, this.triggerHandRest,
+          engage * (0.6 - handT * 0.47),
+          engage * (-2.15 + handT * 1.7),
+          engage * (0.42 - handT * 0.97) - shove,
+          engage * (0.62 - handT * 0.25),
+          engage * 0.3,
+          engage * (-0.3 + handT * 0.16),
+        );
+      } else {
+        this.openSupport = Math.max(this.openSupport, pinch);
+        // Down-y matched to `hold` (grip − 2.25) so the shell sits IN the fist
+        // rather than floating below it.
+        this.setArmPose(
+          this.supportHandGroup, this.supportHandRest,
+          engage * (-0.4 + handT * 0.5),
+          engage * (-2.15 + handT * 1.25),
+          engage * (0.9 + handT * 1.5) - shove,
+          engage * (0.62 - handT * 0.2),
+          engage * 0.36,
+          engage * (0.3 - handT * 0.16),
+        );
+        this.holdTriggerHand();
+      }
       if (this.slide) this.slide.position.z = this.slideRest;
-      this.holdTriggerHand();
     } else {
       // ── Final pump cycle ──
       const p = this.seg(ra, loadEnd, 1);
@@ -3254,17 +3812,30 @@ export class GunModel {
         }
       }
       const hold = 1 - off; // the loading pose still bleeding out
-      this.setArmPose(
-        this.supportHandGroup, this.supportHandRest,
-        hold * 0.1,
-        hold * -0.9 - stroke * 0.45,
-        hold * 2.4 + stroke * 1.7,
-        hold * 0.42,
-        hold * 0.36,
-        hold * 0.14 + stroke * 0.15,
-      );
-      // The whole gun rocks against the stroke — a pump gun has real mass.
-      this.holdTriggerHand(-stroke * 0.05, stroke * 0.09);
+      if (this.reloadOneHanded) {
+        // No hand for the forend: it's pinned against the shield / body and
+        // the WHOLE GUN is driven forward and back through it — so the pump
+        // stays put in the world while the receiver cycles around it.
+        this.reloadPose.z -= stroke * 0.24 * dip;
+        this.reloadPose.rx -= stroke * 0.08 * dip;
+        this.setArmPose(
+          this.triggerHandGroup, this.triggerHandRest,
+          hold * 0.13, hold * -0.45, hold * -0.55, hold * 0.37, hold * 0.3, -hold * 0.14,
+        );
+        this.openTrigger = Math.max(this.openTrigger, hold * 0.3);
+      } else {
+        this.setArmPose(
+          this.supportHandGroup, this.supportHandRest,
+          hold * 0.1,
+          hold * -0.9 - stroke * 0.45,
+          hold * 2.4 + stroke * 1.7,
+          hold * 0.42,
+          hold * 0.36,
+          hold * 0.14 + stroke * 0.15,
+        );
+        // The whole gun rocks against the stroke — a pump gun has real mass.
+        this.holdTriggerHand(-stroke * 0.05, stroke * 0.09);
+      }
     }
   }
 
@@ -3339,6 +3910,7 @@ export class GunModel {
     // reach is +y and −z.
     const atCover = this.ss(this.seg(ra, 0.04, 0.16)) * (1 - this.ss(this.seg(ra, 0.80, 0.92)));
     const haul = this.bump(ra, 0.5, 0.8);
+    this.openSupport = Math.max(this.openSupport, this.bump(ra, 0.04, 0.2) * 0.7 + this.bump(ra, 0.78, 0.86) * 0.9);
     this.setArmPose(
       this.supportHandGroup, this.supportHandRest,
       atCover * 0.3 - haul * 0.4,
@@ -3425,6 +3997,7 @@ export class GunModel {
     // Support hand: carries the round in, shoves it home, then comes back for
     // the pin — a long, deliberate two-stage travel.
     const carry = this.ss(this.seg(ra, 0.04, 0.18)) * (1 - this.ss(this.seg(ra, 0.86, 0.98)));
+    this.openSupport = Math.max(this.openSupport, this.bump(ra, 0.02, 0.14) * 0.7 + shove * 0.8 + pin * 0.3);
     this.setArmPose(
       this.supportHandGroup, this.supportHandRest,
       carry * (0.2 - pin * 0.5),
@@ -3511,11 +4084,21 @@ export class GunModel {
     // Support hand swaps the cartridge at the rear of the deck, then returns.
     const reach = this.ss(this.seg(ra, 0.04, 0.2)) * (1 - this.ss(this.seg(ra, 0.58, 0.78)));
     const ram = this.bump(ra, 0.44, 0.58);
-    this.setArmPose(
-      this.supportHandGroup, this.supportHandRest,
-      -reach * 0.3, -reach * 1.6, reach * 1.3 - ram * 0.9, reach * 0.5, reach * 0.3, -reach * 0.2,
-    );
-    this.holdTriggerHand(-ram * 0.06, ram * 0.05);
+    const grabOpen = this.bump(ra, 0.04, 0.3) * 0.6 + ram * 0.5;
+    if (this.reloadOneHanded) {
+      this.openTrigger = Math.max(this.openTrigger, grabOpen);
+      this.setArmPose(
+        this.triggerHandGroup, this.triggerHandRest,
+        reach * 0.3 - ram * 0.5, -reach * 1.6, reach * 1.3 - ram * 0.9, reach * 0.5, -reach * 0.3, reach * 0.2,
+      );
+    } else {
+      this.openSupport = Math.max(this.openSupport, grabOpen);
+      this.setArmPose(
+        this.supportHandGroup, this.supportHandRest,
+        -reach * 0.3, -reach * 1.6, reach * 1.3 - ram * 0.9, reach * 0.5, reach * 0.3, -reach * 0.2,
+      );
+      this.holdTriggerHand(-ram * 0.06, ram * 0.05);
+    }
   }
 
   /**
@@ -3777,9 +4360,10 @@ export class GunModel {
     // Ease the wiring bend toward its target (engineer demolition).
     this.wireAnim += (this.wiringTarget - this.wireAnim) * Math.min(1, delta * 8);
     if (this.wiringTarget === 0 && this.wireAnim < 0.001) this.wireAnim = 0;
-    // Ease the one-handed carry. A reload always wins: you cannot work a
-    // magazine well with a detonator in that hand, so the arm comes back.
-    const oneHandWant = this.isReloading ? 0 : this.oneHandTarget;
+    // Ease the one-handed carry. A two-handed reload brings the arm back; a
+    // ONE-handed reload (decided at reload start) keeps it off — the firing
+    // hand does the work while the other hand keeps the shield / detonator.
+    const oneHandWant = this.isReloading ? (this.reloadOneHanded ? 1 : 0) : this.oneHandTarget;
     this.oneHandAnim += (oneHandWant - this.oneHandAnim) * Math.min(1, delta * 9);
     if (oneHandWant === 0 && this.oneHandAnim < 0.002) this.oneHandAnim = 0;
     // Overclock retune — decays across OVERCLOCK_DURATION, emitting each
@@ -3960,6 +4544,15 @@ export class GunModel {
     this.cancelInspect();
     this.overclockAnim = 1;
     this.overclockCues.clear();
+  }
+
+  /**
+   * True while a reload needs BOTH hands on the weapon (minigun, launcher, or
+   * any reload started with the support hand free). App slings the shield /
+   * lowers the detonator for its duration so nothing ends up in two places.
+   */
+  get supportHandBusy(): boolean {
+    return this.isReloading && !this.reloadOneHanded;
   }
 
   /** True while the retune is still playing (App gates a re-cast on it). */
@@ -4154,7 +4747,10 @@ export class GunModel {
     // grip, the muzzle rides a little high because nothing is pulling it down,
     // and the whole weapon sits lower and further outboard. The support arm is
     // hidden outright — the prop's own hand is the one on screen.
-    const oneHand = this.oneHandAnim * (1 - aim * 0.7);
+    // During a one-handed RELOAD the drill's own pose takes over from the carry
+    // pose (stacking the two rolled the weapon into the lens).
+    const oneHand = this.oneHandAnim * (1 - aim * 0.7)
+      * (this.isReloading && this.reloadOneHanded ? 1 - this.reloadDip : 1);
     if (this.supportHandGroup) {
       const showSupport = this.oneHandAnim < 0.5;
       if (this.supportHandGroup.visible !== showSupport) this.supportHandGroup.visible = showSupport;
@@ -4178,6 +4774,10 @@ export class GunModel {
       ocRZ = 0.54 * w + rack * 0.07;
     }
 
+    // Reload beats' physical jolt (see reloadKick); damped while sighted.
+    const rk = this.reloadKick;
+    const rkAmp = 1 - aim * 0.7;
+
     this.group.position.x =
       baseX + this.walkOffset.x * swayMul + SP_X * sprint + runX + rl.x
       + leanShift + inspX + equip * 0.12 + wire * 0.05 + mX + ocX
@@ -4185,19 +4785,19 @@ export class GunModel {
       + swYaw * 0.30;
     this.group.position.y =
       baseY + this.walkOffset.y * swayMul + SP_Y * sprint + runY
-      + this.jumpOffset.y - land * 0.12 + abil * 0.07 - dash * 0.05 + rl.y
+      + this.jumpOffset.y - land * 0.12 + abil * 0.07 - dash * 0.05 + rl.y + rk.y * rkAmp
       - equip * 0.5 + equipSettle * 0.05 + inspY - wire * 0.28 + mY + ocY
       - oneHand * 0.048
       + swPitch * 0.24;
     this.group.position.z =
-      baseZ + this.recoilOffset.z + SP_Z * sprint + dash * 0.16 + rl.z
+      baseZ + this.recoilOffset.z + SP_Z * sprint + dash * 0.16 + rl.z + rk.z * rkAmp
       + equip * 0.10 + inspZ + wire * 0.06 - deployJab * 0.16 + mZ + ocZ
       + oneHand * 0.030;
 
     this.group.rotation.x =
       (this.swayOffset.rotX + this.walkOffset.rotX) * swayMul
       + this.recoilOffset.rotX + SP_RX * sprint + runRotX
-      + this.jumpOffset.rotX - land * 0.18 + rl.rx + equip * 0.55 + inspPitch
+      + this.jumpOffset.rotX - land * 0.18 + rl.rx + rk.rx * rkAmp + equip * 0.55 + inspPitch
       + wire * 0.62 - deployJab * 0.14 + mRX + ocRX
       - oneHand * 0.075
       + swPitch * 0.85;
@@ -4207,7 +4807,7 @@ export class GunModel {
       - oneHand * 0.11
       + swYaw * 0.95;
     this.group.rotation.z =
-      this.walkOffset.rotZ * swayMul + rl.rz + SP_RZ * sprint
+      this.walkOffset.rotZ * swayMul + rl.rz + rk.rz * rkAmp + this.recoilOffset.rotZ + SP_RZ * sprint
       + runRotZ + abil * 0.22 + leanRoll + inspRoll + equip * 0.42 + wire * 0.28
       + mRZ + ocRZ
       + oneHand * 0.26
@@ -4226,10 +4826,25 @@ export class GunModel {
    */
   triggerRecoil(strength: number = 1.0) {
     const kick = THREE.MathUtils.clamp(0.78 * strength, 0.32, 1.0);
+    // Still drives slide/bolt reciprocation and the minigun spin.
     this.recoilAnimation = Math.min(1.0, this.recoilAnimation + kick);
     // Fresh random lateral flick each shot — heavier weapons throw the muzzle
     // wider. Purely a viewmodel flourish (the camera owns the real aim-walk).
     this.recoilFlick = (Math.random() - 0.5) * 0.11 * THREE.MathUtils.clamp(strength, 0.5, 2.2);
+    // Impulses into the recoil spring. A shouldered weapon is braced, so ADS
+    // takes a smaller kick; `room` stops sustained auto-fire from stacking the
+    // spring past the same envelope the old linear kick had.
+    const r = this.recoilSpring;
+    const ads = 1 - this.aimProgress * 0.45;
+    const roomZ = 1 - THREE.MathUtils.clamp(r.z / 0.34, 0, 1);
+    const roomX = 1 - THREE.MathUtils.clamp(-r.rx / 0.8, 0, 1);
+    r.vz += 11 * kick * ads * (0.3 + 0.7 * roomZ);
+    r.vrx -= 26 * kick * ads * (0.3 + 0.7 * roomX);
+    r.vry += this.recoilFlick * 16;
+    r.vrz += (Math.random() - 0.5) * 3.2 * kick * ads;
+    // The hand: the trigger breaks and the whole grip clamps down.
+    this.triggerPull = 1;
+    this.gripSqueeze = Math.min(1, this.gripSqueeze + 0.75);
   }
 
   /**
@@ -4251,6 +4866,9 @@ export class GunModel {
     this.reloadShells = Math.max(1, Math.round(shells));
     this.reloadStyle = style;
     this.reloadPanic = THREE.MathUtils.clamp(panic, 0, 1);
+    // The support hand is holding something (shield / detonator) — if this
+    // weapon can be worked one-handed, the firing hand does the whole drill.
+    this.reloadOneHanded = this.oneHandTarget > 0.5 && !TWO_HAND_RELOAD.has(this.currentWeaponType);
     // Fresh beat ledger — every cue is armed again for this reload.
     this.firedCues.clear();
     // A magazine still falling from a previous reload is abandoned rather than

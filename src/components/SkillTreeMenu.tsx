@@ -380,7 +380,7 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
         {selectedSkill && (
           <div className="absolute inset-0 z-20 flex flex-col justify-end bg-black/60 lg:hidden" onClick={() => setSelectedSkill(null)}>
             <div
-              className="max-h-[80%] overflow-y-auto rounded-t-2xl border-t border-emerald-400/20 bg-[#080d0b]"
+              className="max-h-[80%] overflow-y-auto rounded-t-[16px] border-t border-emerald-400/20 bg-[#080d0b]"
               style={{ animation: 'stSheetUp 0.3s cubic-bezier(0.16,1,0.3,1) forwards', boxShadow: '0 -24px 60px rgba(0,0,0,0.6)' }}
               onClick={(e) => e.stopPropagation()}
             >

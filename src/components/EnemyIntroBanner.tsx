@@ -52,55 +52,70 @@ const EnemyIntroBanner = ({ intro, onDone }: EnemyIntroBannerProps) => {
   const Icon = ICONS[intro.icon] ?? Skull;
   const { accent } = intro;
 
+  // Partial-rounded tactical card (the game-wide shape language).
+  const shape = '14px 3.5px';
+  const shapeInner = '13px 3px';
+
   return (
     <div className="pointer-events-none fixed inset-x-0 top-44 z-[55] flex justify-center px-4">
       <div
         key={intro.id}
-        className="relative w-full max-w-md overflow-hidden rounded-2xl border bg-black/90 shadow-2xl"
+        className="relative w-full max-w-md select-none"
         style={{
-          borderColor: `${accent}66`,
-          boxShadow: `0 0 40px ${accent}33`,
+          filter: `drop-shadow(0 0 22px ${accent}40) drop-shadow(0 8px 18px rgba(0,0,0,0.6))`,
           animation: 'enemyIntroIn 0.45s cubic-bezier(0.16,1,0.3,1) forwards',
         }}
       >
-        <div className="h-1 w-full" style={{ background: accent }} />
-        <div
-          className="pointer-events-none absolute inset-0 opacity-50"
-          style={{
-            background: `linear-gradient(110deg, transparent 30%, ${accent}22 50%, transparent 70%)`,
-            animation: 'enemyIntroSweep 1.6s ease-in-out 0.3s',
-          }}
-        />
-
-        <div className="flex items-center gap-4 px-5 py-4">
+        {/* 1px accent frame + opaque body */}
+        <div className="absolute inset-0" style={{ borderRadius: shape, background: `${accent}66` }} />
+        <div className="relative m-px overflow-hidden" style={{ borderRadius: shapeInner, background: 'rgba(6,9,9,0.95)' }}>
+          {/* Accent spine + sweep */}
+          <div className="absolute inset-y-0 left-0 w-[3px]" style={{ background: accent, boxShadow: `0 0 12px ${accent}` }} />
           <div
-            className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-xl border"
-            style={{ borderColor: `${accent}55`, background: `${accent}1f` }}
-          >
-            <Icon className="h-6 w-6" strokeWidth={2.25} style={{ color: accent }} />
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] font-bold tracking-[0.25em] text-gray-400 uppercase">
-                New Threat
-              </span>
-              <span
-                className="rounded-full px-2 py-0.5 text-[9px] font-bold tracking-[0.12em]"
-                style={{ background: `${accent}26`, color: accent }}
-              >
-                {intro.tag}
-              </span>
+            className="pointer-events-none absolute inset-0 opacity-60"
+            style={{
+              background: `linear-gradient(110deg, transparent 30%, ${accent}24 50%, transparent 70%)`,
+              animation: 'enemyIntroSweep 1.6s ease-in-out 0.3s',
+            }}
+          />
+
+          <div className="relative flex items-center gap-4 py-3.5 pl-6 pr-5">
+            <div
+              className="flex h-12 w-12 flex-shrink-0 items-center justify-center border"
+              style={{
+                borderColor: `${accent}66`,
+                background: `${accent}1c`,
+                borderRadius: '8px 2px',
+              }}
+            >
+              <Icon className="h-6 w-6" strokeWidth={2.25} style={{ color: accent, filter: `drop-shadow(0 0 6px ${accent})` }} />
             </div>
-            <h3 className="mt-0.5 text-lg font-black leading-tight text-white">{intro.name}</h3>
-            <p className="mt-0.5 text-xs leading-snug text-gray-300">{intro.blurb}</p>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <span className="hud-label" style={{ color: `${accent}e6` }}>New Threat</span>
+                <span
+                  className="font-hud px-1.5 py-px text-[9px] font-bold uppercase tracking-[0.16em]"
+                  style={{ background: `${accent}26`, color: accent, border: `1px solid ${accent}55` }}
+                >
+                  {intro.tag}
+                </span>
+              </div>
+              <h3
+                className="font-display mt-1 text-[22px] font-semibold uppercase leading-none text-white"
+                style={{ letterSpacing: '0.1em' }}
+              >
+                {intro.name}
+              </h3>
+              <p className="font-hud mt-1.5 text-[12px] leading-snug text-white/70">{intro.blurb}</p>
+            </div>
           </div>
         </div>
       </div>
 
       <style>{`
         @keyframes enemyIntroIn {
-          0% { opacity: 0; transform: translateY(-22px) scale(0.96); filter: blur(4px); }
-          100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+          0% { opacity: 0; transform: translateY(-22px) scale(0.96); }
+          100% { opacity: 1; transform: translateY(0) scale(1); }
         }
         @keyframes enemyIntroSweep {
           0% { transform: translateX(-60%); }

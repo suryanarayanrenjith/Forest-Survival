@@ -1109,7 +1109,7 @@ const PhotosPanel = () => {
             Captured from <span className="text-gray-300">Pause → Photo Mode</span> during Solo play.
           </p>
         </div>
-        <span className="font-hud rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-bold tabular-nums text-emerald-200">
+        <span className="font-hud rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-bold tabular-nums text-emerald-200">
           {photos.length} / {max}
         </span>
       </div>
@@ -1397,7 +1397,7 @@ const SvBar = ({ value, pct, fill, glow }: { value: number; pct: number; fill: s
   <div className="flex h-full w-9 flex-col items-center justify-end">
     <span className="font-hud mb-1 text-[10px] font-bold tabular-nums text-gray-300">{fmtCompact(value)}</span>
     <div
-      className="w-full rounded-t-md"
+      className="w-full rounded-t-[6px]"
       style={{ height: `${Math.max(pct * 0.86, 2)}%`, background: fill, boxShadow: `0 0 14px ${glow}`, transformOrigin: 'bottom', animation: 'svBarGrow 0.7s cubic-bezier(0.16,1,0.3,1)' }}
     />
   </div>

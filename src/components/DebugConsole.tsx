@@ -84,7 +84,7 @@ const DebugConsole = ({ info, tick, isTouch = false }: DebugConsoleProps) => {
       className={`pointer-events-none select-none z-40 font-mono ${
         isTouch
           ? 'absolute left-2 top-[150px] max-h-[calc(100dvh-160px)] w-[176px] overflow-hidden text-[9px] leading-[13px]'
-          : 'absolute left-4 bottom-[116px] w-[204px] text-[10px] leading-[15px]'
+          : 'absolute left-4 bottom-[164px] w-[204px] text-[10px] leading-[15px]'
       }`}
     >
       <div className="rounded-xl border border-white/10 bg-black/75 px-3 py-2">

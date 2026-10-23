@@ -79,12 +79,17 @@ export class DayCycleSystem {
       exposure: 1.05,
     },
     dawn: {
-      skyColor: 0xd47854,
-      fogColor: 0xdba488,
+      // Pastel dawn: a soft periwinkle zenith over a peach horizon, gold key,
+      // lavender fill. The old anchor painted the ZENITH orange and tinted the
+      // fill and the grade orange too, so the whole frame went one colour —
+      // real low-sun light is warm KEY against cool SKY FILL, and that
+      // warm/cool split is what makes golden hour read.
+      skyColor: 0x6b7fb8,
+      fogColor: 0xd8a48c,
       fogDensity: 0.006,
-      ambientColor: 0xeaba94,
+      ambientColor: 0xa9a6d0,
       ambientIntensity: 0.8,
-      lightColor: 0xffba88,
+      lightColor: 0xffb07a,
       lightIntensity: 2.8,
       lightPosition: { x: 100, y: 35, z: -120 },
       sunVisible: true,
@@ -92,11 +97,11 @@ export class DayCycleSystem {
       starIntensity: 0.3,
       cloudOpacity: 0.6,
       bloomStrength: 2.8,
-      colorTint: new THREE.Vector3(1.1, 0.9, 0.76),
-      temperature: 0.34,
-      saturation: 1.42,
+      colorTint: new THREE.Vector3(1.05, 0.95, 0.88),
+      temperature: 0.24,
+      saturation: 1.36,
       contrast: 1.18,
-      exposure: 1.22,
+      exposure: 1.1,
     },
     day: {
       // Rich saturated blue sky + warm golden sunlight, channelling the
@@ -121,15 +126,24 @@ export class DayCycleSystem {
       temperature: 0.12,
       saturation: 1.45,
       contrast: 1.14,
-      exposure: 1.2,
+      // 1.2 → 1.04: measured noon frames sat at a display median of ~0.6 —
+      // pastel mid-tones and a flat, milky read. Natural daylight sits nearer
+      // 0.45 with the sky and sunlit faces carrying the brights.
+      exposure: 1.04,
     },
     dusk: {
-      skyColor: 0xc04860,
-      fogColor: 0xa05368,
+      // Golden hour: deep orange key, blue-violet zenith + sky fill, dusty
+      // apricot horizon/fog. The old anchor was crimson sky, rose fog, pink
+      // fill and a (1.1, 0.78, 0.58) grade — sun, shadows and sky all the same
+      // red, which read as a blood-red filter rather than a sunset. Shadows
+      // now fall cool (lit by the blue sky) against warm sunlit faces. The sky
+      // dome adds the orange glow around the setting sun itself.
+      skyColor: 0x3f62a3,
+      fogColor: 0xc4876e,
       fogDensity: 0.0055,
-      ambientColor: 0xd6808c,
+      ambientColor: 0x8d8fc8,
       ambientIntensity: 0.75,
-      lightColor: 0xff7d52,
+      lightColor: 0xff8c4a,
       lightIntensity: 2.8,
       lightPosition: { x: -90, y: 40, z: -110 },
       sunVisible: true,
@@ -137,11 +151,11 @@ export class DayCycleSystem {
       starIntensity: 0.4,
       cloudOpacity: 0.7,
       bloomStrength: 3.0,
-      colorTint: new THREE.Vector3(1.1, 0.78, 0.58),
-      temperature: 0.42,
-      saturation: 1.45,
+      colorTint: new THREE.Vector3(1.06, 0.93, 0.84),
+      temperature: 0.3,
+      saturation: 1.32,
       contrast: 1.2,
-      exposure: 1.18,
+      exposure: 1.08,
     },
     twilight: {
       skyColor: 0x2d2660,
