@@ -374,6 +374,15 @@ export interface Enemy {
   ccUntil?: number;
   frozenUntil?: number;
   frostShell?: THREE.Mesh;
+  // ── Poise (stagger) ───────────────────────────────────────────────────────
+  // Heavy / critical hits fill a decaying poise meter; when it overflows the
+  // robot staggers (ccUntil + a stumble animation, wind-up cancelled), then is
+  // briefly immune so it can't be stun-locked. Self-healing across pooled
+  // respawns (the meter decays from poiseAt; the timers are timestamps).
+  poise?: number;
+  poiseAt?: number;
+  staggerUntil?: number;
+  staggerImmuneUntil?: number;
   // ── Burning (Pyro flame projector / burning ground) ──────────────────────
   // A robot that walks through fire carries it away with it. `burnUntil` is the
   // ms timestamp the flames go out, `burnDps` the damage-per-second while they
@@ -559,6 +568,8 @@ export interface TerrainObject {
   height?: number; // Collidable height — player can jump over if above this Y
   /** Set on pools that damage/slow whatever stands in them. */
   hazard?: HazardKind;
+  /** Leaf-shedding crown (world Y band + radius) — feeds the LeafSystem. */
+  canopy?: { y0: number; y1: number; r: number };
 }
 
 export interface Keys {

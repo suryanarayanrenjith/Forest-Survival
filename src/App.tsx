@@ -31,6 +31,11 @@ import { WeatherSystem } from './utils/WeatherSystem';
 import { BiomeSystem } from './utils/BiomeSystem';
 import { MapAmbience } from './utils/MapAmbience';
 import { Wildlife } from './utils/Wildlife';
+import { LeafSystem, hasLeaves } from './utils/LeafSystem';
+import { AmbienceAudio } from './utils/AmbienceAudio';
+import { MapSignatureFX } from './utils/MapSignatureFX';
+import { gpuProfiler } from './utils/GpuProfiler';
+import { disposeNoiseTextures } from './utils/NoiseTextures';
 import { BulletDecalSystem } from './utils/BulletDecals';
 import { createAtmosphericHazeMaterial, createSkyDomeMaterial, updateShaderTime } from './utils/Shaders';
 import { getMapConfig, getRandomMap, DEFAULT_MAP, type MapConfig, type MapType } from './utils/MapSystem';
@@ -212,6 +217,9 @@ interface EnemyIntro {
 // fixed at their established defaults; behaviour is unchanged. Adaptive
 // difficulty is also driven by the 'adaptive' difficulty mode at the call sites.
 const RUNTIME_PREFS = { adaptiveDifficulty: true, showTutorial: true, showHints: true } as const;
+
+// Maps whose floor is lawn: a stride brushes the grass (soft swish foley).
+const GRASSY_MAPS = new Set(['deep_forest', 'toxic_swamp', 'ancient_ruins', 'autumn_grove', 'military_outpost']);
 
 const MENU_MUSIC_URL = '/audio/Beyond_The_Overgrowth.mp3';
 
@@ -1820,6 +1828,8 @@ const ForestSurvivalGame = () => {
     const postFX = graphicsPreset.postProcessing
       ? new PostProcessingPipeline(renderer, scene, camera, graphicsPreset, graphicsQuality)
       : null;
+    // Heat-haze driver for MapSignatureFX (no-op without the post chain).
+    const setHeatShimmer = postFX ? (sv: number) => postFX.setHeatShimmer(sv) : null;
     // Apply the map's bloom profile so each environment has its own
     // signature look (heavy bloom on crystal/volcanic, restrained on
     // desert/military). Falls back to neutral if the map didn't declare
@@ -1876,8 +1886,11 @@ const ForestSurvivalGame = () => {
       if (postFX) {
         postFX.render(delta);
       } else {
+        gpuProfiler.begin('scene (no post)');
         renderer.render(scene, camera);
+        gpuProfiler.end();
       }
+      gpuProfiler.poll();
     };
 
     // Photo Mode capture: render a fresh frame, then copy the WebGL canvas onto
@@ -2290,7 +2303,8 @@ const ForestSurvivalGame = () => {
     // tint is a blend of two colours, and doing it in place keeps that sync
     // allocation-free (it runs every frame).
     const _skyScratch = new THREE.Color();
-    const _wildSun = new THREE.Vector3(); // scratch for the wildlife sun vector
+    const _leafFwd = new THREE.Vector3(); // scratch: view direction for leaf shedding
+    const _grassBodies = new Float32Array(8); // scratch: robots pressing the grass (x, z pairs)
 
     // ── TERRAIN SHAPE + GROUND-TEXTURE IDENTITY (per map, per run) ─────────
     // A seeded, WORLD-LOCKED height field (TerrainSystem) displaces the ground
@@ -2358,6 +2372,7 @@ const ForestSurvivalGame = () => {
       // puddles; active precipitation → ripple animation on those puddles.
       uRainWet: { value: 0 },
       uRainRipple: { value: 0 },
+      uRainDamp: { value: 0 },
     };
 
     // All ground shader injection (terrain displacement + ultra-detailed,
@@ -2371,6 +2386,13 @@ const ForestSurvivalGame = () => {
     const ground = new THREE.Mesh(groundGeometry, groundMaterial);
     ground.rotation.x = -Math.PI / 2;
     ground.receiveShadow = true;
+    // Drawn AFTER the other opaque geometry: the ground is one huge plane with
+    // the most expensive surface shader in the scene, and drawing it first made
+    // the GPU fully shade every ground pixel later covered by a tree, rock or
+    // wall. Last, early-Z rejects those pixels outright. (Ground-hugging decals,
+    // scorch marks and puddle rings are all TRANSPARENT, so they still render
+    // after it.) Measured: several ms off the scene pass in the forest.
+    ground.renderOrder = 10;
     ground.castShadow = false;
     scene.add(ground);
 
@@ -2451,9 +2473,12 @@ const ForestSurvivalGame = () => {
       lowTier
     );
     const skyDome = new THREE.Mesh(skyGeometry, skyMaterial);
-    // Render the sky first and ignore depth so it never appears as a "blob"
-    // floating in the distance, even when the player walks far from origin.
-    skyDome.renderOrder = -1000;
+    // Rendered LAST among the opaques, depth-tested against everything already
+    // drawn (its vertices are pinned to the far plane), so the fullscreen sky
+    // shader — clouds, sun, stars — runs only on pixels that actually show sky.
+    // It used to draw first over the WHOLE screen (~3 ms on an integrated GPU)
+    // and then be painted over. Still never a "blob": it follows the camera.
+    skyDome.renderOrder = 1000;
     skyDome.frustumCulled = false;
     scene.add(skyDome);
 
@@ -2547,16 +2572,21 @@ const ForestSurvivalGame = () => {
         console.warn('[App] HDRI environment loading failed; using generated sky IBL fallback:', err);
       });
 
-    // === WEATHER SYSTEM v3 — automatic per-map climate ===
+    // === WEATHER SYSTEM v5 — automatic per-map climate ===
     // No menu, no sync: every mode (Solo / Tutorial / Multiplayer) and every
-    // time-of-day (Auto / Day / Night) gets a living sky driven by the map's
-    // climate — rain on the forest/swamp maps, sandstorms in the desert,
-    // blizzards on the tundra, ashfall over the volcanic wasteland. Outputs
-    // per-frame atmosphere MODIFIERS folded into the day-cycle atmosphere
-    // below, so weather costs a handful of multiplies per frame plus one
-    // Points draw while a storm is active.
+    // time-of-day gets a living sky driven by the map's climate — mist, rain
+    // and thunderstorms on the forest / ruins / outpost, sandstorms in the
+    // desert, blizzards on the tundra, ashfall (with volcanic lightning) over
+    // the wasteland. Outputs per-frame atmosphere MODIFIERS folded into the
+    // day-cycle atmosphere below, and owns the GPU precipitation + lightning
+    // bolt (built here, before the warmup compile; idle = zero draws).
     const weatherSystem = new WeatherSystem(scene);
+    weatherSystem.setQuality(graphicsPreset.particleDensity);
     weatherSystem.setClimate(selectedMap);
+    // The world you can hear: weather beds, thunder, wildlife, foliage foley.
+    const ambienceAudio = new AmbienceAudio(selectedMap, weatherSystem.getStormKind());
+    weatherSystem.onStrike = (e) => ambienceAudio.thunder(e);
+    const _precipLight = new THREE.Color(1, 1, 1);
 
     // === AMBIENT MUSIC — per-map adaptive procedural score (SOLO ONLY) ===
     // Fully generative (zero audio assets): each map gets its own scale,
@@ -2673,9 +2703,18 @@ const ForestSurvivalGame = () => {
     // until now (see HazardKind).
     const hazardGrid = new SpatialGrid<TerrainObject>(8);
     let maxHazardRadius = 0;
+    // World-space falling leaves + ground litter (built further down, once the
+    // terrain profile is known); tree crowns register here as chunks stream.
+    let leafSystem: LeafSystem | null = null;
+    // Grass fields, hidden outright (per frame, below) once they lie wholly
+    // beyond the blade fade-out: every vertex there would shrink to nothing
+    // anyway, but a visible mesh still pays its full vertex pass.
+    const grassFields: TerrainObject[] = [];
     const addTerrainObject = (obj: TerrainObject) => {
       if (!terrainInstancer.add(obj.mesh)) scene.add(obj.mesh);
       terrainObjects.push(obj);
+      if (obj.mesh.userData.kind === 'grass') grassFields.push(obj);
+      if (obj.canopy && leafSystem) leafSystem.addCanopy(obj, obj.x, obj.z, obj.canopy);
       if (obj.collidable) {
         if (obj.radius > maxCollidableRadius) maxCollidableRadius = obj.radius;
         collidableGrid.insert(obj, obj.x, obj.z);
@@ -2692,6 +2731,11 @@ const ForestSurvivalGame = () => {
     const removeTerrainObjectAt = (index: number) => {
       const obj = terrainObjects[index];
       if (!terrainInstancer.remove(obj.mesh)) scene.remove(obj.mesh);
+      if (obj.canopy) leafSystem?.removeCanopy(obj);
+      if (obj.mesh.userData.kind === 'grass') {
+        const gi = grassFields.indexOf(obj);
+        if (gi >= 0) grassFields.splice(gi, 1);
+      }
       if (obj.collidable) collidableGrid.remove(obj, obj.x, obj.z);
       else if (obj.type === 'bush') bushGrid.remove(obj, obj.x, obj.z);
       if (obj.hazard) hazardGrid.remove(obj, obj.x, obj.z);
@@ -2878,14 +2922,19 @@ const ForestSurvivalGame = () => {
         }
       }
 
-      // Lush instanced grass — one draw call per chunk, biome-tinted, with
-      // a shader wind sway. Streams in/out with the chunk like other terrain.
-      // (Already an InstancedMesh, so the instancer falls back to scene.add.)
-      const grassField = biomeSystem.createGrassField(
-        startX, startZ, CHUNK_SIZE, biome, graphicsPreset.terrainDetail,
-      );
-      if (grassField) {
-        addTerrainObject(grassField);
+      // Lush instanced grass tufts — one draw call per QUARTER chunk (so the
+      // per-field distance cull below is fine-grained), biome-tinted, with
+      // wind gusts + trampling in the shader. Streams in/out with the chunk
+      // like other terrain. (InstancedMesh, so the instancer falls back to
+      // scene.add.)
+      const GRASS_CELL = CHUNK_SIZE / 2;
+      for (let gx = 0; gx < 2; gx++) {
+        for (let gz = 0; gz < 2; gz++) {
+          const grassField = biomeSystem.createGrassField(
+            startX + gx * GRASS_CELL, startZ + gz * GRASS_CELL, GRASS_CELL, biome, graphicsPreset.terrainDetail,
+          );
+          if (grassField) addTerrainObject(grassField);
+        }
       }
 
       // Update ground color based on biome in this area
@@ -3499,6 +3548,41 @@ const ForestSurvivalGame = () => {
       return Math.min(dmg, enemy.maxHealth * BOSS_MAX_HIT_FRACTION);
     };
 
+    // ── POISE / STAGGER ──────────────────────────────────────────────────
+    // Weight behind the gunplay: every hit adds poise damage (crits double)
+    // to a meter that drains ~60% of its cap per second. A burst of heavy
+    // hits — a point-blank shotgun blast, a sniper round, a crit chain —
+    // overflows it and the robot STAGGERS: its wind-up is cancelled, it can't
+    // move or strike for a beat, and it stumbles back from the shot. Then it
+    // is immune for 2.2 s, so focus fire can't stun-lock anything. Bosses and
+    // heavies have deep poise and recover fast. Authoritative-hit path only
+    // (solo / host), like every other CC.
+    const poiseCapFor = (e: Enemy): number => {
+      const k = e.type === 'boss' ? 0.55 : e.isMiniBoss ? 0.5 : e.type === 'tank' ? 0.42 : e.type === 'fast' ? 0.22 : 0.3;
+      return e.maxHealth * k;
+    };
+    const applyPoise = (e: Enemy, amount: number) => {
+      if (e.health <= 0 || amount <= 0) return;
+      const now = Date.now();
+      const cap = poiseCapFor(e);
+      const drained = ((now - (e.poiseAt ?? now)) / 1000) * cap * 0.6;
+      e.poise = Math.max(0, (e.poise ?? 0) - drained) + amount;
+      e.poiseAt = now;
+      if (e.poise < cap || now < (e.staggerImmuneUntil ?? 0)) return;
+      e.poise = 0;
+      const heavy = e.type === 'boss' || e.isMiniBoss || e.type === 'tank';
+      const dur = heavy ? 380 : 640;
+      e.staggerUntil = now + dur;
+      e.ccUntil = Math.max(e.ccUntil ?? 0, now + dur);
+      e.staggerImmuneUntil = now + dur + 2200;
+      e.attackSystem?.interrupt();
+      e.aimBlend = 0; // a charging shooter loses its shot
+      const p = e.mesh.position;
+      soundManager.playAt('impact_metal', p.x, p.y + 2, p.z, 0.55, 0.62 + Math.random() * 0.1);
+      createParticles(_tmpStaggerPos.set(p.x, p.y + 2.2, p.z), 0xffd27a, 8);
+    };
+    const _tmpStaggerPos = new THREE.Vector3();
+
     // Gun Model - CRITICAL FIX
     const gunModel = new GunModel('pistol');
     camera.add(gunModel.group);
@@ -3882,11 +3966,35 @@ const ForestSurvivalGame = () => {
       );
     }
     // Wildlife: bird flocks circling overhead (every tier with post-processing
-    // — a few dozen vertices) and falling leaves on the wooded maps (High /
-    // Ultra). Built here, before the warmup compile, like the ambience above.
+    // — a few dozen vertices). Built here, before the warmup compile, like the
+    // ambience above.
     const wildlife: Wildlife | null = graphicsPreset.postProcessing
-      ? new Wildlife(scene, selectedMap, graphicsPreset.terrainDetail >= 1.0)
+      ? new Wildlife(scene, selectedMap)
       : null;
+    // Each map's signature visual (aurora, lava horizon, heat haze, dust
+    // devils, searchlights, bog mist) — see MapSignatureFX. Built before the
+    // warmup compile like the layers above.
+    const mapSignature = new MapSignatureFX(
+      scene, selectedMap, graphicsPreset.particleDensity, graphicsPreset.viewDistance,
+    );
+    // Leaves on the wooded maps (Low and up; counts + field radius scale with
+    // the particle density): shed from the real crowns around the player,
+    // simulated in world space, kicked up by every stride. One instanced draw,
+    // in the scene before the warmup compile. Crowns already streamed in are
+    // registered now; later chunks register through addTerrainObject.
+    if (hasLeaves(selectedMap) && graphicsPreset.terrainDetail >= 0.55) {
+      const ls = new LeafSystem(scene, selectedMap, {
+        density: graphicsPreset.particleDensity,
+        flatRadius: terrainProfile.flatRadius,
+        groundY: visualGroundY,
+      });
+      for (const obj of terrainObjects) if (obj.canopy) ls.addCanopy(obj, obj.x, obj.z, obj.canopy);
+      leafSystem = ls;
+    }
+    // Hoisted so the per-frame ally pass allocates no closure.
+    const kickLeavesAt = (key: object, x: number, y: number, z: number) => {
+      leafSystem?.disturbTracked(key, x, y, z, 2.1);
+    };
 
     // === RUN MODIFIER (single-run mutator) ===
     // Read once on scene init. The modifier is locked for the whole run so
@@ -10524,6 +10632,8 @@ const ForestSurvivalGame = () => {
       // Physically blast any nearby ragdoll corpses outward + skyward (solo
       // Rapier only; no-op in MP / when no corpse is in range).
       ragdollSystem.applyRadialImpulse(pos.x, pos.y, pos.z, radius, 1);
+      // …and every leaf around goes up with the blast column.
+      leafSystem?.blast(pos.x, pos.y, pos.z, radius * 1.5, 1);
     };
 
     // ── SUBVERTER hack helpers ──────────────────────────────────────────
@@ -11467,9 +11577,12 @@ const ForestSurvivalGame = () => {
       const fogColor = (scene.fog as THREE.FogExp2).color;
       // Material fog glows toward the key light, tinted by it.
       _fogSunTint.copy(fogColor).lerp(mainLight.color, 0.62).multiplyScalar(night ? 1.05 : 1.3);
+      // Ground mist (weather + the map's own floor) pools the height fog low
+      // and thick: a steeper falloff concentrates it at the ground.
+      const mist = Math.max(weatherMods.mist, mapSignature.mistBase);
       setAtmosphericFog(
-        ap.heightFalloff,
-        ap.heightFog * thick * (night ? 1.2 : 1.0),
+        ap.heightFalloff * (1 + mist * 1.4),
+        ap.heightFog * thick * (night ? 1.2 : 1.0) * (1 + mist * 3.2),
         -1.5,
         ap.fogSun * shafts * (night ? 0.4 : 1.0),
         sunDirection,
@@ -11564,6 +11677,41 @@ const ForestSurvivalGame = () => {
           return startReload();
         },
         reloadAt: (ra: number | null) => { gunModel.debugReloadAt = ra; },
+        // GPU pass timings (ms, averaged). split=true alternates frames with
+        // the shadow-map update skipped so shadow cost can be separated.
+        gpuProf: (on = true, split = false) => {
+          gpuProfiler.attach(renderer.getContext() as WebGL2RenderingContext);
+          gpuProfiler.enabled = on;
+          gpuProfiler.splitShadows = split;
+          gpuProfiler.reset();
+        },
+        gpuReport: () => gpuProfiler.report(),
+        leaves: () => leafSystem?.stats() ?? null,
+        weather: (state: string, snap = true) => weatherSystem.forceState(state, snap),
+        avatar: (on = true, dist = 9, yaw = 0) => localPlayerShadow.setDebugPreview(on, dist, yaw),
+        grassFade: (a: number, b: number) => biomeSystem.setGrassFade(a, b),
+        recvShadow: (kind: string, on: boolean) => {
+          scene.traverse((o) => { if (o.userData.kind === kind) o.receiveShadow = on; });
+        },
+        leafBlast: (dist = 6, radius = 10) => {
+          camera.getWorldDirection(_leafFwd);
+          leafSystem?.blast(camera.position.x + _leafFwd.x * dist, 0, camera.position.z + _leafFwd.z * dist, radius, 1);
+        },
+        // Hide a category of objects (ground | grass | props | enemy | sky |
+        // viewmodel) to measure its cost; call again with false to restore.
+        hide: (kind: string, on = true) => {
+          const match = (o: THREE.Object3D) =>
+            (kind === 'ground' && o === ground)
+            || (kind === 'sky' && (o === skyDome || o === atmosphericHaze))
+            || (kind === 'viewmodel' && o === gunModel.group)
+            || o.userData.kind === kind;
+          scene.traverse((o) => {
+            if (!match(o)) return;
+            if (on) { if (o.userData.devHidden === undefined) o.userData.devHidden = o.visible; o.visible = false; }
+            else if (o.userData.devHidden !== undefined) { o.visible = o.userData.devHidden; delete o.userData.devHidden; }
+          });
+          if (kind === 'viewmodel') gunModel.group.visible = !on;
+        },
         // Overlay previews: fake boss bar (hp 0..1, 0 = off), intro card, achievement.
         boss: (hp = 0.62, phase = 1) => { devTest.fakeBoss = hp > 0 ? { hp, phase } : null; },
         intro: () => setEnemyIntro({
@@ -11727,10 +11875,28 @@ const ForestSurvivalGame = () => {
       // tan, a blizzard whites it out, ashfall smothers it brown-grey. The
       // same modifiers scale god rays + ground wetness/puddles below. The
       // director reads the day cycle (isNight) so nights run calmer.
+      // Precipitation takes its light from the sky: the fog's HUE at the
+      // brightness a small translucent body really gets — the ambient fill
+      // plus a share of the key (bright in noon snow, near-black at night).
+      _precipLight.setHex(renderAtmosphere.fogColor);
+      {
+        const fl = Math.max(0.05, _precipLight.r * 0.2126 + _precipLight.g * 0.7152 + _precipLight.b * 0.0722);
+        // (Last frame's weather multipliers: this runs before the new fold.)
+        const bright = THREE.MathUtils.clamp(
+          renderAtmosphere.ambientIntensity * weatherMods.ambientMult
+            + renderAtmosphere.lightIntensity * weatherMods.lightMult * 0.35,
+          0.05, 2.2,
+        );
+        _precipLight.multiplyScalar(bright / fl);
+      }
       weatherMods = weatherSystem.update(
         photoModeRef.current ? 0 : rawDelta,
         camera.position,
         !atmosphericSettings.sunVisible,
+        _precipLight,
+        biomeSystem.getWindDir(),
+        atmosphericSettings.sunVisible ? THREE.MathUtils.clamp(renderAtmosphere.lightPosition.y / 120, 0, 1) : 0,
+        graphicsPreset.viewDistance,
       );
 
       // ── WEATHER GETS GAMEPLAY TEETH ──────────────────────────────────────
@@ -11776,6 +11942,15 @@ const ForestSurvivalGame = () => {
       renderAtmosphere.fogDensity *= weatherMods.fogDensityMult;
       renderAtmosphere.saturation *= weatherMods.saturationMult;
       renderAtmosphere.bloomStrength *= weatherMods.bloomMult;
+      // Lightning: the whole world flares blue-white for the stroke — sky,
+      // fog and ambient fill (no runtime lights; see AdvancedLighting).
+      if (weatherMods.lightning > 0.005) {
+        const fl = Math.min(1.2, weatherMods.lightning);
+        renderAtmosphere.skyColor = blendHexColor(renderAtmosphere.skyColor, 0xc6ccff, Math.min(0.6, fl * 0.45));
+        renderAtmosphere.fogColor = blendHexColor(renderAtmosphere.fogColor, 0xaab4e6, Math.min(0.5, fl * 0.35));
+        renderAtmosphere.ambientIntensity *= 1 + fl * 2.2;
+        renderAtmosphere.bloomStrength *= 1 + fl * 0.5;
+      }
 
       // ── AMBIENT MUSIC — feed the adaptive score director (solo only) ──
       // The music tracks the same clock + weather front the sky renders, so
@@ -11808,6 +11983,10 @@ const ForestSurvivalGame = () => {
       groundShaderUniforms.uRainWet.value = groundWetness;
       groundShaderUniforms.uRainRipple.value =
         groundWetness > 0.001 ? weatherMods.rainAmount * groundWetness : 0;
+      // The other rain maps soak without pooling: darker, sheened ground.
+      groundShaderUniforms.uRainDamp.value = selectedMap === 'deep_forest' ? 0 : weatherMods.wetness;
+      // Every rain map: bark and stone darken and turn glossy as they soak.
+      biomeSystem.setPropWetness(weatherMods.wetness);
 
       const sunDirection = computeSunDirection();
 
@@ -11980,6 +12159,30 @@ const ForestSurvivalGame = () => {
       if (skyMaterial.uniforms.skyColorHorizon) {
         skyMaterial.uniforms.skyColorHorizon.value.setHex(renderAtmosphere.fogColor);
       }
+      // Weather in the sky: the cloud deck (drifting faster in wind), the
+      // lightning glow toward the strike, and a post-rain rainbow.
+      {
+        const su = skyMaterial.uniforms;
+        su.uCloudCover.value = weatherMods.cloudCover;
+        su.uCloudTime.value += delta * (1 + weatherMods.wind * 3);
+        su.uFlash.value = weatherMods.lightning;
+        (su.uFlashDir.value as THREE.Vector3).copy(weatherMods.flashDir);
+        su.uRainbow.value = weatherMods.rainbow;
+      }
+      // Per-map signature: aurora / meteors / horizon glow / heat haze /
+      // searchlights / dust devils.
+      mapSignature.update(
+        rawDelta, camera.position,
+        atmosphericSettings.sunVisible ? THREE.MathUtils.clamp(atmosphericSettings.starIntensity, 0, 1) : 1,
+        Math.max(weatherMods.cloudCover - 0.25, weatherMods.rainAmount) / 0.75,
+        skyMaterial, _precipLight, setHeatShimmer,
+      );
+      // The world you can hear.
+      ambienceAudio.update(
+        rawDelta, camera.position.x, camera.position.y, camera.position.z,
+        weatherMods.rainAmount, weatherMods.wind, !atmosphericSettings.sunVisible,
+        Math.min(1, enemies.length / Math.max(8, graphicsPreset.maxEnemies * 0.6)),
+      );
 
       // === SKILL TREE: refresh bonus snapshot + reconcile max health ===
       // Re-read the unlocked-skill bonuses a few times a second so a point spent
@@ -12457,7 +12660,7 @@ const ForestSurvivalGame = () => {
       localPlayerShadow.setWeapon(currentWeapon);
       localPlayerShadow.setCrouch(isCrouching);
       localPlayerShadow.setAlive(!playerEliminated && health > 0);
-      localPlayerShadow.update(rawDelta, camera, euler);
+      localPlayerShadow.update(rawDelta, camera, euler, currentCameraHeight);
 
       // Update water bodies with enhanced shader
       for (const water of waterBodies) {
@@ -12475,7 +12678,7 @@ const ForestSurvivalGame = () => {
       // vegetation (rainAmount pushes the gust up to ~2.6). Wetting fronts that
       // aren't precipitation (gloom) still stir a light breeze via skyDarken.
       const windElapsed = clock.getElapsedTime();
-      const windGust = 1 + weatherMods.rainAmount * 1.6 + weatherMods.skyDarken * 0.5;
+      const windGust = 1 + weatherMods.wind * 1.9 + weatherMods.rainAmount * 0.4;
       currentWindGust = windGust; // shared with effects spawned outside the loop
       biomeSystem.updateWind(windElapsed, windGust);
 
@@ -12492,14 +12695,58 @@ const ForestSurvivalGame = () => {
         wildlife.update(
           windElapsed, rawDelta, camera.position,
           atmosphericSettings.sunVisible ? 1 - THREE.MathUtils.clamp(atmosphericSettings.starIntensity, 0, 1) : 0,
-          _wildSun.set(
-            renderAtmosphere.lightPosition.x, renderAtmosphere.lightPosition.y, renderAtmosphere.lightPosition.z,
-          ),
-          // Leaves are lit by the SUN: dim with the day, not just with the key
-          // light (the moon is also a key light, and lit them like noon).
-          atmosphericSettings.sunVisible ? THREE.MathUtils.clamp(mainLight.intensity / 3.5, 0.3, 1.2) * (1 - THREE.MathUtils.clamp(atmosphericSettings.starIntensity, 0, 1) * 0.7) : 0.16,
-          windGust - 1,
         );
+      }
+      if (leafSystem) {
+        // Feet scatter the litter: the player's stride (last frame's
+        // velocity), the robots closing in, and allies in multiplayer.
+        const cpx = camera.position.x, cpz = camera.position.z;
+        leafSystem.disturb(
+          cpx, camera.position.y - currentCameraHeight, cpz,
+          playerVelocity.x, playerVelocity.z, isCrouching ? 1.5 : 2.1,
+        );
+        let kickers = 0;
+        for (let ei = 0; ei < enemies.length && kickers < 8; ei++) {
+          const en = enemies[ei];
+          if (en.dead) continue;
+          const ep = en.mesh.position;
+          const ex = ep.x - cpx, ez = ep.z - cpz;
+          if (ex * ex + ez * ez > 34 * 34) continue;
+          leafSystem.disturbTracked(en.mesh, ep.x, ep.y, ep.z, 1.2 + en.mesh.scale.x * 0.6);
+          kickers++;
+        }
+        remotePlayerManager?.forEachAvatar(kickLeavesAt);
+        camera.getWorldDirection(_leafFwd);
+        const wd = biomeSystem.getWindDir();
+        leafSystem.update(delta, cpx, cpz, _leafFwd.x, _leafFwd.z, windGust - 1, weatherMods.rainAmount, wd.x, wd.y);
+        // The crunch of the leaves the stride just kicked up.
+        const kicks = leafSystem.takePlayerKicks();
+        if (kicks > 0) ambienceAudio.leafKick(cpx, camera.position.y - currentCameraHeight, cpz, kicks);
+      }
+      {
+        // Grass contact: the player (and their fading footprints) plus the
+        // four nearest robots bow the blades aside.
+        let nb = 0;
+        for (let ei = 0; ei < enemies.length && nb < 4; ei++) {
+          const en = enemies[ei];
+          if (en.dead) continue;
+          const ep = en.mesh.position;
+          const ex = ep.x - camera.position.x, ez = ep.z - camera.position.z;
+          if (ex * ex + ez * ez > 28 * 28) continue;
+          _grassBodies[nb * 2] = ep.x; _grassBodies[nb * 2 + 1] = ep.z;
+          nb++;
+        }
+        biomeSystem.updateGrassContact(
+          rawDelta, camera.position.x, camera.position.y, camera.position.z, !isJumping, _grassBodies, nb,
+        );
+        const gEnd = biomeSystem.getGrassFadeEnd() + 4;
+        for (let gi = 0; gi < grassFields.length; gi++) {
+          const gf = grassFields[gi];
+          if (gf.mesh.userData.devHidden !== undefined) continue; // dev A/B hide wins
+          const gdx = Math.max(0, Math.abs(camera.position.x - gf.x) - gf.radius);
+          const gdz = Math.max(0, Math.abs(camera.position.z - gf.z) - gf.radius);
+          gf.mesh.visible = gdx * gdx + gdz * gdz < gEnd * gEnd;
+        }
       }
 
       // Age / fade / cull the environment bullet marks. Cheap per-frame pass
@@ -13640,11 +13887,13 @@ const ForestSurvivalGame = () => {
           // Heavy rain masks footfalls — the drumming drowns them out.
           const vol = (isCrouching ? 0.1 : isRunning ? 0.26 : 0.18) * weatherFootstepMult;
           soundManager.play('footstep', vol, false, 0.9 + Math.random() * 0.16);
-          // Pushing through brush adds a soft high-pitched leaf rustle on the
-          // footfall, so the slowdown is felt as well as seen.
+          // Pushing through brush adds a leafy rustle on the footfall, so the
+          // slowdown is felt as well as seen; open lawns brush the shins.
           if (bushSlowMul < 0.98) {
             const rustle = (1 - bushSlowMul) * 0.6; // scales with how deep in the bush
-            soundManager.play('footstep', 0.12 + rustle * 0.18, false, 1.7 + Math.random() * 0.3);
+            soundManager.play('leaf_rustle', 0.18 + rustle * 0.3, false, 0.75 + Math.random() * 0.25);
+          } else if (GRASSY_MAPS.has(selectedMap)) {
+            ambienceAudio.grassStep(Math.hypot(playerVelocity.x, playerVelocity.z));
           }
         }
       } else {
@@ -14611,6 +14860,8 @@ const ForestSurvivalGame = () => {
                 }
               }
               enemy.health -= dmgToApply;
+              // Heavy hits build toward a stagger (see applyPoise).
+              applyPoise(enemy, dmgToApply * (isCritical ? 2 : 1));
               // Landing an open-window shot tells the Revenant it's being shot
               // at → it blinks to evade (player-sourced evade only).
               if (enemy.type === 'revenant') enemy.revEvadeUntil = Date.now() + 500;
@@ -14810,6 +15061,8 @@ const ForestSurvivalGame = () => {
           if (hitGround) {
             _decalNormal.set(0, 1, 0);
             bulletDecals.addDecal(_tempVec3, _decalNormal, currentWeapon, 'ground');
+            // The round's impact pops the leaves lying round it.
+            leafSystem?.blast(_tempVec3.x, _tempVec3.y, _tempVec3.z, 1.6, 0.32);
           } else if (terrainHitObj) {
             _decalNormal.set(terrainHitX - terrainHitObj.x, 0, terrainHitZ - terrainHitObj.z);
             if (_decalNormal.lengthSq() < 1e-6) _decalNormal.copy(bullet.velocity).multiplyScalar(-1);
@@ -16504,8 +16757,9 @@ const ForestSurvivalGame = () => {
         // from the last hit direction (hitImpulse). Damage without a direction
         // (burns, hazards) rocks straight back. A slight impact SQUASH replaces
         // the old 16–22% scale-up, which read as the robot inflating.
-        if (enemy.damageFlashTime > 0) {
-          enemy.damageFlashTime -= delta;
+        const staggering = (enemy.staggerUntil ?? 0) > Date.now();
+        if (enemy.damageFlashTime > 0 || staggering) {
+          if (enemy.damageFlashTime > 0) enemy.damageFlashTime -= delta;
           const r = Math.max(0, Math.min(1, enemy.damageFlashTime / 0.3)); // 1 at impact → 0
           const e2 = 1 - r;
           // Damped rock: hardest kick at impact, ~1.3 oscillations as it decays.
@@ -16520,9 +16774,13 @@ const ForestSurvivalGame = () => {
             hitFwd = hi.x * sy + hi.z * cy;   // −1 = shot from the front
             hitSide = hi.x * cy - hi.z * sy;  // shot travelling toward local +X
           }
-          enemy.mesh.rotation.x = hitFwd * wave * 0.3;
-          enemy.mesh.rotation.z = -hitSide * wave * 0.22;
-          if (enemy.head) enemy.head.rotation.z = -hitSide * wave * 0.38;
+          // A STAGGER (poise broken) is a full stumble: a big lurch away from
+          // the shot that rights itself as the robot regains its footing.
+          const stg = Math.max(0, ((enemy.staggerUntil ?? 0) - Date.now()) / 640);
+          const lurch = stg > 0 ? Math.sin(Math.min(1, stg) * Math.PI) * 0.55 : 0;
+          enemy.mesh.rotation.x = hitFwd * (wave * 0.3 + lurch);
+          enemy.mesh.rotation.z = -hitSide * (wave * 0.22 + lurch * 0.6);
+          if (enemy.head) enemy.head.rotation.z = -hitSide * (wave * 0.38 + lurch * 0.5);
           const sq = r * r;
           enemy.mesh.scale.set(baseScale * (1 + sq * 0.035), baseScale * (1 - sq * 0.06), baseScale * (1 + sq * 0.035));
           if (enemy.torso && enemy.torso.scale.x !== 1) enemy.torso.scale.setScalar(1);
@@ -17252,6 +17510,9 @@ const ForestSurvivalGame = () => {
         // Pre-warm the rain shader (hidden Points mesh) so a dynamic-weather
         // front can roll in mid-fight without a first-rain compile hitch.
         weatherSystem.prewarm();
+        // Synthesize this map's weather beds / thunder / wildlife calls now,
+        // behind the loader, instead of on the first storm or birdsong.
+        ambienceAudio.prepare();
 
         // ── HEAVY EXPLOSION-FAMILY EFFECTS ───────────────────────────────
         // Their per-instance additive Mesh/Points materials own shader PROGRAMS
@@ -17781,6 +18042,7 @@ const ForestSurvivalGame = () => {
       // Session-cached ground detail tile: free this renderer's GPU copy (the
       // CPU data stays, so the next run just re-uploads it).
       disposeGroundDetailTextures();
+      disposeNoiseTextures();
       if (import.meta.env.DEV) delete (window as unknown as { __fs?: unknown }).__fs;
 
       // Cleanup shared bullet resources
@@ -17796,6 +18058,8 @@ const ForestSurvivalGame = () => {
 
       // Cleanup weather system
       weatherSystem.clear();
+      ambienceAudio.dispose();
+      mapSignature.dispose();
 
       // Fade out + tear down the per-map ambient score (the menu has its own
       // music). Idempotent — a fresh run rebuilds it from scratch.
@@ -17851,6 +18115,8 @@ const ForestSurvivalGame = () => {
       // elsewhere). Its single geometry + shader material are freed here.
       mapAmbience?.dispose();
       wildlife?.dispose();
+      leafSystem?.dispose();
+      leafSystem = null;
 
       // Free every cached weapon rig (the session-long build-once cache that
       // makes weapon switches attach/detach instead of rebuild).
@@ -19207,7 +19473,7 @@ const ForestSurvivalGame = () => {
           sim), so it safely coexists with the tutorial flow; hidden on pause /
           game-over / photo mode / the tutorial completion modal. */}
       {gameStarted && !gameState.isGameOver && !isPaused && !photoMode && !(gameMode === 'tutorial' && tutorialComplete) && (
-        <EnemyIntroBanner intro={enemyIntro} onDone={() => setEnemyIntro(null)} />
+        <EnemyIntroBanner intro={enemyIntro} onDone={() => setEnemyIntro(null)} lowered={gameMode === 'tutorial'} />
       )}
 
       {/* Tutorial Complete — the player has finished every step and can now

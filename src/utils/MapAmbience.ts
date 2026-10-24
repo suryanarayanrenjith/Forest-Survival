@@ -22,9 +22,10 @@ import type { MapType } from './MapSystem';
  *     single uTime uniform — there is NO per-frame CPU particle loop and NO
  *     buffer re-upload. Advancing the field is literally two uniform writes and
  *     re-centring it on the player.
- *   • The field is a camera-local cylinder that rides the player (like the
- *     weather field), so the ambience is always around them with zero respawn
- *     churn and it wraps seamlessly.
+ *   • The field is WORLD-anchored: each mote drifts in world space and is
+ *     mod-wrapped into a box around the player, so walking moves you THROUGH
+ *     the fireflies / embers (they used to ride along with the camera); only
+ *     the box's soft-faded far edge recycles them.
  *   • Additive, depthWrite off, self-computed soft round sprite (no texture) so
  *     it composes cleanly with bloom and never writes depth over the world.
  *   • Built once at scene init and parented before the warmup compile pass, so
@@ -136,13 +137,15 @@ const AMBIENCE_VERT = /* glsl */ `
   uniform float uTwinkleSpeed;
   uniform float uTwinkleDepth;
   uniform float uPixelScale;
+  uniform vec3 uCam;
 
-  attribute vec3 aBase;    // base position in the camera-local cylinder
+  attribute vec3 aBase;    // base position (offset in the wrap box)
   attribute float aSeed;   // per-mote random phase 0..1
   attribute float aRate;   // per-mote speed multiplier
 
   varying float vTwinkle;
   varying vec3 vTint;      // 0..1 lerp weight between the palette stops
+  varying float vEdge;
 
   void main() {
     float seed = aSeed * 6.2831853;
@@ -157,8 +160,10 @@ const AMBIENCE_VERT = /* glsl */ `
     float R = uRadius;
     float x = aBase.x + uWindX * uTime;
     float z = aBase.z + uWindZ * uTime;
-    x = mod(x + R, 2.0 * R) - R;
-    z = mod(z + R, 2.0 * R) - R;
+    float bx = uCam.x - R, bz = uCam.z - R;
+    x = bx + mod(x - bx, 2.0 * R);
+    z = bz + mod(z - bz, 2.0 * R);
+    vEdge = 1.0 - smoothstep(0.72 * R, R, length(vec2(x - uCam.x, z - uCam.z)));
     x += sin(uTime * uDriftFreq + seed) * uDriftAmp;
     z += cos(uTime * uDriftFreq * 0.8 + seed * 1.7) * uDriftAmp;
     y += sin(uTime * uDriftFreq * 1.3 + seed * 2.3) * uDriftAmp * 0.4;
@@ -186,6 +191,7 @@ const AMBIENCE_FRAG = /* glsl */ `
 
   varying float vTwinkle;
   varying vec3 vTint;
+  varying float vEdge;
 
   void main() {
     // Soft round sprite computed in-shader (no texture bind).
@@ -193,7 +199,7 @@ const AMBIENCE_FRAG = /* glsl */ `
     float d = length(uv);
     if (d > 0.5) discard;
     float core = 1.0 - smoothstep(0.0, 0.5, d);
-    float alpha = pow(core, mix(1.2, 3.0, uHardness)) * vTwinkle * uOpacity;
+    float alpha = pow(core, mix(1.2, 3.0, uHardness)) * vTwinkle * uOpacity * vEdge;
     vec3 col = mix(uColorA, uColorB, vTint.x);
     gl_FragColor = vec4(col, alpha);
   }
@@ -256,6 +262,7 @@ export class MapAmbience {
         uTwinkleSpeed: { value: cfg.twinkleSpeed },
         uTwinkleDepth: { value: cfg.twinkleDepth },
         uPixelScale: { value: pixelRatio },
+        uCam: { value: new THREE.Vector3() },
         uColorA: { value: cfg.colorA.clone() },
         uColorB: { value: cfg.colorB.clone() },
         uOpacity: { value: cfg.opacity },
@@ -283,9 +290,8 @@ export class MapAmbience {
   update(elapsed: number, cameraPos: THREE.Vector3, nightFactor: number): void {
     if (!this.points || !this.material) return;
     this.material.uniforms.uTime.value = elapsed;
-    // Field is camera-local; ride the player on X/Z (Y stays world-anchored so
-    // the vertical band tracks the ground, not the camera height).
-    this.points.position.set(cameraPos.x, 0, cameraPos.z);
+    // World-anchored: the shader wraps the motes into a box round the player.
+    (this.material.uniforms.uCam.value as THREE.Vector3).copy(cameraPos);
     const n = THREE.MathUtils.clamp(nightFactor, 0, 1);
     this.material.uniforms.uOpacity.value = this.baseOpacity * (1 + this.nightBoost * n);
   }

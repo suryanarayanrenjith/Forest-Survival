@@ -31,8 +31,9 @@ import {
   derivePalette, RIG,
   buildRanger, buildScout, buildHeavy, buildOperative,
   buildPyro, buildMedic, buildEngineer, buildPhantom,
-  buildHeldWeapon, getWeaponPose, type WeaponType,
+  buildHeldWeapon, type WeaponType,
 } from './CharacterModels';
+import { getHold, poseAvatarHold } from './AvatarRig';
 import { PlayerWounds, woundSeverityForHealth } from './PlayerWounds';
 
 const VALID_WEAPONS: WeaponType[] = ['pistol', 'rifle', 'shotgun', 'smg', 'sniper', 'minigun', 'launcher'];
@@ -120,6 +121,9 @@ interface RemotePlayerRecord {
   // where the player is actually looking.
   crouchAmount: number;
   aimPitch: number;
+  /** Eased stance blade (rad): the body turns its strong side back while
+   *  holding a long gun (AvatarRig), counter-rotated by weapon + head. */
+  stanceTurn: number;
   // Health bar canvas + texture
   healthCanvas: HTMLCanvasElement;
   healthCtx: CanvasRenderingContext2D;
@@ -142,6 +146,8 @@ interface RemotePlayerRecord {
 interface Joints {
   leftShoulder: THREE.Group;
   rightShoulder: THREE.Group;
+  leftElbow: THREE.Group;
+  rightElbow: THREE.Group;
   leftHip: THREE.Group;
   rightHip: THREE.Group;
   headJoint: THREE.Group;
@@ -348,9 +354,6 @@ export class RemotePlayerManager {
     rec.currentWeaponType = type;
     const matSink: THREE.Material[] = [];
     const weapon = buildHeldWeapon(type, matSink);
-    const pose = getWeaponPose(type);
-    weapon.position.set(...pose.weaponPos);
-    weapon.rotation.set(...pose.weaponRot);
     // Tag for friendly-fire safety and apply shadow flag.
     weapon.traverse((obj) => {
       obj.userData.friendlyPlayer = true;
@@ -360,7 +363,9 @@ export class RemotePlayerManager {
         obj.receiveShadow = false;
       }
     });
-    rec.joints.rightHand.add(weapon);
+    // Held in BODY space (AvatarRig places it from the aim each frame and
+    // solves both arms onto it) — not hung off the right hand.
+    rec.body.add(weapon);
     rec.weaponGroup = weapon;
     rec.weaponMaterials = matSink;
   }
@@ -414,8 +419,12 @@ export class RemotePlayerManager {
       if (rec.posBuf.sample(renderTime, _interp)) {
         rec.group.position.set(_interp.x, _interp.y, _interp.z);
         rec.currentYaw = _interp.yaw;       // already shortest-arc interpolated
-        rec.body.rotation.y = rec.currentYaw;
       }
+      // Bladed shooting stance: the body turns by the hold's stance angle
+      // (eased across weapon swaps; squared off again on death).
+      const turnTarget = rec.isAlive ? getHold(rec.currentWeaponType).turn : 0;
+      rec.stanceTurn += (turnTarget - rec.stanceTurn) * Math.min(1, delta * 8);
+      rec.body.rotation.y = rec.currentYaw - rec.stanceTurn;
 
       // Derived horizontal speed → drives stride length
       const dx = rec.group.position.x - prevX;
@@ -449,32 +458,19 @@ export class RemotePlayerManager {
         rec.joints.leftHip.rotation.x = Math.sin(rec.walkPhase) * legSwing + hipFold;
         rec.joints.rightHip.rotation.x = Math.sin(rec.walkPhase + Math.PI) * legSwing + hipFold;
 
-        // Arms are held in a per-weapon "ready" pose. The right shoulder
-        // is the dominant grip; the left reaches forward to the foregrip
-        // for two-handed weapons or hangs at the side for the pistol.
-        // Sway is intentionally muted so the muzzle stays on-target, and the
-        // aim pitch tilts both arms so the weapon points where they look.
-        const pose = getWeaponPose(rec.currentWeaponType);
-        const armSway = 0.06 + moveGate * 0.14;
-        const armPitch = pitch * 0.6 + crouch * 0.12;
-        rec.joints.rightShoulder.rotation.x = pose.rightShoulderX + armPitch + Math.sin(rec.walkPhase + Math.PI) * armSway;
-        rec.joints.rightShoulder.rotation.z = pose.rightShoulderZ;
-        if (pose.twoHanded) {
-          rec.joints.leftShoulder.rotation.x = pose.leftShoulderX + armPitch + Math.sin(rec.walkPhase) * armSway;
-          rec.joints.leftShoulder.rotation.z = pose.leftShoulderZ;
-        } else {
-          // Pistol: left arm hangs and only sways naturally with the stride.
-          rec.joints.leftShoulder.rotation.x = pose.leftShoulderX + Math.sin(rec.walkPhase) * (armSway + 0.25);
-          rec.joints.leftShoulder.rotation.z = pose.leftShoulderZ;
-        }
+        // The weapon is placed from the aim (pitch) and BOTH hands are
+        // solved onto it with two-bone IK — strong hand on the grip, support
+        // hand on the foregrip — so the gun points where they look and the
+        // arms bend at the elbows like a real hold (see AvatarRig).
+        poseAvatarHold(rec.joints, rec.weaponGroup, rec.currentWeaponType, pitch, moveGate, rec.walkPhase, crouch);
 
         // Head bob with footfalls (and idle breath when still)
         const bobAmp = (0.03 + moveGate * 0.12) * (1 - 0.4 * crouch);
         const breath = Math.sin(rec.bobPhase * 2) * 0.012;
         rec.body.position.y = Math.abs(Math.sin(rec.walkPhase)) * bobAmp + breath;
 
-        // Head tracks aim pitch + a subtle counter-rotated bob and crouch hunch.
-        rec.joints.headJoint.rotation.x = pitch + crouch * 0.22 + Math.sin(rec.walkPhase * 2) * 0.025 * moveGate;
+        // Head (aimed by AvatarRig) + a subtle bob with the footfalls.
+        rec.joints.headJoint.rotation.x += Math.sin(rec.walkPhase * 2) * 0.02 * moveGate;
 
         // ── Human wounds ── bleed through as this player nears death; seal back
         // up the instant they're healed (Medic triage / pickup / crate). Driven
@@ -538,6 +534,16 @@ export class RemotePlayerManager {
       });
     });
     return out;
+  }
+
+  /** Visit every live remote avatar's feet (the group sits at foot level) —
+   *  allocation-free, for per-frame ground effects like the leaf litter. */
+  forEachAvatar(cb: (key: object, x: number, y: number, z: number) => void): void {
+    this.players.forEach((rec) => {
+      if (!rec.isAlive) return;
+      const p = rec.group.position;
+      cb(rec.group, p.x, p.y, p.z);
+    });
   }
 
   dispose(): void {
@@ -797,6 +803,7 @@ export class RemotePlayerManager {
       bobPhase: Math.random() * Math.PI * 2,
       crouchAmount: 0,
       aimPitch: 0,
+      stanceTurn: 0,
       healthCanvas,
       healthCtx,
       healthTexture,

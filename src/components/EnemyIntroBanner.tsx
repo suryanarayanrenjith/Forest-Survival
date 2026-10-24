@@ -18,6 +18,8 @@ interface EnemyIntroBannerProps {
   intro: EnemyIntroData | null;
   /** Called once the banner's lifetime elapses so the host can clear state. */
   onDone: () => void;
+  /** Sit below the tutorial step card instead of on top of it. */
+  lowered?: boolean;
 }
 
 const ICONS: Record<EnemyIntroData['icon'], LucideIcon> = {
@@ -38,7 +40,7 @@ const ICONS: Record<EnemyIntroData['icon'], LucideIcon> = {
  * after a few seconds. Purely presentational — keyed by `intro.id` so each
  * unlock re-triggers the entrance animation even for repeat ids.
  */
-const EnemyIntroBanner = ({ intro, onDone }: EnemyIntroBannerProps) => {
+const EnemyIntroBanner = ({ intro, onDone, lowered = false }: EnemyIntroBannerProps) => {
   useEffect(() => {
     if (!intro) return;
     const timer = setTimeout(onDone, 5200);
@@ -57,7 +59,7 @@ const EnemyIntroBanner = ({ intro, onDone }: EnemyIntroBannerProps) => {
   const shapeInner = '13px 3px';
 
   return (
-    <div className="pointer-events-none fixed inset-x-0 top-44 z-[55] flex justify-center px-4">
+    <div className={`pointer-events-none fixed inset-x-0 ${lowered ? 'top-[23.5rem]' : 'top-44'} z-[55] flex justify-center px-4`}>
       <div
         key={intro.id}
         className="relative w-full max-w-md select-none"

@@ -1,35 +1,36 @@
 import * as THREE from 'three';
 import type { MapType } from './MapSystem';
+import { Precipitation } from './Precipitation';
+import { LightningBolt } from './Lightning';
 
 /**
- * WEATHER SYSTEM v4 — Markov-chain director, clear-dominant.
+ * WEATHER SYSTEM v5 — a living sky, on par with the renderer.
  *
- * Always-on and fully automatic: there is no weather menu. Every run gets a
- * living sky driven by a weather DIRECTOR that, the vast majority of the time,
- * holds a CLEAR sky — and only occasionally lets weather roll in. Crucially the
- * transitions are SMART, not a coin-flip: the director is a 3-state Markov
- * chain (clear → gloomy → storm) where a storm can NEVER strike out of a blue
- * sky. Fronts BUILD — clear softens to overcast gloom, gloom thickens into the
- * map's signature storm — and DECAY back the same way (storm → gloom → clear).
- * Clear is a sticky self-loop with long hold times, so the stationary mix is
- * roughly ~70% clear / ~22% gloom / ~8% storm by roll, and even more clear by
- * wall-clock once the long clear holds are weighted in.
+ * DIRECTOR — a clear-dominant Markov chain over six states:
  *
- * The map's signature storm is still per-environment — the desert's rare but
- * blinding sandstorm, the tundra's white-out blizzard, the volcanic
- * wasteland's ashfall, and the forest/swamp maps' true rain (with growing
- * puddles + reflections, see TerrainSystem). A per-map `storminess` scalar only
- * tunes HOW OFTEN a clear spell gives way to weather, never the clear-dominant
- * shape of the chain. Time of day feeds back into the director: nights run
- * calmer and moodier than days.
+ *     clear ⇄ mist        clear → overcast → drizzle → storm
+ *       ↑        ↘           ↑         ↘________↙      │
+ *       └──────── overcast ←───────────────────────────┘
  *
- * Architecture is atmosphere-first: the primary output is a small struct of
- * ATMOSPHERE MODIFIERS (light / fog / saturation / bloom / god-ray
- * multipliers, a sky tint, ground wetness) that the render loop folds into
- * the existing day-night atmosphere — a handful of multiplies per frame.
- * The only geometry is ONE Points field (single draw call, ≤2600 sprites)
- * shaped per storm: vertical rain streaks, drifting snow, wind-driven dust,
- * or slow-falling ash.
+ * Fronts BUILD and DECAY through the intermediate states — a storm never
+ * strikes out of a blue sky and never vanishes in one step. Clear holds are
+ * long and sticky, so runs are mostly sunny by design; each map's climate sets
+ * its storm SPECIES, how storm-prone it is, whether its storms carry lightning
+ * (forest/ruins/outpost thunderstorms; volcanic lightning in the ashfall) and
+ * whether it breeds dawn mist. Nights run calmer and moodier.
+ *
+ * OUTPUT — a struct of atmosphere modifiers the render loop folds into the
+ * day/night atmosphere (light, fog, grade, bloom, god rays, sky darken/tint,
+ * ground wetness), plus the v5 terms:
+ *   cloudCover  the sky shader's deck (clear wisps → a full storm ceiling)
+ *   wind        0..1 gale strength (grass/trees/leaves gusts, precip slant)
+ *   lightning   0..1 live flash (sky, ambient, bloom, rain sparkle)
+ *   rainbow     0..1 bow left in the sky when a rain front clears into sun
+ *   mist        0..1 low ground mist (height-fog boost)
+ *
+ * VISUALS it owns — GPU precipitation anchored in the world (Precipitation)
+ * and a pooled lightning bolt (Lightning). Both are built at setClimate(), so
+ * their programs link during the warmup compile, and cost nothing while clear.
  */
 
 /** Per-frame modifiers the render loop folds into the atmosphere. */
@@ -56,9 +57,21 @@ export interface WeatherMods {
   wetness: number;
   /** 0..1 — live precipitation intensity (particles + puddle ripples). */
   rainAmount: number;
+  /** 0..1 — sky cloud deck coverage. */
+  cloudCover: number;
+  /** 0..1 — wind strength. */
+  wind: number;
+  /** 0..1+ — live lightning flash. */
+  lightning: number;
+  /** Unit direction (world) toward the latest strike — sky flash glow. */
+  flashDir: THREE.Vector3;
+  /** 0..1 — post-rain rainbow strength. */
+  rainbow: number;
+  /** 0..1 — ground mist density. */
+  mist: number;
 }
 
-type WeatherState = 'clear' | 'gloomy' | 'storm';
+type WeatherState = 'clear' | 'mist' | 'overcast' | 'drizzle' | 'storm';
 export type StormKind = 'rain' | 'sandstorm' | 'blizzard' | 'ashfall' | 'spores' | 'wisps';
 
 interface ModsPreset {
@@ -73,164 +86,108 @@ interface ModsPreset {
   tintStrength: number;
   wetness: number;
   rainAmount: number;
+  cloudCover: number;
+  wind: number;
+  mist: number;
 }
 
 const CLEAR_PRESET: ModsPreset = {
   lightMult: 1.04, ambientMult: 1.0, fogDensityMult: 0.92, saturationMult: 1.04,
   bloomMult: 1.06, godRayMult: 1.3, skyDarken: 0, tintHex: 0xffffff, tintStrength: 0,
-  wetness: 0, rainAmount: 0,
+  wetness: 0, rainAmount: 0, cloudCover: 0, wind: 0.12, mist: 0,
 };
 
-const GLOOMY_PRESET: ModsPreset = {
-  lightMult: 0.58, ambientMult: 0.88, fogDensityMult: 1.55, saturationMult: 0.78,
+// Low ground mist: soft light, glowing shafts, the air thick only near the
+// floor (height fog — see App). Kept well clear of a white-out: fog ≤ ~1.6×,
+// tint ≤ 0.12, never wet.
+const MIST_PRESET: ModsPreset = {
+  lightMult: 0.86, ambientMult: 1.0, fogDensityMult: 1.45, saturationMult: 0.9,
+  bloomMult: 1.08, godRayMult: 1.45, skyDarken: 0.04, tintHex: 0xcfd6dc, tintStrength: 0.1,
+  wetness: 0, rainAmount: 0, cloudCover: 0.22, wind: 0.04, mist: 1,
+};
+
+const OVERCAST_PRESET: ModsPreset = {
+  lightMult: 0.42, ambientMult: 0.96, fogDensityMult: 1.55, saturationMult: 0.8,
   bloomMult: 0.92, godRayMult: 0.22, skyDarken: 0.3, tintHex: 0x8d97a2, tintStrength: 0.16,
   // wetness 0: an overcast sky alone never wets the ground. Puddles form ONLY
-  // from an actual rain storm (and only on the deep forest — see the App.tsx
-  // uRainWet gate). This stops the dry maps (desert, tundra, ash, etc.) from
-  // sprouting reflective "potholes" every time a gloomy front rolls through.
-  wetness: 0, rainAmount: 0,
+  // from actual rain (and only on the deep forest — see the App.tsx uRainWet
+  // gate), so dry maps never sprout reflective "potholes" under a grey sky.
+  wetness: 0, rainAmount: 0, cloudCover: 0.85, wind: 0.32, mist: 0,
 };
 
-/** Atmosphere look for each storm species. */
+/** Atmosphere look for each storm species at full strength. */
 const STORM_PRESETS: Record<StormKind, ModsPreset> = {
-  // Downpour — dark storm deck, soaked reflective ground.
+  // Downpour — dark storm deck, soaked reflective ground, gusting wind.
   rain: {
-    lightMult: 0.52, ambientMult: 0.84, fogDensityMult: 1.8, saturationMult: 0.74,
-    bloomMult: 0.96, godRayMult: 0.14, skyDarken: 0.4, tintHex: 0x76828e, tintStrength: 0.2,
-    wetness: 1.0, rainAmount: 1.0,
+    lightMult: 0.26, ambientMult: 0.94, fogDensityMult: 1.8, saturationMult: 0.76,
+    bloomMult: 0.96, godRayMult: 0.14, skyDarken: 0.42, tintHex: 0x76828e, tintStrength: 0.2,
+    wetness: 1.0, rainAmount: 1.0, cloudCover: 1, wind: 0.7, mist: 0,
   },
   // Wall of wind-driven sand — warm tan haze swallows the horizon.
   sandstorm: {
-    lightMult: 0.66, ambientMult: 0.96, fogDensityMult: 2.6, saturationMult: 0.94,
+    lightMult: 0.5, ambientMult: 1.02, fogDensityMult: 2.6, saturationMult: 0.94,
     bloomMult: 0.95, godRayMult: 0.12, skyDarken: 0.12, tintHex: 0xc89858, tintStrength: 0.55,
-    wetness: 0, rainAmount: 1.0,
+    wetness: 0, rainAmount: 1.0, cloudCover: 0.7, wind: 1, mist: 0,
   },
   // White-out — bright but blinding; the world dissolves into driven snow.
   blizzard: {
-    lightMult: 0.72, ambientMult: 1.05, fogDensityMult: 3.0, saturationMult: 0.7,
+    lightMult: 0.42, ambientMult: 1.12, fogDensityMult: 3.0, saturationMult: 0.7,
     bloomMult: 0.95, godRayMult: 0.06, skyDarken: 0.08, tintHex: 0xdfe8f2, tintStrength: 0.5,
-    wetness: 0, rainAmount: 1.0,
+    wetness: 0, rainAmount: 1.0, cloudCover: 1, wind: 0.95, mist: 0,
   },
   // Volcanic ashfall — smothered light under a brown-grey pall.
   ashfall: {
-    lightMult: 0.56, ambientMult: 0.86, fogDensityMult: 2.0, saturationMult: 0.84,
+    lightMult: 0.38, ambientMult: 0.92, fogDensityMult: 2.0, saturationMult: 0.84,
     bloomMult: 0.95, godRayMult: 0.1, skyDarken: 0.28, tintHex: 0x55483c, tintStrength: 0.42,
-    wetness: 0, rainAmount: 1.0,
+    wetness: 0, rainAmount: 1.0, cloudCover: 0.95, wind: 0.4, mist: 0,
   },
-  // Toxic spore bloom (swamp) — the air thickens with a sickly green haze as
-  // glowing spores drift up off the bog. Saturation + bloom lift so the
-  // luminous green really reads against the murk.
+  // Toxic spore bloom (swamp) — sickly green murk, luminous spores welling up.
   spores: {
     lightMult: 0.60, ambientMult: 0.94, fogDensityMult: 1.95, saturationMult: 1.06,
     bloomMult: 1.10, godRayMult: 0.2, skyDarken: 0.24, tintHex: 0x3f5e36, tintStrength: 0.3,
-    wetness: 0, rainAmount: 1.0,
+    wetness: 0, rainAmount: 1.0, cloudCover: 0.8, wind: 0.15, mist: 0.6,
   },
-  // Spectral wisps (Twilight Vale) — an ethereal, gentle "front", not a harsh
-  // storm: dim violet light, a soft haze and a faint glow as motes of
-  // otherworldly light drift through the dusk.
+  // Spectral wisps (Twilight Vale) — an ethereal front, not a harsh storm.
   wisps: {
     lightMult: 0.78, ambientMult: 0.98, fogDensityMult: 1.5, saturationMult: 1.0,
     bloomMult: 1.16, godRayMult: 0.42, skyDarken: 0.16, tintHex: 0x6a4a8a, tintStrength: 0.22,
-    wetness: 0, rainAmount: 1.0,
+    wetness: 0, rainAmount: 1.0, cloudCover: 0.6, wind: 0.12, mist: 0.7,
   },
 };
 
-/** Particle-field shaping per storm species (one Points draw call). */
-interface StormParticles {
-  count: number;
-  /** 'streak' = vertical rain sprite, 'flake' = soft round sprite. */
-  sprite: 'streak' | 'flake';
-  color: number;
-  size: number;
-  opacity: number;
-  additive: boolean;
-  fallMin: number;   // m/s
-  fallVar: number;
-  windX: number;     // m/s lateral drift
-  windZ: number;
-}
-
-const STORM_PARTICLES: Record<StormKind, StormParticles> = {
-  rain:      { count: 2200, sprite: 'streak', color: 0xbcd6ff, size: 0.65, opacity: 0.5,  additive: true,  fallMin: 26,  fallVar: 14,  windX: 2.6, windZ: 1.2 },
-  sandstorm: { count: 2400, sprite: 'flake',  color: 0xd8b070, size: 1.35, opacity: 0.32, additive: false, fallMin: 2.5, fallVar: 2.5, windX: 30,  windZ: 9 },
-  blizzard:  { count: 2600, sprite: 'flake',  color: 0xf2f7ff, size: 0.55, opacity: 0.8,  additive: false, fallMin: 7,   fallVar: 6,   windX: 17,  windZ: 5 },
-  ashfall:   { count: 1700, sprite: 'flake',  color: 0x9a948c, size: 0.6,  opacity: 0.55, additive: false, fallMin: 2.2, fallVar: 2.2, windX: 3.5, windZ: 2 },
-  // Glowing green spores — slow, lazy drift; additive so they luminesce.
-  spores:    { count: 1500, sprite: 'flake',  color: 0x86e060, size: 0.5,  opacity: 0.5,  additive: true,  fallMin: 1.4, fallVar: 2.2, windX: 2.6, windZ: 1.6 },
-  // Spectral wisps — big, soft, sparse violet motes drifting through the dusk.
-  wisps:     { count: 850,  sprite: 'flake',  color: 0xc7a0ff, size: 1.15, opacity: 0.5,  additive: true,  fallMin: 1.0, fallVar: 1.6, windX: 2.0, windZ: 1.3 },
-};
-
-/** Per-map climate: which storm, and how storm-prone the map is. */
+/** Per-map climate. */
 interface ClimateProfile {
   storm: StormKind;
-  /**
-   * 0..1 — how readily a clear spell gives way to weather on this map. Scales
-   * the Markov chain's drift toward gloom and storm. Even at 1.0 the sky stays
-   * clear most of the time; this only changes how often (and how hard) fronts
-   * roll through. Swamps/tundra brood; deserts get rare-but-dramatic storms.
-   */
+  /** 0..1 — how readily clear spells give way to weather (never the clear-
+   *  dominant SHAPE of the chain, only how often fronts roll through). */
   storminess: number;
+  /** Do this map's storms throw lightning? */
+  lightning: boolean;
+  /** 0..1 — how readily the map breeds ground mist. */
+  mistiness: number;
 }
 
-// Every map now has its OWN signature weather, themed to the environment:
-// forest/ruins/outpost get true rain, the desert its sandstorm, the tundra its
-// blizzard, the volcano its ashfall, the swamp a toxic spore bloom and the
-// Twilight Vale spectral wisps. The Markov director (clear-dominant, long clear
-// holds) is identical everywhere — only the storm SPECIES and how storm-prone
-// the map is (storminess) change, exactly like the forest reference.
 const MAP_CLIMATES: Record<MapType, ClimateProfile> = {
-  deep_forest:        { storm: 'rain',      storminess: 0.50 },
-  autumn_grove:       { storm: 'wisps',     storminess: 0.56 },
-  toxic_swamp:        { storm: 'spores',    storminess: 0.80 },
-  military_outpost:   { storm: 'rain',      storminess: 0.52 },
-  ancient_ruins:      { storm: 'rain',      storminess: 0.48 },
-  desert_canyon:      { storm: 'sandstorm', storminess: 0.40 },
-  frozen_tundra:      { storm: 'blizzard',  storminess: 0.72 },
-  scorched_wasteland: { storm: 'ashfall',   storminess: 0.64 },
+  deep_forest:        { storm: 'rain',      storminess: 0.5,  lightning: true,  mistiness: 0.7 },
+  autumn_grove:       { storm: 'wisps',     storminess: 0.56, lightning: false, mistiness: 0.9 },
+  toxic_swamp:        { storm: 'spores',    storminess: 0.8,  lightning: false, mistiness: 1.0 },
+  military_outpost:   { storm: 'rain',      storminess: 0.52, lightning: true,  mistiness: 0.4 },
+  ancient_ruins:      { storm: 'rain',      storminess: 0.48, lightning: true,  mistiness: 0.75 },
+  desert_canyon:      { storm: 'sandstorm', storminess: 0.4,  lightning: false, mistiness: 0 },
+  frozen_tundra:      { storm: 'blizzard',  storminess: 0.72, lightning: false, mistiness: 0.6 },
+  scorched_wasteland: { storm: 'ashfall',   storminess: 0.64, lightning: true,  mistiness: 0 },
 };
 
 const DEFAULT_CLIMATE: ClimateProfile = MAP_CLIMATES.deep_forest;
 
-// ── Particle field bounds ──────────────────────────────────────────────────
-const FIELD_RADIUS = 42;   // cylinder radius around the camera (m)
-const FIELD_TOP = 34;      // sprites respawn / wrap at this height
+const _top = new THREE.Vector3();
+const _ground = new THREE.Vector3();
 
-/** Soft vertical streak sprite (rain) — built once, shared forever. */
-let streakTexture: THREE.CanvasTexture | null = null;
-function getStreakTexture(): THREE.CanvasTexture {
-  if (streakTexture) return streakTexture;
-  const canvas = document.createElement('canvas');
-  canvas.width = 8;
-  canvas.height = 32;
-  const ctx = canvas.getContext('2d')!;
-  const grad = ctx.createLinearGradient(0, 0, 0, 32);
-  grad.addColorStop(0, 'rgba(200,225,255,0)');
-  grad.addColorStop(0.35, 'rgba(200,225,255,0.9)');
-  grad.addColorStop(0.75, 'rgba(180,210,255,0.55)');
-  grad.addColorStop(1, 'rgba(180,210,255,0)');
-  ctx.fillStyle = grad;
-  ctx.fillRect(2.5, 0, 3, 32);
-  streakTexture = new THREE.CanvasTexture(canvas);
-  return streakTexture;
-}
-
-/** Soft round sprite (snow / dust / ash) — built once, shared forever. */
-let flakeTexture: THREE.CanvasTexture | null = null;
-function getFlakeTexture(): THREE.CanvasTexture {
-  if (flakeTexture) return flakeTexture;
-  const canvas = document.createElement('canvas');
-  canvas.width = 32;
-  canvas.height = 32;
-  const ctx = canvas.getContext('2d')!;
-  const grad = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
-  grad.addColorStop(0, 'rgba(255,255,255,0.95)');
-  grad.addColorStop(0.45, 'rgba(255,255,255,0.55)');
-  grad.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, 32, 32);
-  flakeTexture = new THREE.CanvasTexture(canvas);
-  return flakeTexture;
+export interface StrikeEvent {
+  x: number; y: number; z: number;
+  distance: number;
+  /** A visible bolt (vs. sheet lightning inside the clouds). */
+  bolt: boolean;
 }
 
 export class WeatherSystem {
@@ -241,98 +198,143 @@ export class WeatherSystem {
   private readonly current: WeatherMods = {
     lightMult: 1, ambientMult: 1, fogDensityMult: 1, saturationMult: 1,
     bloomMult: 1, godRayMult: 1, skyDarken: 0, tint: new THREE.Color(0xffffff),
-    tintStrength: 0, wetness: 0, rainAmount: 0,
+    tintStrength: 0, wetness: 0, rainAmount: 0, cloudCover: 0.18, wind: 0.12,
+    lightning: 0, flashDir: new THREE.Vector3(0, 1, 0), rainbow: 0, mist: 0,
   };
   private target: ModsPreset = CLEAR_PRESET;
+  private readonly drizzle: ModsPreset = { ...CLEAR_PRESET };
   private readonly targetTint = new THREE.Color(0xffffff);
 
-  // ── Weather director ──
+  // ── Director ──
   private state: WeatherState = 'clear';
   private holdRemaining = 0;
   private night = false;
+  private lastRainEnd = -999;
+  private clock = 0;
 
-  // ── Storm particle field (lazy single Points mesh) ──
-  private field: THREE.Points | null = null;
-  private fieldMaterial: THREE.PointsMaterial | null = null;
-  private fieldVelY: Float32Array | null = null;
-  private fieldConfig: StormParticles = STORM_PARTICLES.rain;
+  // ── Visuals ──
+  private precip: Precipitation | null = null;
+  private bolt: LightningBolt | null = null;
+  private quality = 1;
+  private strikeTimer = 6;
+  private sheetFlash = 0;
+  private gust = 0;
+  private gustTarget = 0;
+  private gustTimer = 0;
+  private readonly wind2 = new THREE.Vector2(1, 0);
+  /** Strike callback (thunder audio, lighting): set by the owner. */
+  onStrike: ((e: StrikeEvent) => void) | null = null;
 
   constructor(scene: THREE.Scene) {
     this.scene = scene;
   }
 
+  /** Particle density (the preset's particleDensity). Call before setClimate. */
+  setQuality(q: number): void {
+    this.quality = q;
+  }
+
   /**
    * Configure the climate for the selected map. Called once at scene init.
    * Opens on a fair director roll and SNAPS the blend to it, so a run that
-   * begins mid-gloom looks gloomy from the very first frame.
+   * begins in mist looks misty from the very first frame.
    */
   setClimate(map: MapType): void {
     this.climate = MAP_CLIMATES[map] ?? DEFAULT_CLIMATE;
-    this.fieldConfig = STORM_PARTICLES[this.climate.storm];
+    this.buildDrizzle();
     this.state = this.rollNextState(null);
     this.holdRemaining = this.holdSecondsFor(this.state);
     this.target = this.presetFor(this.state);
     this.snapToTarget();
+    this.precip?.dispose();
+    this.precip = new Precipitation(this.scene, this.climate.storm, this.quality);
+    if (this.climate.lightning) {
+      this.bolt = new LightningBolt(this.scene);
+      // Volcanic lightning burns hotter than a summer thunderstorm.
+      if (this.climate.storm === 'ashfall') this.bolt.setColors(0xfff1dc, 0xff9a5a);
+    }
   }
 
   getStormKind(): StormKind {
     return this.climate.storm;
   }
 
+  /** Drizzle = a light version of the map's storm species. */
+  private buildDrizzle(): void {
+    const s = STORM_PRESETS[this.climate.storm];
+    const o = OVERCAST_PRESET;
+    const k = 0.45;
+    const d = this.drizzle;
+    d.lightMult = o.lightMult + (s.lightMult - o.lightMult) * k;
+    d.ambientMult = o.ambientMult + (s.ambientMult - o.ambientMult) * k;
+    d.fogDensityMult = o.fogDensityMult + (s.fogDensityMult - o.fogDensityMult) * k;
+    d.saturationMult = o.saturationMult + (s.saturationMult - o.saturationMult) * k;
+    d.bloomMult = o.bloomMult + (s.bloomMult - o.bloomMult) * k;
+    d.godRayMult = o.godRayMult + (s.godRayMult - o.godRayMult) * k;
+    d.skyDarken = o.skyDarken + (s.skyDarken - o.skyDarken) * k;
+    d.tintHex = s.tintHex;
+    d.tintStrength = o.tintStrength + (s.tintStrength - o.tintStrength) * k;
+    d.wetness = s.wetness * 0.45;
+    d.rainAmount = 0.32;
+    d.cloudCover = 0.9;
+    d.wind = o.wind + (s.wind - o.wind) * 0.5;
+    d.mist = s.mist * 0.5;
+  }
+
   private presetFor(state: WeatherState): ModsPreset {
-    if (state === 'storm') return STORM_PRESETS[this.climate.storm];
-    return state === 'gloomy' ? GLOOMY_PRESET : CLEAR_PRESET;
+    switch (state) {
+      case 'storm': return STORM_PRESETS[this.climate.storm];
+      case 'drizzle': return this.drizzle;
+      case 'overcast': return OVERCAST_PRESET;
+      case 'mist': return MIST_PRESET;
+      default: return CLEAR_PRESET;
+    }
   }
 
-  /**
-   * Hold times. Clear breathes LONG (it's the resting state and dominates the
-   * run), gloom is a shorter transitional band, storms are intense but bounded.
-   * The long clear holds are what tip the time-weighted mix heavily toward a
-   * clear sky on top of the chain already favouring it.
-   */
+  /** Clear breathes LONG (the resting state); the rest are bounded bands. */
   private holdSecondsFor(state: WeatherState): number {
-    if (state === 'storm') return 26 + Math.random() * 30;  // 26–56 s
-    if (state === 'gloomy') return 30 + Math.random() * 34; // 30–64 s (transition)
-    return 75 + Math.random() * 80;                          // 75–155 s clear (resting)
+    switch (state) {
+      case 'storm': return 30 + Math.random() * 32;
+      case 'drizzle': return 22 + Math.random() * 26;
+      case 'overcast': return 28 + Math.random() * 34;
+      case 'mist': return 45 + Math.random() * 50;
+      default: return 75 + Math.random() * 80;
+    }
   }
 
   /**
-   * MARKOV next-state roll — the heart of the "smart" weather. Transitions
-   * depend on the CURRENT state so fronts build and decay believably instead
-   * of teleporting:
-   *   • clear  can only soften into gloom (never snap to a storm), and mostly
-   *     re-rolls clear — a sticky, dominant resting state.
-   *   • gloom  either burns back off to clear or thickens into the storm.
-   *   • storm  winds down through gloom, occasionally digs in, rarely clears
-   *     instantly.
-   * `storminess` scales the drift toward weather; night calms the sky (fewer
-   * storms, slightly more brooding gloom) so it tracks WHERE and WHEN you are.
+   * MARKOV next-state roll — transitions depend on the current state, so
+   * fronts build and decay believably; `storminess` scales the drift toward
+   * weather, `mistiness` gates mist, night calms storms and favours mist.
    */
   private rollNextState(previous: WeatherState | null): WeatherState {
-    // Opening roll: almost always a clear sky, occasionally overcast.
-    if (previous === null) return Math.random() < 0.82 ? 'clear' : 'gloomy';
-
     const s = this.climate.storminess * (this.night ? 0.6 : 1);
-    const gloomBias = this.night ? 1.25 : 1;
-
-    let pClear: number, pGloomy: number;
-    if (previous === 'clear') {
-      pGloomy = Math.min(0.4, 0.16 * (0.45 + s) * gloomBias);
-      pClear = 1 - pGloomy; // storm probability is 0 — no blue-sky storms
-    } else if (previous === 'gloomy') {
-      const pStorm = 0.5 * s;
-      pClear = 0.42;
-      pGloomy = Math.max(0, 1 - pStorm - pClear);
-    } else { // storm — decay back through gloom
-      const pStorm = 0.36;
-      pClear = 0.14;
-      pGloomy = Math.max(0, 1 - pStorm - pClear);
+    const m = this.climate.mistiness * (this.night ? 1.3 : 1);
+    if (previous === null) {
+      const r = Math.random();
+      if (r < 0.74) return 'clear';
+      if (r < 0.74 + 0.12 * m) return 'mist';
+      return 'overcast';
     }
-
-    const roll = Math.random();
-    if (roll < pClear) return 'clear';
-    if (roll < pClear + pGloomy) return 'gloomy';
-    return 'storm';
+    const pick = (weights: Array<[WeatherState, number]>): WeatherState => {
+      let total = 0;
+      for (const [, w] of weights) total += w;
+      let r = Math.random() * total;
+      for (const [st, w] of weights) { r -= w; if (r <= 0) return st; }
+      return weights[0][0];
+    };
+    switch (previous) {
+      case 'clear':
+        return pick([['clear', 0.8], ['mist', 0.1 * m], ['overcast', 0.13 * (0.45 + s)]]);
+      case 'mist':
+        return pick([['clear', 0.6], ['mist', 0.15], ['overcast', 0.25]]);
+      case 'overcast':
+        return pick([['clear', 0.36], ['overcast', 0.18], ['drizzle', 0.3 * (0.4 + s)], ['storm', 0.18 * s]]);
+      case 'drizzle':
+        return pick([['overcast', 0.4], ['drizzle', 0.15], ['storm', 0.45 * s], ['clear', 0.1]]);
+      default: // storm — winds down through drizzle / overcast
+        return pick([['storm', 0.3], ['drizzle', 0.42], ['overcast', 0.28]]);
+    }
   }
 
   private snapToTarget(): void {
@@ -349,26 +351,40 @@ export class WeatherSystem {
     c.tintStrength = t.tintStrength;
     c.wetness = t.wetness;
     c.rainAmount = t.rainAmount;
+    c.cloudCover = t.cloudCover;
+    c.wind = t.wind;
+    c.mist = t.mist;
   }
 
   /**
    * Advance the weather and return the live modifiers. Call once per frame
-   * with the unscaled delta. `isNight` tunes the director to the day cycle.
+   * with the unscaled delta. `light` is the colour precipitation should take
+   * from the sky this frame; `windDir` the breeze heading (unit XZ);
+   * `sunUp` 0..1 how high/visible the sun is (rainbows need sun);
+   * `viewDist` the camera far distance (lightning lands inside it).
    */
-  update(delta: number, cameraPosition: THREE.Vector3, isNight: boolean): WeatherMods {
+  update(
+    delta: number, cameraPosition: THREE.Vector3, isNight: boolean,
+    light?: THREE.Color, windDir?: THREE.Vector2, sunUp = 1, viewDist = 200,
+  ): WeatherMods {
     this.night = isNight;
+    this.clock += delta;
 
     this.holdRemaining -= delta;
     if (this.holdRemaining <= 0) {
+      const was = this.state;
       this.state = this.rollNextState(this.state);
       this.target = this.presetFor(this.state);
       this.holdRemaining = this.holdSecondsFor(this.state);
+      if ((was === 'storm' || was === 'drizzle') && this.climate.storm === 'rain'
+        && (this.state === 'overcast' || this.state === 'clear')) {
+        this.lastRainEnd = this.clock;
+      }
     }
 
-    // Cinematic cross-fade: exponential ease with a ~10 s time constant so
-    // fronts roll in, never snap. Frame-rate independent. Wetness DRIES ~3×
-    // slower than it soaks, so puddles linger after the rain stops — and with
-    // the ripples gone they settle into still mirrors.
+    // Cinematic cross-fade (~10 s time constant) — fronts roll in, never
+    // snap. Wetness DRIES ~3× slower than it soaks, so puddles linger after
+    // the rain stops and settle into still mirrors.
     const blend = 1 - Math.exp(-delta / 10);
     const dryBlend = 1 - Math.exp(-delta / 30);
     const c = this.current;
@@ -385,111 +401,96 @@ export class WeatherSystem {
     c.tintStrength += (t.tintStrength - c.tintStrength) * blend;
     c.wetness += (t.wetness - c.wetness) * (t.wetness > c.wetness ? blend : dryBlend);
     c.rainAmount += (t.rainAmount - c.rainAmount) * blend;
+    c.cloudCover += (t.cloudCover - c.cloudCover) * blend;
+    c.mist += (t.mist - c.mist) * (1 - Math.exp(-delta / 14));
 
-    this.updateField(delta, cameraPosition, c.rainAmount);
+    // Wind: the preset's base plus gusts that build and fall away.
+    this.gustTimer -= delta;
+    if (this.gustTimer <= 0) {
+      this.gustTimer = 2 + Math.random() * 5;
+      this.gustTarget = Math.random() < 0.4 ? Math.random() * 0.45 : 0;
+    }
+    this.gust += (this.gustTarget - this.gust) * Math.min(1, delta * 0.9);
+    const windTarget = Math.min(1, t.wind * (1 + this.gust));
+    c.wind += (windTarget - c.wind) * Math.min(1, delta * 0.6);
+
+    // Rainbow: a rain front clearing into sunlight paints a bow for a while.
+    const sinceRain = this.clock - this.lastRainEnd;
+    const bowTarget = sinceRain > 8 && sinceRain < 120 && !isNight
+      ? (1 - c.rainAmount) * (1 - c.cloudCover * 0.6) * Math.min(1, sunUp * 2) * (1 - sinceRain / 120)
+      : 0;
+    c.rainbow += (bowTarget - c.rainbow) * Math.min(1, delta * 0.15);
+
+    this.updateLightning(delta, cameraPosition, viewDist);
+
+    // Precipitation rides the live wind (u/s) along the grass's heading.
+    if (windDir) this.wind2.copy(windDir);
+    if (this.precip) {
+      const kind = this.climate.storm;
+      const ws = kind === 'sandstorm' ? 26 : kind === 'blizzard' ? 15 : kind === 'rain' ? 9 : 3;
+      const speed = c.wind * ws;
+      this.precip.update(
+        delta, cameraPosition, c.rainAmount,
+        this.wind2.x * speed, this.wind2.y * speed,
+        light ?? _white, c.lightning,
+      );
+    }
     return c;
   }
 
-  // ── Storm particle field ───────────────────────────────────────────────
-
-  private buildField(): void {
-    const cfg = this.fieldConfig;
-    const positions = new Float32Array(cfg.count * 3);
-    const velY = new Float32Array(cfg.count);
-    for (let i = 0; i < cfg.count; i++) {
-      const i3 = i * 3;
-      const a = Math.random() * Math.PI * 2;
-      const r = Math.sqrt(Math.random()) * FIELD_RADIUS;
-      positions[i3] = Math.cos(a) * r;
-      positions[i3 + 1] = Math.random() * FIELD_TOP;
-      positions[i3 + 2] = Math.sin(a) * r;
-      velY[i] = cfg.fallMin + Math.random() * cfg.fallVar;
-    }
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-
-    this.fieldMaterial = new THREE.PointsMaterial({
-      color: cfg.color,
-      size: cfg.size,
-      map: cfg.sprite === 'streak' ? getStreakTexture() : getFlakeTexture(),
-      transparent: true,
-      opacity: 0,
-      blending: cfg.additive ? THREE.AdditiveBlending : THREE.NormalBlending,
-      depthWrite: false,
-      sizeAttenuation: true,
-      fog: false,
-    });
-
-    this.field = new THREE.Points(geometry, this.fieldMaterial);
-    this.field.frustumCulled = false;
-    this.field.visible = false;
-    this.fieldVelY = velY;
-    this.scene.add(this.field);
-  }
-
-  private updateField(delta: number, cameraPosition: THREE.Vector3, amount: number): void {
-    if (amount < 0.02) {
-      if (this.field) this.field.visible = false;
-      return;
-    }
-    if (!this.field) this.buildField();
-    const field = this.field!;
-    const material = this.fieldMaterial!;
-    const velY = this.fieldVelY!;
-    const cfg = this.fieldConfig;
-
-    field.visible = true;
-    material.opacity = cfg.opacity * amount;
-    // The whole field rides the camera (positions are camera-local), so the
-    // storm is always around the player with zero respawn churn.
-    field.position.set(cameraPosition.x, 0, cameraPosition.z);
-
-    const positions = (field.geometry.getAttribute('position') as THREE.BufferAttribute)
-      .array as Float32Array;
-    const windX = cfg.windX * delta;
-    const windZ = cfg.windZ * delta;
-    const wrap = FIELD_RADIUS * 2;
-    for (let i = 0; i < cfg.count; i++) {
-      const i3 = i * 3;
-      positions[i3] += windX;
-      positions[i3 + 1] -= velY[i] * delta;
-      positions[i3 + 2] += windZ;
-      // Vertical recycle (fell below ground).
-      if (positions[i3 + 1] < 0) {
-        const a = Math.random() * Math.PI * 2;
-        const r = Math.sqrt(Math.random()) * FIELD_RADIUS;
-        positions[i3] = Math.cos(a) * r;
-        positions[i3 + 1] = FIELD_TOP;
-        positions[i3 + 2] = Math.sin(a) * r;
+  private updateLightning(delta: number, cam: THREE.Vector3, viewDist: number): void {
+    const c = this.current;
+    let flash = 0;
+    if (this.bolt) flash = this.bolt.update(delta);
+    this.sheetFlash = Math.max(0, this.sheetFlash - delta * 5);
+    // Thunderstorms only: a storm at full tilt strikes every few seconds.
+    const intensity = this.climate.lightning ? Math.max(0, (c.rainAmount - 0.55) / 0.45) * (this.state === 'storm' ? 1 : 0.3) : 0;
+    if (intensity > 0.02) {
+      this.strikeTimer -= delta * intensity;
+      if (this.strikeTimer <= 0) {
+        this.strikeTimer = 3 + Math.random() * 9;
+        const bolt = !!this.bolt && Math.random() < 0.65;
+        const ang = Math.random() * Math.PI * 2;
+        const dist = viewDist * (bolt ? 0.45 + Math.random() * 0.4 : 0.9 + Math.random() * 1.5);
+        const gx = cam.x + Math.cos(ang) * dist, gz = cam.z + Math.sin(ang) * dist;
+        c.flashDir.set(Math.cos(ang), 0.35, Math.sin(ang)).normalize();
+        if (bolt && this.bolt) {
+          _top.set(gx + (Math.random() - 0.5) * 30, 110 + Math.random() * 40, gz + (Math.random() - 0.5) * 30);
+          _ground.set(gx, 0, gz);
+          this.bolt.strike(_top, _ground, cam, 1.6 + Math.random() * 1.0);
+        } else {
+          this.sheetFlash = 0.5 + Math.random() * 0.5;
+        }
+        this.onStrike?.({ x: gx, y: bolt ? 0 : 90, z: gz, distance: dist, bolt });
       }
-      // Horizontal wrap — strong storm winds (sand/blizzard) push sprites
-      // across the cylinder; wrap to the upwind side so density stays even.
-      if (positions[i3] > FIELD_RADIUS) positions[i3] -= wrap;
-      else if (positions[i3] < -FIELD_RADIUS) positions[i3] += wrap;
-      if (positions[i3 + 2] > FIELD_RADIUS) positions[i3 + 2] -= wrap;
-      else if (positions[i3 + 2] < -FIELD_RADIUS) positions[i3 + 2] += wrap;
     }
-    (field.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
+    flash = Math.max(flash * 0.85, this.sheetFlash * 0.6);
+    c.lightning = flash;
   }
 
-  /**
-   * Force-build the storm field (hidden) so its shader program compiles
-   * during the warmup pass instead of when the first front rolls in.
-   */
-  prewarm(): void {
-    if (!this.field) this.buildField();
+  /** Dev / test: jump the director to a state (snap = skip the cross-fade). */
+  forceState(state: string, snap = true): void {
+    const st = (['clear', 'mist', 'overcast', 'drizzle', 'storm'] as WeatherState[]).find((x) => x === state);
+    if (!st) return;
+    this.state = st;
+    this.target = this.presetFor(st);
+    this.holdRemaining = 600;
+    if (snap) this.snapToTarget();
+    if (st === 'clear') this.lastRainEnd = this.clock - 10;
+    this.strikeTimer = 0.5;
   }
+
+  /** Back-compat no-op: the precipitation + bolt are built at setClimate()
+   *  and stay in the scene (zero-cost while clear), so warmup links them. */
+  prewarm(): void { /* built eagerly */ }
 
   /** Release everything. Safe to call multiple times. */
   dispose(): void {
-    if (this.field) {
-      this.scene.remove(this.field);
-      this.field.geometry.dispose();
-      this.fieldMaterial?.dispose();
-      this.field = null;
-      this.fieldMaterial = null;
-      this.fieldVelY = null;
-    }
+    this.precip?.dispose();
+    this.precip = null;
+    this.bolt?.dispose(this.scene);
+    this.bolt = null;
+    this.onStrike = null;
   }
 
   /** Back-compat alias used by the scene teardown. */
@@ -497,3 +498,5 @@ export class WeatherSystem {
     this.dispose();
   }
 }
+
+const _white = new THREE.Color(1, 1, 1);

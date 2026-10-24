@@ -34,6 +34,7 @@
 
 import * as THREE from 'three';
 import type { MapConfig } from './MapSystem';
+import { BAKED_NOISE_GLSL, getNoiseGradientTexture, getNoiseTexture } from './NoiseTextures';
 
 // ── Per-map terrain authoring input (lives on MapConfig.terrain) ────────────
 export interface TerrainProfileInput {
@@ -260,6 +261,8 @@ export function createTerrainUniforms(
     uTCrackGlow: { value: profile.crackGlow },
     uTCrackCol: { value: new THREE.Color(profile.crackColor) },
     uTDetailTex: { value: getGroundDetailTexture(profile.groundDetail) },
+    uBakedNoise: { value: getNoiseTexture() },
+    uBakedNoiseGrad: { value: getNoiseGradientTexture() },
     uTDetailTexStr: { value: profile.groundDetailStrength * DETAIL_STRENGTH[profile.groundDetail] },
     uTDetailNrm: { value: DETAIL_RELIEF[profile.groundDetail] },
     uTDetailTint: {
@@ -624,6 +627,9 @@ export function getGroundDetailTexture(kind: GroundDetailKind): THREE.DataTextur
   tex.minFilter = THREE.LinearMipmapLinearFilter;
   tex.generateMipmaps = true;
   tex.colorSpace = THREE.NoColorSpace; // data, not colour
+  // 4× keeps the grain crisp at grazing angles; the global 16× default cost
+  // up to 16 taps per fetch on a surface seen almost edge-on all the time.
+  tex.anisotropy = 4;
   tex.name = `groundDetail:${kind}`;
   tex.needsUpdate = true;
   _detailTiles.set(kind, tex);
@@ -690,6 +696,9 @@ const TERRAIN_FRAG_COMMON = /* glsl */ `
   //             puddles so still pools only form once the rain has stopped.
   uniform float uRainWet;
   uniform float uRainRipple;
+  // uRainDamp — 0..1 soak WITHOUT puddles (rain on maps whose floor drains):
+  // darker soil + a broad wet sheen, never a reflective pool.
+  uniform float uRainDamp;
 
   uniform float uTQuality;
   uniform vec3  uTMacroA;
@@ -717,27 +726,13 @@ const TERRAIN_FRAG_COMMON = /* glsl */ `
   float gHash(vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
   }
-  float gNoise(vec2 p) {
-    vec2 i = floor(p); vec2 f = fract(p);
-    float a = gHash(i);
-    float b = gHash(i + vec2(1.0, 0.0));
-    float c = gHash(i + vec2(0.0, 1.0));
-    float d = gHash(i + vec2(1.0, 1.0));
-    vec2 u = f * f * (3.0 - 2.0 * f);
-    return mix(a, b, u.x) + (c - a) * u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
-  }
-  float gFbm(vec2 p) {
-    // 3 octaves — the 4th adds negligible ground detail for ~25% more cost.
-    float v = 0.0; float a = 0.5;
-    for (int i = 0; i < 3; i++) { v += a * gNoise(p); p = p * 2.07 + vec2(13.0, 7.0); a *= 0.5; }
-    return v;
-  }
-  vec2 gFbmGradient(vec2 p, float epsilon) {
-    float c = gFbm(p);
-    float dx = gFbm(p + vec2(epsilon, 0.0)) - c;
-    float dy = gFbm(p + vec2(0.0, epsilon)) - c;
-    return vec2(dx, dy) / epsilon;
-  }
+  // Noise is BAKED (see NoiseTextures.ts): these used to evaluate value-noise
+  // fBm procedurally — ~12 three-octave calls per ground pixel, measured at
+  // 6.6 ms of a 31 ms frame on an integrated GPU. Same statistics, one fetch.
+  ${BAKED_NOISE_GLSL}
+  float gNoise(vec2 p) { return bnNoise(p); }
+  float gFbm(vec2 p) { return bnFbm(p); }
+  vec2 gFbmGradient(vec2 p, float epsilon) { return bnFbmGradient(p, epsilon); }
 `;
 
 /**
@@ -921,6 +916,7 @@ export function applyGroundTerrainShader(
         // Rain also soak-darkens the ground BETWEEN the puddles.
         diffuseColor.rgb *= 1.0 - uRainWet * 0.16 * (1.0 - pud);
       }
+      diffuseColor.rgb *= 1.0 - uRainDamp * 0.22;
 
       // Lava crack veins — thin emissive seams between cooled plates.
       if (uTCrackGlow > 0.001) {
@@ -1029,6 +1025,11 @@ export function applyGroundTerrainShader(
         float wetSpec = pow(max(dot(normal, halfVec), 0.0), 160.0);
         float glint = mix(1.6, 0.35, uTSwampWater);
         reflectedLight.directSpecular += uSunColor * wetSpec * gWet * glint * sunDot;
+      }
+      // Rain-damp ground: a broad, soft wet sheen (no mirror).
+      if (uRainDamp > 0.001) {
+        float dampSpec = pow(max(dot(normal, halfVec), 0.0), 48.0);
+        reflectedLight.directSpecular += uSunColor * dampSpec * uRainDamp * 0.3 * sunDot;
       }
 
       // ── PUDDLE MIRROR REFLECTIONS — the "RTX puddle" moment ──────────

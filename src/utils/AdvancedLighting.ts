@@ -144,6 +144,14 @@ float fsFilterNear( sampler2D map, vec3 c, vec2 grad, float phi ) {
 		}
 		// No blocker anywhere in the search region: fully lit, skip the filter.
 		occluded = blockers > 0.5;
+		// EVERY search tap blocked (centre + ring): the receiver is deep in the
+		// umbra. The filter kernel is never wider than the search disk, so it
+		// would return 0 too — skip its 18–24 taps. Penumbrae (some taps lit)
+		// still get the full filter, so edges are unchanged.
+		if ( blockers > fsSunTaps.x + 0.5 ) {
+			occluded = false;
+			shadow = 0.0;
+		}
 		// 2. Penumbra width grows with the receiver-to-blocker distance.
 		float avgBlocker = blockerSum / max( blockers, 1.0 );
 		radius = clamp( ( c.z - avgBlocker ) * fsSunPcss.x, fsSunPcss.z, fsSunPcss.y );

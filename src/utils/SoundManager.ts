@@ -41,6 +41,7 @@ class SoundManager {
   private audioContext: AudioContext | null = null;
   private masterVolume: number = 0.3;
   private sounds: Map<string, AudioBuffer> = new Map();
+  private lazy: Map<string, () => AudioBuffer> = new Map();
   private initialized: boolean = false;
   private muted: boolean = false;
   private activeSources: Set<AudioBufferSourceNode> = new Set();
@@ -374,7 +375,337 @@ class SoundManager {
     this.sounds.set('reload_spinup', this.createSpinUp(ctx, sampleRate));
     // A rocket sliding the length of a launch tube — long, gritty, resonant.
     this.sounds.set('reload_rocketslide', this.createRocketSlide(ctx, sampleRate));
+
+    // ── WEATHER + FOLIAGE + WILDLIFE ─────────────────────────────────────
+    // Looping beds the WeatherAudio director rides (rain hiss, wind howl),
+    // thunder one-shots, the crunch of leaves a stride kicks up, the swish of
+    // tall grass, and the calls of each map's unseen wildlife.
+    // Built LAZILY (the beds + thunder are seconds of audio each): the
+    // scene's warmup calls prepare() for the ones its map can use, so the
+    // synthesis happens behind the loader, never on a menu click.
+    const L = (name: string, make: () => AudioBuffer) => this.lazy.set(name, make);
+    L('rain_bed', () => this.createRainBed(ctx, sampleRate));
+    L('wind_bed', () => this.createWindBed(ctx, sampleRate));
+    L('thunder_close', () => this.createThunder(ctx, sampleRate, true));
+    L('thunder_far', () => this.createThunder(ctx, sampleRate, false));
+    L('leaf_rustle', () => this.createLeafRustle(ctx, sampleRate));
+    L('grass_swish', () => this.createGrassSwish(ctx, sampleRate));
+    L('bird_a', () => this.createBirdCall(ctx, sampleRate, 1234567));
+    L('bird_b', () => this.createBirdCall(ctx, sampleRate, 7654321));
+    L('bird_c', () => this.createBirdCall(ctx, sampleRate, 2468135));
+    L('cricket', () => this.createCricket(ctx, sampleRate));
+    L('frog', () => this.createFrog(ctx, sampleRate));
+    L('owl', () => this.createOwl(ctx, sampleRate));
+    L('crow', () => this.createCrow(ctx, sampleRate));
+    L('howl', () => this.createHowl(ctx, sampleRate));
+    L('hawk', () => this.createHawk(ctx, sampleRate));
+    L('bubble', () => this.createBubble(ctx, sampleRate));
+    L('radio', () => this.createRadio(ctx, sampleRate));
   }
+
+  /** Buffer by name, synthesizing a lazily-registered one on first use. */
+  private buffer(name: string): AudioBuffer | undefined {
+    let b = this.sounds.get(name);
+    if (!b) {
+      const make = this.lazy.get(name);
+      if (make) {
+        b = make();
+        this.sounds.set(name, b);
+        this.lazy.delete(name);
+      }
+    }
+    return b;
+  }
+
+  /** Synthesize lazily-registered buffers now (call behind a loader). */
+  prepare(names: string[]): void {
+    if (!this.initialized) this.initialize();
+    for (const n of names) this.buffer(n);
+  }
+
+  // ── AMBIENCE + NATURE SYNTHESIS ────────────────────────────────────────
+  // Everything below is synthesized at init like the rest of the bank (no
+  // audio files). Loops are built one crossfade longer than their length and
+  // folded, so the seam is inaudible.
+
+  /** Build a seamless loop: `gen(i)` is sampled len+fade times, then folded. */
+  private makeLoop(ctx: AudioContext, sampleRate: number, seconds: number, gen: (i: number) => number): AudioBuffer {
+    const len = Math.floor(sampleRate * seconds);
+    const fade = Math.floor(sampleRate * 0.25);
+    const raw = new Float32Array(len + fade);
+    for (let i = 0; i < raw.length; i++) raw[i] = gen(i);
+    const buffer = ctx.createBuffer(1, len, sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = raw[i];
+    for (let i = 0; i < fade; i++) {
+      const k = i / fade;
+      data[i] = raw[i] * k + raw[len + i] * (1 - k);
+    }
+    return buffer;
+  }
+
+  /** Rain bed: a broadband hiss with a dense patter of droplet ticks. */
+  private createRainBed(ctx: AudioContext, sampleRate: number): AudioBuffer {
+    let lp = 0, hp = 0, tick = 0, tickLp = 0;
+    return this.makeLoop(ctx, sampleRate, 4, () => {
+      const w = Math.random() * 2 - 1;
+      lp += (w - lp) * 0.32;
+      hp += (lp - hp) * 0.015;
+      if (Math.random() < 0.004) tick = (0.25 + Math.random() * 0.75) * (Math.random() < 0.5 ? -1 : 1);
+      tick *= 0.82;
+      tickLp += (tick * (Math.random() * 0.6 + 0.4) - tickLp) * 0.55;
+      return (lp - hp) * 0.42 + tickLp * 0.55;
+    });
+  }
+
+  /** Wind bed: brown noise — the caller's bandpass turns it into a howl. */
+  private createWindBed(ctx: AudioContext, sampleRate: number): AudioBuffer {
+    let b = 0;
+    return this.makeLoop(ctx, sampleRate, 6, () => {
+      b = (b + 0.02 * (Math.random() * 2 - 1)) / 1.02;
+      return b * 3.2;
+    });
+  }
+
+  /** Thunder: an optional close crack, then a long rolling rumble. */
+  private createThunder(ctx: AudioContext, sampleRate: number, close: boolean): AudioBuffer {
+    const duration = close ? 4.6 : 5.2;
+    const len = Math.floor(sampleRate * duration);
+    const buffer = ctx.createBuffer(1, len, sampleRate);
+    const data = buffer.getChannelData(0);
+    const bumps: Array<[number, number, number]> = [];
+    const nb = close ? 6 : 4;
+    for (let k = 0; k < nb; k++) {
+      bumps.push([0.05 + Math.random() * (close ? 2.2 : 3.0), 0.12 + Math.random() * 0.4, (1 - k / nb) * (0.6 + Math.random() * 0.4)]);
+    }
+    let brown = 0, l1 = 0, l2 = 0, hp = 0;
+    const cut = close ? 0.09 : 0.05;
+    let peak = 0;
+    for (let i = 0; i < len; i++) {
+      const t = i / sampleRate;
+      const w = Math.random() * 2 - 1;
+      brown = (brown + 0.02 * w) / 1.02;
+      l1 += (brown - l1) * cut;
+      l2 += (l1 - l2) * cut;
+      let env = Math.exp(-t / (close ? 1.5 : 2.0)) * 0.35;
+      for (const [tk, wk, ak] of bumps) env += ak * Math.exp(-((t - tk) / wk) * ((t - tk) / wk));
+      env *= Math.min(1, t / 0.02);
+      let v = l2 * env * 9;
+      if (close) {
+        hp += (w - hp) * 0.25;
+        v += (w - hp) * Math.exp(-t / 0.05) * 0.8 + w * Math.exp(-t / 0.22) * 0.12;
+      }
+      data[i] = v;
+      peak = Math.max(peak, Math.abs(v));
+    }
+    const norm = peak > 0 ? 0.9 / peak : 1;
+    for (let i = 0; i < len; i++) data[i] *= norm;
+    return buffer;
+  }
+
+  /** Dry leaves scattering: a fast irregular crackle. */
+  private createLeafRustle(ctx: AudioContext, sampleRate: number): AudioBuffer {
+    const len = Math.floor(sampleRate * 0.32);
+    const buffer = ctx.createBuffer(1, len, sampleRate);
+    const data = buffer.getChannelData(0);
+    let click = 0, lp = 0;
+    for (let i = 0; i < len; i++) {
+      const t = i / sampleRate;
+      if (Math.random() < 0.05) click = (Math.random() * 2 - 1) * (0.4 + Math.random() * 0.6);
+      click *= 0.62;
+      lp += (click - lp) * 0.3;
+      const env = Math.min(1, t / 0.008) * Math.exp(-t / 0.1);
+      data[i] = (click - lp) * env * 0.9;
+    }
+    return buffer;
+  }
+
+  /** Brushing through tall grass: a soft band-limited swish. */
+  private createGrassSwish(ctx: AudioContext, sampleRate: number): AudioBuffer {
+    const len = Math.floor(sampleRate * 0.36);
+    const buffer = ctx.createBuffer(1, len, sampleRate);
+    const data = buffer.getChannelData(0);
+    let a = 0, b = 0;
+    for (let i = 0; i < len; i++) {
+      const t = i / len;
+      const w = Math.random() * 2 - 1;
+      a += (w - a) * 0.5;
+      b += (a - b) * 0.08;
+      data[i] = (a - b) * Math.pow(Math.sin(Math.PI * t), 1.6) * 0.5;
+    }
+    return buffer;
+  }
+
+  /** Songbird: a few swept, vibrato'd syllables. */
+  private createBirdCall(ctx: AudioContext, sampleRate: number, seed: number): AudioBuffer {
+    let s = seed;
+    const r = () => { s = (s * 16807) % 2147483647; return s / 2147483647; };
+    const syl = 2 + Math.floor(r() * 4);
+    const parts: Array<[number, number, number, number]> = [];
+    let at = 0;
+    for (let k = 0; k < syl; k++) {
+      const dur = 0.04 + r() * 0.08;
+      parts.push([at, dur, 2400 + r() * 2600, 2200 + r() * 3200]);
+      at += dur + 0.02 + r() * 0.07;
+    }
+    const len = Math.floor(sampleRate * (at + 0.05));
+    const buffer = ctx.createBuffer(1, len, sampleRate);
+    const data = buffer.getChannelData(0);
+    for (const [t0, dur, f0, f1] of parts) {
+      let ph = 0;
+      const n0 = Math.floor(t0 * sampleRate), n = Math.floor(dur * sampleRate);
+      for (let i = 0; i < n && n0 + i < len; i++) {
+        const u = i / n;
+        const f = f0 + (f1 - f0) * u + Math.sin(u * 40) * 90;
+        ph += (2 * Math.PI * f) / sampleRate;
+        const env = Math.pow(Math.sin(Math.PI * u), 0.8);
+        data[n0 + i] += (Math.sin(ph) + Math.sin(ph * 2) * 0.12) * env * 0.32;
+      }
+    }
+    return buffer;
+  }
+
+  /** Cricket: three-pulse chirps of a ~4.4 kHz tone, repeated. */
+  private createCricket(ctx: AudioContext, sampleRate: number): AudioBuffer {
+    const len = Math.floor(sampleRate * 1.3);
+    const buffer = ctx.createBuffer(1, len, sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < len; i++) {
+      const t = i / sampleRate;
+      const chirp = t % 0.42;
+      const pulse = chirp % 0.045;
+      const on = chirp < 0.135 && pulse < 0.026 ? Math.sin(Math.PI * pulse / 0.026) : 0;
+      data[i] = Math.sin(2 * Math.PI * 4400 * t) * on * 0.18;
+    }
+    return buffer;
+  }
+
+  /** Frog: two throaty croaks (glottal pulse train through a formant). */
+  private createFrog(ctx: AudioContext, sampleRate: number): AudioBuffer {
+    const len = Math.floor(sampleRate * 0.62);
+    const buffer = ctx.createBuffer(1, len, sampleRate);
+    const data = buffer.getChannelData(0);
+    let bp1 = 0, bp2 = 0;
+    for (let i = 0; i < len; i++) {
+      const t = i / sampleRate;
+      const croak = t < 0.22 ? t / 0.22 : t > 0.3 && t < 0.56 ? (t - 0.3) / 0.26 : -1;
+      if (croak < 0) { data[i] = 0; continue; }
+      const f0 = 150 - croak * 30;
+      const phase = (t * f0) % 1;
+      const glott = phase < 0.12 ? Math.sin(Math.PI * phase / 0.12) : 0;
+      // Two-pole resonator around 640 Hz.
+      const w0 = 2 * Math.PI * 640 / sampleRate;
+      const rr = 0.985;
+      const y = glott + 2 * rr * Math.cos(w0) * bp1 - rr * rr * bp2;
+      bp2 = bp1; bp1 = y;
+      data[i] = y * 0.03 * Math.sin(Math.PI * croak);
+    }
+    return buffer;
+  }
+
+  /** Owl: a soft two-note hoot. */
+  private createOwl(ctx: AudioContext, sampleRate: number): AudioBuffer {
+    const len = Math.floor(sampleRate * 1.25);
+    const buffer = ctx.createBuffer(1, len, sampleRate);
+    const data = buffer.getChannelData(0);
+    let ph = 0;
+    for (let i = 0; i < len; i++) {
+      const t = i / sampleRate;
+      const note = t < 0.38 ? t / 0.38 : t > 0.55 && t < 1.2 ? (t - 0.55) / 0.65 : -1;
+      if (note < 0) { data[i] = 0; continue; }
+      const f = t < 0.5 ? 410 - note * 25 : 385 - note * 40;
+      ph += 2 * Math.PI * f / sampleRate;
+      data[i] = (Math.sin(ph) + Math.sin(ph * 2) * 0.08) * Math.pow(Math.sin(Math.PI * note), 1.3) * 0.3;
+    }
+    return buffer;
+  }
+
+  /** Crow: a harsh, noisy caw. */
+  private createCrow(ctx: AudioContext, sampleRate: number): AudioBuffer {
+    const len = Math.floor(sampleRate * 0.46);
+    const buffer = ctx.createBuffer(1, len, sampleRate);
+    const data = buffer.getChannelData(0);
+    let ph = 0, lp = 0;
+    for (let i = 0; i < len; i++) {
+      const u = i / len;
+      const f = 640 - u * 160 + Math.sin(u * 60) * 30;
+      ph += f / sampleRate;
+      const saw = 2 * (ph % 1) - 1;
+      const v = saw * 0.6 + (Math.random() * 2 - 1) * 0.35;
+      lp += (v - lp) * 0.22;
+      data[i] = lp * Math.pow(Math.sin(Math.PI * Math.min(1, u * 1.15)), 0.7) * 0.35;
+    }
+    return buffer;
+  }
+
+  /** Distant wolf howl: a slow rising-falling glide with breath. */
+  private createHowl(ctx: AudioContext, sampleRate: number): AudioBuffer {
+    const len = Math.floor(sampleRate * 2.6);
+    const buffer = ctx.createBuffer(1, len, sampleRate);
+    const data = buffer.getChannelData(0);
+    let ph = 0, lp = 0;
+    for (let i = 0; i < len; i++) {
+      const u = i / len;
+      const f = 330 + Math.sin(Math.PI * Math.min(1, u * 1.4)) * 290 - u * 60 + Math.sin(u * 34) * 7;
+      ph += 2 * Math.PI * f / sampleRate;
+      const n = Math.random() * 2 - 1;
+      lp += (n - lp) * 0.05;
+      const env = Math.min(1, u / 0.15) * Math.pow(1 - u, 0.6);
+      data[i] = (Math.sin(ph) + Math.sin(ph * 2) * 0.2 + lp * 0.25) * env * 0.26;
+    }
+    return buffer;
+  }
+
+  /** Raptor cry: a piercing descending screech. */
+  private createHawk(ctx: AudioContext, sampleRate: number): AudioBuffer {
+    const len = Math.floor(sampleRate * 0.75);
+    const buffer = ctx.createBuffer(1, len, sampleRate);
+    const data = buffer.getChannelData(0);
+    let ph = 0;
+    for (let i = 0; i < len; i++) {
+      const u = i / len;
+      const f = 3000 - u * 900 + Math.sin(u * 90) * 60;
+      ph += 2 * Math.PI * f / sampleRate;
+      const env = Math.min(1, u / 0.05) * Math.pow(1 - u, 1.4);
+      data[i] = (Math.sin(ph) * 0.7 + Math.sin(ph * 2.01) * 0.2 + (Math.random() * 2 - 1) * 0.08) * env * 0.24;
+    }
+    return buffer;
+  }
+
+  /** Bog bubble: a quick rising "blup". */
+  private createBubble(ctx: AudioContext, sampleRate: number): AudioBuffer {
+    const len = Math.floor(sampleRate * 0.14);
+    const buffer = ctx.createBuffer(1, len, sampleRate);
+    const data = buffer.getChannelData(0);
+    let ph = 0;
+    for (let i = 0; i < len; i++) {
+      const u = i / len;
+      ph += 2 * Math.PI * (180 + u * u * 700) / sampleRate;
+      data[i] = Math.sin(ph) * Math.sin(Math.PI * u) * 0.35;
+    }
+    return buffer;
+  }
+
+  /** Distant radio chatter: band-limited static and keyed tones. */
+  private createRadio(ctx: AudioContext, sampleRate: number): AudioBuffer {
+    const len = Math.floor(sampleRate * 1.4);
+    const buffer = ctx.createBuffer(1, len, sampleRate);
+    const data = buffer.getChannelData(0);
+    let a = 0, b = 0;
+    const keys: Array<[number, number]> = [];
+    let at = 0.15;
+    while (at < 1.2) { const d = Math.random() < 0.5 ? 0.06 : 0.16; keys.push([at, d]); at += d + 0.06; }
+    for (let i = 0; i < len; i++) {
+      const t = i / sampleRate;
+      const w = Math.random() * 2 - 1;
+      a += (w - a) * 0.45; b += (a - b) * 0.12;
+      let v = (a - b) * 0.18 * (0.6 + 0.4 * Math.sin(t * 23));
+      for (const [k0, d] of keys) if (t >= k0 && t < k0 + d) v += Math.sin(2 * Math.PI * 1150 * t) * 0.16;
+      data[i] = v * Math.min(1, t / 0.05) * Math.min(1, (1.4 - t) / 0.1);
+    }
+    return buffer;
+  }
+
 
   private createShootSound(ctx: AudioContext, sampleRate: number): AudioBuffer {
     const duration = 0.15;
@@ -1005,7 +1336,7 @@ class SoundManager {
       if (!this.audioContext) return;
     }
 
-    const buffer = this.sounds.get(soundName);
+    const buffer = this.buffer(soundName);
     if (!buffer) return;
 
     const source = this.audioContext.createBufferSource();
@@ -1116,7 +1447,7 @@ class SoundManager {
       this.initialize();
       if (!this.audioContext) return;
     }
-    const buffer = this.sounds.get(soundName);
+    const buffer = this.buffer(soundName);
     if (!buffer) return;
 
     const panner = this.makePanner(x, y, z, opts?.refDistance, opts?.maxDistance);
@@ -1139,6 +1470,75 @@ class SoundManager {
       try { panner.disconnect(); } catch { /* already torn down */ }
     };
     source.start(0);
+  }
+
+  /**
+   * Start a looping bed (rain, wind…) with an optional filter in its chain.
+   * The handle's level is RELATIVE (× the master SFX volume at each call), so
+   * the caller re-applies it as it rides the weather. Mute / stopAll() kill
+   * the voice — `alive` then reads false and the caller simply starts anew.
+   */
+  startLoop(
+    soundName: string, volume = 1,
+    opts?: { filter?: BiquadFilterType; freq?: number; q?: number; rate?: number },
+  ): LoopVoice | null {
+    if (this.muted) return null;
+    if (!this.initialized || !this.audioContext) {
+      this.initialize();
+      if (!this.audioContext) return null;
+    }
+    const ctx = this.audioContext;
+    const buffer = this.buffer(soundName);
+    if (!buffer) return null;
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.loop = true;
+    if (opts?.rate) source.playbackRate.value = opts.rate;
+    const gain = ctx.createGain();
+    gain.gain.value = 0;
+    let filter: BiquadFilterNode | null = null;
+    if (opts?.filter) {
+      filter = ctx.createBiquadFilter();
+      filter.type = opts.filter;
+      filter.frequency.value = opts.freq ?? 800;
+      filter.Q.value = opts.q ?? 1;
+      source.connect(filter);
+      filter.connect(gain);
+    } else {
+      source.connect(gain);
+    }
+    gain.connect(this.masterBus ?? ctx.destination);
+    let alive = true;
+    this.activeSources.add(source);
+    source.onended = () => {
+      alive = false;
+      this.activeSources.delete(source);
+      try { gain.disconnect(); filter?.disconnect(); } catch { /* torn down */ }
+    };
+    // Start at a random point so two beds never phase-lock.
+    source.start(0, Math.random() * buffer.duration);
+    const voice: LoopVoice = {
+      get alive() { return alive; },
+      setVolume: (v: number, smoothing = 0.25) => {
+        if (!alive) return;
+        gain.gain.setTargetAtTime(Math.max(0, v) * (this.muted ? 0 : this.masterVolume), ctx.currentTime, smoothing);
+      },
+      setFilter: (freq: number, q?: number) => {
+        if (!alive || !filter) return;
+        filter.frequency.setTargetAtTime(freq, ctx.currentTime, 0.15);
+        if (q !== undefined) filter.Q.setTargetAtTime(q, ctx.currentTime, 0.15);
+      },
+      setRate: (r: number) => {
+        if (alive) source.playbackRate.setTargetAtTime(r, ctx.currentTime, 0.2);
+      },
+      stop: (fade = 0.6) => {
+        if (!alive) return;
+        gain.gain.setTargetAtTime(0, ctx.currentTime, fade / 4);
+        try { source.stop(ctx.currentTime + fade); } catch { /* already stopped */ }
+      },
+    };
+    voice.setVolume(volume);
+    return voice;
   }
 
   setVolume(volume: number): void {
@@ -1170,6 +1570,15 @@ class SoundManager {
     this.stopAll();
     this.muted = false;
   }
+}
+
+/** Handle to a looping ambience bed (see SoundManager.startLoop). */
+export interface LoopVoice {
+  readonly alive: boolean;
+  setVolume(v: number, smoothing?: number): void;
+  setFilter(freq: number, q?: number): void;
+  setRate(r: number): void;
+  stop(fade?: number): void;
 }
 
 /** Handle to a looping positional voice. The creator must call stop(). */

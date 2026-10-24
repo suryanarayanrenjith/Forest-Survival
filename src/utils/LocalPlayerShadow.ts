@@ -24,8 +24,9 @@ import {
   derivePalette, RIG,
   buildRanger, buildScout, buildHeavy, buildOperative,
   buildPyro, buildMedic, buildEngineer, buildPhantom,
-  buildHeldWeapon, getWeaponPose,
+  buildHeldWeapon,
 } from './CharacterModels';
+import { getHold, poseAvatarHold } from './AvatarRig';
 
 const VALID_WEAPONS: WeaponType[] = ['pistol', 'rifle', 'shotgun', 'smg', 'sniper', 'minigun', 'launcher'];
 function asWeaponType(name: string | undefined): WeaponType {
@@ -39,6 +40,8 @@ const MODEL_SCALE = PLAYER_EYE_HEIGHT / MODEL_NATIVE_HEIGHT;
 interface Joints {
   leftShoulder: THREE.Group;
   rightShoulder: THREE.Group;
+  leftElbow: THREE.Group;
+  rightElbow: THREE.Group;
   leftHip: THREE.Group;
   rightHip: THREE.Group;
   headJoint: THREE.Group;
@@ -72,6 +75,10 @@ export class LocalPlayerShadow {
   // Crouch — eased 0→1 so the shadow compresses into a believable kneel.
   private crouchAmount: number = 0;
   private crouchTarget: number = 0;
+  private stanceTurn: number = 0;
+  private aimPitch: number = 0;
+  /** Dev preview: the body stands in front of the camera, visible. */
+  private debugPreview: { dist: number; yaw: number } | null = null;
 
   // Lifecycle
   private isAlive: boolean = true;
@@ -96,19 +103,33 @@ export class LocalPlayerShadow {
     this.applyInvisibilityToAll();
   }
 
+  /** Dev only: show the (normally invisible) body in front of the camera. */
+  setDebugPreview(on: boolean, dist = 9, yaw = 0): void {
+    this.debugPreview = on ? { dist, yaw } : null;
+    const apply = (m: THREE.Material) => {
+      m.colorWrite = on;
+      m.depthWrite = on;
+      m.transparent = !on;
+      m.needsUpdate = true;
+    };
+    this.materials.forEach(apply);
+    this.weaponMaterials.forEach(apply);
+  }
+
   /** Update what character class the shadow is built from. */
   setModelClass(modelClass: ClassId, color: number): void {
     if (modelClass === this.modelClass) return;
     this.modelClass = modelClass;
-    // Tear down old body
+    // Tear down old body (swapWeapon frees the held weapon's GPU data first)
+    const wt = this.currentWeaponType;
+    this.swapWeapon(wt);
+    this.weaponGroup?.removeFromParent();
     this.body.clear();
     this.materials.forEach((m) => m.dispose());
     this.materials = [];
     this.buildModel(color);
-    // Re-attach current weapon to the freshly-built right hand
-    const wt = this.currentWeaponType;
-    this.weaponGroup = null;
-    this.swapWeapon(wt);
+    // Re-attach the held weapon to the freshly-built body
+    if (this.weaponGroup) this.body.add(this.weaponGroup);
     this.applyInvisibilityToAll();
   }
 
@@ -141,16 +162,31 @@ export class LocalPlayerShadow {
 
   /**
    * Per-frame update. Drive the body to follow the camera, animate
-   * walking from the camera's horizontal velocity, and aim the weapon
-   * along the camera's pitch so the shadow reads as "holding gun".
+   * walking from the camera's horizontal velocity, and hold the weapon on
+   * the camera's aim with both hands (AvatarRig IK) so the shadow reads as
+   * "a person aiming a gun". `eyeHeight` is the live camera height above the
+   * feet (it drops while crouched) so the feet stay planted on the ground.
    */
-  update(delta: number, camera: THREE.Camera, euler: THREE.Euler): void {
+  update(delta: number, camera: THREE.Camera, euler: THREE.Euler, eyeHeight = PLAYER_EYE_HEIGHT): void {
     if (delta <= 0) delta = 1 / 60;
 
-    // Position: feet on ground below the camera.
-    this.root.position.set(camera.position.x, camera.position.y - PLAYER_EYE_HEIGHT, camera.position.z);
-    // Yaw: camera looks down -Z by convention; avatar faces same direction.
-    this.body.rotation.y = -euler.y + Math.PI;
+    // Position: feet on the ground below the camera (the crouch lowers the
+    // eye, not the feet — the old fixed 5u offset sank a crouching shadow
+    // a full unit and a half into the ground).
+    this.root.position.set(camera.position.x, camera.position.y - eyeHeight, camera.position.z);
+    // Yaw: camera looks down -Z by convention; avatar faces same direction,
+    // bladed by the weapon's stance turn (weapon + head counter-rotate).
+    const turnTarget = this.isAlive ? getHold(this.currentWeaponType).turn : 0;
+    this.stanceTurn += (turnTarget - this.stanceTurn) * Math.min(1, delta * 8);
+    this.body.rotation.y = -euler.y + Math.PI - this.stanceTurn;
+    if (this.debugPreview) {
+      // Stand `dist` ahead of the eye, turned by `yaw` so the hold can be
+      // inspected from any side (0 = facing the camera).
+      const fx = -Math.sin(euler.y), fz = -Math.cos(euler.y);
+      this.root.position.x += fx * this.debugPreview.dist;
+      this.root.position.z += fz * this.debugPreview.dist;
+      this.body.rotation.y += Math.PI + this.debugPreview.yaw;
+    }
 
     // Derive horizontal speed for the walk animation
     const dx = camera.position.x - this.lastPosition.x;
@@ -179,27 +215,12 @@ export class LocalPlayerShadow {
       this.joints.leftHip.rotation.x = Math.sin(this.walkPhase) * legSwing + hipFold;
       this.joints.rightHip.rotation.x = Math.sin(this.walkPhase + Math.PI) * legSwing + hipFold;
 
-      // Per-weapon arm pose
-      const pose = getWeaponPose(this.currentWeaponType);
-      const armSway = 0.06 + moveGate * 0.14;
-      this.joints.rightShoulder.rotation.x = pose.rightShoulderX + Math.sin(this.walkPhase + Math.PI) * armSway;
-      this.joints.rightShoulder.rotation.z = pose.rightShoulderZ;
-      if (pose.twoHanded) {
-        this.joints.leftShoulder.rotation.x = pose.leftShoulderX + Math.sin(this.walkPhase) * armSway;
-        this.joints.leftShoulder.rotation.z = pose.leftShoulderZ;
-      } else {
-        this.joints.leftShoulder.rotation.x = pose.leftShoulderX + Math.sin(this.walkPhase) * (armSway + 0.25);
-        this.joints.leftShoulder.rotation.z = pose.leftShoulderZ;
-      }
-
-      // Aim pitch — tilt the upper torso so the weapon shadow tracks where
-      // the player is looking. We rotate the head + shoulder joints by the
-      // camera pitch, clamped so the body never folds in half. A crouch adds
-      // a small forward hunch on top.
-      const pitch = THREE.MathUtils.clamp(euler.x, -0.7, 0.7);
-      this.joints.headJoint.rotation.x = pitch + crouch * 0.22 + Math.sin(this.walkPhase * 2) * 0.025 * moveGate;
-      this.joints.rightShoulder.rotation.x += pitch * 0.6 + crouch * 0.12;
-      this.joints.leftShoulder.rotation.x += pitch * 0.6 + crouch * 0.12;
+      // Weapon on the aim, both hands solved onto it (elbows bend), head
+      // down the sights. Pitch is lightly smoothed so mouse jitter doesn't
+      // shiver the shadow.
+      this.aimPitch += (euler.x - this.aimPitch) * Math.min(1, delta * 20);
+      poseAvatarHold(this.joints, this.weaponGroup, this.currentWeaponType, this.aimPitch, moveGate, this.walkPhase, crouch);
+      this.joints.headJoint.rotation.x += Math.sin(this.walkPhase * 2) * 0.02 * moveGate;
 
       // Body bob with footfalls (and idle breath)
       const bobAmp = (0.03 + moveGate * 0.12) * (1 - 0.4 * crouch);
@@ -273,9 +294,6 @@ export class LocalPlayerShadow {
     this.currentWeaponType = type;
     const matSink: THREE.Material[] = [];
     const weapon = buildHeldWeapon(type, matSink);
-    const pose = getWeaponPose(type);
-    weapon.position.set(...pose.weaponPos);
-    weapon.rotation.set(...pose.weaponRot);
     weapon.traverse((obj) => {
       obj.userData.friendlyPlayer = true;
       if (obj instanceof THREE.Mesh) {
@@ -283,7 +301,8 @@ export class LocalPlayerShadow {
         obj.receiveShadow = false;
       }
     });
-    this.joints.rightHand.add(weapon);
+    // Body space — AvatarRig places it on the aim and the hands follow.
+    this.body.add(weapon);
     this.weaponGroup = weapon;
     this.weaponMaterials = matSink;
   }

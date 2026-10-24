@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { BAKED_NOISE_GLSL, getNoiseGradientTexture, getNoiseTexture } from './NoiseTextures';
 import type { TerrainObject } from '../types/game';
 
 export type BiomeType = 'forest' | 'volcanic' | 'tundra' | 'desert' | 'swamp' | 'military' | 'ruins' | 'twilight';
@@ -36,21 +37,12 @@ const PROP_DETAIL_FRAG_HEAD = /* glsl */ `
   varying vec3 vPropWP;
   uniform float uPropDetailStr;
   uniform float uPropDetailFreq;
-  float pdHash( vec2 p ) { return fract( sin( dot( p, vec2( 127.1, 311.7 ) ) ) * 43758.5453123 ); }
-  float pdNoise( vec2 p ) {
-    vec2 i = floor( p ); vec2 f = fract( p );
-    float a = pdHash( i );
-    float b = pdHash( i + vec2( 1.0, 0.0 ) );
-    float c = pdHash( i + vec2( 0.0, 1.0 ) );
-    float d = pdHash( i + vec2( 1.0, 1.0 ) );
-    vec2 u = f * f * ( 3.0 - 2.0 * f );
-    return mix( a, b, u.x ) + ( c - a ) * u.y * ( 1.0 - u.x ) + ( d - b ) * u.x * u.y;
-  }
-  float pdFbm( vec2 p ) {
-    float v = 0.0; float a = 0.5;
-    for ( int i = 0; i < 3; i++ ) { v += a * pdNoise( p ); p = p * 2.07 + vec2( 13.0, 7.0 ); a *= 0.5; }
-    return v;
-  }
+  uniform float uPropWet;
+  // Baked noise (NoiseTextures.ts) — one fetch instead of a 3-octave
+  // procedural fBm; same statistics, a fraction of the fragment cost.
+  ${BAKED_NOISE_GLSL}
+  float pdNoise( vec2 p ) { return bnNoise( p ); }
+  float pdFbm( vec2 p ) { return bnFbmG( p ); }
 `;
 const PROP_DETAIL_FRAG_BODY = /* glsl */ `
   {
@@ -85,6 +77,8 @@ const PROP_DETAIL_FRAG_BODY = /* glsl */ `
     diffuseColor.rgb *= 0.8 + 0.2 * pdContact;
     // Tier strength blends the whole weathering pass in (0 = original colour).
     diffuseColor.rgb = mix( pdBase, diffuseColor.rgb, uPropDetailStr );
+    // Rain-soaked: wet bark / stone darkens (the gloss is in roughness below).
+    diffuseColor.rgb *= 1.0 - uPropWet * 0.26;
   }
 `;
 
@@ -306,6 +300,7 @@ export class BiomeSystem {
   private propDetailUniforms = {
     uPropDetailStr: { value: 0 },
     uPropDetailFreq: { value: 1.0 },
+    uPropWet: { value: 0 },
   };
 
   // Live gust multiplier for the dynamic wind pass (1 = calm baseline). One
@@ -371,6 +366,9 @@ export class BiomeSystem {
       if (detail) {
         shader.uniforms.uPropDetailStr = this.propDetailUniforms.uPropDetailStr;
         shader.uniforms.uPropDetailFreq = this.propDetailUniforms.uPropDetailFreq;
+        shader.uniforms.uPropWet = this.propDetailUniforms.uPropWet;
+        shader.uniforms.uBakedNoise = { value: getNoiseTexture() };
+        shader.uniforms.uBakedNoiseGrad = { value: getNoiseGradientTexture() };
       }
       if (wind || pulse) shader.uniforms.uWindTime = this.grassTime;
       if (wind) shader.uniforms.uWindStrength = this.windStrength;
@@ -406,6 +404,11 @@ export class BiomeSystem {
         frag = frag.replace(
           '#include <color_fragment>',
           `#include <color_fragment>\n${PROP_DETAIL_FRAG_BODY}`,
+        );
+        // Wet surfaces turn glossy in the rain.
+        frag = frag.replace(
+          '#include <roughnessmap_fragment>',
+          '#include <roughnessmap_fragment>\n  roughnessFactor *= 1.0 - uPropWet * 0.5;',
         );
       }
       if (foliage) {
@@ -499,6 +502,19 @@ export class BiomeSystem {
   private grassMaterials: Map<BiomeType, THREE.MeshStandardMaterial> = new Map();
   // Shared time uniform driving the grass wind sway (updated each frame)
   private grassTime = { value: 0 };
+  // The breeze's heading (unit XZ): gust bands roll across the lawn along it,
+  // and the LeafSystem drifts leaves the same way. Veers slowly.
+  private windDir = { value: new THREE.Vector2(0.8, 0.6) };
+  // Bodies pressing the grass flat: xy = XZ position, z = radius, w = strength.
+  // Slot 0 = the player now, 1-3 = the player's recent trail (blades spring
+  // back as it fades), 4-7 = the nearest robots.
+  private grassTrample = { value: Array.from({ length: 8 }, () => new THREE.Vector4(0, 0, 1, 0)) };
+  private grassCam = { value: new THREE.Vector3() };
+  // Tufts shrink to nothing between these camera distances, so chunk
+  // streaming never pops a field in and far blades never shimmer.
+  private grassFade = { value: new THREE.Vector2(70, 95) };
+  private trail: Array<{ x: number; z: number; age: number }> = [];
+  private trailTimer = 0;
 
   // True on Medium+ terrainDetail — gates the EXTRA prop dressing parts (root
   // flares, moss caps, sand skirts). They're built from POOLED geometries +
@@ -520,6 +536,14 @@ export class BiomeSystem {
     // that the props stay static and the shader programs stay unchanged.
     this.dynamicFxOn = detailLevel >= 1.0;
     this.foliageOn = detailLevel >= 0.82;
+    if (detailLevel >= 1.0) this.grassFade.value.set(70, 95);
+    else if (detailLevel >= 0.82) this.grassFade.value.set(55, 76);
+    else this.grassFade.value.set(38, 54);
+  }
+
+  /** Rain soak on weathered props (0 dry … 1 drenched). Once per frame. */
+  setPropWetness(w: number) {
+    this.propDetailUniforms.uPropWet.value = w;
   }
 
   /** Feed the canopy translucency the live key light (once per frame). */
@@ -546,23 +570,131 @@ export class BiomeSystem {
   updateWind(time: number, strength = 1) {
     this.grassTime.value = time;
     this.windStrength.value = this.dynamicFxOn ? strength : 1;
+    const a = 0.65 + Math.sin(time * 0.021) * 0.8 + Math.sin(time * 0.057 + 1.3) * 0.3;
+    this.windDir.value.set(Math.cos(a), Math.sin(a));
   }
 
-  /** Lazily-built tapered grass blade (6 verts, 2 triangles). */
+  /** Distance at which grass tufts have fully faded out. */
+  getGrassFadeEnd(): number {
+    return this.grassFade.value.y;
+  }
+
+  /** Override the grass fade band (dev A/B). */
+  setGrassFade(start: number, end: number): void {
+    this.grassFade.value.set(start, end);
+  }
+
+  /** Current breeze heading (unit XZ) — shared with the leaves. */
+  getWindDir(): THREE.Vector2 {
+    return this.windDir.value;
+  }
+
+  /**
+   * Feed the grass who is standing in it (once per frame). `bodies` holds up
+   * to four robots as flat x, z pairs. The player's recent footprints decay
+   * over ~0.8 s, so trampled blades spring back behind them.
+   */
+  updateGrassContact(
+    dt: number, camX: number, camY: number, camZ: number, grounded: boolean,
+    bodies: Float32Array, bodyCount: number,
+  ): void {
+    this.grassCam.value.set(camX, camY, camZ);
+    const t = this.grassTrample.value;
+    t[0].set(camX, camZ, 1.6, grounded ? 1 : 0);
+    this.trailTimer -= dt;
+    if (this.trailTimer <= 0) {
+      this.trailTimer = 0.2;
+      const last = this.trail[0];
+      if (grounded && (!last || Math.hypot(camX - last.x, camZ - last.z) > 0.4)) {
+        // Recycle the oldest slot instead of allocating a new footprint.
+        const slot = this.trail.length >= 3 ? this.trail.pop()! : { x: 0, z: 0, age: 0 };
+        slot.x = camX; slot.z = camZ; slot.age = 0;
+        this.trail.unshift(slot);
+      }
+    }
+    for (let i = 0; i < 3; i++) {
+      const p = this.trail[i];
+      if (p) {
+        p.age += dt;
+        const k = Math.max(0, 1 - p.age / 0.85);
+        t[1 + i].set(p.x, p.z, 1.5, k * k);
+      } else t[1 + i].w = 0;
+    }
+    for (let i = 0; i < 4; i++) {
+      if (i < bodyCount) t[4 + i].set(bodies[i * 2], bodies[i * 2 + 1], 1.9, 1);
+      else t[4 + i].w = 0;
+    }
+  }
+
+  /**
+   * One grass TUFT: a fan of nine curved, tapered blades (3 segments each)
+   * rooted in a small clump. Blades lean out and droop toward the tip, and
+   * their faces turn outward round the clump, so it reads as a plant from
+   * every side and from above instead of a flat card. Normals are bent
+   * toward the sky (like the ground beneath), so the lawn shades softly and
+   * consistently rather than flashing dark on the blades' back faces.
+   * `aGrass`: x = height along the blade (0 root … 1 tip), y = blade random.
+   */
   private getGrassGeometry(): THREE.BufferGeometry {
     if (this.grassGeo) return this.grassGeo;
+    const BLADES = 9, SEG = 3;
+    let seed = 0x9e3779b9;
+    const rnd = () => {
+      seed = (Math.imul(seed ^ (seed >>> 15), 0x2c1b3c6d) + 0x6d2b79f5) >>> 0;
+      return seed / 4294967296;
+    };
+    const pos: number[] = [], nrm: number[] = [], attr: number[] = [], idx: number[] = [];
+    for (let b = 0; b < BLADES; b++) {
+      const th = (b / BLADES) * Math.PI * 2 + (rnd() - 0.5) * 0.7;
+      const dx = Math.cos(th), dz = Math.sin(th);
+      const sx = -dz, sz = dx;                       // width axis (tangent)
+      const inner = b % 3 === 0;                     // a few upright core blades
+      const h = inner ? 0.86 + rnd() * 0.34 : 0.58 + rnd() * 0.42;
+      const lean = inner ? 0.06 + rnd() * 0.1 : 0.16 + rnd() * 0.3;
+      const droop = inner ? 0.05 + rnd() * 0.1 : 0.14 + rnd() * 0.3;
+      const w = 0.032 + rnd() * 0.02;
+      const r0 = 0.03 + rnd() * 0.1;
+      const br = rnd();
+      // Normal: mostly sky, a little outward.
+      let nx = dx * 0.38, ny = 1, nz = dz * 0.38;
+      const nl = 1 / Math.hypot(nx, ny, nz);
+      nx *= nl; ny *= nl; nz *= nl;
+      const base = pos.length / 3;
+      for (let k = 0; k <= SEG; k++) {
+        const t = k / SEG;
+        const out = r0 + (lean * t + droop * t * t) * h;
+        const y = h * (t - droop * 0.35 * t * t);
+        const cx = dx * out, cz = dz * out;
+        if (k < SEG) {
+          const hw = w * (1 - 0.72 * t);
+          pos.push(cx - sx * hw, y, cz - sz * hw, cx + sx * hw, y, cz + sz * hw);
+          nrm.push(nx, ny, nz, nx, ny, nz);
+          attr.push(t, br, t, br);
+        } else {
+          pos.push(cx, y, cz);
+          nrm.push(nx, ny, nz);
+          attr.push(1, br);
+        }
+      }
+      for (let k = 0; k < SEG - 1; k++) {
+        const a = base + k * 2;
+        idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+      }
+      const a = base + (SEG - 1) * 2;
+      idx.push(a, a + 1, a + 2);
+    }
     const g = new THREE.BufferGeometry();
-    const positions = new Float32Array([
-      -0.07, 0, 0,   0.07, 0, 0,   -0.022, 0.62, 0,
-       0.07, 0, 0,   0.022, 0.62, 0,  -0.022, 0.62, 0,
-    ]);
-    g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    g.computeVertexNormals();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+    g.setAttribute('aGrass', new THREE.Float32BufferAttribute(attr, 2));
+    g.setIndex(idx);
+    g.computeBoundingSphere();
     this.grassGeo = g;
     return g;
   }
 
-  /** Per-biome grass material with a wind sway injected into the shader. */
+  /** Per-biome grass material: wind, trampling, distance fade, root-to-tip
+   *  shading and backlit translucency, all in one shared program. */
   private getGrassMaterial(biome: BiomeType): THREE.MeshStandardMaterial {
     const cached = this.grassMaterials.get(biome);
     if (cached) return cached;
@@ -570,41 +702,110 @@ export class BiomeSystem {
       color: this.grassConfigs[biome].color,
       // Matte, non-metallic blades — grass shouldn't throw sharp specular
       // glints. The faint emissive only keeps it readable at night.
-      roughness: 0.82,
+      roughness: 0.88,
       metalness: 0.0,
       emissive: this.grassConfigs[biome].color,
-      emissiveIntensity: 0.06,
+      emissiveIntensity: 0.04,
       side: THREE.DoubleSide,
-      flatShading: true,
     });
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.uTime = this.grassTime;
       shader.uniforms.uWindStrength = this.windStrength;
-      shader.vertexShader = 'uniform float uTime;\nuniform float uWindStrength;\nvarying float vBladeH;\n' + shader.vertexShader;
+      shader.uniforms.uWindDir = this.windDir;
+      shader.uniforms.uTrample = this.grassTrample;
+      shader.uniforms.uGrassCam = this.grassCam;
+      shader.uniforms.uGrassFade = this.grassFade;
+      shader.vertexShader = `attribute vec2 aGrass;
+uniform float uTime;
+uniform float uWindStrength;
+uniform vec2 uWindDir;
+uniform vec4 uTrample[8];
+uniform vec3 uGrassCam;
+uniform vec2 uGrassFade;
+varying float vBladeH;
+varying float vBladeR;
+` + shader.vertexShader;
       shader.vertexShader = shader.vertexShader.replace(
         '#include <begin_vertex>',
         `#include <begin_vertex>
-         // Normalised blade height (0 = root, 1 = tip) for the shading gradient.
-         vBladeH = clamp(transformed.y / 0.62, 0.0, 1.0);
-         float gWindH = transformed.y;
-         float gWindP = uTime * 1.5 + instanceMatrix[3].x * 0.18 + instanceMatrix[3].z * 0.18;
-         // Softened gust coupling — storm fronts visibly flatten the lawn
-         // without folding blades in half (uWindStrength is pinned to 1 below
-         // the High tier, preserving the original steady sway there).
-         float gWindS = gWindH * gWindH * 0.55 * (0.6 + 0.4 * uWindStrength);
-         transformed.x += sin(gWindP) * gWindS;
-         transformed.z += cos(gWindP * 0.8) * gWindS * 0.6;`,
+        {
+          vBladeH = aGrass.x;
+          vBladeR = aGrass.y;
+          // Grass meshes sit at the origin, so instance space IS world space.
+          vec3 gRoot = instanceMatrix[3].xyz;
+          vec3 gC0 = instanceMatrix[0].xyz, gC1 = instanceMatrix[1].xyz, gC2 = instanceMatrix[2].xyz;
+          float gH = transformed.y * length(gC1);                // world height above the root
+          // Gust bands roll across the field along the breeze; each blade
+          // also flutters on its own.
+          float gBand = sin(dot(gRoot.xz, uWindDir) * 0.09 - uTime * 1.7) * 0.5 + 0.5;
+          float gBand2 = sin(dot(gRoot.xz, vec2(-uWindDir.y, uWindDir.x)) * 0.05 + uTime * 0.6) * 0.5 + 0.5;
+          float gBend = (0.1 + 0.26 * gBand * gBand + 0.06 * gBand2) * (0.55 + 0.45 * uWindStrength);
+          float gFl = sin(uTime * (5.5 + aGrass.y * 3.0) + aGrass.y * 37.0 + gRoot.x * 0.7 + gRoot.z * 0.5);
+          vec2 gSide = vec2(-uWindDir.y, uWindDir.x);
+          vec2 gD = (uWindDir * gBend + gSide * gFl * 0.035 * uWindStrength + uWindDir * gFl * 0.025) * gH * aGrass.x;
+          float gDown = 0.0;
+          // Trampling: blades bow away from whoever stands in them (only
+          // tufts near the player can be touched — skip the loop elsewhere).
+          if (distance(gRoot.xz, uGrassCam.xz) < 36.0)
+          for (int i = 0; i < 8; i++) {
+            vec4 tp = uTrample[i];
+            if (tp.w <= 0.0) continue;
+            vec2 tv = gRoot.xz - tp.xy;
+            float td = length(tv);
+            float tf = (1.0 - smoothstep(tp.z * 0.25, tp.z, td)) * tp.w;
+            if (tf <= 0.0) continue;
+            vec2 tdir = td > 1e-3 ? tv / td : uWindDir;
+            gD += tdir * tf * gH * 0.85 * aGrass.x;
+            gDown = max(gDown, tf);
+          }
+          // Keep the blade's length roughly constant as it bends.
+          float gDy = -0.5 * dot(gD, gD) / max(gH, 0.05) - gDown * gH * 0.45;
+          vec3 gW = vec3(gD.x, gDy, gD.y);
+          // World offset → instance space (orthogonal-column inverse).
+          transformed += vec3(dot(gC0, gW) / dot(gC0, gC0), dot(gC1, gW) / dot(gC1, gC1), dot(gC2, gW) / dot(gC2, gC2));
+          // Distance fade: the tuft shrinks into its root.
+          float gFade = 1.0 - smoothstep(uGrassFade.x, uGrassFade.y, distance(gRoot, uGrassCam));
+          transformed *= gFade;
+        }`,
       );
-      // Root-to-tip gradient — shaded base, brighter tip. This single change
-      // gives the lawn natural depth and removes the flat, glowing-green
-      // "AstroTurf" read that made the ground look artificial.
-      shader.fragmentShader = 'varying float vBladeH;\n' + shader.fragmentShader;
+      shader.fragmentShader = `varying float vBladeH;
+varying float vBladeR;
+` + shader.fragmentShader;
       shader.fragmentShader = shader.fragmentShader.replace(
         '#include <color_fragment>',
         `#include <color_fragment>
-         diffuseColor.rgb *= mix(0.5, 1.1, vBladeH);`,
+        // Shaded, earthy roots → lit blades → sun-bleached tips, plus a
+        // per-blade value shift so no two blades match.
+        diffuseColor.rgb *= mix(0.38, 1.0, smoothstep(0.0, 0.6, vBladeH));
+        diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(1.2, 1.14, 0.74), vBladeH * vBladeH * 0.5);
+        diffuseColor.rgb *= 0.86 + 0.28 * vBladeR;`,
+      );
+      // Both faces take the sky-bent normal (no back-face flip), so a blade
+      // never goes dark just because its far side faces the camera.
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <normal_fragment_begin>',
+        `#include <normal_fragment_begin>
+        normal = normalize( vNormal );`,
+      );
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <lights_fragment_end>',
+        `#include <lights_fragment_end>
+        #if NUM_DIR_LIGHTS > 0
+        {
+          #ifdef FS_SUN_SHADOW
+          float gSh = fsSunShadow;
+          #else
+          float gSh = 1.0;
+          #endif
+          // Backlit blades glow — light through the thin tips.
+          float gT = saturate( dot( -geometryViewDir, directionalLights[ 0 ].direction ) );
+          reflectedLight.indirectDiffuse += diffuseColor.rgb * directionalLights[ 0 ].color
+            * ( gT * gT * gT ) * 0.42 * vBladeH * gSh;
+        }
+        #endif`,
       );
     };
+    mat.customProgramCacheKey = () => 'grassTuft2';
     this.grassMaterials.set(biome, mat);
     return mat;
   }
@@ -613,6 +814,7 @@ export class BiomeSystem {
    * Builds a chunk-sized field of instanced grass tufts. Returns a single
    * TerrainObject (one InstancedMesh = one draw call) so the existing chunk
    * culling can stream it in and out. Returns null for biomes with no grass.
+   * Tufts grow in PATCHES (a few clumps together), like real ground cover.
    */
   createGrassField(
     startX: number, startZ: number, size: number, biome: BiomeType, detailMult = 1,
@@ -620,41 +822,56 @@ export class BiomeSystem {
     const density = this.grassConfigs[biome].density;
     if (density <= 0) return null;
 
-    const count = Math.floor(640 * density * Math.max(0.4, detailMult));
-    if (count < 8) return null;
+    // 760 tufts per 100×100 at full density, scaled to this field's area.
+    const count = Math.floor(760 * (size * size) / 10000 * density * Math.max(0.4, detailMult));
+    if (count < 6) return null;
 
     const mesh = new THREE.InstancedMesh(this.getGrassGeometry(), this.getGrassMaterial(biome), count);
     mesh.receiveShadow = true;
     mesh.castShadow = false;
     mesh.frustumCulled = true;
+    mesh.userData.kind = 'grass';
 
-    const dummy = new THREE.Object3D();
+    const m = new THREE.Matrix4();
+    const q = new THREE.Quaternion();
+    const pos = new THREE.Vector3();
+    const scl = new THREE.Vector3();
+    const up = new THREE.Vector3(0, 1, 0);
+    const col = new THREE.Color();
+    const base = new THREE.Color(this.grassConfigs[biome].color);
+    const hsl = { h: 0, s: 0, l: 0 };
+    base.getHSL(hsl);
     let placed = 0;
-    const clusters = Math.max(1, Math.floor(count / 6));
-    for (let c = 0; c < clusters && placed < count; c++) {
+    while (placed < count) {
       const cx = startX + Math.random() * size;
       const cz = startZ + Math.random() * size;
-      const perCluster = 4 + Math.floor(Math.random() * 5);
-      for (let b = 0; b < perCluster && placed < count; b++) {
-        dummy.position.set(
-          cx + (Math.random() - 0.5) * 1.5,
-          0,
-          cz + (Math.random() - 0.5) * 1.5,
+      const patch = 3 + Math.floor(Math.random() * 6);
+      const spread = 0.8 + Math.random() * 1.6;
+      // A patch shares a hue; dry patches go straw-coloured.
+      const dry = Math.random() < 0.18 ? 0.35 + Math.random() * 0.4 : 0;
+      for (let b = 0; b < patch && placed < count; b++) {
+        const a = Math.random() * Math.PI * 2, r = Math.sqrt(Math.random()) * spread;
+        pos.set(cx + Math.cos(a) * r, 0, cz + Math.sin(a) * r);
+        q.setFromAxisAngle(up, Math.random() * Math.PI * 2);
+        // Bigger in the patch centre, smaller round its rim.
+        const s = (0.75 + Math.random() * 0.55) * (1.15 - 0.35 * (r / spread));
+        scl.set(s, s * (0.8 + Math.random() * 0.55), s);
+        m.compose(pos, q, scl);
+        mesh.setMatrixAt(placed, m);
+        col.setHSL(
+          hsl.h + (Math.random() - 0.5) * 0.035 - dry * 0.06,
+          THREE.MathUtils.clamp(hsl.s * (0.85 + Math.random() * 0.3) * (1 - dry * 0.45), 0, 1),
+          THREE.MathUtils.clamp(hsl.l * (0.88 + Math.random() * 0.26) * (1 + dry * 0.55), 0, 1),
         );
-        dummy.rotation.set(
-          (Math.random() - 0.5) * 0.32,
-          Math.random() * Math.PI * 2,
-          (Math.random() - 0.5) * 0.32,
-        );
-        const s = 0.7 + Math.random() * 0.95;
-        dummy.scale.set(s, s * (0.8 + Math.random() * 0.7), s);
-        dummy.updateMatrix();
-        mesh.setMatrixAt(placed, dummy.matrix);
+        // instanceColor MULTIPLIES the material colour: store the ratio.
+        col.setRGB(col.r / Math.max(base.r, 1e-3), col.g / Math.max(base.g, 1e-3), col.b / Math.max(base.b, 1e-3));
+        mesh.setColorAt(placed, col);
         placed++;
       }
     }
     mesh.count = placed;
     mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
 
     return {
       mesh, x: startX + size / 2, z: startZ + size / 2,
@@ -939,7 +1156,9 @@ export class BiomeSystem {
       group.add(cone);
     }
     group.position.set(x, height / 2, z);
-    return { mesh: group, x, z, type: 'tree', collidable: true, radius: 2.5, height: 99 };
+    // Leaves shed from the underside of the crown's lower cones.
+    const canopy = { y0: height - 1.4, y1: height + 4.5, r: 3.4 };
+    return { mesh: group, x, z, type: 'tree', collidable: true, radius: 2.5, height: 99, canopy };
   }
 
   private createForestRock(x: number, z: number): TerrainObject {
@@ -1515,7 +1734,8 @@ export class BiomeSystem {
       }
     }
     group.position.set(x, height / 2, z);
-    return { mesh: group, x, z, type: 'tree', collidable: true, radius: 2.5, height: 99 };
+    const canopy = { y0: height - 0.6, y1: height + 2.6, r: 2.2 };
+    return { mesh: group, x, z, type: 'tree', collidable: true, radius: 2.5, height: 99, canopy };
   }
 
   private createSwampStone(x: number, z: number): TerrainObject {

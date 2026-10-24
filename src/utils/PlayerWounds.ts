@@ -312,10 +312,10 @@ const HF = RIG.thighD / 2;     // thigh front z
 const FACEZ = RIG.headD / 2;   // head front z
 const ANCHORS: Anchor[] = [
   { parent: 'root', pos: [-0.42, 2.78, TF], normal: [-0.18, 0.05, 1], size: 0.66, threshold: 0.10 },
-  { parent: 'rightShoulder', pos: [0.16, -0.40, SF], normal: [0.55, 0, 1], size: 0.5, threshold: 0.20 },
+  { parent: 'rightShoulder', pos: [-0.16, -0.40, SF], normal: [-0.55, 0, 1], size: 0.5, threshold: 0.20 },
   { parent: 'root', pos: [0.46, 2.6, TF], normal: [0.22, 0, 1], size: 0.62, threshold: 0.30 },
   { parent: 'leftHip', pos: [-0.04, -0.44, HF], normal: [-0.1, 0, 1], size: 0.56, threshold: 0.38 },
-  { parent: 'leftShoulder', pos: [-0.16, -0.46, SF], normal: [-0.55, 0, 1], size: 0.48, threshold: 0.46 },
+  { parent: 'leftShoulder', pos: [0.16, -0.46, SF], normal: [0.55, 0, 1], size: 0.48, threshold: 0.46 },
   { parent: 'root', pos: [0.12, 3.12, TF - 0.06], normal: [0, 0.25, 1], size: 0.44, threshold: 0.52 },
   { parent: 'root', pos: [0.2, 1.96, TF], normal: [0.12, -0.12, 1], size: 0.6, threshold: 0.58 },
   { parent: 'rightHip', pos: [0.08, -0.52, HF], normal: [0.16, 0, 1], size: 0.54, threshold: 0.66 },

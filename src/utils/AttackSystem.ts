@@ -258,6 +258,14 @@ export class AttackSystem {
     this.state.targetPosition = null;
   }
 
+  /** A stagger breaks the swing: cancels a wind-up (or a strike that has
+   *  not landed yet). Returns true if a swing was interrupted. */
+  public interrupt(): boolean {
+    if (!this.state.isAttacking || this.state.damageDealt) return false;
+    this.endAttack();
+    return true;
+  }
+
   /** Allocation-free attack-state probes for the per-enemy animation loop. */
   public isAttacking(): boolean {
     return this.state.isAttacking;

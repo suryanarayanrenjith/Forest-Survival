@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { gpuProfiler } from './GpuProfiler';
 import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 import type { GraphicsPreset, GraphicsQuality } from './GameSettingsManager';
 
@@ -527,6 +528,58 @@ vec3 localInScatter(vec3 dir, float L, float sigma) {
 }
 `;
 
+// ── LOW-RES EFFECT BUFFERS FOR THE COMPOSITE ─────────────────────────────────
+// Halation (8 taps) and the clarity luma blur (6 taps) are smooth, wide
+// kernels: evaluating them per FULL-res pixel cost 14 scene fetches each and
+// was most of the composite's 5.3 ms on an integrated GPU. Same kernels, same
+// full-res tap offsets, evaluated at HALF res and upsampled bilinearly.
+const FX_PRE_FRAG = /* glsl */ `
+uniform sampler2D tScene;
+uniform vec2 uTexel;        // FULL-res texel (the kernels' radii are in full-res texels)
+uniform float uClarityOn;
+uniform float uHalationOn;
+varying vec2 vUv;
+${LUMA}
+${SANITIZE_GLSL}
+void main() {
+  float bLum = 0.0;
+  if (uClarityOn > 0.5) {
+    for (int i = 0; i < 6; i++) {
+      float a = float(i) * 1.0471975512;
+      vec2 off = vec2(cos(a), sin(a)) * uTexel * 6.0;
+      bLum += dot(clamp(textureLod(tScene, vUv + off, 0.0).rgb, vec3(0.0), vec3(8.0)), LUMA);
+    }
+    bLum *= (1.0 / 6.0);
+  }
+  vec3 halo = vec3(0.0);
+  if (uHalationOn > 0.5) {
+    for (int i = 0; i < 8; i++) {
+      float a = float(i) * 0.7853981634;
+      vec2 off = vec2(cos(a), sin(a)) * uTexel * 4.5;
+      halo += max(sanitize(textureLod(tScene, vUv + off, 0.0).rgb) - 1.1, 0.0);
+    }
+    halo *= 0.125;
+  }
+  gl_FragColor = vec4(halo, bLum);
+}
+`;
+
+// The anamorphic streak's 15-tap horizontal smear of the 1/8-res bloom mip,
+// run ONCE at that resolution instead of per full-res pixel.
+const STREAK_BLUR_FRAG = /* glsl */ `
+uniform sampler2D tStreak;
+uniform float uStreakTexel;
+varying vec2 vUv;
+void main() {
+  vec3 streak = vec3(0.0);
+  for (int i = -7; i <= 7; i++) {
+    float fi = float(i);
+    streak += textureLod(tStreak, vUv + vec2(fi * uStreakTexel, 0.0), 0.0).rgb * exp(-abs(fi) * 0.28);
+  }
+  gl_FragColor = vec4(streak, 1.0);
+}
+`;
+
 const COMPOSITE_FRAG = /* glsl */ `
 #include <packing>
 uniform sampler2D tScene;
@@ -536,6 +589,8 @@ uniform sampler2D tStreak;
 uniform sampler2D tGod;
 uniform sampler2D tAO;
 uniform sampler2D tVol;
+uniform sampler2D tFxPre;
+uniform sampler2D tStreakBlur;
 uniform float uUseAO;
 uniform float uAOStrength;
 uniform float uUseVol;
@@ -578,6 +633,7 @@ uniform float uVignetteOffset;
 uniform float uVignetteDarkness;
 uniform float uGlitch;
 uniform float uInterference;
+uniform float uHeatShimmer;
 varying vec2 vUv;
 ${LUMA}
 ${SANITIZE_GLSL}
@@ -709,6 +765,25 @@ void main() {
     guv = clamp(guv, vec2(0.0), vec2(1.0));
   }
 
+  // ─── HEAT SHIMMER (desert / volcanic maps) ─────────────────────────────
+  // Hot air over the ground bends the far view: rising, wavering refraction
+  // confined to the band around the horizon and to distant pixels (the
+  // player's own hands and nearby rocks stay crisp).
+  if (uHeatShimmer > 0.001) {
+    float hd = textureLod(tDepth, guv, 0.0).r;
+    float hFar = hd >= 0.99999 ? 1.0 : smoothstep(14.0, 70.0, linearDepth(hd));
+    vec3 hRay = worldRayDir(vUv);
+    float hBand = 1.0 - smoothstep(0.015, 0.2, abs(hRay.y + 0.025));
+    float hk = uHeatShimmer * hFar * hBand;
+    if (hk > 0.001) {
+      vec2 hw = vec2(
+        sin(vUv.y * 260.0 + uTime * 6.5 + sin(vUv.x * 38.0 + uTime) * 2.0),
+        sin(vUv.y * 190.0 - uTime * 4.7 + vUv.x * 27.0)
+      );
+      guv = clamp(guv + hw * vec2(0.0009, 0.0013) * hk, vec2(0.0), vec2(1.0));
+    }
+  }
+
   // ─── CHROMATIC ABERRATION (HDR, radial) ────────────────────────────────
   vec2 dir = vUv - 0.5;
   float dist = length(dir) * 1.4142;
@@ -737,29 +812,18 @@ void main() {
   bool isSky = depth >= 0.99999;
 
   // ─── CLARITY source (scene luma high-pass, measured pre-fog) ───────────
+  // (The blurred luma and the halation glow come from the half-res FX_PRE
+  //  buffer — same kernels, a quarter of the work.)
+  vec4 fxPre = textureLod(tFxPre, guv, 0.0);
   float detail = 0.0;
   if (uClarity > 0.001) {
     float cLum = dot(min(col, vec3(8.0)), LUMA);
-    float bLum = 0.0;
-    for (int i = 0; i < 6; i++) {
-      float a = float(i) * 1.0471975512;
-      vec2 off = vec2(cos(a), sin(a)) * uTexel * 6.0;
-      bLum += dot(clamp(textureLod(tScene, guv + off, 0.0).rgb, vec3(0.0), vec3(8.0)), LUMA);
-    }
-    bLum *= (1.0 / 6.0);
+    float bLum = fxPre.a;
     detail = clamp((cLum - bLum) / max(bLum + 0.05, 0.05), -0.6, 0.6);
   }
 
   // ─── FILM HALATION (warm bleed around hot highlights) ──────────────────
-  vec3 halo = vec3(0.0);
-  if (uHalation > 0.001) {
-    for (int i = 0; i < 8; i++) {
-      float a = float(i) * 0.7853981634;
-      vec2 off = vec2(cos(a), sin(a)) * uTexel * 4.5;
-      halo += max(sanitize(textureLod(tScene, guv + off, 0.0).rgb) - 1.1, 0.0);
-    }
-    halo *= 0.125;
-  }
+  vec3 halo = uHalation > 0.001 ? fxPre.rgb : vec3(0.0);
 
   // ─── AMBIENT OCCLUSION (contact darkening, never on the sky) ───────────
   if (uUseAO > 0.5 && !isSky) {
@@ -785,11 +849,7 @@ void main() {
 
   // ─── ANAMORPHIC STREAKS (horizontal smear of the brightest lights) ─────
   if (uStreakStrength > 0.001) {
-    vec3 streak = vec3(0.0);
-    for (int i = -7; i <= 7; i++) {
-      float fi = float(i);
-      streak += textureLod(tStreak, guv + vec2(fi * uStreakTexel, 0.0), 0.0).rgb * exp(-abs(fi) * 0.28);
-    }
+    vec3 streak = textureLod(tStreakBlur, guv, 0.0).rgb;
     col += streak * vec3(0.5, 0.72, 1.35) * uStreakStrength * 0.06;
   }
 
@@ -1010,6 +1070,8 @@ export class PostProcessingPipeline {
   private godB!: THREE.WebGLRenderTarget;
   private ldrA!: THREE.WebGLRenderTarget;
   private ldrB!: THREE.WebGLRenderTarget;
+  private fxPreTarget!: THREE.WebGLRenderTarget;
+  private streakTarget: THREE.WebGLRenderTarget | null = null;
 
   private readonly ssaoMat: THREE.ShaderMaterial;
   private readonly ssaoBlurMat: THREE.ShaderMaterial;
@@ -1021,6 +1083,8 @@ export class PostProcessingPipeline {
   private readonly godMaskMat: THREE.ShaderMaterial;
   private readonly godBlurMat: THREE.ShaderMaterial;
   private readonly compositeMat: THREE.ShaderMaterial;
+  private readonly fxPreMat: THREE.ShaderMaterial;
+  private readonly streakBlurMat: THREE.ShaderMaterial;
   private readonly casMat: THREE.ShaderMaterial;
   private readonly copyMat: THREE.ShaderMaterial;
   private readonly smaaPass: SMAAPass | null;
@@ -1192,6 +1256,8 @@ export class PostProcessingPipeline {
       tGod: { value: this.blackTexture },
       tAO: { value: this.whiteTexture },
       tVol: { value: this.blackTexture },
+      tFxPre: { value: this.blackTexture },
+      tStreakBlur: { value: this.blackTexture },
       uUseAO: { value: 0 },
       uAOStrength: { value: 0.85 },
       uUseVol: { value: 0 },
@@ -1239,6 +1305,17 @@ export class PostProcessingPipeline {
       uVignetteDarkness: { value: 0.42 },
       uGlitch: { value: 0 },
       uInterference: { value: 0 },
+      uHeatShimmer: { value: 0 },
+    });
+    this.fxPreMat = makeShader(FX_PRE_FRAG, {
+      tScene: { value: null },
+      uTexel: { value: new THREE.Vector2() },
+      uClarityOn: { value: this.tier.clarity > 0.001 ? 1 : 0 },
+      uHalationOn: { value: this.tier.halation > 0.001 ? 1 : 0 },
+    });
+    this.streakBlurMat = makeShader(STREAK_BLUR_FRAG, {
+      tStreak: { value: null },
+      uStreakTexel: { value: 0.01 },
     });
     this.casMat = makeShader(CAS_FRAG, {
       tInput: { value: null },
@@ -1251,6 +1328,7 @@ export class PostProcessingPipeline {
       [this.ssaoMat, 'ssao'], [this.ssaoBlurMat, 'ssaoBlur'], [this.volMat, 'volumetric'], [this.volResolveMat, 'volResolve'],
       [this.prefilterMat, 'bloomPrefilter'], [this.downMat, 'bloomDown'], [this.upMat, 'bloomUp'], [this.godMaskMat, 'godMask'],
       [this.godBlurMat, 'godBlur'], [this.compositeMat, 'composite'], [this.casMat, 'cas'], [this.copyMat, 'copy'],
+      [this.fxPreMat, 'fxPre'], [this.streakBlurMat, 'streakBlur'],
     ];
     for (const [m, n] of named) m.name = `post:${n}`;
 
@@ -1333,6 +1411,10 @@ export class PostProcessingPipeline {
 
     this.ldrA = target(W, H, THREE.UnsignedByteType);
     this.ldrB = target(W, H, THREE.UnsignedByteType);
+    this.fxPreTarget = target(Math.ceil(W / 2), Math.ceil(H / 2));
+    (this.fxPreMat.uniforms.uTexel.value as THREE.Vector2).set(1 / W, 1 / H);
+    const sm = this.bloomMips[Math.min(2, this.bloomMips.length - 1)];
+    this.streakTarget = sm ? target(sm.width, sm.height) : null;
 
     this.smaaPass?.setSize(W, H);
     const c = this.compositeMat.uniforms;
@@ -1358,6 +1440,9 @@ export class PostProcessingPipeline {
     this.godB?.dispose();
     this.ldrA?.dispose();
     this.ldrB?.dispose();
+    this.fxPreTarget?.dispose();
+    this.streakTarget?.dispose();
+    this.streakTarget = null;
   }
 
   private pass(material: THREE.ShaderMaterial, target: THREE.WebGLRenderTarget | null, clear = true) {
@@ -1502,6 +1587,11 @@ export class PostProcessingPipeline {
     this.compositeMat.uniforms.uInterference.value = THREE.MathUtils.clamp(strength, 0, 1);
   }
 
+  /** Heat-haze refraction near the horizon (0 = off). Plain uniform write. */
+  setHeatShimmer(strength: number) {
+    this.compositeMat.uniforms.uHeatShimmer.value = THREE.MathUtils.clamp(strength, 0, 1.5);
+  }
+
   setSize(width: number, height: number) {
     this.disposeTargets();
     this.allocate(width, height);
@@ -1546,6 +1636,8 @@ export class PostProcessingPipeline {
         compileFor(this.godMaskMat, this.godA);
         compileFor(this.godBlurMat, this.godB);
       }
+      compileFor(this.fxPreMat, this.fxPreTarget);
+      if (this.streakTarget) compileFor(this.streakBlurMat, this.streakTarget);
       compileFor(this.compositeMat, this.ldrA);
       // CAS writes the canvas (sRGB output space) whenever it is enabled.
       compileFor(this.casMat, this.tier.cas > 0 ? null : this.ldrA);
@@ -1599,8 +1691,15 @@ export class PostProcessingPipeline {
     camera.updateMatrixWorld();
 
     // 1. Scene → linear HDR + depth.
+    const gp = gpuProfiler;
+    const shadowAuto = renderer.shadowMap.autoUpdate;
+    const skipShadows = gp.enabled && gp.splitShadows && (gp.frame & 1) === 1;
+    if (skipShadows) renderer.shadowMap.autoUpdate = false;
+    gp.begin(skipShadows ? 'scene(no shadow)' : 'scene+shadow');
     renderer.setRenderTarget(this.sceneTarget);
     renderer.render(this.scene, camera);
+    gp.end();
+    if (skipShadows) renderer.shadowMap.autoUpdate = shadowAuto;
     const sceneTex = this.sceneTarget.texture;
     const depthTex = this.sceneTarget.depthTexture as THREE.DepthTexture;
 
@@ -1612,6 +1711,7 @@ export class PostProcessingPipeline {
       (s.uProjInv.value as THREE.Matrix4).copy(camera.projectionMatrixInverse);
       (s.uProj.value as THREE.Matrix4).copy(camera.projectionMatrix);
       (s.uTexel.value as THREE.Vector2).set(1 / this.aoTarget.width, 1 / this.aoTarget.height);
+      gp.begin('ssao');
       this.pass(this.ssaoMat, this.aoTarget);
       const b = this.ssaoBlurMat.uniforms;
       b.tInput.value = this.aoTarget.texture;
@@ -1620,13 +1720,16 @@ export class PostProcessingPipeline {
       b.uNear.value = camera.near;
       b.uFar.value = camera.far;
       this.pass(this.ssaoBlurMat, this.aoBlurTarget);
+      gp.end();
     }
 
     // 3. Volumetric light.
     const vol = this.volumetricInputs;
     let volTex: THREE.Texture | null = null;
     if (this.volTarget && (vol.enabled || force)) {
+      gp.begin('volumetrics');
       volTex = this.renderVolumetrics(depthTex);
+      gp.end();
     } else {
       this.volReset = true;
     }
@@ -1640,6 +1743,7 @@ export class PostProcessingPipeline {
       p.tVol.value = volTex ?? this.blackTexture;
       p.uUseVol.value = volTex ? 1 : 0;
       (p.uTexel.value as THREE.Vector2).set(0.5 / this.width, 0.5 / this.height);
+      gp.begin('bloom');
       this.pass(this.prefilterMat, first);
       for (let i = 1; i < this.bloomMips.length; i++) {
         const src = this.bloomMips[i - 1];
@@ -1654,6 +1758,7 @@ export class PostProcessingPipeline {
         this.pass(this.upMat, this.bloomMips[i - 1], false);
       }
       bloomTex = first.texture;
+      gp.end();
     }
 
     // 5. God rays.
@@ -1662,6 +1767,7 @@ export class PostProcessingPipeline {
       this.godMaskMat.uniforms.tScene.value = sceneTex;
       this.godMaskMat.uniforms.tDepth.value = depthTex;
       this.godMaskMat.uniforms.uAspect.value = this.width / this.height;
+      gp.begin('godrays');
       this.pass(this.godMaskMat, this.godA);
       this.godBlurMat.uniforms.tInput.value = this.godA.texture;
       this.godBlurMat.uniforms.uDensity.value = 0.55;
@@ -1670,10 +1776,30 @@ export class PostProcessingPipeline {
       this.godBlurMat.uniforms.uDensity.value = 0.95;
       this.pass(this.godBlurMat, this.godA);
       godTex = this.godA.texture;
+      gp.end();
     }
+
+    // 6a. Low-res effect buffers (halation + clarity blur; anamorphic streak).
+    gp.begin('fxPre+streak');
+    const usePre = tier.clarity > 0.001 || tier.halation > 0.001;
+    if (usePre) {
+      this.fxPreMat.uniforms.tScene.value = sceneTex;
+      this.pass(this.fxPreMat, this.fxPreTarget);
+    }
+    const streakMip0 = this.bloomMips[Math.min(2, this.bloomMips.length - 1)];
+    let streakBlurTex: THREE.Texture = this.blackTexture;
+    if (this.streakTarget && streakMip0 && tier.anamorphic > 0) {
+      this.streakBlurMat.uniforms.tStreak.value = streakMip0.texture;
+      this.streakBlurMat.uniforms.uStreakTexel.value = 2.5 / streakMip0.width;
+      this.pass(this.streakBlurMat, this.streakTarget);
+      streakBlurTex = this.streakTarget.texture;
+    }
+    gp.end();
 
     // 6. Composite → display-referred LDR.
     const c = this.compositeMat.uniforms;
+    c.tFxPre.value = usePre ? this.fxPreTarget.texture : this.blackTexture;
+    c.tStreakBlur.value = streakBlurTex;
     c.tScene.value = sceneTex;
     c.tDepth.value = depthTex;
     c.tBloom.value = bloomTex;
@@ -1702,12 +1828,18 @@ export class PostProcessingPipeline {
     c.uTime.value = this.time;
 
     if (this.smaaPass) {
+      gp.begin('composite');
       this.pass(this.compositeMat, this.ldrA);
+      gp.end();
       if (tier.cas > 0) {
         this.smaaPass.renderToScreen = false;
+        gp.begin('smaa');
         this.smaaPass.render(renderer, this.ldrB, this.ldrA, 0, false);
+        gp.end();
         this.casMat.uniforms.tInput.value = this.ldrB.texture;
+        gp.begin('cas');
         this.pass(this.casMat, null);
+        gp.end();
       } else {
         this.smaaPass.renderToScreen = true;
         this.smaaPass.render(renderer, null as unknown as THREE.WebGLRenderTarget, this.ldrA, 0, false);
@@ -1809,7 +1941,7 @@ export class PostProcessingPipeline {
     for (const m of [
       this.ssaoMat, this.ssaoBlurMat, this.volMat, this.volResolveMat, this.prefilterMat,
       this.downMat, this.upMat, this.godMaskMat, this.godBlurMat, this.compositeMat,
-      this.casMat, this.copyMat,
+      this.casMat, this.copyMat, this.fxPreMat, this.streakBlurMat,
     ]) {
       m.dispose();
     }

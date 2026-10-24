@@ -10,9 +10,13 @@
  * with-bevels look.
  *
  * Returned bodies expose joint groups (leftShoulder, rightShoulder,
- * leftHip, rightHip, headJoint, leftHand, rightHand) that the
- * RemotePlayerManager rotates each frame to drive walk / idle / death
- * animation.
+ * leftElbow, rightElbow, leftHip, rightHip, headJoint, leftHand, rightHand)
+ * that the avatar animators (RemotePlayerManager, LocalPlayerShadow) drive
+ * each frame — the arms through two-bone IK onto the held weapon (AvatarRig).
+ *
+ * Handedness: models face +Z, so the ANATOMICAL right side is −X. The
+ * "right" arm / hip are built there (they used to sit at +X, which put the
+ * gun in every avatar's left hand).
  */
 import * as THREE from 'three';
 import { applyRobotSurface, type RobotSurfaceKind } from './RobotSurface';
@@ -61,6 +65,8 @@ export interface HumanoidBody {
   };
   leftShoulder: THREE.Group;
   rightShoulder: THREE.Group;
+  leftElbow: THREE.Group;
+  rightElbow: THREE.Group;
   leftHand: THREE.Mesh;
   rightHand: THREE.Mesh;
   leftHip: THREE.Group;
@@ -195,6 +201,7 @@ interface Rig {
   torsoW: number; torsoH: number; torsoD: number;
   padW: number; padH: number; padD: number;
   upperArmW: number; upperArmH: number; upperArmD: number;
+  foreArmH: number;
   handW: number; handH: number; handD: number;
   wristGap: number;
   neckW: number; neckH: number; neckD: number;
@@ -212,9 +219,12 @@ const _R: Partial<Rig> = {
   beltH: 0.18,
   torsoW: 1.65, torsoH: 1.55, torsoD: 0.95,
   padW: 0.55, padH: 0.55, padD: 0.7,
-  upperArmW: 0.5, upperArmH: 0.85, upperArmD: 0.55,
-  handW: 0.55, handH: 0.55, handD: 0.6,
-  wristGap: 0.08,
+  // Shoulder→elbow, elbow→wrist: long enough (fingertips at the upper thigh)
+  // for both hands to meet on a shouldered weapon across the broad torso.
+  upperArmW: 0.5, upperArmH: 0.68, upperArmD: 0.55,
+  foreArmH: 0.62,
+  handW: 0.5, handH: 0.52, handD: 0.56,
+  wristGap: 0.05,
   neckW: 0.42, neckH: 0.22, neckD: 0.5,
   headW: 1.0, headH: 1.0, headD: 1.05,
   topCapW: 0.55, topCapH: 0.5, topCapD: 0.55,
@@ -230,30 +240,45 @@ _R.hipY      = _R.thighTopY!;
 _R.headJointY = _R.neckTopY!;
 export const RIG = _R as Rig;
 
+/** Shoulder joint rest position for an arm (+1 = anatomical right, at −X). */
+export function shoulderRest(side: -1 | 1): THREE.Vector3 {
+  return new THREE.Vector3(-side * (RIG.torsoW / 2 + RIG.upperArmW / 2 + 0.04), RIG.shoulderY, 0);
+}
+
+/** `side` +1 = anatomical right (built at −X), −1 = left. Shoulder → upper
+ *  arm → ELBOW → forearm + hand, so the animator can bend the arm onto a
+ *  grip. The segments overlap a touch past the elbow so a bent arm never
+ *  opens a gap at the joint. */
 function buildArm(side: -1 | 1, palette: Palette, materials: THREE.Material[]) {
-  const joint = group(side === -1 ? 'leftShoulder' : 'rightShoulder');
-  joint.position.set(
-    side * (RIG.torsoW / 2 + RIG.upperArmW / 2 + 0.04),
-    RIG.shoulderY, 0,
-  );
+  const joint = group(side === 1 ? 'rightShoulder' : 'leftShoulder');
+  joint.position.copy(shoulderRest(side));
 
   const upperMat = mat(palette.base, { rough: 0.7 }, materials);
-  const upper = chamfer(RIG.upperArmW, RIG.upperArmH, RIG.upperArmD, upperMat, 0.06,
-    0, -RIG.upperArmH / 2, 0);
+  const upper = chamfer(RIG.upperArmW, RIG.upperArmH + 0.1, RIG.upperArmD, upperMat, 0.06,
+    0, -(RIG.upperArmH + 0.1) / 2, 0);
   joint.add(upper);
+
+  const elbow = group(side === 1 ? 'rightElbow' : 'leftElbow');
+  elbow.position.set(0, -RIG.upperArmH, 0);
+  joint.add(elbow);
+
+  const fore = chamfer(RIG.upperArmW * 0.92, RIG.foreArmH + 0.08, RIG.upperArmD * 0.92, upperMat, 0.06,
+    0, -(RIG.foreArmH - 0.08) / 2, 0);
+  elbow.add(fore);
 
   const handMat = mat(palette.hand ?? palette.dark, { rough: 0.8 }, materials);
   const hand = chamfer(RIG.handW, RIG.handH, RIG.handD, handMat, 0.07,
-    0, -RIG.upperArmH - RIG.wristGap - RIG.handH / 2, 0);
-  joint.add(hand);
+    0, -RIG.foreArmH - RIG.wristGap - RIG.handH / 2, 0);
+  elbow.add(hand);
 
-  return { joint, upper, hand };
+  return { joint, elbow, upper, hand };
 }
 
 function buildLeg(side: -1 | 1, palette: Palette, materials: THREE.Material[]) {
-  const joint = group(side === -1 ? 'leftHip' : 'rightHip');
+  // +1 = anatomical right, at −X (matches the arms).
+  const joint = group(side === 1 ? 'rightHip' : 'leftHip');
   joint.position.set(
-    side * (RIG.thighW / 2 + 0.04),
+    -side * (RIG.thighW / 2 + 0.04),
     RIG.hipY, 0,
   );
 
@@ -351,6 +376,8 @@ export function buildHumanoid(palette: Palette): HumanoidBody {
     defaultFace: { head, eyeL, eyeR, pupilL, pupilR, mouth },
     leftShoulder: leftArm.joint,
     rightShoulder: rightArm.joint,
+    leftElbow: leftArm.elbow,
+    rightElbow: rightArm.elbow,
     leftHand: leftArm.hand,
     rightHand: rightArm.hand,
     leftHip: leftLeg.joint,
@@ -987,14 +1014,14 @@ export function buildEngineer(palette: Palette, materials: THREE.Material[]): TH
 
   // Hydraulic exo on right shoulder
   const exoMat = mat(0x7a8390, { rough: 0.3, metal: 0.85 }, materials);
-  const exoBlock = chamfer(0.5, 0.5, 0.5, exoMat, 0.06, 0.18, 0.2, 0);
+  const exoBlock = chamfer(0.5, 0.5, 0.5, exoMat, 0.06, -0.18, 0.2, 0);
   body.rightShoulder.add(exoBlock);
   const piston = box(0.18, 0.16, 0.5, exoMat,
-    0.08, -0.0, 0.32);
+    -0.08, -0.0, 0.32);
   body.rightShoulder.add(piston);
   const exoGlow = box(0.36, 0.06, 0.04, mat(palette.visor, {
     emissive: palette.visor.clone(), emissiveI: 1.6, rough: 0.3,
-  }, materials), 0.18, 0.4, 0.25);
+  }, materials), -0.18, 0.4, 0.25);
   body.rightShoulder.add(exoGlow);
 
   // Backpack power unit
@@ -1102,6 +1129,8 @@ function attachJoints(root: THREE.Group, body: HumanoidBody): void {
   root.userData.joints = {
     leftShoulder: body.leftShoulder,
     rightShoulder: body.rightShoulder,
+    leftElbow: body.leftElbow,
+    rightElbow: body.rightElbow,
     leftHip: body.leftHip,
     rightHip: body.rightHip,
     leftHand: body.leftHand,
@@ -1115,88 +1144,17 @@ function attachJoints(root: THREE.Group, body: HumanoidBody): void {
 // ─── HELD-WEAPON BUILDERS ──────────────────────────────────────────────────
 //
 // Every weapon is built so its LOCAL origin sits at the trigger / pistol
-// grip. The avatar's right hand grips here, so attaching the weapon to
-// `joints.rightHand` puts it instantly in the correct place. Each weapon
-// also exports a `pose` (arm/shoulder rotations + left-hand reach) so the
-// avatar can adapt — one-handed pistols, two-handed rifles, shoulder-
-// mounted launchers, etc.
+// grip, which is the strong hand's IK target. The per-weapon HOLD (stance, pivot, support-
+// hand grip — two-handed rifles, isosceles pistol, shouldered launcher, hip
+// minigun) lives in AvatarRig.
 
 export type WeaponType =
   | 'pistol' | 'rifle' | 'shotgun' | 'smg'
   | 'sniper' | 'minigun' | 'launcher';
 
-export interface WeaponPose {
-  /** Right-shoulder rotation (radians) — usually negative X (raise forward). */
-  rightShoulderX: number;
-  rightShoulderZ: number;
-  /** Left-shoulder rotation — used by two-handed weapons to reach forward. */
-  leftShoulderX: number;
-  leftShoulderZ: number;
-  /** Should the left arm visibly grip the weapon? Pistols → false. */
-  twoHanded: boolean;
-  /** Local offset / rotation of the weapon group relative to the right hand. */
-  weaponPos: [number, number, number];
-  weaponRot: [number, number, number];
-}
-
-const DEFAULT_TWO_HANDED_POSE: WeaponPose = {
-  rightShoulderX: -1.05, rightShoulderZ: -0.12,
-  leftShoulderX:  -0.95, leftShoulderZ:  0.30,
-  twoHanded: true,
-  weaponPos: [-0.06, -0.08, 0.1],
-  weaponRot: [0, -0.05, 0],
-};
-
-const ONE_HANDED_POSE: WeaponPose = {
-  rightShoulderX: -0.95, rightShoulderZ: -0.05,
-  leftShoulderX:  -0.15, leftShoulderZ:  0.05,
-  twoHanded: false,
-  weaponPos: [-0.04, -0.06, 0.08],
-  weaponRot: [0, 0, 0],
-};
-
-export function getWeaponPose(type: WeaponType): WeaponPose {
-  switch (type) {
-    case 'pistol':
-      return ONE_HANDED_POSE;
-    case 'minigun':
-      // Held lower & more level — supported by both hands at the cradle.
-      return {
-        rightShoulderX: -0.85, rightShoulderZ: -0.18,
-        leftShoulderX:  -0.85, leftShoulderZ:  0.22,
-        twoHanded: true,
-        weaponPos: [-0.1, -0.12, 0.15],
-        weaponRot: [0, 0, 0],
-      };
-    case 'launcher':
-      // Shoulder-mounted — held high so the tube clears the head.
-      return {
-        rightShoulderX: -1.25, rightShoulderZ: -0.12,
-        leftShoulderX:  -1.05, leftShoulderZ:  0.4,
-        twoHanded: true,
-        weaponPos: [-0.06, -0.04, 0.18],
-        weaponRot: [0, -0.05, 0],
-      };
-    case 'sniper':
-      // Slightly more raised so the scope reads at eye level.
-      return {
-        rightShoulderX: -1.1, rightShoulderZ: -0.1,
-        leftShoulderX:  -1.0, leftShoulderZ:  0.32,
-        twoHanded: true,
-        weaponPos: [-0.06, -0.1, 0.12],
-        weaponRot: [0, -0.05, 0],
-      };
-    case 'shotgun':
-    case 'rifle':
-    case 'smg':
-    default:
-      return DEFAULT_TWO_HANDED_POSE;
-  }
-}
-
 /**
  * Build the held-in-hand mesh for any weapon. Local origin is at the
- * trigger / pistol grip. Use `getWeaponPose(type)` for the arm pose.
+ * trigger / pistol grip. AvatarRig places it and solves the hands onto it.
  */
 export function buildHeldWeapon(type: WeaponType, materials: THREE.Material[]): THREE.Group {
   switch (type) {

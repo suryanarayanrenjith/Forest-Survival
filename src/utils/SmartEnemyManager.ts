@@ -858,6 +858,7 @@ class SmartEnemyManager {
 
     const group = new THREE.Group();
     group.visible = false; // Hidden until activated
+    group.userData.kind = 'enemy';
 
     // Create LOD groups - all start hidden, applyLOD will show the correct one
     const highGroup = new THREE.Group();

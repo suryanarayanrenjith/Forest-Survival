@@ -189,6 +189,7 @@ export class TerrainInstancer {
     // Slots churn as chunks stream in/out.
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     mesh.matrixAutoUpdate = false;
+    mesh.userData.kind = 'props';
     this.scene.add(mesh);
     return mesh;
   }
