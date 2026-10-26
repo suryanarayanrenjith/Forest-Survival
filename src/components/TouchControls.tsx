@@ -502,7 +502,8 @@ const PowerButton = ({
 const GrenadeButton = ({ grenade }: { grenade?: AbilityHudItem }) => {
   const kind = grenade?.grenadeKind ?? 'frag';
   const meta = GRENADE_HUD[kind];
-  const count = grenade?.count ?? 0;
+  const unlimited = !!grenade?.unlimited;
+  const count = unlimited ? Math.max(1, grenade?.count ?? 0) : grenade?.count ?? 0;
   const Icon = meta.icon;
   // Left hand busy with persistent gear (shield / detonator): the button greys
   // out with the gear's badge, and a refused press shakes it — same rule and
@@ -542,7 +543,7 @@ const GrenadeButton = ({ grenade }: { grenade?: AbilityHudItem }) => {
       >
         <Icon className="h-5 w-5" style={{ color: count > 0 && !lock ? meta.color : '#6b7672', opacity: lock ? 0.5 : 1 }} strokeWidth={2.25} />
         <span className="mt-0.5 text-[8px] font-bold uppercase tracking-wide text-gray-300">{lock ? 'Hand busy' : meta.label}</span>
-        <span className="absolute bottom-0.5 right-1 text-[10px] font-bold tabular-nums text-white">{count}</span>
+        <span className="absolute bottom-0.5 right-1 text-[10px] font-bold tabular-nums text-white">{unlimited ? '∞' : count}</span>
         {lock && (
           <span className="absolute left-1 top-1 flex h-4 w-4 items-center justify-center rounded-md border border-amber-300/70 bg-black/85">
             <LockIcon className="h-2.5 w-2.5 text-amber-300" strokeWidth={2.5} />

@@ -70,7 +70,7 @@ const C = {
   crateTop: [9, 5, 4, 3],
   c4Label: [13, 6, 2, 1],
   decoyLabel: [0, 7, 2, 1],
-  smokeHCLabel: [2, 7, 2, 1],
+  hijackLabel: [2, 7, 2, 1],
   knifeBlade: [4, 7, 1, 1],
   paracord: [5, 7, 1, 1],
   c4Putty: [6, 7, 1, 1],
@@ -853,15 +853,30 @@ function paintItemLabels(L: Layers, rnd: () => number): void {
     text(L, 'NOISE · SIGNATURE EMITTER', r.x + r.w * 0.68, r.y + r.h * 0.64, r.h * 0.07, 0xb8bcc2, { maxW: r.w * 0.6 });
     led(L, r.x + r.w * 0.95, r.y + r.h * 0.2, r.h * 0.06, 0x9be56a);
   }
-  // ── HC smoke grenade (white smoke). ──
+  // ── HJK-7 hijack spike body: machined gunmetal over a lit circuit lattice. ──
   {
-    const r = cellRect(L, C.smokeHCLabel);
-    base(L, r, 0x4c5136, 0.62, 0);
-    L.a.fillStyle = '#e8e8e2'; L.a.fillRect(r.x, r.y + r.h * 0.34, r.w, r.h * 0.32);
-    text(L, 'SMOKE · HC', r.x + r.w * 0.5, r.y + r.h * 0.5, r.h * 0.2, 0x1a1a1a, { weight: '900' });
-    text(L, 'AN-M8 · SCREENING', r.x + r.w * 0.5, r.y + r.h * 0.2, r.h * 0.08, 0xd8d6c8);
-    text(L, 'BURN TIME 90 S', r.x + r.w * 0.5, r.y + r.h * 0.82, r.h * 0.08, 0xd8d6c8);
-    chips(L, r, rnd, 12);
+    const r = cellRect(L, C.hijackLabel);
+    base(L, r, 0x1b2026, 0.4, 0.75);
+    brushed(L, r, rnd, 0.06, true);
+    // Circuit traces: right-angled runs ending in solder pads, lit azure on
+    // the emissive layer and cut a hair into the height.
+    for (let t = 0; t < 16; t++) {
+      let x = r.x + rnd() * r.w, y = r.y + r.h * (0.12 + rnd() * 0.76);
+      L.a.strokeStyle = 'rgba(76,157,255,0.9)'; L.e.strokeStyle = 'rgba(76,157,255,0.75)';
+      L.a.lineWidth = L.e.lineWidth = Math.max(1, r.h * 0.012);
+      for (const ctx of [L.a, L.e]) { ctx.beginPath(); ctx.moveTo(x, y); }
+      for (let k = 0; k < 3; k++) {
+        if (k % 2 === 0) x += (rnd() - 0.5) * r.w * 0.22; else y += (rnd() - 0.5) * r.h * 0.3;
+        for (const ctx of [L.a, L.e]) ctx.lineTo(x, y);
+      }
+      for (const ctx of [L.a, L.e]) ctx.stroke();
+      led(L, x, y, r.h * 0.018, 0x4c9dff);
+    }
+    // Stencilled band with the designation.
+    L.a.fillStyle = 'rgba(8,10,14,0.85)'; L.a.fillRect(r.x, r.y + r.h * 0.4, r.w, r.h * 0.2);
+    text(L, 'HJK-7 · OVERRIDE', r.x + r.w * 0.5, r.y + r.h * 0.5, r.h * 0.13, 0x9cc8ff, { weight: '900', raise: 0.05 });
+    text(L, 'INTRUSION SPIKE · DO NOT HANDLE TIP', r.x + r.w * 0.5, r.y + r.h * 0.86, r.h * 0.06, 0x7f8a96, { maxW: r.w * 0.9 });
+    chips(L, r, rnd, 6, 0x9aa4ae);
   }
   // ── Knife blade + paracord grip. ──
   {
@@ -1049,8 +1064,8 @@ export type ItemModelId =
 function buildGrenade(kind: GrenadeKind, withPin: boolean): THREE.BufferGeometry {
   const it = new Item();
   // Kinds that are armed by pulling a pin carry the spoon + ring.
-  const pinned = kind === 'frag' || kind === 'emp' || kind === 'thermite' || kind === 'smoke';
-  let topY = 0.16;
+  const pinned = kind === 'frag' || kind === 'emp' || kind === 'thermite';
+  const topY = 0.16;
   let sideX = 0.09;
   switch (kind) {
     case 'frag':
@@ -1070,15 +1085,20 @@ function buildGrenade(kind: GrenadeKind, withPin: boolean): THREE.BufferGeometry
       it.cyl(0.064, 0.08, 0.03, C.darkSteel, { p: [0, -0.135, 0] }, 20);
       it.cyl(0.046, 0.058, 0.04, C.darkSteel, { p: [0, 0.14, 0] }, 14);
       break;
-    case 'smoke':
-      it.cyl(0.078, 0.078, 0.27, C.smokeHCLabel, { r: [0, Math.PI, 0] }, 22);
-      it.cyl(0.066, 0.078, 0.025, C.darkSteel, { p: [0, -0.147, 0] }, 20);
-      for (let k = 0; k < 4; k++) {                                          // emission ports
-        const a = (k / 4) * Math.PI * 2;
-        it.cyl(0.012, 0.012, 0.02, C.rubber, { p: [Math.cos(a) * 0.05, -0.16, Math.sin(a) * 0.05] }, 8);
+    case 'hijack':
+      // HJK-7 intrusion spike, tip DOWN (−Y): the flight + stick code aim −Y
+      // along the throw. Tungsten penetrator → hex body with the lit lattice →
+      // azure status band → finned tail cap with the arming button.
+      it.cyl(0.026, 0.002, 0.1, C.steel, { p: [0, -0.14, 0] }, 12);           // penetrator tip
+      it.cyl(0.03, 0.026, 0.022, C.darkSteel, { p: [0, -0.08, 0] }, 6);       // collar
+      it.cyl(0.032, 0.032, 0.15, C.hijackLabel, { r: [0, Math.PI / 6, 0] }, 6); // hex body
+      it.cyl(0.0345, 0.0345, 0.014, C.ledBlue, { p: [0, 0.035, 0] }, 6);     // status band
+      it.cyl(0.028, 0.032, 0.03, C.darkSteel, { p: [0, 0.09, 0] }, 6);        // tail cap
+      for (let k = 0; k < 3; k++) {                                          // stabiliser fins
+        const a = (k / 3) * Math.PI * 2;
+        it.box(0.004, 0.07, 0.045, C.blackPoly, { p: [Math.cos(a) * 0.04, 0.08, Math.sin(a) * 0.04], r: [0, -a, 0] }, 0.0015);
       }
-      it.cyl(0.046, 0.058, 0.04, C.darkSteel, { p: [0, 0.155, 0] }, 14);
-      topY = 0.175;
+      it.cyl(0.011, 0.011, 0.012, C.ledBlue, { p: [0, 0.111, 0] }, 10);      // arming button
       break;
     case 'sticky':
       // A wrapped M112 block, adhesive pad underneath, timer-detonator on top.
@@ -1270,7 +1290,7 @@ const builders: Record<ItemModelId, () => THREE.BufferGeometry> = {
   grenade_frag: () => buildGrenade('frag', true),
   grenade_emp: () => buildGrenade('emp', true),
   grenade_thermite: () => buildGrenade('thermite', true),
-  grenade_smoke: () => buildGrenade('smoke', true),
+  grenade_hijack: () => buildGrenade('hijack', true),
   grenade_sticky: () => buildGrenade('sticky', true),
   grenade_decoy: () => buildGrenade('decoy', true),
   grenade_knife: () => buildGrenade('knife', true),

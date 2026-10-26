@@ -374,6 +374,21 @@ export interface Enemy {
   hackDuration?: number;   // total hack window (drives the indicator ring)
   hackVisuals?: THREE.Group;
   hackNextSparkAt?: number;
+  // Overclock servo seizure: 1 → 0 decay of the current spasm, its side, and
+  // when the next one lands (ms timestamp).
+  hackSpasm?: number;
+  hackSpasmSign?: number;
+  hackSpasmNextAt?: number;
+  // HIJACKED (Hijack spike throwable) — a hacked unit with no burnout: it is
+  // the player's ally until destroyed. Its health only drops when robots hit
+  // it, it fights (melee or bolts) whatever hostile is nearest, escorts the
+  // player when there is nothing to fight, and carries over between waves.
+  // Never counts toward wave-clear, the spawn cap or the radar's hostiles.
+  hijacked?: boolean;
+  // Retaliation: the last ally that struck this hostile, and until when the
+  // hostile keeps turning on it (ms timestamp).
+  allyAggressor?: Enemy;
+  allyAggroUntil?: number;
   // ── Crowd-control (Cryo Freeze / Shockwave pickups) ──────────────────────
   // ccUntil: ms timestamp until which the enemy is stunned — it can't move or
   // attack (frozen solid or staggered by a shockwave). frozenUntil: ms until
@@ -550,7 +565,7 @@ export interface PowerUp {
   mesh: THREE.Mesh;
   type: PowerUpType;
   /** Which throwable a 'grenade' pickup holds (see utils/Throwables). */
-  grenadeKind?: 'frag' | 'emp' | 'thermite' | 'smoke' | 'sticky' | 'decoy' | 'knife';
+  grenadeKind?: 'frag' | 'emp' | 'thermite' | 'hijack' | 'sticky' | 'decoy' | 'knife';
   position: THREE.Vector3;
   collected: boolean;
 }

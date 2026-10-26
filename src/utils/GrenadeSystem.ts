@@ -7,12 +7,13 @@
  * off the ground and obstacles (restitution + friction + tumble), rolling to
  * rest, and the three ways a throwable can end:
  *
- *   • 'fuse'  — frag / EMP / thermite / smoke / decoy: the fuse runs from the
- *               release; smoke and decoy then LINGER (the canister keeps
- *               emitting / the beacon keeps calling) before they're removed.
- *   • 'stick' — the C4 charge clings to the first robot or surface it touches
- *               (riding a robot's chassis, even through its death fall) and
- *               its timer starts on contact.
+ *   • 'fuse'  — frag / EMP / thermite / decoy: the fuse runs from the
+ *               release (the decoy calls robots while its battery lasts).
+ *   • 'stick' — the C4 charge and the Hijack spike cling to the first robot
+ *               or surface they touch (riding a robot's chassis, even through
+ *               its death fall) and their timer starts on contact. A spike in
+ *               a robot DRIVES IN over that timer — it sinks through the
+ *               armour before the takeover lands.
  *   • 'blade' — the throwing knife flies flat and fast, end over end, and
  *               EMBEDS where it strikes: in a robot (onImpact → damage) or in
  *               a trunk / the ground.
@@ -22,14 +23,14 @@
  * replicated throw (FX only), so a throw looks identical on every screen.
  *
  * RIGID BODIES: once the shared PhysicsWorld is up, every 'fuse' throwable
- * (frag, thermite, smoke, EMP, decoy) flies as a real Rapier body with a
+ * (frag, thermite, EMP, decoy) flies as a real Rapier body with a
  * convex-hull collider fitted to its own model — so it tumbles with a true
  * inertia tensor, a canister rolls along its axis and comes to rest on its
  * side, a frag wobbles to a stop, and everything glances off tree trunks,
  * rocks and corpses. Robots stay a gameplay test (they're not in the physics
  * world) and simply deflect the body. The knife and the C4 charge keep the
- * hand-rolled integrator: they end on first contact, where a solver adds
- * nothing. Before the WASM is ready every kind uses that integrator.
+ * hand-rolled integrator (so does the Hijack spike): they end on first
+ * contact, where a solver adds nothing. Before the WASM is ready every kind uses that integrator.
  *
  * Every live throwable is one mesh sharing the ItemAtlas material and a cached
  * geometry. The aim-arc preview is a pre-allocated line + landing ring that
@@ -49,8 +50,6 @@ export const GRENADE_KINDS = THROWABLE_KINDS;
 const RADIUS = 0.17;
 /** In-world display scale over the true-size model (readable at range). */
 const WORLD_SCALE = 1.45;
-/** How long a smoke canister keeps pouring after its fuse (s). */
-export const SMOKE_EMIT_SECONDS = 15;
 /** Seconds an embedded knife stays in a robot / the world. */
 const KNIFE_STAY_ROBOT = 2.6;
 const KNIFE_STAY_WORLD = 7;
@@ -77,7 +76,7 @@ export interface LiveGrenade {
   attachRef: unknown;
   attachOffset: THREE.Vector3;
   attachQuat: THREE.Quaternion;
-  /** Fused + lingering (smoke pouring / spent knife waiting to vanish). */
+  /** Fused + lingering (a spent knife waiting to vanish). */
   detonated: boolean;
   linger: number;
   age: number;
@@ -113,6 +112,7 @@ const _v = new THREE.Vector3();
 const _dir = new THREE.Vector3();
 const _UP = new THREE.Vector3(0, 1, 0);
 const _DOWN = new THREE.Vector3(0, -1, 0);
+const _home = new THREE.Vector3();
 const _lin = { x: 0, y: 0, z: 0 };
 const THROWN_GROUPS = groups(GROUP_THROWN, GROUP_WORLD | GROUP_RAGDOLL | GROUP_DEBRIS | GROUP_THROWN);
 /** Below this speed a rigid throwable counts as resting (decoys start calling). */
@@ -137,7 +137,7 @@ export class GrenadeSystem {
   private prewarming = false;
   private pulse = 0;
 
-  /** The fuse ran out (frag/emp/thermite/sticky: blast · smoke: start pouring · decoy: fizzle). */
+  /** The fuse ran out (frag/emp/thermite/sticky: blast · hijack: take over · decoy: fizzle). */
   onDetonate: ((g: LiveGrenade) => void) | null = null;
   /** A knife struck something (`ref` = the robot, null for the world). */
   onImpact: ((g: LiveGrenade, ref: unknown, at: THREE.Vector3) => void) | null = null;
@@ -147,6 +147,11 @@ export class GrenadeSystem {
   onBounce: ((g: LiveGrenade, speed: number) => void) | null = null;
   /** Is an attachment still a valid place to ride (e.g. the corpse still exists)? */
   attachValid: ((ref: unknown) => boolean) | null = null;
+  /**
+   * The Hijack spike's magnetic tip: fill `out` with a point to steer onto
+   * (a robot it could take, passing close) and return true — or false.
+   */
+  homing: ((g: LiveGrenade, out: THREE.Vector3) => boolean) | null = null;
 
   constructor(scene: THREE.Scene, ground: GroundFn, solid: SolidFn, physics: PhysicsWorld | null = null) {
     this.scene = scene;
@@ -200,6 +205,11 @@ export class GrenadeSystem {
       // Point the blade along the throw to start.
       _dir.copy(velocity).normalize();
       mesh.quaternion.setFromUnitVectors(_UP, _dir);
+    } else if (kind === 'hijack') {
+      // A dart: point-first along the throw, no tumble (it re-aims to its
+      // velocity every step — see update).
+      _dir.copy(velocity).normalize();
+      mesh.quaternion.setFromUnitVectors(_DOWN, _dir);
     } else {
       // A real throw leaves the hand spinning end over end.
       ang.set(8 + Math.random() * 6, (Math.random() - 0.5) * 4, (Math.random() - 0.5) * 6);
@@ -336,12 +346,10 @@ export class GrenadeSystem {
       const g = this.live[i];
       g.age += dt;
 
-      // ── Lingering after the effect (smoke pouring, spent knife, …) ──
+      // ── Lingering after the effect (a spent knife in a trunk, …) ──
       if (g.detonated) {
         g.linger -= dt;
         if (g.attach) this.ride(g);
-        // A pouring smoke canister keeps rolling (its plume follows it).
-        else if (g.body) this.stepBody(g, g.body);
         if (g.linger <= 0) { this.remove(i); }
         continue;
       }
@@ -350,16 +358,22 @@ export class GrenadeSystem {
       if (g.fuse <= 0) {
         g.detonated = true;
         this.onDetonate?.(g);
-        // Smoke keeps its canister on the ground while it pours; everything
-        // else is consumed by the effect.
-        g.linger = g.kind === 'smoke' ? SMOKE_EMIT_SECONDS : 0;
-        if (g.linger <= 0) this.remove(i);
+        g.linger = 0;
+        this.remove(i);
         continue;
       }
       // Safety: nothing flies forever (a knife thrown into the sky, …).
       if (g.age > 14 && !g.stuck) { g.detonated = true; g.linger = 0; this.remove(i); continue; }
 
       if (g.stuck) {
+        // A Hijack spike in a robot drives itself in: it slides along its own
+        // axis into the chassis over the drive-in window and is swallowed.
+        if (g.kind === 'hijack' && g.attach) {
+          const k = Math.min(1, dt * 3.2);
+          g.attachOffset.x -= g.attachOffset.x * k;
+          g.attachOffset.z -= g.attachOffset.z * k;
+          g.mesh.scale.multiplyScalar(1 - Math.min(0.5, dt * 1.1));
+        }
         if (g.attach) this.ride(g);
         continue;
       }
@@ -372,6 +386,10 @@ export class GrenadeSystem {
       for (let s = 0; s < steps && !g.stuck; s++) this.step(g, h);
       if (g.stuck) continue;
       g.mesh.position.copy(g.pos);
+      if (g.kind === 'hijack' && g.vel.lengthSq() > 1e-4) {
+        _dir.copy(g.vel).normalize();
+        g.mesh.quaternion.setFromUnitVectors(_DOWN, _dir);
+      }
       const w = g.ang.length();
       if (w > 1e-4) {
         _axis.copy(g.ang).multiplyScalar(1 / w);
@@ -430,6 +448,14 @@ export class GrenadeSystem {
   private step(g: LiveGrenade, h: number): void {
     const spec = THROWABLES[g.kind];
     if (!g.resting) g.vel.y -= spec.gravity * h;
+    // Magnetic tip: a spike that passes close to a robot bends onto it, keeping
+    // its speed (a dart that "finds" the chassis rather than skimming past).
+    if (g.kind === 'hijack' && this.homing && this.homing(g, _home)) {
+      const sp = g.vel.length();
+      _dir.copy(_home).sub(g.pos).normalize().multiplyScalar(sp);
+      g.vel.lerp(_dir, Math.min(1, h * 9));
+      g.vel.setLength(sp);
+    }
     const vx = g.vel.x, vy = g.vel.y, vz = g.vel.z;
     g.pos.addScaledVector(g.vel, h);
 
@@ -455,8 +481,9 @@ export class GrenadeSystem {
         g.pos.x += n.x * pen * 0.6;
         g.pos.z += n.z * pen * 0.6;
         g.mesh.position.copy(g.pos);
-        // Adhesive face (−Y) toward the surface.
-        _dir.set(-n.x, 0, -n.z);
+        // Adhesive face (−Y) toward the surface; a spike lands point-first.
+        if (g.kind === 'hijack') _dir.set(vx, vy, vz).normalize();
+        else _dir.set(-n.x, 0, -n.z);
         g.mesh.quaternion.setFromUnitVectors(_DOWN, _dir);
         this.stickTo(g, _hit.target, _hit.ref);
         g.fuse = spec.fuse;
@@ -532,11 +559,6 @@ export class GrenadeSystem {
   /** Live decoys that have landed and are calling robots onto themselves. */
   forEachActiveDecoy(fn: (g: LiveGrenade) => void): void {
     for (const g of this.live) if (g.kind === 'decoy' && !g.detonated && (g.resting || g.stuck)) fn(g);
-  }
-
-  /** Smoke canisters currently pouring. */
-  forEachSmoke(fn: (g: LiveGrenade) => void): void {
-    for (const g of this.live) if (g.kind === 'smoke' && g.detonated && g.linger > 0) fn(g);
   }
 
   /**

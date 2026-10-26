@@ -1,9 +1,9 @@
-import { Bomb, Magnet, Flame, Sword, CloudFog, Zap, Radio, type LucideIcon } from 'lucide-react';
+import { Bomb, Magnet, Flame, Sword, Cpu, Zap, Radio, type LucideIcon } from 'lucide-react';
 import { THROWABLES, THROWABLE_KINDS, type ThrowableKind } from '../utils/Throwables';
 
 /** Per-throwable HUD icon. */
 const THROWABLE_ICONS: Record<ThrowableKind, LucideIcon> = {
-  frag: Bomb, sticky: Magnet, thermite: Flame, knife: Sword, smoke: CloudFog, emp: Zap, decoy: Radio,
+  frag: Bomb, sticky: Magnet, thermite: Flame, knife: Sword, hijack: Cpu, emp: Zap, decoy: Radio,
 };
 
 /**

@@ -44,6 +44,8 @@ export interface AbilityHudItem {
   count?: number;
   /** Every kind's count (the mini pips under the slot). */
   counts?: Record<GrenadeHudKind, number>;
+  /** Tutorial: the pouch never runs out (counts render as ∞). */
+  unlimited?: boolean;
   /** Keybind label of the switch-grenade key. */
   cycleKey?: string;
   /** Persistent gear holding the left hand (the throw is refused while set). */
@@ -553,7 +555,8 @@ const GrenadeSlot = ({ ability }: { ability: AbilityHudItem }) => {
   const kind = ability.grenadeKind ?? 'frag';
   const meta = GRENADE_HUD[kind];
   const count = ability.count ?? 0;
-  const empty = count <= 0;
+  const unlimited = !!ability.unlimited;
+  const empty = count <= 0 && !unlimited;
   const Icon = meta.icon;
   // LEFT HAND: persistent gear greys the slot out with the gear's own badge;
   // a queued throw pulses; a refused press shakes it (Motion, transform only).
@@ -582,14 +585,14 @@ const GrenadeSlot = ({ ability }: { ability: AbilityHudItem }) => {
           </div>
           {/* The count pops whenever it changes (a pickup or a throw). */}
           <m.span
-            key={`n-${count}`}
+            key={`n-${unlimited ? 'inf' : count}`}
             className="hud-num absolute bottom-[3px] right-[5px] text-[13px] leading-none"
             style={{ color: empty ? C_DANGER : 'var(--hud-ink)' }}
             initial={{ scale: 1.8, opacity: 0.35 }}
             animate={{ scale: 1, opacity: 1 }}
             transition={{ type: 'spring', stiffness: 520, damping: 17 }}
           >
-            {count}
+            {unlimited ? '∞' : count}
           </m.span>
           {LockIcon && (
             <m.span
@@ -629,9 +632,9 @@ const GrenadeSlot = ({ ability }: { ability: AbilityHudItem }) => {
                 border: `1px solid ${sel ? GRENADE_HUD[k].color : 'rgba(214,228,220,0.14)'}`,
                 color: n > 0 ? GRENADE_HUD[k].color : 'var(--hud-faint)',
               }}
-              title={`${GRENADE_HUD[k].label} ×${n}`}
+              title={`${GRENADE_HUD[k].label} ×${unlimited ? '∞' : n}`}
             >
-              {n}
+              {unlimited ? '∞' : n}
             </span>
           );
         })}

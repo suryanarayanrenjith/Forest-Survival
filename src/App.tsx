@@ -16,7 +16,7 @@ import { SpeedInsights } from '@vercel/speed-insights/react';
 import { GunModel, MELEE_CAPABLE_WEAPONS, TWO_HAND_RELOAD, type WeaponType as GunWeaponType, type ReloadCue, type ReloadStyle, SCOPE_TAKEOVER, OVERCLOCK_DURATION } from './utils/GunModel';
 import { type LeftHandGear, isPersistentGear, refusedThrowMessage, throwBufferMs, ABILITY_BUFFER_MS } from './utils/LeftHand';
 import { MuzzleFlash, MuzzleSmoke, BulletTracer, ImpactEffect, RobotHitSparks, ExplosionEffect, FireNovaEffect, NukeEffect, AbilityCastEffect, ImpactBurst, setImpactBurstCamera, setMuzzleLightPool, setExplosionLightPool, clearParticleGeometryPools, clearTracerGeometryPool, clearFlashSpritePool, clearSmokeSpritePool, setSmokeLight, clearExplosionRigPool, clearCastRigPool, clearBurstPairPool, getSoftSparkTexture } from './utils/Effects';
-import { HackBeam, buildHackVisuals, updateHackVisuals, disposeHackVisuals } from './utils/HackVisuals';
+import { HackBeam, buildHackVisuals, updateHackVisuals, disposeHackVisuals, flashHackVisuals } from './utils/HackVisuals';
 import { soundManager } from './utils/SoundManager';
 import { ambientMusic } from './utils/AmbientMusicSystem';
 import { gameSettingsManager, defaultUserSettings, defaultKeyBindings, type UserSettings, type KeyBindings } from './utils/GameSettingsManager';
@@ -111,7 +111,7 @@ import { CHARACTER_PASSIVES } from './utils/CharacterPassiveRegistry';
 import { getCharacterAbility } from './utils/CharacterAbilityRegistry';
 import { AbilityViewmodel, abilityPropKind, ABILITY_PAYLOAD_DELAY, type AbilityBeat } from './utils/AbilityViewmodels';
 import { driveRobotGait, driveRobotIdle, braceKnees } from './utils/RobotGait';
-import { GrenadeSystem, GRENADE_KINDS, SMOKE_EMIT_SECONDS, type LiveGrenade, type SolidHit } from './utils/GrenadeSystem';
+import { GrenadeSystem, GRENADE_KINDS, type LiveGrenade, type SolidHit } from './utils/GrenadeSystem';
 import { THROWABLES, THROWABLE_KINDS, startingThrowables, rollThrowableDrop, throwableDropRules, type ThrowableKind } from './utils/Throwables';
 import { pickupColor, pickupCss } from './utils/pickupPalette';
 import ThrowableWheel from './components/ThrowableWheel';
@@ -397,6 +397,7 @@ const ForestSurvivalGame = () => {
     hover: ThrowableKind | null;
     selected: ThrowableKind;
     counts: Record<ThrowableKind, number>;
+    unlimited: boolean;
   } | null>(null);
   const [wavePerkOffer, setWavePerkOffer] = useState<{
     wave: number;
@@ -4223,6 +4224,8 @@ const ForestSurvivalGame = () => {
     const GRENADE_LABEL: Record<ThrowableKind, string> = {} as Record<ThrowableKind, string>;
     for (const k of THROWABLE_KINDS) GRENADE_LABEL[k] = THROWABLES[k].label;
     const grenadeCount: Record<ThrowableKind, number> = startingThrowables(isTutorialMode);
+    // Tutorial = an unlimited pouch: every kind full and a throw never spends one.
+    const unlimitedThrowables = isTutorialMode;
     let selectedGrenade: ThrowableKind = 'frag';
     let grenadeThrowKind: ThrowableKind = 'frag';
     /** A throw choreography has started and the object hasn't left the hand. */
@@ -4273,7 +4276,7 @@ const ForestSurvivalGame = () => {
       selectedGrenade = kind;
       grenadeProp.showcase(kind);
       soundManager.play('weaponSwitch', 0.3, false, 1.35);
-      if (announce) showPowerMessage(`${GRENADE_LABEL[kind]} · ${grenadeCount[kind]} left`, 1100);
+      if (announce) showPowerMessage(`${GRENADE_LABEL[kind]} · ${unlimitedThrowables ? 'unlimited' : `${grenadeCount[kind]} left`}`, 1100);
     };
     /** Pouch a throwable drop. False (nothing taken) when that kind is full. */
     const addGrenades = (kind: ThrowableKind, n: number): boolean => {
@@ -4308,6 +4311,7 @@ const ForestSurvivalGame = () => {
         hover: wheelHover,
         selected: selectedGrenade,
         counts: { ...grenadeCount },
+        unlimited: unlimitedThrowables,
       } : null);
     };
     const openWheel = () => {
@@ -4643,6 +4647,27 @@ const ForestSurvivalGame = () => {
     const HACK_BLAST_RADIUS = 6.8;    // overclock EMP radius
     const HACK_BLAST_DAMAGE = 110;    // EMP centre damage (falls off to ~50%)
 
+    // ── HIJACK SPIKE (throwable) tuning ──────────────────────────────────
+    // A hijacked robot is a hacked unit with NO burnout: it keeps the health
+    // it had, loses it only to robots that hit it, fights whatever hostile is
+    // nearest (melee, or bolts for a shooter), escorts the player when there's
+    // nothing to fight, and carries over between waves until it's destroyed.
+    const HIJACK_DMG_MULT = 1.5;      // an ally's hits vs its old squad
+    const HIJACK_SEEK_RADIUS = 4.5;   // a spike landed short leaps this far
+    const HIJACK_HUNT_RADIUS = 42;    // how far an ally ranges from itself …
+    const HIJACK_LEASH = 48;          // … and from the player, for a target
+    const ALLY_AGGRO_RADIUS = 12;     // hostiles this close may turn on an ally
+    const ALLY_AGGRO_MS = 4500;       // … and keep at it after it hits them
+    const ALLY_AGGRO_CAP = 1;         // unprovoked attackers per ally at once
+    const ALLY_DAMAGE_TAKEN = 0.45;   // the rewrite hardens its servo armour
+    /** Unprovoked hostiles on each ally this frame (cleared with liveAllies). */
+    const allyAggroCount = new Map<Enemy, number>();
+    const ALLY_COLOR = 0x4c9dff;
+    /** Hijacked robots alive this frame (rebuilt once per frame, before the enemy loop). */
+    const liveAllies: Enemy[] = [];
+    const _allyFocus = new THREE.Vector3();
+    const _allyEscort = new THREE.Vector3();
+
     // ── Decapitation gibs ────────────────────────────────────────────────
     // A powerful headshot kill (sniper / launcher-tier weapons) pops the
     // enemy's head clean off: we hide the real (pooled) head, clone it into a
@@ -4730,10 +4755,14 @@ const ForestSurvivalGame = () => {
 
     // Game objects
     const enemies: Enemy[] = [];
-    /** Robots still alive (corpses playing their death fall don't count toward spawn caps). */
+    /**
+     * HOSTILE robots still alive — corpses playing their death fall don't
+     * count, and neither do hijacked allies (they never hold a wave open or
+     * eat into the spawn cap).
+     */
     const livingEnemyCount = (): number => {
       let n = 0;
-      for (let k = 0; k < enemies.length; k++) if (!enemies[k].dead) n++;
+      for (let k = 0; k < enemies.length; k++) if (!enemies[k].dead && !enemies[k].hijacked) n++;
       return n;
     };
 
@@ -4779,8 +4808,10 @@ const ForestSurvivalGame = () => {
       damage: number;
       life: number; // 60 Hz steps until auto-cull
       whizzed?: boolean; // near-miss crack already played
-      hue: number;    // impact particle colour (cyan Sniper / gold Revenant)
+      hue: number;    // impact particle colour (cyan Sniper / gold Revenant / azure ally)
       label: string;  // damage source shown on the death screen
+      /** Fired by a hijacked ally: hits hostile robots, never the player. */
+      owner?: Enemy;
     }
     const enemyBullets: EnemyBullet[] = [];
     // Bolts are stretched along their flight line so they read as a streak of
@@ -4789,7 +4820,7 @@ const ForestSurvivalGame = () => {
     const BOLT_STRETCH = 2.6;
     const launchEnemyBolt = (
       origin: THREE.Vector3, dir: THREE.Vector3, speed: number, damage: number,
-      core: THREE.Material, glow: THREE.Material, hue: number, label: string,
+      core: THREE.Material, glow: THREE.Material, hue: number, label: string, owner?: Enemy,
     ) => {
       const bolt = new THREE.Mesh(_enemyBulletGeo, core);
       bolt.position.copy(origin);
@@ -4799,7 +4830,7 @@ const ForestSurvivalGame = () => {
       halo.scale.set(1.15, 1.15, 1.25);
       bolt.add(halo);
       scene.add(bolt);
-      enemyBullets.push({ mesh: bolt, velocity: dir.clone().multiplyScalar(speed), damage, life: 240, hue, label });
+      enemyBullets.push({ mesh: bolt, velocity: dir.clone().multiplyScalar(speed), damage, life: 240, hue, label, owner });
     };
     const _enemyBulletGeo = new THREE.SphereGeometry(0.12, 10, 8);
     const _enemyBulletMat = new THREE.MeshBasicMaterial({
@@ -4824,6 +4855,13 @@ const ForestSurvivalGame = () => {
     });
     const _revBoltGlowMat = new THREE.MeshBasicMaterial({
       color: 0xffc24a, transparent: true, opacity: 0.45,
+      blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false, fog: false,
+    });
+    // A hijacked shooter's bolts: azure — same geo + material setup as the
+    // hostile bolts, so no new program.
+    const _allyBoltMat = new THREE.MeshBasicMaterial({ color: 0x9cc8ff, toneMapped: false, fog: false });
+    const _allyBoltGlowMat = new THREE.MeshBasicMaterial({
+      color: 0x4c9dff, transparent: true, opacity: 0.45,
       blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false, fog: false,
     });
     const powerUps: PowerUp[] = [];
@@ -7497,7 +7535,7 @@ const ForestSurvivalGame = () => {
           let nuked = detonateNuke(camera.position, 90);
           for (let i = 0; i < enemies.length; i++) {
             const e = enemies[i];
-            if (e.dead || e.health <= 0) continue;
+            if (e.dead || e.health <= 0 || e.hijacked) continue;
             e.health = 0;
             handleEnemyKilled(e, false);
             nuked++;
@@ -8796,7 +8834,7 @@ const ForestSurvivalGame = () => {
 
       for (let mi = 0; mi < enemies.length && hitCount < MELEE_MAX_TARGETS; mi++) {
         const te = enemies[mi];
-        if (te.dead || te.engageable === false || te.detailReady === false) continue;
+        if (te.dead || te.hijacked || te.engageable === false || te.detailReady === false) continue;
         const tdx = te.mesh.position.x - camera.position.x;
         const tdz = te.mesh.position.z - camera.position.z;
         const d2 = tdx * tdx + tdz * tdz;
@@ -9437,7 +9475,7 @@ const ForestSurvivalGame = () => {
       if (show) {
         for (let i = 0; i < enemies.length; i++) {
           const e = enemies[i];
-          if (e.dead) continue;
+          if (e.dead || e.hijacked) continue;
           if (alive < 2) _arrowTargets[alive] = e;
           alive++;
           if (alive > 2) break;
@@ -9753,8 +9791,10 @@ const ForestSurvivalGame = () => {
       }
       if (!enemy.hacked) return;
       enemy.hacked = false;
+      enemy.hijacked = false;
       enemy.hackTimeLeft = undefined;
       enemy.hackDuration = undefined;
+      enemy.hackSpasm = 0;
       enemy.mesh.rotation.z = 0; // clear any leftover instability roll
     };
 
@@ -9948,6 +9988,9 @@ const ForestSurvivalGame = () => {
     // rocket launcher's area-of-effect so score, combos, drops, achievements
     // and wave progression all behave identically however an enemy dies.
     const handleEnemyKilled = (enemy: Enemy, isCritical: boolean, killerId?: string) => {
+      // A hijacked ally that dies (a robot got it, a hazard, a barrel…) is the
+      // player's loss, not a kill: no score, streak or drops.
+      if (enemy.hijacked) { destroyAlly(enemy); return; }
       // A dying enemy is no longer hacked — strip the chip/indicator first.
       clearHackState(enemy);
       // Drop any frost shell / crowd-control so a thawing corpse can't carry it.
@@ -10268,14 +10311,61 @@ const ForestSurvivalGame = () => {
       maybeDropGrenade(enemy.mesh.position.x, enemy.mesh.position.z);
       updateGameState();
       // Wave complete — only once the whole wave budget has spawned AND
-      // every living enemy is dead. Tutorial mode has no wave progression.
-      const livingEnemies = enemies.reduce((n, e) => n + (e.dead ? 0 : 1), 0);
+      // every HOSTILE robot is dead (hijacked allies don't hold it open).
+      // Tutorial mode has no wave progression.
       // MP guests NEVER advance the wave locally — the wave number is strictly
       // host-authoritative and mirrored from the enemy_sync stream (see
       // handleEnemySync). This keeps every player's wave counter exactly equal.
       if (!isTutorialMode && !isGameOver && !playerEliminated && !isMpGuest
-          && waveEnemiesRemaining <= 0 && livingEnemies === 0 && !waveTransitioning) {
+          && waveEnemiesRemaining <= 0 && livingEnemyCount() === 0 && !waveTransitioning) {
         waveTransitioning = true;
+        // The banner + Mystery Box wait for the last robot's death to play
+        // out (see updateWaveClear) instead of freezing it mid-fall.
+        waveClearElapsed = 0;
+      }
+    };
+
+    // ── WAVE CLEAR (settle → celebrate) ──────────────────────────────────
+    // The killing blow of a wave used to freeze the whole simulation on the
+    // spot (solo) and drop the banner over a ragdoll hanging in mid-air, a
+    // fireball stopped mid-bloom. Now the last kill rolls into a short bullet-
+    // time beat (solo) and the world keeps running until every death fall,
+    // blast and chain reaction has finished — THEN the banner and the box.
+    let waveClearElapsed = -1;          // s since the clearing kill; -1 = none
+    const WAVE_CLEAR_MIN_S = 1.4;       // never celebrate on the same breath
+    const WAVE_CLEAR_MAX_S = 6.0;       // a long set-piece can't stall the run
+    const WAVE_CLEAR_DEATH_ANIM_S = 2.4; // collapse + power-down of a corpse
+    const waveClearSettled = (): boolean => {
+      if (waveClearElapsed < WAVE_CLEAR_MIN_S) return false;
+      if (waveClearElapsed >= WAVE_CLEAR_MAX_S) return true;
+      for (let k = 0; k < enemies.length; k++) {
+        const e = enemies[k];
+        if (e.dead && e.deathTime > 0 && (e.deathElapsed ?? 0) < WAVE_CLEAR_DEATH_ANIM_S) return false;
+      }
+      return explosionEffects.length === 0 && nukeEffects.length === 0 && fireNovas.length === 0
+        && pendingBarrelDetonations.length === 0;
+    };
+    /** Per frame (sim running): count the settle down, then celebrate. */
+    const updateWaveClear = (dt: number) => {
+      if (waveClearElapsed < 0) return;
+      if (isGameOver || playerEliminated) { waveClearElapsed = -1; return; }
+      waveClearElapsed += dt;
+      if (waveClearSettled()) {
+        waveClearElapsed = -1;
+        finishWaveClear();
+      }
+    };
+    /** Final-kill bullet time (solo): a held beat, then a breath back to speed. */
+    const waveClearTimeScale = (): number => {
+      if (waveClearElapsed < 0 || isMultiplayer) return 1;
+      const t = waveClearElapsed;
+      if (t < 0.45) return 0.3;
+      if (t < 1.15) { const k = (t - 0.45) / 0.7; return 0.3 + 0.7 * k * k * (3 - 2 * k); }
+      return 1;
+    };
+
+    const finishWaveClear = () => {
+      {
         // Flawless — the wave just cleared took no damage. Evaluate before the
         // tracker resets for the next wave. Flawless wave count (single run)
         // drives the Untouchable achievement.
@@ -10345,7 +10435,9 @@ const ForestSurvivalGame = () => {
           //            celebration lands on a still scene; in MP the loop
           //            keeps running so remote players don't appear to
           //            stall (input is still blocked by onKeyDown).
-          //   t=2.0s   Pointer lock released. Mystery-box overlay slides in
+          //   (t=0 is when the scene has SETTLED — see updateWaveClear — not
+          //   the killing blow: the last death plays out first.)
+          //   t=1.5s   Pointer lock released. Mystery-box overlay slides in
           //            on a clean dark scrim. MP also gets an 8 s auto-pick
           //            countdown so a distracted player can't stall the
           //            match indefinitely.
@@ -10425,7 +10517,7 @@ const ForestSurvivalGame = () => {
               // Same formula the resolver pays out below — shown on a miss.
               consolation: `+${25 + clearedWave * 6} ${WEAPONS[currentWeapon].name} Mastery XP`,
             });
-          }, 2000);
+          }, 1500);
         }
         updateGameState();
       }
@@ -11007,7 +11099,7 @@ const ForestSurvivalGame = () => {
         if (!isMpHost) return;
         const m = raw as { netId: number; damage: number; isCritical: boolean; shooterId: string };
         const e = enemyByNetId.get(m.netId);
-        if (!e || e.dead) return;
+        if (!e || e.dead || e.hijacked) return;
         // NULL WAVE ballistics compromise — scaled here (the single
         // authoritative write for guest fire) so it's never double-applied.
         // Same boss clamp the local bullet path applies, so a guest's reported
@@ -11296,19 +11388,164 @@ const ForestSurvivalGame = () => {
     // radius so a hacked enemy doesn't sprint across the whole map.
     const findHackVictim = (hackerIdx: number): Enemy | null => {
       const hacker = enemies[hackerIdx];
+      const ally = hacker.hijacked === true;
       let best: Enemy | null = null;
       let bestD = Infinity;
-      const MAX = 50;
+      const MAX = ally ? HIJACK_HUNT_RADIUS : 50;
       for (let k = 0; k < enemies.length; k++) {
         if (k === hackerIdx) continue;
         const o = enemies[k];
         if (o.dead || o.hacked || o.health <= 0) continue;
-        // Bosses are immune to the Subverter — a hacked minion never turns on a boss.
-        if (o.type === 'boss') continue;
+        // Bosses are immune to the Subverter — a hacked minion never turns on
+        // a boss. A HIJACKED ally will (it's a soldier now, not a virus).
+        if (o.type === 'boss' && !ally) continue;
+        // An ally stays on the player's side of the fight.
+        if (ally && o.mesh.position.distanceToSquared(camera.position) > HIJACK_LEASH * HIJACK_LEASH) continue;
         const d = o.mesh.position.distanceToSquared(hacker.mesh.position);
         if (d < bestD && d < MAX * MAX) { bestD = d; best = o; }
       }
       return best;
+    };
+
+    // ── HIJACK helpers ──────────────────────────────────────────────────
+    /** Can a Hijack spike take this robot? Bosses, mini-bosses and the Revenant reject it. */
+    const canHijack = (e: Enemy): boolean =>
+      !e.dead && e.health > 0 && !e.hacked && e.type !== 'boss' && e.type !== 'revenant' && !e.isMiniBoss;
+
+    /** An ally's blow (melee or bolt) landing on a hostile robot. */
+    const allyStrike = (attacker: Enemy | null, victim: Enemy, dmg: number, from: THREE.Vector3) => {
+      if (victim.dead || victim.health <= 0) return;
+      markRevenantHackedHit(victim);
+      const dealt = victim.type === 'boss' ? capBossHit(victim, dmg) : dmg;
+      victim.health -= dealt;
+      victim.damageFlashTime = Math.max(victim.damageFlashTime, 0.3);
+      stampEnemyDamage(victim, dealt, false, undefined, from);
+      // It noticed who did that — it may turn on the ally (see ALLY_AGGRO).
+      if (attacker && attacker.hijacked) {
+        victim.allyAggressor = attacker;
+        victim.allyAggroUntil = Date.now() + ALLY_AGGRO_MS;
+      }
+      if (victim.health <= 0) handleEnemyKilled(victim, false);
+    };
+
+    /** A hostile robot's blow landing on a hijacked ally. */
+    const allyTakeDamage = (ally: Enemy, dmg: number, from: THREE.Vector3) => {
+      if (ally.dead || !ally.hijacked) return;
+      dmg *= ALLY_DAMAGE_TAKEN;
+      ally.health -= dmg;
+      ally.damageFlashTime = Math.max(ally.damageFlashTime, 0.3);
+      stampEnemyDamage(ally, dmg, false, undefined, from);
+      if (ally.hackVisuals) flashHackVisuals(ally.hackVisuals, 1);
+      _tempVec3.copy(ally.mesh.position); _tempVec3.y += 0.9 * ENEMY_SCALE[ally.type];
+      robotSparks.push(new RobotHitSparks(scene, _tempVec3.clone(), _deathUp, 6));
+      soundManager.playAt('hit', _tempVec3.x, _tempVec3.y, _tempVec3.z, 0.35, 0.85);
+      if (ally.health <= 0) destroyAlly(ally);
+    };
+
+    /** A hijacked ally is destroyed: the death plays, but nothing is credited. */
+    const destroyAlly = (ally: Enemy) => {
+      if (ally.dead) return;
+      clearHackState(ally);
+      clearEnemyCC(ally);
+      clearEnemyBurn(ally);
+      clearNetEventVisuals(ally);
+      ally.dead = true;
+      ally.deathTime = 1.0;
+      const dp = ally.mesh.position;
+      soundManager.playAt('enemy_die', dp.x, dp.y, dp.z, 0.5, 0.92);
+      soundManager.playAt('hack_fail', dp.x, dp.y + 1, dp.z, 0.55, 0.8, { refDistance: 6, maxDistance: 70 });
+      createParticles(dp, ALLY_COLOR, 16);
+      startEnemyDeathFX(ally, false);
+      showPowerMessage('Hijacked unit lost', 1500, 'warn');
+      if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Hijacked unit destroyed', 'wave');
+      updateGameState();
+    };
+
+    /** Take a robot over. `from` = where the spike struck / leapt from. */
+    const hijackEnemy = (e: Enemy, from: THREE.Vector3) => {
+      const nowMs = Date.now();
+      // Whatever it was doing to the player stops: swing cancelled, fire put
+      // out, stuns lifted — then a short "reboot" freeze while it rewrites.
+      e.attackSystem?.reset();
+      e.rangedChargeMs = 0;
+      e.leapState = 'idle';
+      e.mesh.scale.setScalar(ENEMY_SCALE[e.type]);
+      clearEnemyBurn(e);
+      clearEnemyCC(e);
+      e.ccUntil = nowMs + 650;
+      e.staggerUntil = nowMs + 650;
+      e.hacked = true;
+      e.hijacked = true;
+      e.hackTimeLeft = HACK_DURATION;
+      e.hackDuration = HACK_DURATION;
+      e.hackNextSparkAt = 0;
+      e.allyAggressor = undefined;
+      e.targetPlayerId = undefined;
+      const vis = buildHackVisuals('ally');
+      e.mesh.add(vis);
+      e.hackVisuals = vis;
+      // Install: the takeover arcs through the chassis.
+      const sc = ENEMY_SCALE[e.type];
+      const chest = e.mesh.position.clone();
+      chest.y += 0.9 * sc;
+      hackBeams.push(new HackBeam(scene, from.clone(), chest, ALLY_COLOR));
+      for (let k = 0; k < 3; k++) {
+        _tempVec3.set(chest.x + (Math.random() - 0.5) * 1.6 * sc, chest.y + (Math.random() - 0.3) * 1.4 * sc, chest.z + (Math.random() - 0.5) * 1.6 * sc);
+        spawnLightningBolt(chest.clone(), _tempVec3.clone(), ALLY_COLOR);
+      }
+      impactBursts.push(new ImpactBurst(scene, chest.clone(), ALLY_COLOR, 1.3));
+      createParticles(chest, ALLY_COLOR, 20);
+      soundManager.playAt('hack_deploy', chest.x, chest.y, chest.z, 0.85, 0.82, { refDistance: 8, maxDistance: 90 });
+      soundManager.playAt(soundManager.pickVariant('robot_powerdown', 2), chest.x, chest.y, chest.z, 0.4, 1.6, { refDistance: 6, maxDistance: 60 });
+      haptic('fire');
+      showPowerMessage('ROBOT HIJACKED · it fights for you until destroyed', 1900);
+      if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry(`Hijacked a ${enemyLabelOf(e.type)}`, 'powerup');
+      updateGameState();
+    };
+
+    /** The spike's timer ran out: take the robot it's in, or one it can reach. */
+    const resolveHijack = (g: LiveGrenade, pos: THREE.Vector3) => {
+      const host = g.attachRef as Enemy | null;
+      const reject = (who: Enemy) => {
+        // Hardened cores: the spike is spat back out in a burst of sparks.
+        _tempVec3.copy(pos);
+        robotSparks.push(new RobotHitSparks(scene, _tempVec3.clone(), _deathUp, 14));
+        impactBursts.push(new ImpactBurst(scene, _tempVec3.clone(), 0xff5a5f, 0.9));
+        soundManager.playAt('hack_fail', pos.x, pos.y, pos.z, 0.8, 1, { refDistance: 6, maxDistance: 70 });
+        if (g.local) {
+          const why = who.type === 'boss' ? 'Boss core' : who.type === 'revenant' ? 'Revenant shield' : who.isMiniBoss ? 'Elite core' : 'Unit';
+          showPowerMessage(`${why} rejected the Hijack spike`, 1700, 'warn');
+        }
+      };
+      // Guests fly the spike for the look; the host (who owns every robot)
+      // performs the takeover for every spike, its own or a guest's.
+      if (isMpGuest) {
+        createParticles(pos, ALLY_COLOR, 10);
+        return;
+      }
+      if (host && !host.dead) {
+        if (canHijack(host)) { hijackEnemy(host, pos); return; }
+        if (!host.hacked) { reject(host); return; }
+      }
+      // Landed short (or in a robot that's already turned): leap to the
+      // nearest robot it can take within reach.
+      let best: Enemy | null = null;
+      let bestD = HIJACK_SEEK_RADIUS * HIJACK_SEEK_RADIUS;
+      let immune: Enemy | null = null;
+      for (let k = 0; k < enemies.length; k++) {
+        const e = enemies[k];
+        if (e.dead) continue;
+        const d = e.mesh.position.distanceToSquared(pos);
+        if (d > bestD) continue;
+        if (canHijack(e)) { bestD = d; best = e; } else if (!e.hacked) immune = e;
+      }
+      if (best) { hijackEnemy(best, pos); return; }
+      if (immune) { reject(immune); return; }
+      // Nothing in reach: the spike shorts out.
+      robotSparks.push(new RobotHitSparks(scene, pos.clone(), _deathUp, 8));
+      createParticles(pos, ALLY_COLOR, 10);
+      soundManager.playAt('hack_fail', pos.x, pos.y, pos.z, 0.5, 1.2, { refDistance: 5, maxDistance: 50 });
+      if (g.local) showPowerMessage('Hijack spike — no robot in reach', 1400);
     };
 
     // Overclock burnout: the hacked enemy detonates in a green EMP that fries
@@ -11323,7 +11560,7 @@ const ForestSurvivalGame = () => {
       createParticles(epos, 0x9dff6a, 18);
       for (let j = enemies.length - 1; j >= 0; j--) {
         const e = enemies[j];
-        if (e === enemy || e.dead) continue;
+        if (e === enemy || e.dead || e.hijacked) continue;
         // Bosses shrug off the overclock EMP — the Subverter can't touch them.
         if (e.type === 'boss') continue;
         const d = e.mesh.position.distanceTo(epos);
@@ -11679,7 +11916,7 @@ const ForestSurvivalGame = () => {
       let kills = 0;
       for (let i = 0; i < enemies.length; i++) {
         const e = enemies[i];
-        if (e.dead || e.health <= 0) continue;
+        if (e.dead || e.health <= 0 || e.hijacked) continue;
         const dx = e.mesh.position.x - center.x;
         const dz = e.mesh.position.z - center.z;
         const d2 = dx * dx + dz * dz;
@@ -11827,7 +12064,7 @@ const ForestSurvivalGame = () => {
       let arcs = 0;
       for (let a = 0; a < enemies.length && arcs < 3; a++) {
         const e = enemies[a];
-        if (e === source || e.dead || e.health <= 0) continue;
+        if (e === source || e.dead || e.health <= 0 || e.hijacked) continue;
         const dx = e.mesh.position.x - origin.x;
         const dz = e.mesh.position.z - origin.z;
         if (dx * dx + dz * dz > R2) continue;
@@ -11856,7 +12093,7 @@ const ForestSurvivalGame = () => {
       let frozen = 0;
       for (let i = 0; i < enemies.length; i++) {
         const e = enemies[i];
-        if (e.dead || e.health <= 0) continue;
+        if (e.dead || e.health <= 0 || e.hijacked) continue;
         const dx = e.mesh.position.x - center.x;
         const dz = e.mesh.position.z - center.z;
         if (dx * dx + dz * dz > r2) continue;
@@ -11895,7 +12132,7 @@ const ForestSurvivalGame = () => {
       let hit = 0;
       for (let i = 0; i < enemies.length; i++) {
         const e = enemies[i];
-        if (e.dead || e.health <= 0) continue;
+        if (e.dead || e.health <= 0 || e.hijacked) continue;
         const dx = e.mesh.position.x - center.x;
         const dz = e.mesh.position.z - center.z;
         const d2 = dx * dx + dz * dz;
@@ -12000,7 +12237,7 @@ const ForestSurvivalGame = () => {
         for (let i = 0; i < enemies.length; i++) {
           if (used.has(i)) continue;
           const e = enemies[i];
-          if (e.dead || e.health <= 0) continue;
+          if (e.dead || e.health <= 0 || e.hijacked) continue;
           const dx = e.mesh.position.x - _teslaFrom.x;
           const dz = e.mesh.position.z - _teslaFrom.z;
           const d2 = dx * dx + dz * dz;
@@ -12139,7 +12376,7 @@ const ForestSurvivalGame = () => {
       soundManager.playAt('explosion', pos.x, pos.y, pos.z, 1.0, 0.95 + Math.random() * 0.1);
       for (let j = enemies.length - 1; j >= 0; j--) {
         const e = enemies[j];
-        if (e.dead) continue;
+        if (e.dead || e.hijacked) continue;
         const dist = e.mesh.position.distanceTo(pos);
         if (dist > RADIUS) continue;
         // Full damage at the centre, tapering to ~35% at the blast edge
@@ -12181,7 +12418,6 @@ const ForestSurvivalGame = () => {
     const THERMITE_RADIUS = 5.5;
     const THERMITE_DAMAGE = 45;
     const KNIFE_DAMAGE = 150;
-    const SMOKE_RADIUS = 7.5;
     const DECOY_PULL_RADIUS = 46;
     const _gOrigin = new THREE.Vector3();
     const _gVel = new THREE.Vector3();
@@ -12257,7 +12493,7 @@ const ForestSurvivalGame = () => {
       // The throw needs the left hand (requestThrow owns the feedback/queue).
       if (leftHandGear() !== null) return;
       grenadeThrowKind = selectedGrenade;
-      grenadeCount[grenadeThrowKind]--;
+      if (!unlimitedThrowables) grenadeCount[grenadeThrowKind]--;
       grenadeProp.setCookHold(true);
       grenadeProp.playThrow(grenadeThrowKind);
       gunModel.cancelInspect();
@@ -12394,7 +12630,35 @@ const ForestSurvivalGame = () => {
       const e = ref as Enemy | null;
       return !!e && (!e.dead || e.deathTime > 0);
     };
+    // The spike's magnetic tip: within 3.2 m of a robot it could take (and
+    // still flying toward it) it bends onto the chest.
+    grenadeSystem.homing = (g, out) => {
+      let best: Enemy | null = null;
+      let bestD = 3.2 * 3.2;
+      for (let k = 0; k < enemies.length; k++) {
+        const e = enemies[k];
+        if (!canHijack(e)) continue;
+        const sc = ENEMY_SCALE[e.type];
+        const dx = e.mesh.position.x - g.pos.x;
+        const dy = e.mesh.position.y + 0.5 * sc - g.pos.y;
+        const dz = e.mesh.position.z - g.pos.z;
+        const d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 >= bestD || dx * g.vel.x + dy * g.vel.y + dz * g.vel.z <= 0) continue;
+        bestD = d2;
+        best = e;
+      }
+      if (!best) return false;
+      out.set(best.mesh.position.x, best.mesh.position.y + 0.5 * ENEMY_SCALE[best.type], best.mesh.position.z);
+      return true;
+    };
     grenadeSystem.onStick = (g, ref) => {
+      if (g.kind === 'hijack') {
+        // The spike bites in and starts drilling.
+        soundManager.playAt(soundManager.pickVariant('melee_hit', 2), g.pos.x, g.pos.y, g.pos.z, 0.55, 1.5, { refDistance: 5, maxDistance: 50 });
+        soundManager.playAt('arm_click', g.pos.x, g.pos.y, g.pos.z, 0.5, 1.8, { refDistance: 5, maxDistance: 50 });
+        robotSparks.push(new RobotHitSparks(scene, g.pos.clone(), _deathUp, ref ? 8 : 4));
+        return;
+      }
       soundManager.playAt('arm_click', g.pos.x, g.pos.y, g.pos.z, 0.7, 1.3, { refDistance: 5, maxDistance: 50 });
       if (g.local && ref) showPowerMessage('Charge stuck!', 900);
     };
@@ -12406,7 +12670,7 @@ const ForestSurvivalGame = () => {
       }
       soundManager.playAt(soundManager.pickVariant('melee_hit', 2), at.x, at.y, at.z, 0.75, 1.15, { refDistance: 6, maxDistance: 60 });
       robotSparks.push(new RobotHitSparks(scene, at.clone(), new THREE.Vector3(0, 1, 0), 9));
-      if (!g.local || e.dead) return;
+      if (!g.local || e.dead || e.hijacked) return;
       // A blade to the head (upper third of the chassis) is a critical.
       const sc = ENEMY_SCALE[e.type];
       const crit = at.y > e.mesh.position.y + sc * 1.35;
@@ -12444,7 +12708,7 @@ const ForestSurvivalGame = () => {
       if (!g.local) return; // a remote throw: its owner's client applies the damage
       for (let j = enemies.length - 1; j >= 0; j--) {
         const e = enemies[j];
-        if (e.dead) continue;
+        if (e.dead || e.hijacked) continue;
         const d = e.mesh.position.distanceTo(pos);
         // A charge stuck ON a robot hits that robot with the full blast.
         const host = g.attachRef === e;
@@ -12493,7 +12757,7 @@ const ForestSurvivalGame = () => {
       let arcs = 0;
       for (let j = enemies.length - 1; j >= 0; j--) {
         const e = enemies[j];
-        if (e.dead) continue;
+        if (e.dead || e.hijacked) continue;
         const d = e.mesh.position.distanceTo(pos);
         if (d > EMP_RADIUS) continue;
         if (arcs < 8) {
@@ -12546,7 +12810,7 @@ const ForestSurvivalGame = () => {
       if (!g.local) return;
       for (let j = enemies.length - 1; j >= 0; j--) {
         const e = enemies[j];
-        if (e.dead) continue;
+        if (e.dead || e.hijacked) continue;
         const d = e.mesh.position.distanceTo(pos);
         if (d > THERMITE_RADIUS) continue;
         if (revShieldUp(e)) { pingRevShield(e, e.mesh.position); continue; }
@@ -12571,12 +12835,7 @@ const ForestSurvivalGame = () => {
         case 'sticky': shrapnelBlast(pos, g, STICKY_RADIUS, STICKY_DAMAGE, 'Own Charge'); break;
         case 'emp': detonateEmp(pos, g); break;
         case 'thermite': detonateThermite(pos, g); break;
-        case 'smoke':
-          // The canister pops and starts pouring (the cloud is driven in
-          // updateThrowableZones for as long as it lingers).
-          soundManager.playAt('thermite_ignite', pos.x, pos.y, pos.z, 0.45, 1.6, { refDistance: 6, maxDistance: 70 });
-          createParticles(pos, 0xdfe3e6, 18);
-          break;
+        case 'hijack': resolveHijack(g, g.pos.clone()); break;
         case 'decoy':
           // Battery gone: a little pop and it falls silent.
           soundManager.playAt('arm_click', pos.x, pos.y, pos.z, 0.6, 0.6, { refDistance: 5, maxDistance: 50 });
@@ -12586,50 +12845,21 @@ const ForestSurvivalGame = () => {
       }
     };
 
-    // ── SMOKE SCREENS + DECOYS (per frame) ──────────────────────────────
-    interface SmokeZone { x: number; z: number; r: number }
-    const smokeZones: SmokeZone[] = [];
+    // ── DECOYS + WORLD PUFFS (per frame) ────────────────────────────────
+    // (The smoke-screen grenade was retired — the Phantom module already
+    // owns "robots lose sight of you". Its pooled puff list lives on for the
+    // airdrop signal plumes + touchdown dust.)
     const decoyPoints: THREE.Vector3[] = [];
-    const smokeScreenPuffs: MuzzleSmoke[] = [];
-    const SMOKE_PUFF_CAP = 64;
-    let smokeEmitAccum = 0;
+    const worldPuffs: MuzzleSmoke[] = [];
+    const WORLD_PUFF_CAP = 40;
     let decoyPingAccum = 0;
-    const _smokeDirUp = new THREE.Vector3();
     const _smokeAt = new THREE.Vector3();
     const updateThrowableZones = (dt: number) => {
-      smokeZones.length = 0;
-      grenadeSystem.forEachSmoke((g) => {
-        const age = SMOKE_EMIT_SECONDS - g.linger;
-        // The cloud blooms over ~2.5 s and thins in its last 3 s.
-        const grow = Math.min(1, age / 2.5);
-        const thin = Math.min(1, g.linger / 3);
-        smokeZones.push({ x: g.pos.x, z: g.pos.z, r: SMOKE_RADIUS * grow * (0.6 + 0.4 * thin) });
-      });
       decoyPoints.length = 0;
       grenadeSystem.forEachActiveDecoy((g) => { decoyPoints.push(g.pos); });
-
-      // Pour smoke: big, slow, long-lived sprites spread through each cloud.
-      smokeEmitAccum += dt * 16;
-      while (smokeEmitAccum >= 1 && smokeZones.length > 0) {
-        smokeEmitAccum -= 1;
-        for (const z of smokeZones) {
-          if (smokeScreenPuffs.length >= SMOKE_PUFF_CAP) {
-            const old = smokeScreenPuffs.shift();
-            if (old) old.dispose(scene);
-          }
-          const a = Math.random() * Math.PI * 2;
-          const rr = Math.sqrt(Math.random()) * z.r * 0.85;
-          _smokeAt.set(z.x + Math.cos(a) * rr, visualGroundY(z.x, z.z) + 0.4 + Math.random() * 1.6, z.z + Math.sin(a) * rr);
-          _smokeDirUp.set(currentWindGust * 0.12 + (Math.random() - 0.5) * 0.3, 0.35, (Math.random() - 0.5) * 0.3);
-          smokeScreenPuffs.push(new MuzzleSmoke(scene, _smokeAt, _smokeDirUp, {
-            color: 0xd3d6d9, sizeScale: 6.5 + Math.random() * 3, lifeScale: 6.5, opacityScale: 1.7, rise: 0.1,
-          }));
-        }
-      }
-      if (smokeZones.length === 0) smokeEmitAccum = 0;
-      for (let i = smokeScreenPuffs.length - 1; i >= 0; i--) {
-        const sp = smokeScreenPuffs[i];
-        if (sp.update(dt)) { sp.dispose(scene); smokeScreenPuffs.splice(i, 1); }
+      for (let i = worldPuffs.length - 1; i >= 0; i--) {
+        const sp = worldPuffs[i];
+        if (sp.update(dt)) { sp.dispose(scene); worldPuffs.splice(i, 1); }
       }
 
       // Decoys chirp — the noise is the whole point.
@@ -12643,44 +12873,25 @@ const ForestSurvivalGame = () => {
     };
 
     // Airdrops: the red M18 signal plume off a landed crate, and the dust its
-    // pallet kicks up on touchdown — the same pooled, already-warmed smoke
-    // sprites (and cap) as the smoke screens.
+    // pallet kicks up on touchdown — pooled, already-warmed smoke sprites.
     const _puffDir = new THREE.Vector3();
     enhancedPowerUps.onPuff = (kind, x, y, z) => {
-      if (smokeScreenPuffs.length >= SMOKE_PUFF_CAP) {
-        const old = smokeScreenPuffs.shift();
+      if (worldPuffs.length >= WORLD_PUFF_CAP) {
+        const old = worldPuffs.shift();
         if (old) old.dispose(scene);
       }
       _smokeAt.set(x, y, z);
       if (kind === 'signal') {
         _puffDir.set(currentWindGust * 0.35 + (Math.random() - 0.5) * 0.25, 1, (Math.random() - 0.5) * 0.25);
-        smokeScreenPuffs.push(new MuzzleSmoke(scene, _smokeAt, _puffDir, {
+        worldPuffs.push(new MuzzleSmoke(scene, _smokeAt, _puffDir, {
           color: 0xc4432c, sizeScale: 2.6 + Math.random() * 1.2, lifeScale: 4.6, opacityScale: 1.15, rise: 1.05,
         }));
       } else {
         _puffDir.set((Math.random() - 0.5) * 0.8, 0.25, (Math.random() - 0.5) * 0.8);
-        smokeScreenPuffs.push(new MuzzleSmoke(scene, _smokeAt, _puffDir, {
+        worldPuffs.push(new MuzzleSmoke(scene, _smokeAt, _puffDir, {
           color: 0x8a7a60, sizeScale: 2.4, lifeScale: 1.7, opacityScale: 0.9, rise: 0.15,
         }));
       }
-    };
-
-    /** Does a smoke screen stand between (or around) these two points? */
-    const smokeBlocksSight = (ax: number, az: number, bx: number, bz: number): boolean => {
-      for (const z of smokeZones) {
-        if (z.r < 0.5) continue;
-        const r2 = z.r * z.r;
-        const adx = ax - z.x, adz = az - z.z;
-        const bdx = bx - z.x, bdz = bz - z.z;
-        if (adx * adx + adz * adz < r2 || bdx * bdx + bdz * bdz < r2) return true;
-        const lx = bx - ax, lz = bz - az;
-        const lsq = lx * lx + lz * lz;
-        if (lsq < 1e-6) continue;
-        const t = Math.max(0, Math.min(1, ((z.x - ax) * lx + (z.z - az) * lz) / lsq));
-        const cx = ax + lx * t - z.x, cz = az + lz * t - z.z;
-        if (cx * cx + cz * cz < r2) return true;
-      }
-      return false;
     };
 
     // Photo Mode camera driver: WASD pans, Space/Shift change height, all
@@ -12811,6 +13022,24 @@ const ForestSurvivalGame = () => {
           euler.y = THREE.MathUtils.degToRad(yawDeg);
           euler.x = THREE.MathUtils.degToRad(pitchDeg);
         },
+        // Point the camera at the nearest ally / Subverter-hacked / hostile robot.
+        lookAt: (which: 'ally' | 'hacked' | 'hostile' = 'ally') => {
+          let t: Enemy | null = null; let bd = Infinity;
+          for (const e of enemies) {
+            if (e.dead) continue;
+            const ok = which === 'ally' ? e.hijacked === true : which === 'hacked' ? (e.hacked === true && !e.hijacked) : !e.hacked;
+            if (!ok) continue;
+            const d = e.mesh.position.distanceToSquared(camera.position);
+            if (d < bd) { bd = d; t = e; }
+          }
+          if (!t) return null;
+          const dx = t.mesh.position.x - camera.position.x;
+          const dz = t.mesh.position.z - camera.position.z;
+          const dy = t.mesh.position.y + 0.6 * ENEMY_SCALE[t.type] - camera.position.y;
+          euler.y = Math.atan2(-dx, -dz);
+          euler.x = Math.atan2(dy, Math.hypot(dx, dz));
+          return +Math.hypot(dx, dz).toFixed(1);
+        },
         god: (on = true) => { devTest.god = on; },
         time: (hour: number) => { dayCycleSystem.setTime(hour); },
         // A/B switches for visual debugging: PCSS ↔ fixed PCF, and raw
@@ -12911,6 +13140,45 @@ const ForestSurvivalGame = () => {
           return enemyBullets.length;
         },
         boltCount: () => enemyBullets.length,
+        // Hijack the nearest robot the spike could take (null if none).
+        hijackNearest: () => {
+          let best: Enemy | null = null; let bd = Infinity;
+          for (const e of enemies) {
+            if (!canHijack(e)) continue;
+            const d = e.mesh.position.distanceToSquared(camera.position);
+            if (d < bd) { bd = d; best = e; }
+          }
+          if (!best) return null;
+          hijackEnemy(best, best.mesh.position.clone().setY(best.mesh.position.y + 1));
+          return best.type;
+        },
+        // Subverter-hack the nearest robot (overclock rig + seizure animation).
+        hackNearest: () => {
+          let best: Enemy | null = null; let bd = Infinity;
+          for (const e of enemies) {
+            if (e.dead || e.hacked || e.type === 'boss' || e.type === 'revenant') continue;
+            const d = e.mesh.position.distanceToSquared(camera.position);
+            if (d < bd) { bd = d; best = e; }
+          }
+          if (!best) return null;
+          best.hacked = true;
+          best.hackTimeLeft = HACK_DURATION;
+          best.hackDuration = HACK_DURATION;
+          best.hackNextSparkAt = 0;
+          const vis = buildHackVisuals('overclock');
+          best.mesh.add(vis);
+          best.hackVisuals = vis;
+          return best.type;
+        },
+        allies: () => liveAllies.map((a) => ({ type: a.type, hp: Math.round(a.health), max: Math.round(a.maxHealth), d: +a.mesh.position.distanceTo(camera.position).toFixed(1) })),
+        hostiles: () => livingEnemyCount(),
+        waveClear: () => ({ elapsed: waveClearElapsed, transitioning: waveTransitioning, wave, remaining: waveEnemiesRemaining }),
+        // Kill every hostile (wave-clear flow test). Allies are left alone.
+        clearWave: () => {
+          waveEnemiesRemaining = 0;
+          for (const e of enemies) if (!e.dead && !e.hijacked) handleEnemyKilled(e, false);
+          return waveClearElapsed;
+        },
         // Pin a smoke puff `dist` m ahead at a FIXED opacity/scale (not ticked),
         // optionally with the plain alpha blend (cov = false) for an A/B of
         // the smoke-coverage fog exclusion. smokeClear() removes them.
@@ -13167,11 +13435,12 @@ const ForestSurvivalGame = () => {
         if (Math.abs(healthTimeScale - 1) < 0.002) healthTimeScale = 1;
         // Drive the matching audio muffle (underwater-dull + ducked) — the
         // death sequence's own muffle wins while it's up.
-        soundManager.setSlowMo(Math.max(eased, deathMuffle));
+        const clearScale = waveClearTimeScale();
+        soundManager.setSlowMo(Math.max(eased, deathMuffle, (1 - clearScale) * 0.55));
       }
 
-      // transient + critical + death slow-mo
-      const delta = rawDelta * timeScale * healthTimeScale * (isMultiplayer ? 1 : deathTimeScale);
+      // transient + critical + death + final-kill slow-mo
+      const delta = rawDelta * timeScale * healthTimeScale * (isMultiplayer ? 1 : deathTimeScale) * waveClearTimeScale();
 
       // ── FRAME-RATE NORMALISER (60 FPS reference) ─────────────────────────
       // Player locomotion + the jump/gravity integrator are written as PER-FRAME
@@ -13714,6 +13983,7 @@ const ForestSurvivalGame = () => {
             grenadeKind: selectedGrenade,
             count: grenadeCount[selectedGrenade],
             counts: { ...grenadeCount },
+            unlimited: unlimitedThrowables,
             cycleKey: `${hudKeyLabel(kbNow.prevThrowable)}/${hudKeyLabel(kbNow.cycleGrenade)}`,
             handLock,
             throwQueued,
@@ -14260,7 +14530,7 @@ const ForestSurvivalGame = () => {
           let bestDot = ACQUIRE_COS;
           for (let i = 0; i < enemies.length; i++) {
             const e = enemies[i];
-            if (e.dead || e.health <= 0) continue;
+            if (e.dead || e.health <= 0 || e.hijacked) continue;
             _assistDir.set(e.mesh.position.x, e.mesh.position.y + 1.1, e.mesh.position.z).sub(camera.position);
             const dist = _assistDir.length();
             if (dist < 3 || dist > ASSIST_RANGE) continue;
@@ -14663,7 +14933,7 @@ const ForestSurvivalGame = () => {
           const f2 = front * front;
           for (let i = 0; i < enemies.length; i++) {
             const e = enemies[i];
-            if (e.dead || e.health <= 0) continue;
+            if (e.dead || e.health <= 0 || e.hijacked) continue;
             const dx = e.mesh.position.x - camera.position.x;
             const dz = e.mesh.position.z - camera.position.z;
             if (dx * dx + dz * dz > f2) continue;
@@ -14716,7 +14986,7 @@ const ForestSurvivalGame = () => {
         const pr2 = patch.radius * patch.radius;
         for (let i = 0; i < enemies.length; i++) {
           const e = enemies[i];
-          if (e.dead || e.health <= 0) continue;
+          if (e.dead || e.health <= 0 || e.hijacked) continue;
           const dx = e.mesh.position.x - patch.x;
           const dz = e.mesh.position.z - patch.z;
           if (dx * dx + dz * dz > pr2) continue;
@@ -14735,7 +15005,7 @@ const ForestSurvivalGame = () => {
       for (let i = 0; i < enemies.length; i++) {
         const e = enemies[i];
         if (!e.burnFx) continue;
-        if (e.dead || e.health <= 0 || now >= (e.burnUntil ?? 0)) {
+        if (e.dead || e.health <= 0 || e.hijacked || now >= (e.burnUntil ?? 0)) {
           clearEnemyBurn(e);
           continue;
         }
@@ -15048,7 +15318,7 @@ const ForestSurvivalGame = () => {
         }
         for (let di = 0; di < enemies.length; di++) {
           const te = enemies[di];
-          if (te.dead || dashHitEnemies.has(te)) continue;
+          if (te.dead || te.hijacked || dashHitEnemies.has(te)) continue;
           const tdx = te.mesh.position.x - camera.position.x;
           const tdz = te.mesh.position.z - camera.position.z;
           if (tdx * tdx + tdz * tdz > TRAMPLE_RADIUS_SQ) continue;
@@ -15925,9 +16195,38 @@ const ForestSurvivalGame = () => {
         const dypb = bpy + bsy * bst - camera.position.y;
         const dzpb = bpz + bsz * bst - camera.position.z;
         const boltD2 = dxpb * dxpb + dypb * dypb + dzpb * dzpb;
-        const playerHit = boltD2 < 0.72; // ~0.85m
+        // ── ROBOT HITS ── an ally's bolt strikes the first hostile along this
+        // step; a hostile bolt strikes the first hijacked ally (the player test
+        // follows). Same swept closest-approach test, against a chest sphere.
+        let robotHit: Enemy | null = null;
+        let robotT = 2;
+        const robotList = bolt.owner ? enemies : liveAllies;
+        for (let k = 0; k < robotList.length; k++) {
+          const r = robotList[k];
+          if (r.dead || r.health <= 0 || r === bolt.owner) continue;
+          if (bolt.owner ? r.hacked : !r.hijacked) continue;
+          const rsc = ENEMY_SCALE[r.type];
+          const rcx = r.mesh.position.x, rcy = r.mesh.position.y + 0.45 * rsc, rcz = r.mesh.position.z;
+          let rt = bs2 > 1e-8 ? ((rcx - bpx) * bsx + (rcy - bpy) * bsy + (rcz - bpz) * bsz) / bs2 : 1;
+          rt = rt < 0 ? 0 : rt > 1 ? 1 : rt;
+          const rdx = bpx + bsx * rt - rcx, rdy = bpy + bsy * rt - rcy, rdz = bpz + bsz * rt - rcz;
+          const rr = 0.85 * rsc;
+          if (rdx * rdx + rdy * rdy + rdz * rdz < rr * rr && rt < robotT) { robotT = rt; robotHit = r; }
+        }
+        if (robotHit) {
+          bp.set(bpx + bsx * robotT, bpy + bsy * robotT, bpz + bsz * robotT);
+          if (bolt.owner) allyStrike(bolt.owner, robotHit, bolt.damage, bp);
+          else allyTakeDamage(robotHit, bolt.damage, bp);
+          createParticles(bp, bolt.hue, 8);
+          robotSparks.push(new RobotHitSparks(scene, bp.clone(), _deathUp, 6));
+          scene.remove(bolt.mesh);
+          enemyBullets.splice(eb, 1);
+          continue;
+        }
+        // An ally's bolt never touches the player.
+        const playerHit = !bolt.owner && boltD2 < 0.72; // ~0.85m
         // Near miss: the bolt tears past the ear.
-        if (!playerHit && !bolt.whizzed && boltD2 < 14) {
+        if (!bolt.owner && !playerHit && !bolt.whizzed && boltD2 < 14) {
           bolt.whizzed = true;
           soundManager.playWhizz(bolt.mesh.position.x, bolt.mesh.position.y, bolt.mesh.position.z, 0.75);
         }
@@ -16236,7 +16535,7 @@ const ForestSurvivalGame = () => {
         for (let n = 0; n < nearbyIds.length && !bulletConsumed; n++) {
           const j = nearbyIds[n];
           const enemy = enemies[j];
-          if (!enemy || enemy.dead) continue;
+          if (!enemy || enemy.dead || enemy.hijacked) continue;
           // A piercing round never re-hits a body it already punched through.
           if (bullet.hitEnemies !== undefined && bullet.hitEnemies.has(enemy)) continue;
           // Can't snipe an enemy that isn't actually rendered on screen (fogged
@@ -16561,7 +16860,7 @@ const ForestSurvivalGame = () => {
               spawnExplosionFX(splashOrigin, SPLASH_R);
               for (let s = 0; s < enemies.length; s++) {
                 const e = enemies[s];
-                if (e === enemy || e.dead) continue;
+                if (e === enemy || e.dead || e.hijacked) continue;
                 const d = e.mesh.position.distanceTo(splashOrigin);
                 if (d > SPLASH_R) continue;
                 const falloff = 1 - (d / SPLASH_R) * 0.5;
@@ -16640,6 +16939,9 @@ const ForestSurvivalGame = () => {
         }
       }
 
+      // Wave cleared? Celebrate once the last deaths have finished playing.
+      updateWaveClear(rawDelta);
+
       // === SMART ENEMY MANAGER UPDATE ===
       // Updates LOD, frustum culling, and adaptive enemy limits
       smartEnemyManager.update(delta);
@@ -16691,7 +16993,7 @@ const ForestSurvivalGame = () => {
       if (!isTutorialMode && !isMpGuest && !waveTransitioning && waveEnemiesRemaining <= 0
           && frameNowMs - lastKillTime > 8000) {
         let alive = 0;
-        for (let e = 0; e < enemies.length && alive <= 2; e++) if (!enemies[e].dead) alive++;
+        for (let e = 0; e < enemies.length && alive <= 2; e++) if (!enemies[e].dead && !enemies[e].hijacked) alive++;
         stragglerHunt = alive > 0 && alive <= 2;
       }
 
@@ -16712,7 +17014,7 @@ const ForestSurvivalGame = () => {
         let livingEnemies = 0;
         for (let e = 0; e < enemies.length; e++) {
           const en = enemies[e];
-          if (en.dead) continue;
+          if (en.dead || en.hijacked) continue;
           livingEnemies++;
           if (en.targetPlayerId !== undefined) {
             const ti = mpTgtIndex.get(en.targetPlayerId);
@@ -16721,6 +17023,15 @@ const ForestSurvivalGame = () => {
         }
         mpDesiredCap = mpTgtIds.length > 0 ? Math.max(1, Math.ceil(livingEnemies / mpTgtIds.length)) : 0;
       }
+
+      // Hijacked allies this frame + where an idle one should walk: a few
+      // metres behind and to the side of the player (alternating sides).
+      liveAllies.length = 0;
+      allyAggroCount.clear();
+      for (let k = 0; k < enemies.length; k++) if (!enemies[k].dead && enemies[k].hijacked) liveAllies.push(enemies[k]);
+      camera.getWorldDirection(_allyEscort);
+      const escortFx = _allyEscort.x, escortFz = _allyEscort.z;
+      const escortLen = Math.hypot(escortFx, escortFz) || 1;
 
       for (let i = enemies.length - 1; i >= 0; i--) {
         const enemy = enemies[i];
@@ -17008,12 +17319,13 @@ const ForestSurvivalGame = () => {
         if (!isMpGuest && MAX_ENEMY_SMOKE > 0 && enemy.engageable !== false) {
           const hpRatio = enemy.maxHealth > 0 ? enemy.health / enemy.maxHealth : 1;
           const critical = hpRatio < 0.33;
-          if ((critical || enemy.hacked) && frameNowMs >= (enemy.nextDamageFxAt ?? 0)) {
-            ventEnemySmoke(enemy, !!enemy.hacked);
+          const overclocked = enemy.hacked === true && !enemy.hijacked;
+          if ((critical || overclocked) && frameNowMs >= (enemy.nextDamageFxAt ?? 0)) {
+            ventEnemySmoke(enemy, overclocked);
             // Vent faster (and sparkier) the closer it is to burning out.
-            const interval = enemy.hacked ? 150 : hpRatio < 0.18 ? 120 : 240;
+            const interval = overclocked ? 150 : hpRatio < 0.18 ? 120 : 240;
             enemy.nextDamageFxAt = frameNowMs + interval + Math.random() * 80;
-            if ((enemy.hacked || hpRatio < 0.2) && Math.random() < 0.5) {
+            if ((overclocked || hpRatio < 0.2) && Math.random() < 0.5) {
               _tempVec3.set(Math.random() - 0.5, 1, Math.random() - 0.5).normalize();
               _tempVec3_2.copy(enemy.mesh.position); _tempVec3_2.y += 0.9 * baseScale;
               robotSparks.push(new RobotHitSparks(scene, _tempVec3_2.clone(), _tempVec3, 5));
@@ -17086,7 +17398,7 @@ const ForestSurvivalGame = () => {
         let focusPos: THREE.Vector3 = camera.position;
         let focusVel: THREE.Vector3 = playerVelocity;
         let focusPlayerId: string | null = null;
-        if (isMpHost && mp && mpTgtIds.length > 0) {
+        if (isMpHost && mp && mpTgtIds.length > 0 && !enemy.hijacked) {
           let tIdx = enemy.targetPlayerId !== undefined ? (mpTgtIndex.get(enemy.targetPlayerId) ?? -1) : -1;
           if (tIdx === -1) {
             // No valid target (new enemy, or its target just died/left) → assign.
@@ -17116,10 +17428,32 @@ const ForestSurvivalGame = () => {
         // overclock timer ticks down to a self-destruct EMP. Visuals + erratic
         // sparks are driven here every frame.
         let hackVictim: Enemy | null = null;
-        if (enemy.hacked) {
-          enemy.hackTimeLeft = (enemy.hackTimeLeft ?? 0) - delta;
+        if (enemy.hacked && enemy.hijacked) {
+          // ── HIJACKED ALLY ── no burnout, no drain: the rig reads its health.
           if (enemy.hackVisuals) {
-            const frac = (enemy.hackTimeLeft ?? 0) / (enemy.hackDuration || HACK_DURATION);
+            const hp = enemy.maxHealth > 0 ? enemy.health / enemy.maxHealth : 1;
+            updateHackVisuals(enemy.hackVisuals, delta, (frameNowMs % 100000) * 0.001, hp);
+          }
+          hackVictim = findHackVictim(i);
+          if (hackVictim) {
+            focusPos = _hackFocus.set(
+              hackVictim.mesh.position.x, hackVictim.mesh.position.y, hackVictim.mesh.position.z,
+            );
+          } else {
+            // Nothing to fight: fall in behind the player, off to one side.
+            const side = (i & 1) === 0 ? 1 : -1;
+            focusPos = _hackFocus.set(
+              camera.position.x - (escortFx / escortLen) * 3.6 - (escortFz / escortLen) * 3.2 * side,
+              enemy.mesh.position.y,
+              camera.position.z - (escortFz / escortLen) * 3.6 + (escortFx / escortLen) * 3.2 * side,
+            );
+          }
+          focusVel = _zeroVel;
+          focusPlayerId = null;
+        } else if (enemy.hacked) {
+          enemy.hackTimeLeft = (enemy.hackTimeLeft ?? 0) - delta;
+          const frac = (enemy.hackTimeLeft ?? 0) / (enemy.hackDuration || HACK_DURATION);
+          if (enemy.hackVisuals) {
             // Bounded time base (0–100s) keeps the sin() animations precise.
             updateHackVisuals(enemy.hackVisuals, delta, (frameNowMs % 100000) * 0.001, frac);
           }
@@ -17129,6 +17463,24 @@ const ForestSurvivalGame = () => {
             _tempVec3.copy(enemy.mesh.position); _tempVec3.y += 1.0;
             robotSparks.push(new RobotHitSparks(scene, _tempVec3.clone(), _hackSparkDir, 5));
             enemy.hackNextSparkAt = frameNowMs + 240 + Math.random() * 180;
+          }
+          // SERVO SEIZURES — the overclock isn't a constant jitter any more:
+          // it lands in hard, discrete spasms (faster as burnout nears), each
+          // one cracking an arc from the implant across the chassis.
+          if ((enemy.hackSpasmNextAt ?? 0) <= frameNowMs) {
+            enemy.hackSpasm = 1;
+            enemy.hackSpasmSign = Math.random() < 0.5 ? -1 : 1;
+            enemy.hackSpasmNextAt = frameNowMs + (320 + Math.random() * 380) * (0.45 + Math.max(0, frac) * 0.55);
+            if (enemy.engageable !== false) {
+              const sc = ENEMY_SCALE[enemy.type];
+              _tempVec3.copy(enemy.mesh.position); _tempVec3.y += 1.05 * sc;
+              _tempVec3_2.set(
+                enemy.mesh.position.x + (Math.random() - 0.5) * 1.4 * sc,
+                enemy.mesh.position.y + (0.2 + Math.random() * 1.6) * sc,
+                enemy.mesh.position.z + (Math.random() - 0.5) * 1.4 * sc,
+              );
+              spawnLightningBolt(_tempVec3.clone(), _tempVec3_2.clone(), frac > 0.5 ? 0x7dff5a : frac > 0.2 ? 0xffc83a : 0xff4a3a);
+            }
           }
           // Overclock burnout → EMP self-destruct.
           if ((enemy.hackTimeLeft ?? 0) <= 0) {
@@ -17170,6 +17522,34 @@ const ForestSurvivalGame = () => {
           }
         }
 
+        // ── ALLY RETALIATION ── a hostile fights a hijacked ally that just hit
+        // it, or one standing clearly closer to it than the player is. This is
+        // the only way an ally loses health. Authoritative side only.
+        let allyTarget: Enemy | null = null;
+        if (!enemy.hacked && !decoyTarget && liveAllies.length > 0 && !isMpGuest) {
+          const aggr = enemy.allyAggressor;
+          if (aggr && !aggr.dead && aggr.hijacked && frameNowMs < (enemy.allyAggroUntil ?? 0)) {
+            allyTarget = aggr;
+          } else {
+            // Unprovoked: only when the ally is clearly the nearer target, and
+            // never more than ALLY_AGGRO_CAP of them piling onto one ally.
+            let bestA = ALLY_AGGRO_RADIUS * ALLY_AGGRO_RADIUS;
+            for (let a = 0; a < liveAllies.length; a++) {
+              const al = liveAllies[a];
+              if ((allyAggroCount.get(al) ?? 0) >= ALLY_AGGRO_CAP) continue;
+              const d2 = al.mesh.position.distanceToSquared(enemy.mesh.position);
+              if (d2 < bestA) { bestA = d2; allyTarget = al; }
+            }
+            if (allyTarget && bestA > enemy.mesh.position.distanceToSquared(focusPos) * 0.36) allyTarget = null;
+            if (allyTarget) allyAggroCount.set(allyTarget, (allyAggroCount.get(allyTarget) ?? 0) + 1);
+          }
+          if (allyTarget) {
+            focusPos = _allyFocus.copy(allyTarget.mesh.position);
+            focusVel = _zeroVel;
+            focusPlayerId = null;
+          }
+        }
+
         // Performance optimization: Skip AI update for distant enemies
         let distance = enemy.mesh.position.distanceTo(focusPos);
 
@@ -17180,7 +17560,7 @@ const ForestSurvivalGame = () => {
         // is never sniping silhouettes; hard lets enemies persist out to
         // 130m so they can engage from far range.
         const recycleDistance = (76 + (diffSettings.chaseMult - 0.8) * 90) * mapSpawnReach;
-        if (distance > recycleDistance) {
+        if (distance > recycleDistance && !enemy.hijacked) {
           // Spawn just outside the player's frustum behind them on hard,
           // closer (still visible) on easy. Use the tree-collision-aware
           // findEnemySpawnSpot so recycled enemies don't reappear inside
@@ -17272,10 +17652,7 @@ const ForestSurvivalGame = () => {
 
         // Phantom: the player is cloaked — enemies can't see or hear them, so
         // the behaviour tree stops pursuing/attacking and they wander/idle.
-        // A smoke screen in or between them hides the player completely.
-        const smokeHidden = smokeZones.length > 0
-          && smokeBlocksSight(enemy.mesh.position.x, enemy.mesh.position.z, focusPos.x, focusPos.z);
-        const canSeePlayer = phantomActive || smokeHidden ? false : (perception?.canSeePlayer || false);
+        const canSeePlayer = phantomActive ? false : (perception?.canSeePlayer || false);
         const canHearPlayer = phantomActive ? false : (perception?.canHearPlayer || false);
 
         // === AI DECISION MAKING (throttled — behaviour tree is expensive) ===
@@ -17484,6 +17861,7 @@ const ForestSurvivalGame = () => {
             // Hacked units are overclocked — they rush their victims faster
             // and more erratically than a normal chase.
             const speedMul = enemy.isDodging ? 3.0
+              : enemy.hijacked ? aiDecision.moveSpeed * 1.15
               : enemy.hacked ? aiDecision.moveSpeed * 1.7
               : aiDecision.moveSpeed;
             // Adaptive mode scales the whole swarm's pace live with the player's
@@ -17795,7 +18173,7 @@ const ForestSurvivalGame = () => {
           // zero material cost.
           enemy.bulwarkShield.scale.setScalar(1 + (enemy.bulwarkFlash ?? 0) * 0.12);
           enemy.bulwarkShield.visible = pulse > 0;
-        } else if (enemy.type === 'howler') {
+        } else if (enemy.type === 'howler' && !enemy.hacked) {
           // Pulse an overshield onto nearby allies. This is the whole reason
           // the archetype exists: left alone, the swarm stops dying.
           enemy.howlerAura?.rotateZ(delta * 0.9);
@@ -17807,7 +18185,7 @@ const ForestSurvivalGame = () => {
             for (let hi = 0; hi < enemies.length; hi++) {
               const ally = enemies[hi];
               if (ally === enemy || ally.dead || ally.health <= 0) continue;
-              if (ally.type === 'howler') continue; // no mutual-heal lock
+              if (ally.type === 'howler' || ally.hacked) continue; // no mutual-heal lock / never a turned unit
               const ddx = ally.mesh.position.x - hx;
               const ddz = ally.mesh.position.z - hz;
               if (ddx * ddx + ddz * ddz > HOWLER_AURA_RADIUS * HOWLER_AURA_RADIUS) continue;
@@ -17878,8 +18256,16 @@ const ForestSurvivalGame = () => {
               // landing zone. Dodging the tell avoids all of it.
               const idx2 = camera.position.x - enemy.mesh.position.x;
               const idz2 = camera.position.z - enemy.mesh.position.z;
-              if (idx2 * idx2 + idz2 * idz2 < 9) {
-                takeEnemyDamage(LEAP_IMPACT_DAMAGE * enemyDamageMult(enemy), 'Leaper', enemy.mesh.position);
+              const leapDmg = LEAP_IMPACT_DAMAGE * enemyDamageMult(enemy);
+              if (enemy.hacked) {
+                // A turned leaper pounces on its prey, never on the player.
+                if (hackVictim && hackVictim.mesh.position.distanceToSquared(enemy.mesh.position) < 9) {
+                  allyStrike(enemy.hijacked ? enemy : null, hackVictim, leapDmg * (enemy.hijacked ? HIJACK_DMG_MULT : HACK_VICTIM_DMG_MULT), enemy.mesh.position);
+                }
+              } else if (allyTarget) {
+                if (allyTarget.mesh.position.distanceToSquared(enemy.mesh.position) < 9) allyTakeDamage(allyTarget, leapDmg, enemy.mesh.position);
+              } else if (idx2 * idx2 + idz2 * idz2 < 9) {
+                takeEnemyDamage(leapDmg, 'Leaper', enemy.mesh.position);
                 playerRootedUntil = frameNowMs + LEAP_ROOT_MS;
               }
               // Touchdown reads at the FEET: sparks off the claws, a dust ring
@@ -17923,7 +18309,7 @@ const ForestSurvivalGame = () => {
           // midpoint between the enemy and the player and check for any
           // collidable within ~half the distance — same trick the ranged
           // sentinels use, kept lean here.
-          let los = inRange && !smokeHidden;
+          let los = inRange;
           if (los && distR > 4) {
             const midX = (enemy.mesh.position.x + focusPos.x) * 0.5;
             const midZ = (enemy.mesh.position.z + focusPos.z) * 0.5;
@@ -17965,7 +18351,11 @@ const ForestSurvivalGame = () => {
                 // fixed offset off the chassis root, so the round left the
                 // sniper's chest while the barrel pointed elsewhere.
                 const origin = enemyMuzzleOrigin(enemy, 1.2);
-                const target = new THREE.Vector3(focusPos.x, decoyTarget ? focusPos.y + 0.3 : camera.position.y - 0.2, focusPos.z);
+                const target = new THREE.Vector3(
+                  focusPos.x,
+                  decoyTarget ? focusPos.y + 0.3 : allyTarget ? focusPos.y + 0.5 * ENEMY_SCALE[allyTarget.type] : camera.position.y - 0.2,
+                  focusPos.z,
+                );
                 const dir = target.clone().sub(origin).normalize();
                 // ARK-07 empowerment baked into the bolt at launch.
                 launchEnemyBolt(origin, dir, 0.55, enemy.damage * enemyDamageMult(enemy),
@@ -18013,7 +18403,25 @@ const ForestSurvivalGame = () => {
           const dxs = hackVictim.mesh.position.x - enemy.mesh.position.x;
           const dzs = hackVictim.mesh.position.z - enemy.mesh.position.z;
           const hackInRange = Math.hypot(dxs, dzs) <= HACK_SNIPE_RANGE;
-          if (hackInRange) {
+          if (hackInRange && enemy.hijacked) {
+            // ALLY SHOOTER: a measured cadence of azure bolts that actually
+            // travel (and can be dodged, or eaten by cover) — no hitscan.
+            if ((enemy.rangedNextShotAt ?? 0) <= frameNowMs) {
+              enemy.rangedChargeMs = (enemy.rangedChargeMs ?? 0) + delta * 1000;
+              if ((enemy.rangedChargeMs ?? 0) >= 560) {
+                const origin = enemyMuzzleOrigin(enemy, 1.2);
+                const vsc = ENEMY_SCALE[hackVictim.type];
+                const tgt = new THREE.Vector3(hackVictim.mesh.position.x, hackVictim.mesh.position.y + 0.5 * vsc, hackVictim.mesh.position.z);
+                const dir = tgt.sub(origin).normalize();
+                launchEnemyBolt(origin, dir, 0.72, enemy.damage * HIJACK_DMG_MULT * enemyDamageMult(enemy),
+                  _allyBoltMat, _allyBoltGlowMat, ALLY_COLOR, 'Ally Bolt', enemy);
+                soundManager.playAt('shoot_pistol', enemy.mesh.position.x, enemy.mesh.position.y + 1.4, enemy.mesh.position.z, 0.42, 1.42);
+                enemy.rangedChargeMs = 0;
+                enemy.rangedNextShotAt = frameNowMs + 1250;
+                enemy.recoilTime = RECOIL_S;
+              }
+            }
+          } else if (hackInRange) {
             if ((enemy.rangedNextShotAt ?? 0) <= frameNowMs) {
               enemy.rangedChargeMs = (enemy.rangedChargeMs ?? 0) + delta * 1000;
               if ((enemy.rangedChargeMs ?? 0) >= 380) { // overclocked → snappy charge
@@ -18045,7 +18453,7 @@ const ForestSurvivalGame = () => {
           // shoulders its lance, it just points it at its own kind.
           driveShooterPose(
             enemy, hackVictim.mesh.position.x, hackVictim.mesh.position.y + 0.9, hackVictim.mesh.position.z,
-            (enemy.rangedChargeMs ?? 0) / 380,
+            (enemy.rangedChargeMs ?? 0) / (enemy.hijacked ? 560 : 380),
             hackInRange,
             delta, frameNowMs,
                 );
@@ -18252,7 +18660,11 @@ const ForestSurvivalGame = () => {
               if ((enemy.rangedChargeMs ?? 0) >= 520) {
                 // From the lance's bore — see the sniper path above.
                 const origin = enemyMuzzleOrigin(enemy, 1.0);
-                const target = new THREE.Vector3(focusPos.x, decoyTarget ? focusPos.y + 0.3 : camera.position.y - 0.2, focusPos.z);
+                const target = new THREE.Vector3(
+                  focusPos.x,
+                  decoyTarget ? focusPos.y + 0.3 : allyTarget ? focusPos.y + 0.5 * ENEMY_SCALE[allyTarget.type] : camera.position.y - 0.2,
+                  focusPos.z,
+                );
                 const dir = target.clone().sub(origin).normalize();
                 launchEnemyBolt(origin, dir, 0.62, enemy.damage * enemyDamageMult(enemy),
                   _revBoltMat, _revBoltGlowMat, 0xffc24a, 'Revenant Bolt');   // GOLD bolt
@@ -18314,7 +18726,9 @@ const ForestSurvivalGame = () => {
           // untargetable — enemies fully disengage, so no new melee swing is
           // started and the lunge/hit checks below are skipped. This is what
           // makes the cloak read as "they lost me", not "they swing through me".
-          const shouldAttack = distance < 7.0 && !phantomActive && frameNowMs >= (enemy.ccUntil ?? 0);
+          // (A turned unit with no prey — an ally escorting the player — never swings.)
+          const shouldAttack = distance < 7.0 && !phantomActive && frameNowMs >= (enemy.ccUntil ?? 0)
+            && (!enemy.hacked || hackVictim !== null);
           if (shouldAttack) {
             // tryAttack returns true only on the frame a NEW swing starts, so
             // this is the windup telegraph — a positional cue that gives the
@@ -18356,7 +18770,15 @@ const ForestSurvivalGame = () => {
             // covers the host→remote sendPlayerDamage path below (same raw).
             const raw = enemy.attackSystem.getDamage() * enemyDamageMult(enemy);
             enemy.lastAttackTime = frameNowMs; // Update for overlap cooldown
-            if (enemy.hacked) {
+            if (enemy.hijacked) {
+              // ── HIJACKED ALLY: a clean, controlled blow on its prey.
+              if (hackVictim && !hackVictim.dead && hackVictim.health > 0) {
+                allyStrike(enemy, hackVictim, raw * HIJACK_DMG_MULT, enemy.mesh.position);
+                _tempVec3.copy(hackVictim.mesh.position); _tempVec3.y += 0.9;
+                createParticles(_tempVec3, ALLY_COLOR, 5);
+                soundManager.playAt('hit', _tempVec3.x, _tempVec3.y, _tempVec3.z, 0.35, 1.25);
+              }
+            } else if (enemy.hacked) {
               // ── HACKED: the strike lands on its victim enemy, not the player.
               if (hackVictim && !hackVictim.dead && hackVictim.health > 0) {
                 // Revenant victim: strip its shield + suppress its teleport so
@@ -18376,6 +18798,9 @@ const ForestSurvivalGame = () => {
               _tempVec3.copy(decoyTarget); _tempVec3.y += 0.3;
               robotSparks.push(new RobotHitSparks(scene, _tempVec3.clone(), new THREE.Vector3(0, 1, 0), 5));
               soundManager.playAt('hit', _tempVec3.x, _tempVec3.y, _tempVec3.z, 0.3, 1.5);
+            } else if (allyTarget) {
+              // ── RETALIATION: the blow lands on the hijacked ally.
+              allyTakeDamage(allyTarget, raw, enemy.mesh.position);
             } else if (isMpHost && mp && focusPlayerId !== null) {
               // SHARED ENEMY struck a REMOTE player. The host owns the enemy,
               // so it tells that player's client to take the hit — this is how
@@ -18507,7 +18932,7 @@ const ForestSurvivalGame = () => {
             target = enemy.attackSystem.getLungeDrive() > 0.12 ? 1.1 : -0.35;
           }
           if (enemy.damageFlashTime > 0.12) target = -0.45 + Math.sin(ph * 37) * 0.15;
-          if (enemy.hacked) target = 0.3 + Math.sin(ph * 23) * 0.6;
+          if (enemy.hacked && !enemy.hijacked) target = 0.3 + Math.sin(ph * 23) * 0.6;
           const c = (enemy.clawCurl ?? 0.42) + (target - (enemy.clawCurl ?? 0.42)) * Math.min(1, delta * 14);
           enemy.clawCurl = c;
           const shooter = enemy.type === 'ranged' || enemy.type === 'revenant';
@@ -18519,19 +18944,29 @@ const ForestSurvivalGame = () => {
           enemy.rightClaw.thumb.rotation.x = right * 0.85;
         }
 
-        // ── INSTABILITY TWITCH (hacked / overclocked) ──
-        // A hacked unit is glitching out: it jitters its position and rolls its
-        // chassis erratically — reads as "uncontrollable". Runs last so it sits
-        // on top of the walk / hit-reaction transforms. Intensifies near burnout.
-        if (enemy.hacked && !enemy.dead) {
-          const urgency = 1 + (1 - (enemy.hackTimeLeft ?? 0) / (enemy.hackDuration || HACK_DURATION)) * 1.5;
-          // Frame-scaled: this is a per-frame positional nudge, so on a 144 Hz
-          // display a glitching unit accumulated well over twice the wander it
-          // does at 60 Hz.
-          const amt = 0.045 * urgency * Math.min(2, delta * 60);
-          enemy.mesh.position.x += (Math.random() - 0.5) * amt;
-          enemy.mesh.position.z += (Math.random() - 0.5) * amt;
-          enemy.mesh.rotation.z = (Math.random() - 0.5) * 0.14 * urgency;
+        // ── SERVO SEIZURE (Subverter overclock) ──
+        // The overclocked unit no longer buzzes with constant random noise (it
+        // read as a rendering glitch, not a robot fighting its own firmware).
+        // Each spasm (timed in the hack block) is a hard snap of the chassis —
+        // a lurch sideways and a roll that springs back with an overshoot —
+        // over a faint servo tremor that grows toward burnout. Runs last so
+        // it sits on top of the walk / hit-reaction transforms.
+        if (enemy.hacked && !enemy.hijacked && !enemy.dead) {
+          const frac = (enemy.hackTimeLeft ?? 0) / (enemy.hackDuration || HACK_DURATION);
+          const sp = enemy.hackSpasm ?? 0;
+          const sign = enemy.hackSpasmSign ?? 1;
+          // Damped spring back from the snap: e^-kt · cos(ωt) shape over ~0.3 s.
+          const age = 1 - sp;
+          const snap = sp > 0 ? Math.exp(-age * 5) * Math.cos(age * 13) : 0;
+          enemy.hackSpasm = Math.max(0, sp - delta * 3.4);
+          const tremor = (1 - Math.max(0, frac)) * 0.035;
+          enemy.mesh.rotation.z = sign * snap * 0.26 + (Math.random() - 0.5) * tremor;
+          // The lurch: a sideways shove only while the snap is live.
+          const shove = sign * snap * 0.05 * Math.min(2, delta * 60);
+          enemy.mesh.position.x += Math.cos(enemy.mesh.rotation.y) * shove;
+          enemy.mesh.position.z -= Math.sin(enemy.mesh.rotation.y) * shove;
+        } else if (enemy.hijacked && !enemy.dead) {
+          enemy.mesh.rotation.z = 0;
         }
 
         // ── NULL-WAVE CORRUPTION (host/solo authoritative) ──────────────
@@ -18773,7 +19208,7 @@ const ForestSurvivalGame = () => {
               break;
             case 'damageEnemy': {
               const en = ev.enemy;
-              if (en.dead || en.health <= 0) break;
+              if (en.dead || en.health <= 0 || en.hijacked) break;
               en.health -= ev.amount;
               en.damageFlashTime = 0.3;
               // Guests never resolve deaths locally — the host is authoritative.
@@ -18893,6 +19328,10 @@ const ForestSurvivalGame = () => {
         for (let e = 0; e < enemies.length; e++) {
           const en = enemies[e];
           if (en.dead) continue;
+          if (en.hijacked) {
+            blips.push({ x: en.mesh.position.x, z: en.mesh.position.z, color: '#4c9dff', alive: true, kind: 'ally' });
+            continue;
+          }
           blips.push({ x: en.mesh.position.x, z: en.mesh.position.z, color: '', alive: true, kind: en.type === 'boss' ? 'boss' : 'enemy' });
         }
         camera.getWorldDirection(_miniDir);
@@ -19927,8 +20366,8 @@ const ForestSurvivalGame = () => {
       grenadeSystem.dispose();
       rigidDebris.clear();
       physicsWorld.dispose();
-      for (const sp of smokeScreenPuffs) sp.dispose(scene);
-      smokeScreenPuffs.length = 0;
+      for (const sp of worldPuffs) sp.dispose(scene);
+      worldPuffs.length = 0;
       if (wheelTimer !== null) window.clearTimeout(wheelTimer);
       disposeItemAtlas();
       gunModel.onOverclockCue = null;
@@ -20666,6 +21105,7 @@ const ForestSurvivalGame = () => {
             hover={throwWheel.hover}
             selected={throwWheel.selected}
             counts={throwWheel.counts}
+            unlimited={throwWheel.unlimited}
             keyLabel={hudKeyLabel(keyBindingsRef.current.cycleGrenade)}
           />
         )}

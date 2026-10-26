@@ -17,6 +17,8 @@ interface ThrowableWheelProps {
   hover: ThrowableKind | null;
   selected: ThrowableKind;
   counts: Record<ThrowableKind, number>;
+  /** Tutorial: the pouch never runs out (counts render as ∞). */
+  unlimited?: boolean;
   /** Label of the key being held (e.g. 'T'). */
   keyLabel: string;
 }
@@ -25,7 +27,7 @@ const RADIUS = 132;
 const SLOT = 74;
 const SLOT_SPRING = { type: 'spring', stiffness: 520, damping: 26 } as const;
 
-const ThrowableWheel = ({ hover, selected, counts, keyLabel }: ThrowableWheelProps) => {
+const ThrowableWheel = ({ hover, selected, counts, unlimited = false, keyLabel }: ThrowableWheelProps) => {
   const focus = hover ?? selected;
   const spec = THROWABLES[focus];
   const n = THROWABLE_KINDS.length;
@@ -68,7 +70,7 @@ const ThrowableWheel = ({ hover, selected, counts, keyLabel }: ThrowableWheelPro
           const c = counts[k] ?? 0;
           const isHover = k === hover;
           const isSel = k === selected;
-          const empty = c <= 0;
+          const empty = c <= 0 && !unlimited;
           return (
             <m.div
               key={k}
@@ -92,7 +94,7 @@ const ThrowableWheel = ({ hover, selected, counts, keyLabel }: ThrowableWheelPro
                 {meta.label}
               </span>
               <span className="hud-num absolute right-1.5 top-1 text-[12px]" style={{ color: empty ? '#ff5a5f' : 'var(--hud-ink)' }}>
-                {c}
+                {unlimited ? '∞' : c}
               </span>
               {isSel && (
                 <m.span

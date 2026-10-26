@@ -13,15 +13,18 @@
  *                        it touches, heavy blast after a short timer
  *              knife     balanced throwing knife — fast, silent, single target
  *   TACTICAL   emp       M84E pulse — stuns robots, breaks Revenant shields
- *              smoke     HC smoke screen — robots lose sight of anyone in or
- *                        behind the cloud
+ *              hijack    HJK-7 intrusion spike — drives into a robot and
+ *                        rewrites its memory: it fights for you until it is
+ *                        destroyed (bosses, mini-bosses and the Revenant reject
+ *                        it). Replaced the smoke screen, which only duplicated
+ *                        the Phantom module's cloak.
  *              decoy     noise beacon — pulls nearby robots onto itself
  */
 
-export type ThrowableKind = 'frag' | 'emp' | 'thermite' | 'smoke' | 'sticky' | 'decoy' | 'knife';
+export type ThrowableKind = 'frag' | 'emp' | 'thermite' | 'hijack' | 'sticky' | 'decoy' | 'knife';
 
 /** Display / cycle order (the wheel lays them out clockwise from the top). */
-export const THROWABLE_KINDS: ThrowableKind[] = ['frag', 'sticky', 'thermite', 'knife', 'smoke', 'emp', 'decoy'];
+export const THROWABLE_KINDS: ThrowableKind[] = ['frag', 'sticky', 'thermite', 'knife', 'hijack', 'emp', 'decoy'];
 
 /**
  * How a throwable leaves the hand. Each style is its own first-person arc:
@@ -86,10 +89,13 @@ export const THROWABLES: Record<ThrowableKind, ThrowableSpec> = {
     max: 5, start: 0, fuse: 0, speed: 58, loft: 0.04, gravity: 9, restitution: 0, friction: 0,
     impact: 'blade', style: 'flick', prep: 'flip', animSeconds: 0.62, dropWeight: 16, color: '#cfd6dc',
   },
-  smoke: {
-    label: 'Smoke', blurb: 'Smoke screen — robots lose sight of anyone in or behind the cloud.', lethal: false,
-    max: 3, start: 0, fuse: 1.2, speed: 26, loft: 0.34, gravity: 30, restitution: 0.25, friction: 0.6,
-    impact: 'fuse', style: 'underhand', prep: 'pin', animSeconds: 1.0, dropWeight: 10, color: '#c9ced3',
+  hijack: {
+    // A dart: thrown flat and fast so it can be put ON a robot. Sticks on
+    // contact; `fuse` is the drive-in — the spike sinking through the armour
+    // before the takeover lands. Landed short, it leaps to a robot nearby.
+    label: 'Hijack', blurb: 'Hijack spike — embeds in a robot and turns it to your side until destroyed. Bosses and the Revenant reject it.', lethal: false,
+    max: 2, start: 0, fuse: 0.7, speed: 40, loft: 0.08, gravity: 16, restitution: 0, friction: 0,
+    impact: 'stick', style: 'flick', prep: 'button', animSeconds: 0.66, dropWeight: 8, color: '#4c9dff',
   },
   emp: {
     label: 'EMP', blurb: 'EMP pulse — stuns every robot nearby and shreds energy shields.', lethal: false,
@@ -103,10 +109,14 @@ export const THROWABLES: Record<ThrowableKind, ThrowableSpec> = {
   },
 };
 
-/** The kit a run starts with (tutorial gets a little of everything to try). */
+/**
+ * The kit a run starts with. The tutorial carries a FULL pouch of every kind —
+ * and never spends it (App's throw path skips the decrement there), so each
+ * throwable can be practised as often as the player likes.
+ */
 export function startingThrowables(tutorial: boolean): Record<ThrowableKind, number> {
   const out = {} as Record<ThrowableKind, number>;
-  for (const k of THROWABLE_KINDS) out[k] = tutorial ? Math.max(THROWABLES[k].start, 2) : THROWABLES[k].start;
+  for (const k of THROWABLE_KINDS) out[k] = tutorial ? THROWABLES[k].max : THROWABLES[k].start;
   return out;
 }
 
