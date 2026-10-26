@@ -1,8 +1,8 @@
 /**
- * Server copy of the rank logic. Used by playerStats.getPublicProfile so a
- * private user's rank can be returned without exposing their detailed stats.
- *
- * ⚠️ KEEP IN SYNC with src/utils/rankSystem.ts — same weights + thresholds.
+ * THE rank logic — the single source. The server uses it in
+ * playerStats.getPublicProfile so a private user's rank can be returned
+ * without exposing their detailed stats; the client re-exports it from
+ * src/utils/rankSystem.ts. Keep this file free of server-only imports.
  */
 
 export interface RankStatsInput {

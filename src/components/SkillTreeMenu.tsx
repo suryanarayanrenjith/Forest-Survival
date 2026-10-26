@@ -5,14 +5,13 @@ import {
 } from 'lucide-react';
 import MusicMuteButton from './MusicMuteButton';
 import { detectIsTouch } from '../hooks/useDeviceInfo';
-import { type Skill, type SkillEffect, type SkillCategory, type PlayStyle } from '../utils/SmartSkillTreeSystem';
+import { type Skill, type SkillEffect, type SkillCategory } from '../utils/SmartSkillTreeSystem';
 
 interface SkillTreeMenuProps {
   skills: Skill[];
   availablePoints: number;
   spentPoints: number;
   totalPoints: number;
-  detectedPlayStyle: PlayStyle;
   recommendations: string[];
   onUnlockSkill: (skillId: string) => void;
   onClose: () => void;

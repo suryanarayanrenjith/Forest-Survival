@@ -791,7 +791,12 @@ void main() {
   float caStrength = uChromatic * (dist * dist + 0.2) + uGlitch * 0.0038 + uInterference * 0.0016;
   vec3 col;
   col.r = texture2D(tScene, guv - dir * caStrength).r;
-  col.g = texture2D(tScene, guv).g;
+  vec4 sceneC = texture2D(tScene, guv);
+  col.g = sceneC.g;
+  // Soft smoke (no depth write) erodes the target's alpha by its coverage —
+  // see the smoke sprite's blend state in Effects.ts. Everything else leaves
+  // alpha at 1, so this is 0 except where smoke actually sits.
+  float smokeCov = clamp(1.0 - sceneC.a, 0.0, 1.0);
   col.b = texture2D(tScene, guv + dir * caStrength).b;
   col = sanitize(col);
 
@@ -829,13 +834,15 @@ void main() {
   // ─── AMBIENT OCCLUSION (contact darkening, never on the sky) ───────────
   if (uUseAO > 0.5 && !isSky) {
     float ao = textureLod(tAO, guv, 0.0).r;
-    col *= mix(1.0, ao, uAOStrength);
+    col *= mix(1.0, ao, uAOStrength * (1.0 - smokeCov));
   }
 
   // ─── VOLUMETRIC LIGHT + FOG (shadowed in-scatter, transmittance) ───────
   if (uUseVol > 0.5) {
     vec4 v = sampleVolumetric(guv, depth);
-    col = col * v.a + v.rgb;
+    // The depth here is the BACKGROUND's, so only the uncovered fraction of a
+    // smoke pixel takes the medium; the smoke itself stays in front of it.
+    col = col * mix(v.a, 1.0, smokeCov) + v.rgb * (1.0 - smokeCov);
   }
 
   col += halo * vec3(1.0, 0.48, 0.32) * uHalation;

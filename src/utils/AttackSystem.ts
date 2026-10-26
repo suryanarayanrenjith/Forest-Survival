@@ -76,6 +76,9 @@ export class AttackSystem {
   // hardcoded a 30% strike phase while the pose maths assumed something else.
   private windupEnd = 0.375;
   private strikeEnd = 0.75;
+  /** Latched by update() on the frame a SLAM's fists reach the bottom of the
+   *  blow (strike → recovery); read once via consumeSlamImpact(). */
+  private slamLanded = false;
 
   constructor(config: AttackConfig, style: MeleeStyle = 'swipe') {
     this.config = config;
@@ -117,6 +120,7 @@ export class AttackSystem {
     if (!this.state.isAttacking) return;
 
     this.state.attackProgress += delta / this.config.attackDuration;
+    const prevPhase = this.state.attackPhase;
 
     if (this.state.attackProgress < this.windupEnd) {
       this.state.attackPhase = 'windup';
@@ -124,6 +128,9 @@ export class AttackSystem {
       this.state.attackPhase = 'strike';
     } else {
       this.state.attackPhase = 'recovery';
+    }
+    if (this.style === 'slam' && prevPhase !== 'recovery' && this.state.attackPhase === 'recovery') {
+      this.slamLanded = true;
     }
 
     // End attack when complete
@@ -392,6 +399,15 @@ export class AttackSystem {
     return p;
   }
 
+  /** True ONCE per slam, on the frame the blow bottoms out — whether or not it
+   *  connected — so the ground can take the impact. Always false for swipes
+   *  and flurries. */
+  public consumeSlamImpact(): boolean {
+    const v = this.slamLanded;
+    this.slamLanded = false;
+    return v;
+  }
+
   /** How hard the body should be driven forward this frame (0..1, strike only).
    *  Peaks at the moment of contact rather than being flat across the phase, so
    *  the lunge lands WITH the blow instead of shoving through it. */
@@ -405,6 +421,7 @@ export class AttackSystem {
    * Reset attack system
    */
   public reset(): void {
+    this.slamLanded = false;
     this.state = {
       isAttacking: false,
       attackPhase: 'idle',

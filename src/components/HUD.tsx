@@ -1,14 +1,13 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import {
-  Heart, Skull, Waves, Lock,
-  Zap, Shield as ShieldIcon, Wind, Ghost, Footprints,
-  Swords, Infinity as InfinityIcon, Boxes, PackageSearch, Bomb,
-  Snowflake, Bolt, RadioTower, Radio, Hand, type LucideIcon,
+  Heart, Skull, Waves, Lock, Zap, Shield as ShieldIcon, Footprints, PackageSearch,
+  RadioTower, Radio, Hand, type LucideIcon,
 } from 'lucide-react';
 import { m } from 'motion/react';
 import { THROWABLE_KINDS, type ThrowableKind } from '../utils/Throwables';
 import { LEFT_HAND_TAG, type LeftHandGear } from '../utils/LeftHand';
 import { GRENADE_HUD } from './throwableHud';
+import { POWER_ICONS } from './powerIcons';
 import { WEAPONS } from '../types/game';
 import { getAbilityIcon } from './abilityIcons';
 
@@ -57,22 +56,6 @@ export interface AbilityHudItem {
 
 export type GrenadeHudKind = ThrowableKind;
 
-/** Unique icon per looted power — no more duplicate lightning bolts. */
-const POWER_ICONS: Record<string, LucideIcon> = {
-  ammo: Boxes,
-  speed: Wind,
-  damage: Swords,
-  shield: ShieldIcon,
-  infinite_ammo: InfinityIcon,
-  overcharge: Zap,
-  phantom: Ghost,
-  cryo: Snowflake,
-  tesla: Bolt,
-  shockwave: Waves,
-  health: Heart,
-  nuke: Bomb,
-};
-
 interface HUDProps {
   health: number;
   maxHealth?: number; // optional dynamic cap (Thick Skin); defaults to 100
@@ -82,7 +65,6 @@ interface HUDProps {
   score: number;
   wave: number;
   weaponName: string;
-  t: (key: string) => string;
   unlockedWeapons: string[];
   currentWeapon: string;
   /** Weapon Mastery snapshot for the EQUIPPED weapon. When undefined the

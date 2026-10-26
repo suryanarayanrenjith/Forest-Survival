@@ -235,6 +235,16 @@ function getSmokeTexture(): THREE.CanvasTexture {
   return sharedSmokeTexture;
 }
 
+// Smoke is drawn with an UNLIT sprite, so its colour is an absolute radiance:
+// the same grey that reads right at noon glowed against a moonlit forest, and
+// black soot vanished against shaded trunks. Every puff's base colour is
+// multiplied by this scene-light term, which App derives from the live fog /
+// horizon colour each frame (≈ 1 at noon, warm at dusk, dim blue at night).
+const _smokeLight = new THREE.Color(1, 1, 1);
+export function setSmokeLight(c: THREE.Color): void {
+  _smokeLight.copy(c);
+}
+
 // Pooled smoke sprites. Every puff (muzzle wisp on each throttled shot +
 // damaged-robot venting) used to allocate a fresh SpriteMaterial — a steady
 // drip of heap garbage under sustained fire. Colour is a per-material uniform,
@@ -257,6 +267,20 @@ function acquireSmokeSprite(color: number): THREE.Sprite {
     opacity: 0,
     color,
     fog: true,
+    // Ordinary alpha blending for colour, but the scene target's ALPHA is
+    // eroded by the puff's coverage (dstA × (1 − srcA)). Smoke writes no
+    // depth, so the post composite would otherwise fog each smoke pixel at
+    // the depth of whatever is BEHIND it — on High/Ultra the volumetric
+    // medium washed puffs, dust and whole smoke-grenade clouds out to almost
+    // nothing. The composite reads (1 − alpha) as smoke coverage and keeps
+    // that fraction out of the depth-based fog. Blend state is not part of
+    // the program key, so this costs no new shader program.
+    blending: THREE.CustomBlending,
+    blendEquation: THREE.AddEquation,
+    blendSrc: THREE.SrcAlphaFactor,
+    blendDst: THREE.OneMinusSrcAlphaFactor,
+    blendSrcAlpha: THREE.ZeroFactor,
+    blendDstAlpha: THREE.OneMinusSrcAlphaFactor,
   });
   const sprite = new THREE.Sprite(mat);
   return sprite;
@@ -286,6 +310,8 @@ export class MuzzleSmoke {
   private readonly endScale: number;
   private readonly peakOpacity: number;
   private readonly spin: number;
+  /** Unlit base tint; lit by the scene-light term every update. */
+  private readonly base: THREE.Color;
 
   // Optional tuning so the SAME smoke sprite (and therefore the same shader
   // program) can serve both gun-muzzle smoke and the heavier, sootier smoke that
@@ -300,7 +326,9 @@ export class MuzzleSmoke {
   }) {
     // Cool gun-smoke grey by default; fog ON so it grounds into the atmosphere.
     // Borrowed from the pool — colour/opacity reset on acquire.
+    this.base = new THREE.Color(opts?.color ?? 0x9a9ea6);
     this.sprite = acquireSmokeSprite(opts?.color ?? 0x9a9ea6);
+    (this.sprite.material as THREE.SpriteMaterial).color.copy(this.base).multiply(_smokeLight);
     this.sprite.position.copy(position);
     // Drift: a little along the barrel + a buoyant rise + slight random jitter.
     this.vel = new THREE.Vector3(
@@ -336,6 +364,7 @@ export class MuzzleSmoke {
     const mat = this.sprite.material as THREE.SpriteMaterial;
     mat.opacity = Math.max(0, op);
     mat.rotation += this.spin * delta;
+    mat.color.copy(this.base).multiply(_smokeLight);
     return false;
   }
 
@@ -535,19 +564,60 @@ export function clearParticleGeometryPools(): void {
   _sparkGeoPool.length = 0;
 }
 
+/**
+ * A burst of glowing particles at a point of action — the generic "something
+ * happened here" effect behind App's createParticles (frost, heals, hacks,
+ * blasts, pickups, crits …).
+ *
+ * - Takes the CALLER'S colour (it used to ignore it and spray the same orange
+ *   sparks for everything), with per-particle brightness jitter and a brief
+ *   white-hot core.
+ * - Warm, saturated colours behave like sparks: fast, falling, short-lived.
+ *   Everything else (frost, energy, motes) drifts — slower, buoyant, lingering.
+ * - Every particle fades over its OWN life by darkening its vertex colour
+ *   (additive blending: darker = more transparent), so a burst dissolves
+ *   instead of popping out on one frame.
+ * - Drag is frame-rate independent (exp decay, not a per-frame multiply that
+ *   halved the spread on 120 Hz screens).
+ *
+ * Same pooled geometry + shared material as before: no new shader program.
+ */
 export class ImpactEffect {
   particles: THREE.Points;
   private velocities: Float32Array;
+  private base: Float32Array;
+  private lives: Float32Array;
   private count: number;
+  private age = 0;
+  private maxLife = 0;
+  private readonly gravity: number;
+  private readonly drag: number;
+  /** Kept for API compatibility (remaining life of the longest particle). */
   lifetime: number = 0;
   private geometry: THREE.BufferGeometry;
 
-  constructor(scene: THREE.Scene, position: THREE.Vector3, _color: number, count: number = 20) {
+  constructor(scene: THREE.Scene, position: THREE.Vector3, color: number, count: number = 20) {
     this.count = count;
     this.geometry = acquireParticleGeometry(_impactGeoPool, count);
     const positions = this.geometry.getAttribute('position').array as Float32Array;
     const colors = this.geometry.getAttribute('color').array as Float32Array;
     this.velocities = new Float32Array(count * 3);
+    this.base = new Float32Array(count * 3);
+    this.lives = new Float32Array(count);
+
+    // Display-referred channels (the tuning the old sparks were built on).
+    const r0 = ((color >> 16) & 255) / 255;
+    const g0 = ((color >> 8) & 255) / 255;
+    const b0 = (color & 255) / 255;
+    const max = Math.max(r0, g0, b0), min = Math.min(r0, g0, b0);
+    const sat = max > 0 ? (max - min) / max : 0;
+    // Warm = red channel leads and blue trails (fire, sparks, gold, crits).
+    const sparky = r0 >= g0 && r0 > b0 + 0.25 && sat > 0.45;
+    this.gravity = sparky ? 8 : 2.2;
+    this.drag = sparky ? 1.1 : 2.2;
+    const speed = sparky ? 1.55 : 1.0;
+    const lift = sparky ? 0.15 : 0.55;
+    const lifeBase = sparky ? 0.42 : 0.62;
 
     for (let i = 0; i < count; i++) {
       const idx = i * 3;
@@ -555,16 +625,28 @@ export class ImpactEffect {
       positions[idx + 1] = position.y;
       positions[idx + 2] = position.z;
 
-      // Mix of yellow/orange for realistic impact sparks (ignore passed color)
-      const sparkColor = Math.random() > 0.5 ? 0xffaa00 : 0xffdd55;
-      colors[idx] = ((sparkColor >> 16) & 255) / 255;
-      colors[idx + 1] = ((sparkColor >> 8) & 255) / 255;
-      colors[idx + 2] = (sparkColor & 255) / 255;
+      // Brightness jitter + a few white-hot particles in every burst.
+      const k = 0.72 + Math.random() * 0.45;
+      const hot = Math.random() < 0.22 ? 0.55 : 0;
+      this.base[idx] = Math.min(1, r0 * k + hot * (1 - r0));
+      this.base[idx + 1] = Math.min(1, g0 * k + hot * (1 - g0));
+      this.base[idx + 2] = Math.min(1, b0 * k + hot * (1 - b0));
+      colors[idx] = this.base[idx];
+      colors[idx + 1] = this.base[idx + 1];
+      colors[idx + 2] = this.base[idx + 2];
 
-      // Faster, more explosive velocities
-      this.velocities[idx] = (Math.random() - 0.5) * 1.5;
-      this.velocities[idx + 1] = (Math.random() - 0.2) * 1.2;
-      this.velocities[idx + 2] = (Math.random() - 0.5) * 1.5;
+      // Uniform direction on a sphere, biased upward.
+      const u = Math.random() * 2 - 1;
+      const th = Math.random() * Math.PI * 2;
+      const rr = Math.sqrt(1 - u * u);
+      const sp = speed * (0.45 + Math.random() * 0.75);
+      this.velocities[idx] = rr * Math.cos(th) * sp;
+      this.velocities[idx + 1] = (u * 0.8 + lift) * sp;
+      this.velocities[idx + 2] = rr * Math.sin(th) * sp;
+
+      const life = lifeBase * (0.6 + Math.random() * 0.75);
+      this.lives[i] = life;
+      if (life > this.maxLife) this.maxLife = life;
     }
 
     // Only render the `count` points we wrote — the rest of a pooled buffer is
@@ -577,42 +659,45 @@ export class ImpactEffect {
     // A pooled geometry keeps the previous user's boundingSphere, so per-object
     // frustum culling would test against a stale bounds. These are tiny,
     // sub-second bursts that only ever spawn at the point of combat (always
-    // on-screen), so skip the frustum test outright — visually identical,
-    // and it sidesteps the stale-bounds cull without recomputing a sphere.
+    // on-screen), so skip the frustum test outright.
     this.particles.frustumCulled = false;
     scene.add(this.particles);
-    this.lifetime = 0.6; // Longer visible impact
+    this.lifetime = this.maxLife;
   }
 
   update(delta: number): boolean {
-    this.lifetime -= delta;
-
-    if (this.lifetime <= 0) {
-      return true;
-    }
+    this.age += delta;
+    this.lifetime = this.maxLife - this.age;
+    if (this.age >= this.maxLife) return true;
 
     const positions = this.geometry.getAttribute('position').array as Float32Array;
+    const colors = this.geometry.getAttribute('color').array as Float32Array;
     const vel = this.velocities;
+    const damp = Math.exp(-delta * this.drag);
+    const g = this.gravity * delta;
+    const t = this.age;
+    // The white-hot flash of the first ~0.1 s.
+    const flash = t < 0.1 ? 1 + (1 - t / 0.1) * 0.6 : 1;
 
     for (let i = 0; i < this.count; i++) {
       const idx = i * 3;
       positions[idx] += vel[idx] * delta * 15;
       positions[idx + 1] += vel[idx + 1] * delta * 15;
       positions[idx + 2] += vel[idx + 2] * delta * 15;
+      vel[idx + 1] -= g;
+      vel[idx] *= damp;
+      vel[idx + 1] *= damp;
+      vel[idx + 2] *= damp;
 
-      // Strong gravity for realistic fall
-      vel[idx + 1] -= delta * 8;
-
-      // Air resistance
-      vel[idx] *= 0.98;
-      vel[idx + 1] *= 0.98;
-      vel[idx + 2] *= 0.98;
+      const left = 1 - t / this.lives[i];
+      const fade = left <= 0 ? 0 : left * Math.sqrt(left) * flash;
+      colors[idx] = this.base[idx] * fade;
+      colors[idx + 1] = this.base[idx + 1] * fade;
+      colors[idx + 2] = this.base[idx + 2] * fade;
     }
 
     this.geometry.getAttribute('position').needsUpdate = true;
-    // Opacity belongs to the shared material — leave it at 1 and rely on
-    // the short lifetime + removal to provide the "pop" feel.
-
+    this.geometry.getAttribute('color').needsUpdate = true;
     return false;
   }
 

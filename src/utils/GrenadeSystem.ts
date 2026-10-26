@@ -178,8 +178,12 @@ export class GrenadeSystem {
     scene.add(this.ring);
   }
 
-  /** Release a throwable. `origin` is the hand in world space, `velocity` in u/s. */
-  throw(kind: GrenadeKind, origin: THREE.Vector3, velocity: THREE.Vector3, local: boolean, owner = ''): LiveGrenade {
+  /**
+   * Release a throwable. `origin` is the hand in world space, `velocity` in
+   * u/s. `fuse` overrides the catalog fuse for 'fuse' kinds — a cooked frag
+   * leaves the hand with whatever time was left on it.
+   */
+  throw(kind: GrenadeKind, origin: THREE.Vector3, velocity: THREE.Vector3, local: boolean, owner = '', fuse?: number): LiveGrenade {
     const spec = THROWABLES[kind];
     const mesh = new THREE.Mesh(getThrownGrenadeGeometry(kind), getItemMaterial());
     mesh.scale.setScalar(kind === 'knife' ? WORLD_SCALE * 1.15 : WORLD_SCALE);
@@ -205,7 +209,7 @@ export class GrenadeSystem {
       pos: origin.clone(),
       vel: velocity.clone(),
       ang,
-      fuse: spec.impact === 'stick' ? Infinity : spec.impact === 'blade' ? Infinity : spec.fuse,
+      fuse: spec.impact === 'stick' ? Infinity : spec.impact === 'blade' ? Infinity : (fuse ?? spec.fuse),
       resting: false,
       bounces: 0,
       stuck: false,

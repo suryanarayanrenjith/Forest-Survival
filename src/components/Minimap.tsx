@@ -25,10 +25,10 @@ export interface MinimapBlip {
   /** World position. */
   x: number;
   z: number;
-  /** CSS colour string (allies use their player colour; enemies a fixed red/orange). */
+  /** CSS colour string (allies use their player colour; enemies a fixed red/orange; pickups their identity colour). */
   color: string;
   alive: boolean;
-  kind: 'ally' | 'enemy' | 'boss';
+  kind: 'ally' | 'enemy' | 'boss' | 'pickup';
 }
 
 export interface MinimapFrame {
@@ -126,10 +126,30 @@ function draw(r: RadarReg, f: MinimapFrame): void {
     }
   }
 
+  // ── Pickup blips: small diamonds in the loot's identity colour (under
+  //    everything else, so a threat is never hidden behind a medkit). ──
+  for (let i = 0; i < f.blips.length; i++) {
+    const b = f.blips[i];
+    if (b.kind !== 'pickup') continue;
+    const rx = (b.x - f.selfX) * scale;
+    const rz = (b.z - f.selfZ) * scale;
+    if (rx * rx + rz * rz > R * R) continue;
+    const px = cx + rx;
+    const py = cy + rz;
+    const d = 2.8 * k;
+    c.beginPath();
+    c.moveTo(px, py - d); c.lineTo(px + d, py); c.lineTo(px, py + d); c.lineTo(px - d, py);
+    c.closePath();
+    c.fillStyle = b.color;
+    c.globalAlpha = 0.9;
+    c.fill();
+    c.globalAlpha = 1;
+  }
+
   // ── Enemy blips (drawn first so allies/self sit on top) ──
   for (let i = 0; i < f.blips.length; i++) {
     const b = f.blips[i];
-    if (b.kind === 'ally') continue;
+    if (b.kind === 'ally' || b.kind === 'pickup') continue;
     const rx = (b.x - f.selfX) * scale;
     const rz = (b.z - f.selfZ) * scale;
     if (rx * rx + rz * rz > R * R) continue; // off-radar — keep it uncluttered
@@ -266,6 +286,7 @@ const Legend = ({ className = '', soloMode = false }: { className?: string; solo
       // Allies only exist in multiplayer — hidden in solo / tutorial.
       ...(soloMode ? [] : [{ label: 'Allies', color: '#38bdf8' }]),
       { label: 'Enemies', color: '#f85252' },
+      { label: 'Loot', color: '#ffd84a' },
     ].map((item) => (
       <span key={item.label} className="flex items-center gap-1.5">
         <span

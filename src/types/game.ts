@@ -555,19 +555,6 @@ export interface PowerUp {
   collected: boolean;
 }
 
-export interface Particle {
-  mesh: THREE.Mesh;
-  velocity: THREE.Vector3;
-  life: number;
-  maxLife: number;
-}
-
-export interface Tree {
-  mesh: THREE.Group;
-  x: number;
-  z: number;
-}
-
 /**
  * What standing in this pool actually DOES.
  *

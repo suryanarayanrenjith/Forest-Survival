@@ -9,7 +9,6 @@ interface GameOverProps {
   wave: number;
   onRestart: () => void;
   onMainMenu: () => void;
-  t: (key: string) => string;
 }
 
 const SHAPE = '14px 3.5px';

@@ -147,7 +147,7 @@ export type NetworkMessage =
   // A thrown grenade (kind 0 frag · 1 EMP · 2 thermite) — release point +
   // velocity. Every client flies and detonates its own copy for the visuals;
   // only the thrower's client applies damage (guests via enemy_hit).
-  | { type: 'grenade_throw'; playerId: string; kind: number; ox: number; oy: number; oz: number; vx: number; vy: number; vz: number }
+  | { type: 'grenade_throw'; playerId: string; kind: number; ox: number; oy: number; oz: number; vx: number; vy: number; vz: number; fz?: number }
   | { type: 'player_killed'; victimId: string; victimName: string; victimColor: number; killerId: string; killerName: string; weapon: string; timestamp: number }
   | { type: 'chat_message'; playerId: string; playerName: string; playerColor: number; message: string; messageType: 'chat' | 'emote'; timestamp: number }
   | { type: 'heartbeat'; playerId: string; timestamp: number };
@@ -1143,8 +1143,10 @@ export class MultiplayerManager {
         const vx = finiteBetween(message.vx, -120, 120);
         const vy = finiteBetween(message.vy, -120, 120);
         const vz = finiteBetween(message.vz, -120, 120);
+        // Optional cooked fuse (seconds left when it left the hand).
+        const fz = message.fz === undefined ? undefined : finiteBetween(message.fz, 0.2, 12);
         if (!playerId || kind === null || ox === null || oy === null || oz === null
-          || vx === null || vy === null || vz === null) return;
+          || vx === null || vy === null || vz === null || fz === null) return;
         if (this.isHost) {
           if (!this.isRegisteredGuest(conn) || playerId !== conn.peer) return;
         } else if (!this.isHostConnection(conn)) {
@@ -1152,6 +1154,7 @@ export class MultiplayerManager {
         }
         const throwMessage: NetworkMessage = {
           type: 'grenade_throw', playerId, kind: Math.floor(kind), ox, oy, oz, vx, vy, vz,
+          ...(fz !== undefined ? { fz } : {}),
         };
         if (this.isHost) this.broadcastMessage(throwMessage, conn.peer);
         this.messageHandlers.get('grenade_throw')?.forEach((handler) => handler(throwMessage));
@@ -1730,11 +1733,12 @@ export class MultiplayerManager {
    * Also triggers local handlers so the shooter sees their own kill in the feed.
    */
   /** Tell every peer about a grenade this client just threw. */
-  broadcastGrenade(kind: number, ox: number, oy: number, oz: number, vx: number, vy: number, vz: number): void {
+  broadcastGrenade(kind: number, ox: number, oy: number, oz: number, vx: number, vy: number, vz: number, fuse?: number): void {
     const q = (n: number) => Math.round(n * 100) / 100;
     this.broadcastMessage({
       type: 'grenade_throw', playerId: this.localPlayer.id, kind,
       ox: q(ox), oy: q(oy), oz: q(oz), vx: q(vx), vy: q(vy), vz: q(vz),
+      ...(fuse !== undefined ? { fz: q(fuse) } : {}),
     });
   }
 

@@ -110,6 +110,42 @@ export function startingThrowables(tutorial: boolean): Record<ThrowableKind, num
   return out;
 }
 
+/**
+ * How often robots drop throwables — set ENTIRELY by the difficulty mode.
+ * Every kill rolls `chance`; drops are capped per wave and spaced in time, and
+ * a pity counter guarantees one after `pityKills` kills without a drop (still
+ * inside the cap + spacing), so a long dry spell can't happen on any mode.
+ * Easier modes are more generous; Hard keeps throwables a rare prize.
+ */
+export interface ThrowableDropRules {
+  chance: number;
+  perWave: number;
+  spacingMs: number;
+  pityKills: number;
+}
+
+export const THROWABLE_DROPS: Record<'easy' | 'medium' | 'hard', ThrowableDropRules> = {
+  easy: { chance: 0.07, perWave: 3, spacingMs: 20000, pityKills: 24 },
+  medium: { chance: 0.05, perWave: 2, spacingMs: 28000, pityKills: 34 },
+  hard: { chance: 0.04, perWave: 1, spacingMs: 36000, pityKills: 48 },
+};
+
+/**
+ * The live rules for a mode. Adaptive slides from Easy's generosity (a
+ * struggling player, `adaptiveT` 0) to Hard's scarcity (dominating, 1).
+ */
+export function throwableDropRules(mode: 'easy' | 'medium' | 'hard' | 'adaptive', adaptiveT = 0.5): ThrowableDropRules {
+  if (mode !== 'adaptive') return THROWABLE_DROPS[mode];
+  const t = Math.max(0, Math.min(1, adaptiveT));
+  const a = THROWABLE_DROPS.easy, b = THROWABLE_DROPS.hard;
+  return {
+    chance: a.chance + (b.chance - a.chance) * t,
+    perWave: Math.round(a.perWave + (b.perWave - a.perWave) * t),
+    spacingMs: a.spacingMs + (b.spacingMs - a.spacingMs) * t,
+    pityKills: Math.round(a.pityKills + (b.pityKills - a.pityKills) * t),
+  };
+}
+
 /** Weighted roll for a rare throwable drop. */
 export function rollThrowableDrop(): ThrowableKind {
   let total = 0;

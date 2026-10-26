@@ -1,11 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  Crosshair, ChevronsUp, ChevronsRight, ChevronsDown, RotateCw, Zap, Pause,
-  Wind, Shield as ShieldIcon, Flame, Heart, Infinity as InfinityIcon, Ghost, Bomb,
-  Boxes, Swords, PackageSearch, ChevronDown, Lock, X,
-  Snowflake, Bolt, Waves, Radio, Hand,
-  type LucideIcon,
+  Crosshair, ChevronsUp, ChevronsRight, ChevronsDown, RotateCw, Pause, Wind,
+  Shield as ShieldIcon, Flame, Heart, Infinity as InfinityIcon, Ghost, Bomb, Swords,
+  PackageSearch, ChevronDown, Lock, X, Radio, Hand, type LucideIcon,
 } from 'lucide-react';
 import { m } from 'motion/react';
 import { touchControls } from '../utils/touchControls';
@@ -15,6 +13,7 @@ import { useTouchLayout, DEFAULT_LAYOUT, type TouchControlId } from '../utils/to
 import { gameSettingsManager } from '../utils/GameSettingsManager';
 import type { AbilityHudItem } from './HUD';
 import { GRENADE_HUD } from './throwableHud';
+import { POWER_ICONS } from './powerIcons';
 
 interface TouchControlsProps {
   unlockedWeapons: string[];
@@ -109,14 +108,8 @@ const TouchControls = ({
   const powerJammed = power?.jammed === true && power?.state !== 'empty';
   const powerHeld = power?.state === 'held' && !powerJammed;
   const powerActive = power?.state === 'active' && !powerJammed;
-  // Held/active pickup icon, so mobile players can SEE which power they have.
-  // ⚠ Keep in sync with POWER_ICONS in HUD.tsx — every HeldPower needs an
-  // entry here or mobile shows a generic box for it.
-  const POWER_ICONS: Record<string, LucideIcon> = {
-    ammo: Boxes, speed: Wind, damage: Swords, shield: ShieldIcon,
-    infinite_ammo: InfinityIcon, overcharge: Zap, phantom: Ghost, health: Heart,
-    cryo: Snowflake, tesla: Bolt, shockwave: Waves, nuke: Bomb,
-  };
+  // Held/active pickup icon (shared table with the desktop HUD slot), so
+  // mobile players can SEE which power they have.
   const powerIcon = power?.powerType ? (POWER_ICONS[power.powerType] ?? PackageSearch) : PackageSearch;
   const isReloading = reloadDuration !== null;
 

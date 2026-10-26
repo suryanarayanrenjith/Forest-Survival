@@ -3,7 +3,6 @@ import { AnimatePresence, m } from 'motion/react';
 
 interface NotificationsProps {
   showWaveComplete: boolean;
-  killStreak?: number;
   powerUpMessage?: string;
   /** Total lifetime of the pill in ms — drives the self-collapsing keyframe. */
   powerUpMessageMs?: number;
