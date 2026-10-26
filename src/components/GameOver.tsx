@@ -1,3 +1,5 @@
+import { useEffect, useRef } from 'react';
+import { animate, m, useReducedMotion } from 'motion/react';
 import { Skull, Trophy, Crown, Waves, RotateCcw, Home } from 'lucide-react';
 
 interface GameOverProps {
@@ -12,6 +14,28 @@ interface GameOverProps {
 
 const SHAPE = '14px 3.5px';
 
+/**
+ * A number that counts up from zero when the screen lands. Motion's imperative
+ * `animate()` writes the text node directly — no React render per frame.
+ * Reduced-motion players just see the final number.
+ */
+const CountUp = ({ value, delay = 0, duration = 1.1, className }: {
+  value: number; delay?: number; duration?: number; className?: string;
+}) => {
+  const ref = useRef<HTMLSpanElement>(null);
+  const reduced = useReducedMotion();
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || reduced) return;
+    const controls = animate(0, value, {
+      delay, duration, ease: [0.16, 1, 0.3, 1],
+      onUpdate: (v) => { el.textContent = Math.round(v).toLocaleString(); },
+    });
+    return () => controls.stop();
+  }, [value, delay, duration, reduced]);
+  return <span ref={ref} className={className}>{reduced ? value.toLocaleString() : '0'}</span>;
+};
+
 const GameOver = ({ isVictory, score, enemiesKilled, wave, onRestart, onMainMenu }: GameOverProps) => {
   const getRating = () => {
     if (score >= 500) return { text: 'Legendary', color: '#fbbf24' };
@@ -23,8 +47,8 @@ const GameOver = ({ isVictory, score, enemiesKilled, wave, onRestart, onMainMenu
   const accent = isVictory ? '#2ee8b4' : '#ff5a5f';
 
   const stats = [
-    { icon: Skull, label: 'Enemies Killed', value: `${enemiesKilled}`, color: '#ff5a5f' },
-    { icon: Waves, label: 'Waves Survived', value: `${wave}`, color: '#c084fc' },
+    { icon: Skull, label: 'Enemies Killed', value: enemiesKilled, color: '#ff5a5f' },
+    { icon: Waves, label: 'Waves Survived', value: wave, color: '#c084fc' },
   ];
 
   return (
@@ -63,9 +87,16 @@ const GameOver = ({ isVictory, score, enemiesKilled, wave, onRestart, onMainMenu
               {isVictory ? 'Victory' : 'Game Over'}
             </h1>
             <div className="mx-auto mt-3 h-px w-48" style={{ background: `linear-gradient(90deg, transparent, ${accent}99, transparent)` }} />
-            <p className="font-hud mt-3 text-xs font-semibold uppercase tracking-[0.3em] sm:text-sm" style={{ color: rating.color }}>
+            {/* The verdict lands once the score has finished counting. */}
+            <m.p
+              className="font-hud mt-3 text-xs font-semibold uppercase tracking-[0.3em] sm:text-sm"
+              style={{ color: rating.color }}
+              initial={{ opacity: 0, scale: 0.7, y: 6 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              transition={{ type: 'spring', stiffness: 420, damping: 16, delay: 1.25 }}
+            >
               {rating.text}
-            </p>
+            </m.p>
           </div>
 
           {/* Score hero + stats */}
@@ -75,19 +106,25 @@ const GameOver = ({ isVictory, score, enemiesKilled, wave, onRestart, onMainMenu
                 <Trophy className="h-[18px] w-[18px] text-amber-300" strokeWidth={2.25} />
                 <span className="hud-label">Final Score</span>
               </div>
-              <span className="hud-num text-[46px] text-white sm:text-[54px]">{score.toLocaleString()}</span>
+              <CountUp value={score} delay={0.25} duration={1.2} className="hud-num text-[46px] text-white sm:text-[54px]" />
             </div>
             <div className="grid grid-cols-2">
               {stats.map((s, i) => {
                 const Icon = s.icon;
                 return (
-                  <div key={s.label} className={`flex items-center gap-3 px-5 py-3.5 ${i === 0 ? 'border-r border-white/[0.07]' : ''}`}>
+                  <m.div
+                    key={s.label}
+                    className={`flex items-center gap-3 px-5 py-3.5 ${i === 0 ? 'border-r border-white/[0.07]' : ''}`}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.4, ease: 'easeOut', delay: 0.4 + i * 0.1 }}
+                  >
                     <Icon className="h-[17px] w-[17px] flex-shrink-0" style={{ color: s.color }} strokeWidth={2.25} />
                     <div className="min-w-0">
                       <div className="hud-label" style={{ fontSize: 9 }}>{s.label}</div>
-                      <div className="hud-num mt-1 text-[26px] text-white">{s.value}</div>
+                      <CountUp value={s.value} delay={0.45 + i * 0.1} duration={0.9} className="hud-num mt-1 block text-[26px] text-white" />
                     </div>
-                  </div>
+                  </m.div>
                 );
               })}
             </div>

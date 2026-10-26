@@ -1,16 +1,9 @@
-/** Tuning knobs for the parameterized per-weapon gunshot synthesizer. */
-interface WeaponShotOpts {
-  duration: number;    // buffer length in seconds
-  punchFreq: number;   // base frequency of the low sine "thump"
-  punchDecay: number;  // how fast the punch fades
-  sweep: number;       // downward pitch-sweep amount on the punch
-  bodyLevel: number;   // amplitude of the sine punch
-  noiseLevel: number;  // amplitude of the lowpassed body noise
-  noiseDecay: number;  // how fast the body noise fades
-  crackLevel: number;  // amplitude of the sharp transient crack
-  crackDecay: number;  // how fast the crack fades (higher = snappier)
-  lowpass: number;     // body-noise lowpass coefficient (0..1, higher = brighter)
-}
+import {
+  ACOUSTICS, GUNSHOTS, createGunshot, createImpulse, createMeleeHit, createMeleeSwing,
+  createRobotStep, createStep, createWhizz, createPinPull, createGrenadeThrow, createGrenadeBounce,
+  createEmpBlast, createThermite, createGrenadePickup, createRobotPowerDown, createRobotCollapse,
+  createBodyFall, createTinnitus, createArmClick, createDecoyPing, type Surface,
+} from './SoundDesign';
 
 /**
  * One percussive contact in a mechanical sound (a latch clicking, a bolt
@@ -61,6 +54,20 @@ class SoundManager {
   // volume + musicMute toggle, applied inside AmbientMusicSystem).
   private musicInput: GainNode | null = null;
 
+  // ── Environment reverb ──────────────────────────────────────────────────
+  // One convolution reverb fed by per-voice SENDS: guns, blasts, impacts and
+  // calls ring off the map (forest diffusion, canyon echoes, dead snow, ringing
+  // stone). Distant positional sounds send relatively MORE (the direct path
+  // falls off faster than the room), and are darkened by air absorption.
+  private reverbIn: GainNode | null = null;
+  private convolver: ConvolverNode | null = null;
+  private impulses: Map<string, AudioBuffer> = new Map();
+  private environment = 'forest';
+  private listenerX = 0;
+  private listenerY = 0;
+  private listenerZ = 0;
+  private lastVariant: Map<string, number> = new Map();
+
   constructor() {
     // Audio context will be initialized on first user interaction
   }
@@ -81,8 +88,17 @@ class SoundManager {
       this.lowpassFilter.Q.value = 0.0001;
       this.masterBus.connect(this.lowpassFilter);
       this.lowpassFilter.connect(this.audioContext.destination);
+      // Reverb send bus → convolver → master.
+      this.reverbIn = this.audioContext.createGain();
+      this.convolver = this.audioContext.createConvolver();
+      const reverbOut = this.audioContext.createGain();
+      reverbOut.gain.value = 0.9;
+      this.reverbIn.connect(this.convolver);
+      this.convolver.connect(reverbOut);
+      reverbOut.connect(this.masterBus);
       this.initialized = true;
       this.generateSounds();
+      this.applyEnvironment();
     } catch (error) {
       console.warn('Web Audio API not supported', error);
     }
@@ -205,14 +221,13 @@ class SoundManager {
     // seven guns sounded identical. Each now has a distinct synthesized
     // report (transient crack + lowpassed body noise + pitch-swept punch)
     // tuned to its character. 'shoot' is kept as a safe fallback.
-    const W = (o: WeaponShotOpts) => this.createWeaponShot(ctx, sampleRate, o);
-    this.sounds.set('shoot_pistol',   W({ duration: 0.16, punchFreq: 150, punchDecay: 26, sweep: 1.8, bodyLevel: 0.50, noiseLevel: 0.50, noiseDecay: 26, crackLevel: 0.60, crackDecay: 160, lowpass: 0.60 }));
-    this.sounds.set('shoot_rifle',    W({ duration: 0.18, punchFreq: 120, punchDecay: 22, sweep: 1.6, bodyLevel: 0.55, noiseLevel: 0.55, noiseDecay: 22, crackLevel: 0.72, crackDecay: 150, lowpass: 0.55 }));
-    this.sounds.set('shoot_shotgun',  W({ duration: 0.34, punchFreq: 80,  punchDecay: 11, sweep: 1.2, bodyLevel: 0.72, noiseLevel: 0.72, noiseDecay: 11, crackLevel: 0.55, crackDecay: 90,  lowpass: 0.32 }));
-    this.sounds.set('shoot_smg',      W({ duration: 0.12, punchFreq: 165, punchDecay: 30, sweep: 2.0, bodyLevel: 0.42, noiseLevel: 0.50, noiseDecay: 30, crackLevel: 0.60, crackDecay: 180, lowpass: 0.66 }));
-    this.sounds.set('shoot_sniper',   W({ duration: 0.40, punchFreq: 70,  punchDecay: 9,  sweep: 1.0, bodyLevel: 0.78, noiseLevel: 0.60, noiseDecay: 13, crackLevel: 0.92, crackDecay: 120, lowpass: 0.40 }));
-    this.sounds.set('shoot_minigun',  W({ duration: 0.10, punchFreq: 135, punchDecay: 30, sweep: 1.6, bodyLevel: 0.45, noiseLevel: 0.55, noiseDecay: 32, crackLevel: 0.60, crackDecay: 170, lowpass: 0.60 }));
-    this.sounds.set('shoot_launcher', W({ duration: 0.45, punchFreq: 55,  punchDecay: 8,  sweep: 0.8, bodyLevel: 0.82, noiseLevel: 0.60, noiseDecay: 9,  crackLevel: 0.45, crackDecay: 70,  lowpass: 0.28 }));
+    // Layered stereo reports (SoundDesign.GUNSHOTS): pressure transient,
+    // supersonic crack, band-limited blast with a lingering boom, the punch
+    // and the weapon's own mechanism. The world's echo comes from the reverb
+    // send, so the buffers stay dry.
+    for (const w of Object.keys(GUNSHOTS)) {
+      this.sounds.set(`shoot_${w}`, createGunshot(ctx, sampleRate, GUNSHOTS[w], 0x51a7 + w.length * 977));
+    }
 
     // ── EXPLOSIONS ───────────────────────────────────────────────────────
     // Three weights so a barrel, a rocket and the nuke are distinguishable
@@ -401,6 +416,37 @@ class SoundManager {
     L('hawk', () => this.createHawk(ctx, sampleRate));
     L('bubble', () => this.createBubble(ctx, sampleRate));
     L('radio', () => this.createRadio(ctx, sampleRate));
+    // Footsteps: four seeded variations per surface + a landing each.
+    const surfaces: Surface[] = ['forest', 'leaves', 'gravel', 'sand', 'snow', 'stone', 'mud', 'wet'];
+    for (const sf of surfaces) {
+      for (let v = 0; v < 4; v++) L(`step_${sf}_${v}`, () => createStep(ctx, sampleRate, sf, 0x5e9 + v * 7919 + sf.length * 31));
+      L(`land_${sf}`, () => createStep(ctx, sampleRate, sf, 0x1a9d + sf.length * 17, true));
+    }
+    for (let v = 0; v < 3; v++) {
+      L(`robot_step_light_${v}`, () => createRobotStep(ctx, sampleRate, false, 0x70b0 + v * 131));
+      L(`robot_step_heavy_${v}`, () => createRobotStep(ctx, sampleRate, true, 0x7e1 + v * 211));
+    }
+    // Grenades: pin, throw, bounces, the two special detonations, pickup.
+    L('grenade_pin', () => createPinPull(ctx, sampleRate, 0x9e1));
+    L('grenade_throw', () => createGrenadeThrow(ctx, sampleRate, 0x7a3));
+    for (let v = 0; v < 3; v++) L(`grenade_bounce_${v}`, () => createGrenadeBounce(ctx, sampleRate, 0x4b1 + v * 173));
+    L('emp_blast', () => createEmpBlast(ctx, sampleRate, 0xe39));
+    L('thermite_ignite', () => createThermite(ctx, sampleRate, 0x7e3));
+    L('grenade_pickup', () => createGrenadePickup(ctx, sampleRate, 0x61d));
+    L('arm_click', () => createArmClick(ctx, sampleRate, 0xa7c));
+    L('decoy_ping', () => createDecoyPing(ctx, sampleRate));
+    // Deaths: robot power-down + chassis collapse; the player's fall + ear ring.
+    for (let v = 0; v < 2; v++) {
+      L(`robot_powerdown_${v}`, () => createRobotPowerDown(ctx, sampleRate, 0x3d1 + v * 311));
+      L(`robot_collapse_${v}`, () => createRobotCollapse(ctx, sampleRate, 0x2c7 + v * 199));
+    }
+    L('body_fall', () => createBodyFall(ctx, sampleRate, 0x8f3));
+    L('tinnitus', () => createTinnitus(ctx, sampleRate));
+    for (let v = 0; v < 2; v++) {
+      L(`melee_swing_${v}`, () => createMeleeSwing(ctx, sampleRate, 0x5317 + v * 97));
+      L(`melee_hit_${v}`, () => createMeleeHit(ctx, sampleRate, 0x417 + v * 53));
+      L(`whizz_${v}`, () => createWhizz(ctx, sampleRate, 0x1771 + v * 29));
+    }
   }
 
   /** Buffer by name, synthesizing a lazily-registered one on first use. */
@@ -947,26 +993,6 @@ class SoundManager {
   // Layers three elements: a sharp high-frequency transient crack, a body
   // of lowpassed noise (weight), and a pitch-swept low sine punch. Soft
   // clipping glues them into a single percussive report.
-  private createWeaponShot(ctx: AudioContext, sampleRate: number, o: WeaponShotOpts): AudioBuffer {
-    const buffer = ctx.createBuffer(1, Math.floor(sampleRate * o.duration), sampleRate);
-    const data = buffer.getChannelData(0);
-    let lp = 0; // one-pole lowpass state for the body noise
-    for (let i = 0; i < buffer.length; i++) {
-      const t = i / sampleRate;
-      // Sharp transient (the "crack") — dominant in the first few ms.
-      const crack = (Math.random() * 2 - 1) * Math.exp(-t * o.crackDecay) * o.crackLevel;
-      // Body noise, lowpassed so heavier guns read "boomy", lighter ones "tight".
-      const raw = Math.random() * 2 - 1;
-      lp += (raw - lp) * o.lowpass;
-      const body = lp * Math.exp(-t * o.noiseDecay) * o.noiseLevel;
-      // Low sine punch with a downward pitch sweep for the "thump".
-      const sweepFreq = o.punchFreq * (1 + o.sweep * Math.exp(-t * 35));
-      const punch = Math.sin(2 * Math.PI * sweepFreq * t) * Math.exp(-t * o.punchDecay) * o.bodyLevel;
-      data[i] = Math.tanh((crack + body + punch) * 1.4) * 0.6;
-    }
-    return buffer;
-  }
-
   /**
    * EXPLOSION — rockets, barrels, the tactical nuke.
    *
@@ -1351,6 +1377,7 @@ class SoundManager {
     // Route through the master bus (lowpass-muffle chain) when available so the
     // slow-mo effect can muffle every voice; fall back to direct out otherwise.
     gainNode.connect(this.masterBus ?? this.audioContext.destination);
+    this.attachSend(gainNode, soundName);
 
     // Track active sources for cleanup
     this.activeSources.add(source);
@@ -1391,6 +1418,7 @@ class SoundManager {
     fx: number, fy: number, fz: number,
     ux: number, uy: number, uz: number,
   ): void {
+    this.listenerX = px; this.listenerY = py; this.listenerZ = pz;
     const ctx = this.audioContext;
     if (!ctx) return;
     const l = ctx.listener;
@@ -1460,14 +1488,30 @@ class SoundManager {
     gainNode.gain.value = this.masterVolume * volume;
 
     source.connect(gainNode);
-    gainNode.connect(panner);
+    // Air absorption: far sources lose their highs (a distant shot is a
+    // thud, not a crack). Near sounds skip the extra node.
+    const dx = x - this.listenerX, dy = y - this.listenerY, dz = z - this.listenerZ;
+    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    let air: BiquadFilterNode | null = null;
+    if (dist > 12) {
+      air = this.audioContext.createBiquadFilter();
+      air.type = 'lowpass';
+      air.frequency.value = Math.max(1100, 20000 * Math.exp(-dist / 85));
+      air.Q.value = 0.5;
+      gainNode.connect(air);
+      air.connect(panner);
+    } else {
+      gainNode.connect(panner);
+    }
     panner.connect(this.masterBus ?? this.audioContext.destination);
+    // Distant sources are relatively more reverberant.
+    this.attachSend(gainNode, soundName, 0.55 + 0.45 * Math.min(1, dist / 60));
 
     this.activeSources.add(source);
     source.onended = () => {
       this.activeSources.delete(source);
       // Explicit disconnect so the panner can't linger in the graph.
-      try { panner.disconnect(); } catch { /* already torn down */ }
+      try { panner.disconnect(); air?.disconnect(); } catch { /* already torn down */ }
     };
     source.start(0);
   }
@@ -1539,6 +1583,101 @@ class SoundManager {
     };
     voice.setVolume(volume);
     return voice;
+  }
+
+  /** Select the reverb acoustics (SoundDesign.ACOUSTICS key, e.g. 'desert'). */
+  setEnvironment(name: string): void {
+    if (!ACOUSTICS[name]) name = 'forest';
+    if (name === this.environment && this.convolver?.buffer) return;
+    this.environment = name;
+    this.applyEnvironment();
+  }
+
+  private applyEnvironment(): void {
+    if (!this.audioContext || !this.convolver) return;
+    let ir = this.impulses.get(this.environment);
+    if (!ir) {
+      ir = createImpulse(this.audioContext, this.audioContext.sampleRate, ACOUSTICS[this.environment], 0x2e7 + this.environment.length * 101);
+      this.impulses.set(this.environment, ir);
+    }
+    this.convolver.buffer = ir;
+  }
+
+  /** How much of a voice feeds the environment reverb, by sound family. */
+  private reverbSendFor(name: string): number {
+    if (name.startsWith('shoot')) return 0.42;
+    if (name.startsWith('explosion')) return 0.6;
+    if (name.startsWith('impact_')) return 0.24;
+    if (name.startsWith('thunder')) return 0.22;
+    if (name.startsWith('enemy_') || name.startsWith('boss_')) return 0.26;
+    if (name.startsWith('robot_step')) return 0.16;
+    if (name.startsWith('step_') || name.startsWith('land_')) return 0.06;
+    if (name.startsWith('melee_')) return 0.18;
+    if (name === 'hit' || name === 'enemyHit' || name === 'enemyDeath') return 0.16;
+    if (name.startsWith('reload_') || name === 'casing') return 0.06;
+    if (name.startsWith('bird') || name === 'owl' || name === 'crow' || name === 'howl'
+      || name === 'hawk' || name === 'cricket' || name === 'frog' || name === 'radio') return 0.3;
+    if (name.startsWith('whizz')) return 0.12;
+    if (name === 'emp_blast' || name === 'thermite_ignite') return 0.5;
+    if (name.startsWith('grenade_bounce')) return 0.14;
+    if (name === 'decoy_ping') return 0.3;
+    if (name.startsWith('robot_collapse')) return 0.3;
+    if (name.startsWith('robot_powerdown')) return 0.2;
+    if (name === 'body_fall') return 0.12;
+    return 0;
+  }
+
+  private attachSend(from: AudioNode, name: string, scale = 1): void {
+    const send = this.reverbSendFor(name) * scale;
+    if (send <= 0 || !this.reverbIn || !this.audioContext) return;
+    const g = this.audioContext.createGain();
+    g.gain.value = send;
+    from.connect(g);
+    g.connect(this.reverbIn);
+  }
+
+  /** Pick one of `count` numbered variants of `prefix`, never the same twice running. */
+  private variant(prefix: string, count: number): string {
+    const last = this.lastVariant.get(prefix) ?? -1;
+    let v = Math.floor(Math.random() * count);
+    if (v === last) v = (v + 1) % count;
+    this.lastVariant.set(prefix, v);
+    return `${prefix}_${v}`;
+  }
+
+  /** A footstep on `surface` (2D — it's the listener's own feet). */
+  playFootstep(surface: Surface, volume: number, rate = 1): void {
+    this.play(this.variant(`step_${surface}`, 4), volume, false, rate * (0.94 + Math.random() * 0.12));
+  }
+
+  /** Landing from a jump / drop on `surface`. */
+  playLanding(surface: Surface, volume: number): void {
+    this.play(`land_${surface}`, volume, false, 0.92 + Math.random() * 0.12);
+  }
+
+  /** A robot's steel foot planting at a world position. */
+  playRobotStep(x: number, y: number, z: number, heavy: boolean, volume: number, rate = 1): void {
+    this.playAt(this.variant(heavy ? 'robot_step_heavy' : 'robot_step_light', 3), x, y, z, volume,
+      rate * (0.93 + Math.random() * 0.14), { refDistance: heavy ? 10 : 6, maxDistance: 90 });
+  }
+
+  /** Melee: the swing, and the steel crunch when it connects. */
+  playMeleeSwing(volume = 0.6): void {
+    this.play(this.variant('melee_swing', 2), volume, false, 0.95 + Math.random() * 0.1);
+  }
+
+  playMeleeHit(volume = 0.85): void {
+    this.play(this.variant('melee_hit', 2), volume, false, 0.92 + Math.random() * 0.14);
+  }
+
+  /** Pick a numbered variant (never the same twice running) — public for callers. */
+  pickVariant(prefix: string, count: number): string {
+    return this.variant(prefix, count);
+  }
+
+  /** An energy bolt tearing past the listener at (x, y, z). */
+  playWhizz(x: number, y: number, z: number, volume = 0.7): void {
+    this.playAt(this.variant('whizz', 2), x, y, z, volume, 0.9 + Math.random() * 0.25, { refDistance: 3, maxDistance: 30 });
   }
 
   setVolume(volume: number): void {

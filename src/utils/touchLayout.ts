@@ -15,7 +15,7 @@ import { useSyncExternalStore } from 'react';
 
 export type TouchControlId =
   | 'fire' | 'reload' | 'jump' | 'ability' | 'crouch' | 'melee' | 'power'
-  | 'weapon' | 'pause';
+  | 'grenade' | 'weapon' | 'pause';
 
 export interface TouchHudLayout {
   /** Control CENTER as a fraction of the viewport (x = width, y = height). */
@@ -32,7 +32,7 @@ export interface TouchHudLayout {
 
 /** Draggable order (also the order chips are stacked in the editor legend). */
 export const TOUCH_CONTROL_ORDER: TouchControlId[] = [
-  'fire', 'jump', 'ability', 'melee', 'reload', 'crouch', 'power', 'weapon', 'pause',
+  'fire', 'jump', 'ability', 'melee', 'reload', 'crouch', 'power', 'grenade', 'weapon', 'pause',
 ];
 
 // Reference on-screen size (px) each control occupies in-game — used by the
@@ -46,6 +46,7 @@ export const CONTROL_BASE_SIZE: Record<TouchControlId, { w: number; h: number }>
   crouch: { w: 52, h: 52 },
   melee: { w: 52, h: 52 },
   power: { w: 52, h: 52 },
+  grenade: { w: 52, h: 52 },
   weapon: { w: 128, h: 48 },
   pause: { w: 48, h: 48 },
 };
@@ -67,6 +68,8 @@ export const DEFAULT_LAYOUT: TouchHudLayout = {
     crouch: { x: 0.80, y: 0.74 },
     melee: { x: 0.70, y: 0.88 },
     power: { x: 0.80, y: 0.88 },
+    // Grenade starts a third column, beside melee (still clear of the stick).
+    grenade: { x: 0.60, y: 0.88 },
     weapon: { x: 0.82, y: 0.095 },
     pause: { x: 0.955, y: 0.095 },
   },

@@ -5,9 +5,13 @@
  * cap, chest emblem, helmet/mask, and accessories on top of a shared
  * rig so silhouettes read distinctly at distance while staying cheap.
  *
- * Geometry style: low-poly with bevels (octagonal extrudes for cubes).
- * Materials use flat shading + low metalness for the stylized voxel-
- * with-bevels look.
+ * Geometry style: soft-edged ROUNDED boxes with smooth normals (every edge
+ * catches a rim of light, the way stitched fabric and moulded kit do) and
+ * world-scaled UVs, so the shared cloth/plate detail keeps one texel density
+ * on a torso and a strap alike. The shared humanoid carries real field kit
+ * — collar, cummerbund, belt pouches, gloves with cuffs, thumbs and knuckle
+ * guards, elbow and knee pads, cargo pockets, boot soles and toe caps —
+ * merged per joint + material so the extra detail costs a handful of draws.
  *
  * Returned bodies expose joint groups (leftShoulder, rightShoulder,
  * leftElbow, rightElbow, leftHip, rightHip, headJoint, leftHand, rightHand)
@@ -19,6 +23,8 @@
  * gun in every avatar's left hand).
  */
 import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { applyRobotSurface, type RobotSurfaceKind } from './RobotSurface';
 
 export type ClassId =
@@ -71,6 +77,8 @@ export interface HumanoidBody {
   rightHand: THREE.Mesh;
   leftHip: THREE.Group;
   rightHip: THREE.Group;
+  leftKnee: THREE.Group;
+  rightKnee: THREE.Group;
 }
 
 interface MatOpts {
@@ -100,7 +108,8 @@ export function mat(
       ? (opts.emissive instanceof THREE.Color ? opts.emissive.clone() : new THREE.Color(opts.emissive))
       : new THREE.Color(0x000000),
     emissiveIntensity: opts.emissiveI ?? 0,
-    flatShading: true,
+    // Smooth: the rounded geometry's bevels carry the form now.
+    flatShading: false,
   });
   // ── SURFACE DETAIL ────────────────────────────────────────────────────
   // These characters were flat-coloured chamfered blocks — no maps at all —
@@ -123,10 +132,32 @@ export function mat(
 }
 
 /**
- * Chamfered box — ExtrudeGeometry with bevels for the low-poly look.
- * Cross-section is an octagon (cut corners), extruded vertically with
- * beveled top/bottom too. Use for any body part where you want the
- * silhouette to read as "cubic but with cut edges".
+ * Soft-edged box: a RoundedBoxGeometry (smooth normals, so the bevel reads
+ * as a moulded / stitched edge) with its per-face 0..1 UVs rescaled to WORLD
+ * units — the surface maps then keep one density across every part, the way
+ * the old extrudes' world-space UVs did. Large parts get a second bevel ring.
+ */
+function softBoxGeometry(w: number, h: number, d: number, bevel: number): THREE.BufferGeometry {
+  const r = Math.max(0.004, Math.min(bevel, Math.min(w, h, d) / 2 - 0.004));
+  const seg = Math.max(w, h, d) >= 0.9 ? 2 : 1;
+  const geo = new RoundedBoxGeometry(w, h, d, seg, r);
+  const uv = geo.getAttribute('uv') as THREE.BufferAttribute;
+  const perFace = uv.count / 6;
+  // Face order (BoxGeometry): +x, −x (u→depth, v→height), +y, −y (u→width,
+  // v→depth), +z, −z (u→width, v→height).
+  const du = [d, d, w, w, w, w];
+  const dv = [h, h, d, d, h, h];
+  for (let i = 0; i < uv.count; i++) {
+    const f = Math.min(5, Math.floor(i / perFace));
+    uv.setXY(i, uv.getX(i) * du[f], uv.getY(i) * dv[f]);
+  }
+  uv.needsUpdate = true;
+  return geo;
+}
+
+/**
+ * Rounded box part — the building block of every body part, helmet and
+ * accessory ("chamfer" for history: these used to be octagonal extrudes).
  */
 export function chamfer(
   w: number, h: number, d: number,
@@ -135,40 +166,7 @@ export function chamfer(
   x = 0, y = 0, z = 0,
 ): THREE.Mesh {
   const b = bevel ?? Math.min(w, h, d) * 0.12;
-  const innerW = Math.max(0.02, w - 2 * b);
-  const innerD = Math.max(0.02, d - 2 * b);
-  const cornerCut = Math.min(b, innerW / 2 - 0.01, innerD / 2 - 0.01);
-  const hw = innerW / 2, hd = innerD / 2;
-
-  const s = new THREE.Shape();
-  s.moveTo(-hw + cornerCut, -hd);
-  s.lineTo(hw - cornerCut,  -hd);
-  s.lineTo(hw,              -hd + cornerCut);
-  s.lineTo(hw,              hd - cornerCut);
-  s.lineTo(hw - cornerCut,  hd);
-  s.lineTo(-hw + cornerCut, hd);
-  s.lineTo(-hw,             hd - cornerCut);
-  s.lineTo(-hw,             -hd + cornerCut);
-  s.closePath();
-
-  const innerH = Math.max(0.01, h - 2 * b);
-  const geo = new THREE.ExtrudeGeometry(s, {
-    depth: innerH,
-    bevelEnabled: true,
-    bevelSegments: 1,
-    bevelSize: b,
-    bevelThickness: b,
-    curveSegments: 1,
-  });
-  geo.rotateX(-Math.PI / 2);
-  geo.computeBoundingBox();
-  const bb = geo.boundingBox!;
-  geo.translate(
-    -(bb.min.x + bb.max.x) / 2,
-    -(bb.min.y + bb.max.y) / 2,
-    -(bb.min.z + bb.max.z) / 2,
-  );
-
+  const geo = softBoxGeometry(w, h, d, b);
   const mesh = new THREE.Mesh(geo, material);
   mesh.position.set(x, y, z);
   mesh.castShadow = true;
@@ -192,6 +190,35 @@ export function group(name?: string): THREE.Group {
   const g = new THREE.Group();
   if (name) g.name = name;
   return g;
+}
+
+/** One detail piece for `kit`: size, position, optional rotation (radians). */
+type KitPart = [w: number, h: number, d: number, x: number, y: number, z: number, rx?: number, ry?: number, rz?: number];
+
+/**
+ * Many small soft-edged pieces sharing one material, merged into ONE mesh on
+ * `parent` — field kit (pads, pouches, cuffs, soles) at the cost of a single
+ * draw per joint + material.
+ */
+function kit(parent: THREE.Object3D, material: THREE.Material, parts: KitPart[], bevel = 0.03): THREE.Mesh {
+  const m4 = new THREE.Matrix4();
+  const q = new THREE.Quaternion();
+  const e = new THREE.Euler();
+  const one = new THREE.Vector3(1, 1, 1);
+  const geos = parts.map(([w, h, d, x, y, z, rx = 0, ry = 0, rz = 0]) => {
+    const g = softBoxGeometry(w, h, d, bevel);
+    g.clearGroups();
+    q.setFromEuler(e.set(rx, ry, rz));
+    g.applyMatrix4(m4.compose(new THREE.Vector3(x, y, z), q, one));
+    return g;
+  });
+  const merged = mergeGeometries(geos, false) ?? geos[0];
+  if (merged !== geos[0]) geos.forEach((g) => g.dispose());
+  const mesh = new THREE.Mesh(merged, material);
+  mesh.castShadow = true;
+  mesh.receiveShadow = false;
+  parent.add(mesh);
+  return mesh;
 }
 
 interface Rig {
@@ -225,8 +252,11 @@ const _R: Partial<Rig> = {
   foreArmH: 0.62,
   handW: 0.5, handH: 0.52, handD: 0.56,
   wristGap: 0.05,
-  neckW: 0.42, neckH: 0.22, neckD: 0.5,
-  headW: 1.0, headH: 1.0, headD: 1.05,
+  // Head trimmed from a 1.0 cube toward heroic proportions (about 1:5 of
+  // the figure) on a slightly longer neck: the single biggest "toy to
+  // soldier" cue. Every helmet / visor is built relative to these.
+  neckW: 0.42, neckH: 0.26, neckD: 0.5,
+  headW: 0.86, headH: 0.88, headD: 0.9,
   topCapW: 0.55, topCapH: 0.5, topCapD: 0.55,
 };
 _R.bootTopY  = _R.bootH!;
@@ -267,12 +297,31 @@ function buildArm(side: -1 | 1, palette: Palette, materials: THREE.Material[]) {
   elbow.add(fore);
 
   const handMat = mat(palette.hand ?? palette.dark, { rough: 0.8 }, materials);
+  const handY = -RIG.foreArmH - RIG.wristGap - RIG.handH / 2;
   const hand = chamfer(RIG.handW, RIG.handH, RIG.handD, handMat, 0.07,
-    0, -RIG.foreArmH - RIG.wristGap - RIG.handH / 2, 0);
+    0, handY, 0);
   elbow.add(hand);
+
+  // Glove: a padded cuff over the wrist, a thumb on the inner side and the
+  // finger roll across the front, all in the glove's own material.
+  kit(elbow, handMat, [
+    [RIG.upperArmW * 0.92 + 0.07, 0.13, RIG.upperArmD * 0.92 + 0.07, 0, -RIG.foreArmH + 0.05, 0],
+    [0.15, 0.27, 0.2, side * (RIG.handW / 2 + 0.03), handY + 0.05, RIG.handD * 0.16, 0, 0, side * -0.22],
+    [RIG.handW * 0.94, 0.17, 0.1, 0, handY - RIG.handH * 0.3, RIG.handD / 2 - 0.01],
+  ], 0.035);
+  // Hard parts: knuckle guard across the back of the fist and a moulded
+  // elbow pad at the point of the elbow.
+  const padMat = mat(0x1b1d21, { rough: 0.62, metal: 0.05, surface: 'plate' }, materials);
+  kit(elbow, padMat, [
+    [RIG.handW * 0.8, 0.12, 0.09, 0, handY + RIG.handH * 0.12, RIG.handD / 2 + 0.03],
+    [RIG.upperArmW * 0.74, 0.26, 0.1, 0, -0.03, -(RIG.upperArmD * 0.92) / 2 - 0.03],
+  ], 0.035);
 
   return { joint, elbow, upper, hand };
 }
+
+/** Knee height below the hip joint (model units) — thigh ≈ shin, like a person. */
+export const KNEE_DROP = 0.72;
 
 function buildLeg(side: -1 | 1, palette: Palette, materials: THREE.Material[]) {
   // +1 = anatomical right, at −X (matches the arms).
@@ -282,17 +331,49 @@ function buildLeg(side: -1 | 1, palette: Palette, materials: THREE.Material[]) {
     RIG.hipY, 0,
   );
 
+  // THIGH (hip → knee) and a KNEE pivot carrying the shin + boot, so a stride
+  // bends the leg and a crouch folds it instead of squashing the body. The two
+  // trouser segments overlap a touch across the joint so a bent knee never
+  // opens a gap.
   const thighMat = mat(palette.pants ?? palette.dark, { rough: 0.78 }, materials);
-  const thigh = chamfer(RIG.thighW, RIG.thighH, RIG.thighD, thighMat, 0.08,
-    0, -RIG.thighH / 2, 0);
+  const upperH = KNEE_DROP + 0.02;
+  const thigh = chamfer(RIG.thighW, upperH, RIG.thighD, thighMat, 0.08,
+    0, -upperH / 2, 0);
   joint.add(thigh);
+
+  const knee = group(side === 1 ? 'rightKnee' : 'leftKnee');
+  knee.position.set(0, -KNEE_DROP, 0);
+  joint.add(knee);
+  const shinH = RIG.thighH - KNEE_DROP;          // trouser below the knee
+  const shin = chamfer(RIG.thighW * 0.94, shinH + 0.08, RIG.thighD * 0.94, thighMat, 0.07,
+    0, -(shinH + 0.08) / 2 + 0.04, 0);
+  knee.add(shin);
 
   const bootMat = mat(palette.boot ?? new THREE.Color(0x141518), { rough: 0.82 }, materials);
   const boot = chamfer(RIG.bootW, RIG.bootH, RIG.bootD, bootMat, 0.08,
-    0, -RIG.thighH - RIG.bootH / 2, 0.05);
-  joint.add(boot);
+    0, -shinH - RIG.bootH / 2, 0.05);
+  knee.add(boot);
 
-  return { joint, thigh, boot };
+  // Trouser detail: a cargo pocket on the OUTER thigh (−X is outward for the
+  // right leg); a padded boot collar where the trouser tucks in.
+  kit(joint, thighMat, [
+    [0.07, 0.38, RIG.thighD * 0.5, -side * (RIG.thighW / 2 + 0.03), -RIG.thighH * 0.48, 0.02],
+  ], 0.03);
+  kit(knee, thighMat, [
+    [RIG.bootW + 0.05, 0.11, RIG.bootD * 0.74, 0, -shinH - 0.05, 0.0],
+  ], 0.03);
+  // Rubber: knee pad over the joint, a sole that lips past the upper, toe
+  // cap, heel counter — all riding the shin.
+  const footY = -shinH - RIG.bootH;
+  const rubberMat = mat(0x111214, { rough: 0.88, surface: 'plate' }, materials);
+  kit(knee, rubberMat, [
+    [RIG.thighW * 0.78, 0.32, 0.1, 0, -0.04, RIG.thighD / 2 + 0.03],
+    [RIG.bootW + 0.07, 0.1, RIG.bootD + 0.07, 0, footY + 0.05, 0.07],
+    [RIG.bootW * 0.88, RIG.bootH * 0.42, 0.13, 0, footY + RIG.bootH * 0.3, 0.05 + RIG.bootD / 2 + 0.01],
+    [RIG.bootW * 0.8, RIG.bootH * 0.38, 0.1, 0, footY + RIG.bootH * 0.3, 0.05 - RIG.bootD / 2 - 0.01],
+  ], 0.035);
+
+  return { joint, knee, thigh, boot };
 }
 
 export function buildHumanoid(palette: Palette): HumanoidBody {
@@ -344,6 +425,18 @@ export function buildHumanoid(palette: Palette): HumanoidBody {
     0, RIG.torsoTopY + RIG.neckH / 2, 0);
   root.add(neck);
 
+  // Load-bearing kit in nylon: a padded collar, cummerbund panels down the
+  // flanks (inside the arms' swing) and two pouches riding the rear belt —
+  // placed clear of the chest, where each class wears its own identity.
+  const gearMat = mat((palette.belt ?? palette.dark).clone().lerp(palette.base, 0.18), { rough: 0.86 }, materials);
+  kit(root, gearMat, [
+    [RIG.neckW + 0.26, 0.14, RIG.neckD + 0.26, 0, RIG.torsoTopY + 0.04, 0],
+    [0.045, RIG.torsoH * 0.55, RIG.torsoD * 0.8, RIG.torsoW / 2 + 0.012, RIG.beltTopY + RIG.torsoH * 0.32, 0],
+    [0.045, RIG.torsoH * 0.55, RIG.torsoD * 0.8, -(RIG.torsoW / 2 + 0.012), RIG.beltTopY + RIG.torsoH * 0.32, 0],
+    [0.28, 0.32, 0.2, 0.6, RIG.thighTopY + RIG.beltH / 2 - 0.06, -RIG.torsoD / 2 + 0.06],
+    [0.28, 0.32, 0.2, -0.6, RIG.thighTopY + RIG.beltH / 2 - 0.06, -RIG.torsoD / 2 + 0.06],
+  ], 0.035);
+
   // Head joint (head + visor + top cap attach here)
   const headJoint = group('headJoint');
   headJoint.position.set(0, RIG.neckTopY, 0);
@@ -382,6 +475,8 @@ export function buildHumanoid(palette: Palette): HumanoidBody {
     rightHand: rightArm.hand,
     leftHip: leftLeg.joint,
     rightHip: rightLeg.joint,
+    leftKnee: leftLeg.knee,
+    rightKnee: rightLeg.knee,
   };
 }
 
@@ -1133,6 +1228,8 @@ function attachJoints(root: THREE.Group, body: HumanoidBody): void {
     rightElbow: body.rightElbow,
     leftHip: body.leftHip,
     rightHip: body.rightHip,
+    leftKnee: body.leftKnee,
+    rightKnee: body.rightKnee,
     leftHand: body.leftHand,
     rightHand: body.rightHand,
     headJoint: body.headJoint,

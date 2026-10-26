@@ -280,7 +280,8 @@ export function parseGraphics(raw: unknown, legacyQuality?: unknown): GraphicsSe
 // (pause) are intentionally NOT rebindable and stay fixed.
 export type GameAction =
   | 'moveForward' | 'moveBackward' | 'moveLeft' | 'moveRight'
-  | 'jump' | 'sprint' | 'crouch' | 'dash' | 'melee' | 'reload' | 'usePower' | 'toggleMap' | 'inspect';
+  | 'jump' | 'sprint' | 'crouch' | 'dash' | 'melee' | 'reload' | 'usePower' | 'toggleMap' | 'inspect'
+  | 'grenade' | 'cycleGrenade' | 'prevThrowable';
 
 export type KeyBindings = Record<GameAction, string>;
 
@@ -298,6 +299,9 @@ export const defaultKeyBindings: KeyBindings = {
   usePower: 'KeyE',
   toggleMap: 'KeyM',
   inspect: 'KeyF',
+  grenade: 'KeyG',
+  cycleGrenade: 'KeyT',
+  prevThrowable: 'KeyB',
 };
 
 // Codes that may never be assigned to a rebindable action — they're owned by
@@ -308,10 +312,29 @@ export const RESERVED_KEY_CODES: ReadonlySet<string> = new Set([
   'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
 ]);
 
+/** Free keys handed to a NEW action whose default is already taken. */
+const FALLBACK_CODES = ['KeyG', 'KeyT', 'KeyB', 'KeyX', 'KeyZ', 'KeyH', 'KeyY', 'KeyN', 'KeyJ', 'KeyK', 'KeyL', 'KeyU', 'KeyI', 'KeyO', 'KeyP'];
+
 /** Merge a (possibly partial / legacy) binding set onto the full defaults so
- *  the live bindings always cover every action. */
+ *  the live bindings always cover every action.
+ *
+ *  An action the stored set doesn't mention (one added after the player last
+ *  saved — e.g. the grenade keys) takes its default UNLESS the player already
+ *  rebound something else onto that key; then it falls back to the first free
+ *  key, so an update can never silently make two actions share a key. */
 export function normalizeKeyBindings(partial?: Partial<KeyBindings> | null): KeyBindings {
-  return { ...defaultKeyBindings, ...(partial ?? {}) };
+  const p = partial ?? {};
+  const out = { ...defaultKeyBindings, ...p } as KeyBindings;
+  const actions = Object.keys(defaultKeyBindings) as GameAction[];
+  for (const a of actions) {
+    if (p[a] !== undefined) continue; // explicitly stored → the player's choice
+    const clash = actions.some((o) => o !== a && out[o] === out[a] && (p[o] !== undefined || actions.indexOf(o) < actions.indexOf(a)));
+    if (!clash) continue;
+    const used = new Set(actions.filter((o) => o !== a).map((o) => out[o]));
+    const free = FALLBACK_CODES.find((c) => !used.has(c) && !RESERVED_KEY_CODES.has(c));
+    if (free) out[a] = free;
+  }
+  return out;
 }
 
 export interface UserSettings {

@@ -7,7 +7,7 @@ not a mech game. The enemies are robots: metal, sparks, dents and EMP. It runs e
 client-side on WebGL2 via hand-written Three.js, with peer-to-peer co-op for up to eight
 players. Built solo by Surya and released under the MIT licence.
 
-Key facts: 8 maps (8 distinct biomes) · 8 weapons · 8 character classes · 10 robot enemy
+Key facts: 8 maps (8 distinct biomes) · 8 weapons · 7 throwables · 8 character classes · 10 robot enemy
 archetypes · 34 roguelike wave perks · 31 achievements · 71 daily challenges · 4
 difficulties (Easy, Medium, Hard, Adaptive) · up to 8-player P2P co-op · endless waves,
 no win condition · plays on desktop, phone and tablet · free, MIT licensed, no ads and no
@@ -18,7 +18,7 @@ in-app purchases.
 - [Play Forest Survival](https://forestsurvival.live/): The game itself. Runs in the browser; requires JavaScript and WebGL2.
 - [Guide](https://forestsurvival.live/guide): Hub page linking every topic below, with a primer on each.
 - [How to play](https://forestsurvival.live/how-to-play): Keyboard, mouse and touch controls, the wave loop, active reload, difficulty modes and tips.
-- [Weapons](https://forestsurvival.live/weapons): All 8 weapons with stats, and how unlock scores scale with difficulty.
+- [Weapons](https://forestsurvival.live/weapons): All 8 weapons and 7 throwables with stats, and how unlock scores scale with difficulty.
 - [Character classes](https://forestsurvival.live/characters): All 8 classes with their signature abilities, cooldowns and passives.
 - [Robot enemies](https://forestsurvival.live/enemies): All 10 robot archetypes, Ranged Sentinel turrets, Crowned Elite mini-bosses, the Overlord and the Revenant.
 - [Maps](https://forestsurvival.live/maps): All 8 biome maps, terrain hazards, weather and the ARK-07 relay spires.

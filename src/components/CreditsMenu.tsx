@@ -2,7 +2,7 @@ import {
   Sparkles, Heart, Code2, ExternalLink, X,
   Cpu, Wand2, Palette, Boxes, Zap, ArrowUpRight,
   Database, ShieldCheck, Triangle, GitFork, Crosshair, BookOpen,
-  Gamepad2, Network, Brush, Cog, Bone, HeartHandshake,
+  Gamepad2, Network, Brush, Cog, Bone, HeartHandshake, Orbit, KeyRound,
   type LucideIcon,
 } from 'lucide-react';
 import { detectIsTouch } from '../hooks/useDeviceInfo';
@@ -38,7 +38,8 @@ const STATS: Array<{ value: string; label: string }> = [
 const TECH_STACK: TechItem[] = [
   { label: 'React 19',          hint: 'TypeScript · strict',     icon: Code2,   accent: '#38bdf8' },
   { label: 'Three.js',          hint: 'r180 · WebGL2',           icon: Boxes,   accent: '#34d399' },
-  { label: 'Rapier Physics',    hint: 'Ragdolls · WASM solver',  icon: Bone,    accent: '#fb7185' },
+  { label: 'Rapier Physics',    hint: 'Ragdolls · throwables · debris · brass', icon: Bone, accent: '#fb7185' },
+  { label: 'Motion',            hint: 'Springs · exits · count-ups', icon: Orbit, accent: '#f472b6' },
   // @react-three/fiber and @react-three/drei were credited here but never
   // imported anywhere in the codebase — the scene is hand-written Three.js with
   // no reconciler between the game loop and the GPU. Both packages have been
@@ -46,6 +47,7 @@ const TECH_STACK: TechItem[] = [
   { label: 'three.js Postprocessing', hint: 'Bloom · GTAO · ACES · SMAA · God-rays · CAS', icon: Wand2,   accent: '#c084fc' },
   { label: 'Convex',            hint: 'Realtime DB · serverless', icon: Database, accent: '#f97316' },
   { label: 'Convex Auth',       hint: 'Accounts · sessions',     icon: ShieldCheck, accent: '#22d3ee' },
+  { label: 'Lucia',             hint: 'Scrypt password hashing', icon: KeyRound, accent: '#a3e635' },
   { label: 'Tailwind + Lucide', hint: 'Design system',           icon: Palette, accent: '#fbbf24' },
   { label: 'PeerJS',            hint: 'P2P multiplayer',         icon: Cpu,     accent: '#f87171' },
   { label: 'Vite',              hint: 'HMR · ESBuild',           icon: Zap,     accent: '#fb923c' },

@@ -1,46 +1,64 @@
 import * as THREE from 'three';
-// Types only — erased at build time, so importing them costs nothing in the
-// bundle. The engine itself is pulled in lazily via dynamic import() inside
-// init(), so the ~1 MB physics WASM never touches the menu / first paint and
-// is only fetched the first time a solo game with ragdolls actually starts.
+// Types only — erased at build time. The engine is loaded lazily by the
+// shared PhysicsWorld, so the physics WASM never touches the menu.
 import type * as RAPIER from '@dimforge/rapier3d-compat';
+import { GROUP_DEBRIS, GROUP_RAGDOLL, GROUP_THROWN, GROUP_WORLD, groups, type PhysicsWorld } from './PhysicsWorld';
 
 /**
- * RagdollSystem — engine-grade enemy-death ragdolls backed by Rapier.
+ * RagdollSystem — engine-grade robot-death ragdolls on the shared Rapier world.
  *
- * WHY THIS EXISTS (and why it's scoped the way it is):
- *   The rest of the game's "physics" is featherlight, hand-rolled kinematic
- *   integration (bullets, casings, gibs, player movement) and is already about
- *   as cheap as it gets — moving any of it into a rigid-body engine would only
- *   ADD cost. Ragdolls are the one place a real solver earns its keep: corpses
- *   tumble with a true inertia tensor, drape over each other, settle into
- *   stable rest poses, and go to sleep (≈ free) once still — none of which the
- *   single-velocity "ragdoll-lite" launcher could do.
+ * Every corpse is a real articulated body: a compound chassis with hinged
+ * shoulders, hips and knees that topple, fold and settle into whatever pose
+ * the dead machine actually fell into. They share PhysicsWorld with the
+ * throwables and debris, so corpses rest on the VISUAL ground (not a hidden
+ * plane under raised terrain), slump against tree trunks and rocks, get
+ * shoved by blasts alongside every loose gib, and sleep (≈ free) once still.
  *
- * HOW IT STAYS CHEAP (so it never regresses the thing it's part of):
- *   • Lazy-loaded   — the WASM is dynamic-import()ed on first solo game start;
- *                     the menu and initial bundle are untouched.
- *   • Capped        — at most `maxActive` live bodies; the oldest corpse is
- *                     recycled when the cap is hit (it was already fading out).
- *   • Sleeps        — settled corpses are slept by Rapier and cost ~nothing.
- *   • Stepped only when ≥1 corpse is active, with the game's own (slow-mo
- *     scaled) delta so ragdolls obey bullet-time exactly like everything else.
- *   • Graceful      — until the WASM is ready (or if it fails to load at all),
- *     spawn() returns -1 and the caller transparently falls back to the old
- *     lightweight death integrator. Nothing hard-depends on Rapier being there.
- *
- * The corpse mesh is driven as a SINGLE compound body (a capsule) rather than a
- * fully articulated per-limb skeleton: the enemy meshes are pooled and reused,
- * so re-parenting their limbs into world space every death would be both a GC
- * and a correctness hazard. One body per corpse gives real-world collisions,
- * real tumbling and corpse-on-corpse piling without ever touching the pool's
- * mesh hierarchy — we only READ the body transform and copy it onto the group.
+ * Kept cheap: capped (the oldest corpse is recycled at the cap — it was
+ * already fading), no corpse-to-corpse contacts (no tangles), and graceful —
+ * until the WASM is ready spawn() returns -1 and the caller falls back to the
+ * lightweight scripted death. The pooled enemy meshes are never re-parented:
+ * we only READ body transforms and copy them onto the group and its limbs.
  */
+/** One jointed limb of an articulated robot ragdoll. */
+export interface RagdollLimbSpec {
+  /** Which body it hangs from: -1 = the torso, else the index of an earlier limb. */
+  parent: number;
+  /** Joint position in the PARENT body's frame (model units, pre-scale). */
+  anchor: { x: number; y: number; z: number };
+  /** The limb pivot's world transform at the moment of death. */
+  pos: THREE.Vector3;
+  quat: THREE.Quaternion;
+  /** Segment length hanging down its local −Y (model units) and radius. */
+  length: number;
+  radius: number;
+  /** Hinge range about the local X axis (radians, +X swings the end backward). */
+  min: number;
+  max: number;
+}
+
+/** Everything an articulated corpse needs at spawn (world units, already scaled where noted). */
+export interface RobotRagdollSpec {
+  torsoPos: THREE.Vector3;
+  torsoQuat: THREE.Quaternion;
+  /** Uniform model → world scale of the robot. */
+  scale: number;
+  limbs: RagdollLimbSpec[];
+  vel: { x: number; y: number; z: number };
+  spin: { x: number; y: number; z: number };
+}
+
+interface Articulated {
+  torso: RAPIER.RigidBody;
+  limbs: RAPIER.RigidBody[];
+  joints: RAPIER.ImpulseJoint[];
+}
+
+/** Ragdoll parts hit the world, throwables and debris — never another corpse (no tangles). */
+const RAGDOLL_GROUPS = groups(GROUP_RAGDOLL, GROUP_WORLD | GROUP_THROWN | GROUP_DEBRIS);
+
 export class RagdollSystem {
-  private rapier: typeof RAPIER | null = null;
-  private world: RAPIER.World | null = null;
-  private _ready = false;
-  private _initStarted = false;
+  private readonly physics: PhysicsWorld;
 
   /** id → live rigid body. */
   private readonly bodies = new Map<number, RAPIER.RigidBody>();
@@ -49,47 +67,18 @@ export class RagdollSystem {
   private nextId = 1;
 
   private readonly maxActive: number;
-  private readonly gravityY: number;
 
-  // Reusable vector-likes for applyRadialImpulse so a blast that shoves several
-  // corpses allocates nothing (Rapier's set*vel accept any {x,y,z}).
-  private readonly _scratchV = { x: 0, y: 0, z: 0 };
-  private readonly _scratchW = { x: 0, y: 0, z: 0 };
+  /** Articulated (jointed) robot corpses, by id — shares the id space + cap. */
+  private readonly articulated = new Map<number, Articulated>();
 
-  constructor(maxActive = 20, gravityY = 18) {
+  constructor(physics: PhysicsWorld, maxActive = 20) {
+    this.physics = physics;
     this.maxActive = maxActive;
-    this.gravityY = gravityY;
   }
 
-  /**
-   * Lazily load Rapier's WASM, build the physics world + static ground, and go
-   * live. Idempotent and safe to call more than once — only the first call does
-   * work. Never throws: a failure (WASM blocked, fetch error) leaves the system
-   * un-ready so callers fall back to the lightweight ragdoll path.
-   */
+  /** Load the shared physics world (idempotent; never throws). */
   async init(): Promise<void> {
-    if (this._initStarted) return;
-    this._initStarted = true;
-    try {
-      const RAPIER = await import('@dimforge/rapier3d-compat');
-      await RAPIER.init();
-      const world = new RAPIER.World({ x: 0, y: -this.gravityY, z: 0 });
-      // Big thin static floor — its TOP face sits exactly at y = 0, matching the
-      // game's flat gameplay ground envelope, so corpses rest where they always
-      // did. Friction + a little restitution give the same tumble-and-settle.
-      const ground = RAPIER.ColliderDesc.cuboid(600, 0.5, 600)
-        .setTranslation(0, -0.5, 0)
-        .setRestitution(0.3)
-        .setFriction(0.85);
-      world.createCollider(ground);
-      this.rapier = RAPIER;
-      this.world = world;
-      this._ready = true;
-    } catch (err) {
-      this._ready = false;
-      // Non-fatal: the caller falls back to the lightweight death integrator.
-      console.warn('[RagdollSystem] Rapier failed to initialise — using lightweight ragdolls.', err);
-    }
+    await this.physics.init();
   }
 
   /**
@@ -103,9 +92,8 @@ export class RagdollSystem {
     sx: number, sy: number, sz: number,
     baseScale: number,
   ): number {
-    const RAPIER = this.rapier;
-    const world = this.world;
-    if (!RAPIER || !world || !this._ready) return -1;
+    const RAPIER = this.physics.R;
+    if (!RAPIER || !this.physics.ready) return -1;
 
     // At the cap, retire the oldest corpse (already near the end of its fade).
     if (this.order.length >= this.maxActive) {
@@ -123,18 +111,119 @@ export class RagdollSystem {
       .setLinearDamping(0.12)
       .setAngularDamping(0.45)
       .setCcdEnabled(true); // don't let a fast launch tunnel through the floor
-    const rb = world.createRigidBody(bodyDesc);
+    const rb = this.physics.createDynamic(bodyDesc);
+    if (!rb) return -1;
 
     const colliderDesc = RAPIER.ColliderDesc.capsule(halfHeight, radius)
       .setRestitution(0.32)
       .setFriction(0.8)
       .setDensity(1.1);
-    world.createCollider(colliderDesc, rb);
+    this.physics.world!.createCollider(colliderDesc, rb);
 
     const id = this.nextId++;
     this.bodies.set(id, rb);
     this.order.push(id);
     return id;
+  }
+
+  /**
+   * Launch an ARTICULATED robot corpse: a compound torso (chassis + head + hip
+   * block) with jointed limbs hanging off it on HINGES — shoulders, hips and
+   * knees swing about their own X axes within real ranges, like the servo
+   * joints they are. The chassis topples, the knees fold, the arms flop and
+   * everything settles into a pose the dead machine actually fell into.
+   * Returns an id, or -1 when the engine isn't ready (caller falls back).
+   */
+  spawnArticulated(spec: RobotRagdollSpec): number {
+    const RAPIER = this.physics.R;
+    const world = this.physics.world;
+    if (!RAPIER || !world || !this.physics.ready) return -1;
+    if (this.order.length >= this.maxActive) {
+      const oldest = this.order.shift();
+      if (oldest !== undefined) this.destroy(oldest);
+    }
+    const k = spec.scale;
+    const q = spec.torsoQuat;
+    const torsoDesc = RAPIER.RigidBodyDesc.dynamic()
+      .setTranslation(spec.torsoPos.x, spec.torsoPos.y, spec.torsoPos.z)
+      .setRotation({ x: q.x, y: q.y, z: q.z, w: q.w })
+      .setLinvel(spec.vel.x, spec.vel.y, spec.vel.z)
+      .setAngvel(spec.spin)
+      .setLinearDamping(0.1)
+      .setAngularDamping(0.6)
+      .setCcdEnabled(true);
+    const torso = this.physics.createDynamic(torsoDesc);
+    if (!torso) return -1;
+    // Chassis, head, hip block (robot-local offsets × scale).
+    const box = (hx: number, hy: number, hz: number, ox: number, oy: number, oz: number, density: number) =>
+      world.createCollider(RAPIER.ColliderDesc.cuboid(hx * k, hy * k, hz * k)
+        .setTranslation(ox * k, oy * k, oz * k)
+        .setRestitution(0.15).setFriction(0.9).setDensity(density)
+        .setCollisionGroups(RAGDOLL_GROUPS), torso);
+    box(0.5, 0.75, 0.3, 0, 0.75, 0, 1.3);
+    box(0.4, 0.4, 0.4, 0, 1.9, 0, 0.9);
+    box(0.46, 0.2, 0.28, 0, -0.05, 0, 1.2);
+
+    const bodies: RAPIER.RigidBody[] = [];
+    const joints: RAPIER.ImpulseJoint[] = [];
+    for (const limb of spec.limbs) {
+      const lq = limb.quat;
+      const rb = this.physics.createDynamic(RAPIER.RigidBodyDesc.dynamic()
+        .setTranslation(limb.pos.x, limb.pos.y, limb.pos.z)
+        .setRotation({ x: lq.x, y: lq.y, z: lq.z, w: lq.w })
+        .setLinvel(spec.vel.x, spec.vel.y, spec.vel.z)
+        .setLinearDamping(0.1)
+        // Servo friction: the joints resist a little, so limbs swing heavy
+        // instead of whipping like rope.
+        .setAngularDamping(1.6))!;
+      const half = Math.max(0.01, (limb.length / 2 - limb.radius)) * k;
+      world.createCollider(RAPIER.ColliderDesc.capsule(half, limb.radius * k)
+        .setTranslation(0, -limb.length / 2 * k, 0)
+        .setRestitution(0.1).setFriction(0.9).setDensity(1.0)
+        .setCollisionGroups(RAGDOLL_GROUPS), rb);
+      const parent = limb.parent < 0 ? torso : bodies[limb.parent];
+      const params = RAPIER.JointData.revolute(
+        { x: limb.anchor.x * k, y: limb.anchor.y * k, z: limb.anchor.z * k },
+        { x: 0, y: 0, z: 0 },
+        { x: 1, y: 0, z: 0 },
+      );
+      const joint = world.createImpulseJoint(params, parent, rb, true) as RAPIER.RevoluteImpulseJoint;
+      joint.setContactsEnabled(false);
+      joint.setLimits(limb.min, limb.max);
+      bodies.push(rb);
+      joints.push(joint);
+    }
+
+    const id = this.nextId++;
+    this.articulated.set(id, { torso, limbs: bodies, joints });
+    this.order.push(id);
+    return id;
+  }
+
+  /**
+   * Read an articulated corpse: the torso's world transform, and each limb's
+   * world quaternion (in spec order) into `outLimbQuats`. False if recycled.
+   */
+  readArticulated(id: number, outPos: THREE.Vector3, outQuat: THREE.Quaternion, outLimbQuats: THREE.Quaternion[]): boolean {
+    const a = this.articulated.get(id);
+    if (!a) return false;
+    const t = a.torso.translation();
+    outPos.set(t.x, t.y, t.z);
+    const r = a.torso.rotation();
+    outQuat.set(r.x, r.y, r.z, r.w);
+    for (let i = 0; i < a.limbs.length && i < outLimbQuats.length; i++) {
+      const lr = a.limbs[i].rotation();
+      outLimbQuats[i].set(lr.x, lr.y, lr.z, lr.w);
+    }
+    return true;
+  }
+
+  /** Torso speed of an articulated corpse (for the ground-impact thud). */
+  articulatedSpeed(id: number): number {
+    const a = this.articulated.get(id);
+    if (!a) return 0;
+    const v = a.torso.linvel();
+    return Math.hypot(v.x, v.y, v.z);
   }
 
   /**
@@ -153,57 +242,11 @@ export class RagdollSystem {
   }
 
   /**
-   * Shove every live corpse near a blast outward + upward — the physical
-   * "bodies fly from the explosion" feel. Velocity-based (not force-based) so the
-   * result is mass-independent and reads consistently for light fast-bots and
-   * heavy tanks alike, with a smooth distance falloff and a satisfying upward
-   * pop. Solo-only by construction (MP never spawns Rapier corpses, so `bodies`
-   * is empty → no-op) and free when no corpse is in range. `strength` scales the
-   * whole kick (1 = a standard grenade; the nuke/airstrike pass more).
-   * Returns how many corpses were affected.
+   * Shove every loose body near a blast — corpses AND every gib / throwable in
+   * the shared world (see PhysicsWorld.applyRadialImpulse). Returns the count.
    */
   applyRadialImpulse(cx: number, cy: number, cz: number, radius: number, strength = 1): number {
-    const world = this.world;
-    if (!world || !this._ready || this.order.length === 0) return 0;
-    // Corpses just outside the kill radius should still get nudged, so the blast
-    // edge doesn't look like a hard wall.
-    const reach = radius * 1.6;
-    const reachSq = reach * reach;
-    let affected = 0;
-    for (const rb of this.bodies.values()) {
-      const t = rb.translation();
-      const dx = t.x - cx;
-      const dy = t.y - cy;
-      const dz = t.z - cz;
-      const horizSq = dx * dx + dz * dz;
-      if (horizSq > reachSq) continue;
-      const d = Math.sqrt(horizSq);
-      const f = 1 - d / reach;           // 1 at centre → 0 at the edge
-      const ease = f * f;                // bias the kick toward the epicentre
-      // Outward direction (random scatter at the exact centre so a dead-centre
-      // corpse still launches somewhere rather than straight up).
-      let nx: number, nz: number;
-      if (d > 0.01) { nx = dx / d; nz = dz / d; }
-      else { const a = Math.random() * Math.PI * 2; nx = Math.cos(a); nz = Math.sin(a); }
-      // A corpse below the blast centre (typical — bodies are on the ground) gets
-      // a touch more lift so it actually leaves the ground.
-      const lift = dy < 0 ? 1.15 : 1.0;
-      const speed = (6 + 15 * ease) * strength;
-      const up = (5 + 9 * ease) * strength * lift;
-      const v = rb.linvel();
-      this._scratchV.x = v.x + nx * speed;
-      this._scratchV.y = v.y + up;
-      this._scratchV.z = v.z + nz * speed;
-      rb.setLinvel(this._scratchV, true); // `true` wakes a sleeping corpse
-      const av = rb.angvel();
-      const spin = 9 * ease * strength;
-      this._scratchW.x = av.x + (Math.random() - 0.5) * spin;
-      this._scratchW.y = av.y + (Math.random() - 0.5) * spin;
-      this._scratchW.z = av.z + (Math.random() - 0.5) * spin;
-      rb.setAngvel(this._scratchW, true);
-      affected++;
-    }
-    return affected;
+    return this.physics.applyRadialImpulse(cx, cy, cz, radius, strength);
   }
 
   /** Retire a corpse body once its visual has finished fading. */
@@ -215,45 +258,31 @@ export class RagdollSystem {
 
   private destroy(id: number): void {
     const rb = this.bodies.get(id);
-    if (rb && this.world) this.world.removeRigidBody(rb); // also drops its collider
+    if (rb) this.physics.removeDynamic(rb); // also drops its collider
     this.bodies.delete(id);
+    const a = this.articulated.get(id);
+    if (a) {
+      // Removing a body removes its joints with it.
+      for (const l of a.limbs) this.physics.removeDynamic(l);
+      this.physics.removeDynamic(a.torso);
+    }
+    this.articulated.delete(id);
   }
 
   /** Drop every live corpse (game reset / scene teardown). */
   releaseAll(): void {
-    if (this.world) {
-      for (const rb of this.bodies.values()) this.world.removeRigidBody(rb);
+    for (const rb of this.bodies.values()) this.physics.removeDynamic(rb);
+    for (const a of this.articulated.values()) {
+      for (const l of a.limbs) this.physics.removeDynamic(l);
+      this.physics.removeDynamic(a.torso);
     }
     this.bodies.clear();
+    this.articulated.clear();
     this.order.length = 0;
   }
 
-  /**
-   * Advance the simulation by the game's frame delta (already scaled by the
-   * transient + critical-health slow-mo, so corpses dilate in bullet-time too).
-   * No-op while no corpses are live, so an idle field costs literally nothing.
-   * The step is clamped to ≥30 Hz worth of time so a GC/stall spike can't blow
-   * the solver up.
-   */
-  step(dt: number): void {
-    const world = this.world;
-    if (!world || !this._ready || this.order.length === 0) return;
-    // Hold corpses perfectly still on a paused / zero-delta frame (the main
-    // loop already freezes during pause; this is belt-and-braces).
-    if (dt <= 0) return;
-    world.timestep = dt > 1 / 30 ? 1 / 30 : dt;
-    world.step();
-  }
-
-  /** Free the Rapier world + all bodies. Call on scene unmount. */
+  /** Drop every corpse body (the shared world itself is freed by its owner). */
   dispose(): void {
     this.releaseAll();
-    if (this.world) {
-      this.world.free();
-      this.world = null;
-    }
-    this.rapier = null;
-    this._ready = false;
-    this._initStarted = false;
   }
 }

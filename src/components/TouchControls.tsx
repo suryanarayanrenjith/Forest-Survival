@@ -4,14 +4,17 @@ import {
   Crosshair, ChevronsUp, ChevronsRight, ChevronsDown, RotateCw, Zap, Pause,
   Wind, Shield as ShieldIcon, Flame, Heart, Infinity as InfinityIcon, Ghost, Bomb,
   Boxes, Swords, PackageSearch, ChevronDown, Lock, X,
-  Snowflake, Bolt, Waves,
+  Snowflake, Bolt, Waves, Radio, Hand,
   type LucideIcon,
 } from 'lucide-react';
+import { m } from 'motion/react';
 import { touchControls } from '../utils/touchControls';
 import { haptic } from '../utils/haptics';
 import { WEAPONS } from '../types/game';
 import { useTouchLayout, DEFAULT_LAYOUT, type TouchControlId } from '../utils/touchLayout';
+import { gameSettingsManager } from '../utils/GameSettingsManager';
 import type { AbilityHudItem } from './HUD';
+import { GRENADE_HUD } from './throwableHud';
 
 interface TouchControlsProps {
   unlockedWeapons: string[];
@@ -90,6 +93,7 @@ const TouchControls = ({
 
   const dash = abilities.find((a) => a.kind === 'dash');
   const power = abilities.find((a) => a.kind === 'power');
+  const grenade = abilities.find((a) => a.kind === 'grenade');
   // Explicit readiness, NOT a re-derivation from the quantised fill — see
   // AbilityHudItem.ready for why deriving it leaves the button stuck greyed.
   const dashReady = dash?.ready ?? (dash?.cooldown ?? 1) >= 1;
@@ -302,6 +306,10 @@ const TouchControls = ({
         />
       </Positioned>
 
+      <Positioned id="grenade" layout={layout}>
+        <GrenadeButton grenade={grenade} />
+      </Positioned>
+
       {/* ── FIRE (draggable) — primary, under the looking thumb. Firing
           auto-aims to the nearest enemy (and auto-ADS for aim-capable guns),
           so there is no separate aim button. The badge advertises that. ── */}
@@ -491,6 +499,72 @@ const PowerButton = ({
         </div>
       )}
     </button>
+  );
+};
+
+// ── Grenade button ───────────────────────────────────────────────────────────
+// Press-and-HOLD aims (the arm parks cocked and the arc shows, exactly like
+// holding the key on desktop); lifting the thumb throws. The corner chip
+// cycles the grenade kind. Dispatches the player's bound keys.
+const GrenadeButton = ({ grenade }: { grenade?: AbilityHudItem }) => {
+  const kind = grenade?.grenadeKind ?? 'frag';
+  const meta = GRENADE_HUD[kind];
+  const count = grenade?.count ?? 0;
+  const Icon = meta.icon;
+  // Left hand busy with persistent gear (shield / detonator): the button greys
+  // out with the gear's badge, and a refused press shakes it — same rule and
+  // same feedback as the desktop slot. Pressing still goes through App, which
+  // remembers a held thumb and throws the moment the hand frees.
+  const lock = grenade?.handLock ?? null;
+  const LockIcon = lock === 'detonator' ? Radio : lock === 'shield' ? ShieldIcon : Hand;
+  const nonce = grenade?.denyNonce ?? 0;
+  const keyOf = (a: 'grenade' | 'cycleGrenade') => gameSettingsManager.getSetting('keyBindings')[a];
+  const down = (e: React.PointerEvent) => {
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    haptic('tap');
+    dispatchKey('keydown', keyOf('grenade'));
+  };
+  const up = (e: React.PointerEvent) => {
+    e.preventDefault();
+    dispatchKey('keyup', keyOf('grenade'));
+  };
+  return (
+    <m.div
+      key={`deny-${nonce}`}
+      className="pointer-events-none relative"
+      animate={{ x: nonce ? [0, -7, 7, -5, 5, -2, 0] : 0 }}
+      transition={{ duration: 0.42, ease: 'easeOut' }}
+    >
+      <button
+        type="button"
+        aria-label={lock ? `Throw ${meta.label} — left hand busy` : `Throw ${meta.label} grenade (hold to aim)`}
+        onPointerDown={down}
+        onPointerUp={up}
+        onPointerCancel={up}
+        onContextMenu={(e) => e.preventDefault()}
+        className={`pointer-events-auto relative flex h-[52px] w-[52px] flex-col items-center justify-center rounded-2xl border transition-transform active:scale-90 ${
+          lock ? 'border-amber-300/70 bg-black/75' : count > 0 ? 'border-amber-300/50 bg-black/70' : 'border-white/15 bg-black/50 opacity-70'
+        }`}
+      >
+        <Icon className="h-5 w-5" style={{ color: count > 0 && !lock ? meta.color : '#6b7672', opacity: lock ? 0.5 : 1 }} strokeWidth={2.25} />
+        <span className="mt-0.5 text-[8px] font-bold uppercase tracking-wide text-gray-300">{lock ? 'Hand busy' : meta.label}</span>
+        <span className="absolute bottom-0.5 right-1 text-[10px] font-bold tabular-nums text-white">{count}</span>
+        {lock && (
+          <span className="absolute left-1 top-1 flex h-4 w-4 items-center justify-center rounded-md border border-amber-300/70 bg-black/85">
+            <LockIcon className="h-2.5 w-2.5 text-amber-300" strokeWidth={2.5} />
+          </span>
+        )}
+      </button>
+      <button
+        type="button"
+        aria-label="Switch grenade"
+        onPointerDown={(e) => { e.preventDefault(); tapKey(keyOf('cycleGrenade')); }}
+        className="pointer-events-auto absolute -left-2 -top-2 flex h-5 w-5 items-center justify-center rounded-md border border-white/20 bg-black/80 text-[9px] font-bold text-gray-200 active:scale-90"
+      >
+        ⇄
+      </button>
+    </m.div>
   );
 };
 

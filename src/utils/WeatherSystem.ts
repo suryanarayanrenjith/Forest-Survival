@@ -6,15 +6,17 @@ import { LightningBolt } from './Lightning';
 /**
  * WEATHER SYSTEM v5 — a living sky, on par with the renderer.
  *
- * DIRECTOR — a clear-dominant Markov chain over six states:
+ * DIRECTOR — a Markov chain over five states (Auto time of day only — the
+ * fixed Day / Night modes hold a permanently clear sky):
  *
  *     clear ⇄ mist        clear → overcast → drizzle → storm
  *       ↑        ↘           ↑         ↘________↙      │
  *       └──────── overcast ←───────────────────────────┘
  *
  * Fronts BUILD and DECAY through the intermediate states — a storm never
- * strikes out of a blue sky and never vanishes in one step. Clear holds are
- * long and sticky, so runs are mostly sunny by design; each map's climate sets
+ * strikes out of a blue sky and never vanishes in one step. Holds are short
+ * enough that a front rolls through every minute or two (clear spells are
+ * still the longest), so an Auto run genuinely changes; each map's climate sets
  * its storm SPECIES, how storm-prone it is, whether its storms carry lightning
  * (forest/ruins/outpost thunderstorms; volcanic lightning in the ashfall) and
  * whether it breeds dawn mist. Nights run calmer and moodier.
@@ -72,6 +74,8 @@ export interface WeatherMods {
 }
 
 type WeatherState = 'clear' | 'mist' | 'overcast' | 'drizzle' | 'storm';
+/** Wire order for multiplayer sync (index = the `ws` field). */
+const WEATHER_STATES: readonly WeatherState[] = ['clear', 'mist', 'overcast', 'drizzle', 'storm'];
 export type StormKind = 'rain' | 'sandstorm' | 'blizzard' | 'ashfall' | 'spores' | 'wisps';
 
 interface ModsPreset {
@@ -209,6 +213,9 @@ export class WeatherSystem {
   private state: WeatherState = 'clear';
   private holdRemaining = 0;
   private night = false;
+  /** Auto time-of-day = a living, frequently changing sky; the fixed Day /
+   *  Night modes are a deliberate choice of light and stay clear. */
+  private dynamic = true;
   private lastRainEnd = -999;
   private clock = 0;
 
@@ -227,6 +234,12 @@ export class WeatherSystem {
 
   constructor(scene: THREE.Scene) {
     this.scene = scene;
+  }
+
+  /** true = weather rolls (Auto time of day); false = permanently clear
+   *  (fixed Day / Night). Call before setClimate. */
+  setDynamic(dynamic: boolean): void {
+    this.dynamic = dynamic;
   }
 
   /** Particle density (the preset's particleDensity). Call before setClimate. */
@@ -257,6 +270,33 @@ export class WeatherSystem {
 
   getStormKind(): StormKind {
     return this.climate.storm;
+  }
+
+  /** The director's current state (dev hooks / diagnostics). */
+  getState(): WeatherState {
+    return this.state;
+  }
+
+  /** Current state as a wire index (0 clear … 4 storm) for multiplayer sync. */
+  getStateIndex(): number {
+    return WEATHER_STATES.indexOf(this.state);
+  }
+
+  /**
+   * Multiplayer guest: mirror the host's sky. Blends like a local change
+   * (never snaps) and parks the local director so it never rolls on its own.
+   */
+  follow(index: number): void {
+    this.holdRemaining = 1e9;
+    const st = WEATHER_STATES[index];
+    if (!st || st === this.state) return;
+    const was = this.state;
+    this.state = st;
+    this.target = this.presetFor(st);
+    if ((was === 'storm' || was === 'drizzle') && this.climate.storm === 'rain'
+      && (st === 'overcast' || st === 'clear')) {
+      this.lastRainEnd = this.clock;
+    }
   }
 
   /** Drizzle = a light version of the map's storm species. */
@@ -291,14 +331,15 @@ export class WeatherSystem {
     }
   }
 
-  /** Clear breathes LONG (the resting state); the rest are bounded bands. */
+  /** Bounded holds so the sky keeps moving: fronts arrive every minute or
+   *  two, clear spells still the longest. */
   private holdSecondsFor(state: WeatherState): number {
     switch (state) {
-      case 'storm': return 30 + Math.random() * 32;
-      case 'drizzle': return 22 + Math.random() * 26;
-      case 'overcast': return 28 + Math.random() * 34;
-      case 'mist': return 45 + Math.random() * 50;
-      default: return 75 + Math.random() * 80;
+      case 'storm': return 24 + Math.random() * 18;
+      case 'drizzle': return 18 + Math.random() * 16;
+      case 'overcast': return 18 + Math.random() * 18;
+      case 'mist': return 26 + Math.random() * 22;
+      default: return 34 + Math.random() * 36;
     }
   }
 
@@ -310,10 +351,11 @@ export class WeatherSystem {
   private rollNextState(previous: WeatherState | null): WeatherState {
     const s = this.climate.storminess * (this.night ? 0.6 : 1);
     const m = this.climate.mistiness * (this.night ? 1.3 : 1);
+    if (!this.dynamic) return 'clear';
     if (previous === null) {
       const r = Math.random();
-      if (r < 0.74) return 'clear';
-      if (r < 0.74 + 0.12 * m) return 'mist';
+      if (r < 0.55) return 'clear';
+      if (r < 0.55 + 0.18 * m) return 'mist';
       return 'overcast';
     }
     const pick = (weights: Array<[WeatherState, number]>): WeatherState => {
@@ -324,16 +366,18 @@ export class WeatherSystem {
       return weights[0][0];
     };
     switch (previous) {
+      // A clear spell usually gives way to SOMETHING — mist on the damp maps,
+      // a gathering overcast everywhere — so Auto runs see real fronts.
       case 'clear':
-        return pick([['clear', 0.8], ['mist', 0.1 * m], ['overcast', 0.13 * (0.45 + s)]]);
+        return pick([['clear', 0.34], ['mist', 0.2 * m], ['overcast', 0.46 * (0.5 + s)]]);
       case 'mist':
-        return pick([['clear', 0.6], ['mist', 0.15], ['overcast', 0.25]]);
+        return pick([['clear', 0.5], ['mist', 0.1], ['overcast', 0.4]]);
       case 'overcast':
-        return pick([['clear', 0.36], ['overcast', 0.18], ['drizzle', 0.3 * (0.4 + s)], ['storm', 0.18 * s]]);
+        return pick([['clear', 0.26], ['overcast', 0.12], ['drizzle', 0.38 * (0.5 + s)], ['storm', 0.26 * s]]);
       case 'drizzle':
-        return pick([['overcast', 0.4], ['drizzle', 0.15], ['storm', 0.45 * s], ['clear', 0.1]]);
+        return pick([['overcast', 0.32], ['drizzle', 0.12], ['storm', 0.5 * (0.3 + s)], ['clear', 0.12]]);
       default: // storm — winds down through drizzle / overcast
-        return pick([['storm', 0.3], ['drizzle', 0.42], ['overcast', 0.28]]);
+        return pick([['storm', 0.14], ['drizzle', 0.5], ['overcast', 0.36]]);
     }
   }
 
@@ -382,10 +426,10 @@ export class WeatherSystem {
       }
     }
 
-    // Cinematic cross-fade (~10 s time constant) — fronts roll in, never
+    // Cinematic cross-fade (~8 s time constant) — fronts roll in, never
     // snap. Wetness DRIES ~3× slower than it soaks, so puddles linger after
     // the rain stops and settle into still mirrors.
-    const blend = 1 - Math.exp(-delta / 10);
+    const blend = 1 - Math.exp(-delta / 8);
     const dryBlend = 1 - Math.exp(-delta / 30);
     const c = this.current;
     const t = this.target;

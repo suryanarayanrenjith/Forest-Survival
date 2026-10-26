@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Environment files (Convex writes .env.local; keep every variant out of git)
+.env
+.env.*
+!.env.example
+
 # Editor directories and files
 .vscode/*
 .claude

@@ -205,9 +205,18 @@ export interface Enemy {
   // from the rigid body instead of the lightweight deathVel integrator above;
   // released back to the physics world when the corpse finishes fading.
   ragdollBodyId?: number;
+  /** Articulated (jointed) Rapier corpse handle — the preferred death path. */
+  ragdollArtId?: number;
+  /** Seconds since death (drives the visor flicker, venting, impact thud). */
+  deathElapsed?: number;
+  deathImpactDone?: boolean;
+  /** The visor eye-bar (switched off as the robot powers down). */
+  eye?: THREE.Mesh;
   hitImpulse?: THREE.Vector3;
-  leftLeg?: THREE.Mesh;
-  rightLeg?: THREE.Mesh;
+  leftLeg?: THREE.Object3D;  // hip-pivot group (thigh inside)
+  rightLeg?: THREE.Object3D;
+  leftKnee?: THREE.Object3D; // knee-pivot group (shin + foot inside)
+  rightKnee?: THREE.Object3D;
   leftArm?: THREE.Object3D;  // shoulder-pivot group (arm mesh hangs inside)
   rightArm?: THREE.Object3D;
   torso?: THREE.Mesh;
@@ -383,6 +392,8 @@ export interface Enemy {
   poiseAt?: number;
   staggerUntil?: number;
   staggerImmuneUntil?: number;
+  /** Straggler hunt: when this robot was first seen > 85 u out (ms). */
+  stragglerFarSince?: number;
   // ── Burning (Pyro flame projector / burning ground) ──────────────────────
   // A robot that walks through fire carries it away with it. `burnUntil` is the
   // ms timestamp the flames go out, `burnDps` the damage-per-second while they
@@ -429,6 +440,14 @@ export interface Enemy {
   // (the flying head gib carries its own matching wires). Attached to the
   // pooled mesh, so it MUST be detached when the corpse is recycled.
   neckWires?: THREE.Group;
+  // ── Blast dismemberment ──────────────────────────────────────────────────
+  // Limb pivots hidden when an explosion tore them off (a rigid-debris clone
+  // flies instead) + the cable stubs left in their sockets. Both ride the
+  // pooled mesh: re-show / detach when the corpse slot is recycled.
+  severedParts?: THREE.Object3D[];
+  socketWires?: THREE.Group[];
+  /** Where the blast that killed it went off (host → guests via the enemy wire). */
+  blastFrom?: { x: number; z: number };
 
   // ══ TACTICAL ARCHETYPES ═════════════════════════════════════════════════
   //
@@ -523,11 +542,15 @@ export interface Bullet {
 }
 
 export type PowerUpType = 'ammo' | 'speed' | 'damage' | 'shield' | 'infinite_ammo' | 'overcharge' | 'phantom'
-  | 'cryo' | 'tesla' | 'shockwave' | 'health' | 'nuke';
+  | 'cryo' | 'tesla' | 'shockwave' | 'health' | 'nuke'
+  /** A grenade drop — goes straight into the pouch, never the held-power slot. */
+  | 'grenade';
 
 export interface PowerUp {
   mesh: THREE.Mesh;
   type: PowerUpType;
+  /** Which throwable a 'grenade' pickup holds (see utils/Throwables). */
+  grenadeKind?: 'frag' | 'emp' | 'thermite' | 'smoke' | 'sticky' | 'decoy' | 'knife';
   position: THREE.Vector3;
   collected: boolean;
 }

@@ -866,7 +866,76 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
       trunkHeight: number;
       tiers: Array<{ radius: number; height: number; y: number }>;
     };
-    const buildPineGeometry = (shape: PineShape): THREE.BufferGeometry => {
+    // A spruce bough TIER: not a smooth cone but a skirt of radiating branch
+    // tips — the rim scalloped into ~10 branches whose tips reach out and
+    // DROOP while the valleys between them pull in, a little noise on every
+    // ring, and a concave underside (the shadowed inside of the boughs you see
+    // from the ground) instead of a flat disc. Normals are softened toward
+    // up/out so a tier shades like a volume of needles, not a faceted solid.
+    const buildBoughTier = (radius: number, height: number, seed: number): THREE.BufferGeometry => {
+      const N = 22;               // around
+      const K = 3;                // apex → rim rings
+      const branches = 9 + (seed % 3);
+      const phase = seed * 1.7;
+      const positions: number[] = [];
+      const uvs: number[] = [];
+      const indices: number[] = [];
+      const branchAt = (theta: number) => Math.pow(0.5 + 0.5 * Math.cos(theta * branches + phase), 1.4);
+      const jitter = (i: number, k: number) => Math.sin(i * 12.9898 + k * 78.233 + seed * 3.1) * 0.5;
+      // Apex.
+      positions.push(0, height / 2, 0);
+      uvs.push(0.5, 1);
+      for (let k = 1; k <= K; k++) {
+        const f = k / K;
+        for (let i = 0; i <= N; i++) {
+          const theta = (i / N) * Math.PI * 2;
+          const b = branchAt(theta);
+          const r = radius * f * (1 - 0.34 * (1 - b) * f) * (1 + jitter(i, k) * 0.08);
+          const droop = height * 0.16 * b * f * f;
+          const y = height / 2 - height * f - droop;
+          positions.push(Math.cos(theta) * r, y, Math.sin(theta) * r);
+          uvs.push((i / N) * 3, 1 - f);
+        }
+      }
+      // Underside: from the rim in to a raised centre (concave).
+      const underCentre = positions.length / 3;
+      positions.push(0, -height / 2 + height * 0.3, 0);
+      uvs.push(0.5, 0);
+      const ring = (k: number) => 1 + (k - 1) * (N + 1);
+      for (let i = 0; i < N; i++) {
+        indices.push(0, ring(1) + i + 1, ring(1) + i);
+      }
+      for (let k = 1; k < K; k++) {
+        const a = ring(k), c = ring(k + 1);
+        for (let i = 0; i < N; i++) {
+          indices.push(a + i, a + i + 1, c + i);
+          indices.push(a + i + 1, c + i + 1, c + i);
+        }
+      }
+      const rim = ring(K);
+      for (let i = 0; i < N; i++) indices.push(underCentre, rim + i, rim + i + 1);
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+      g.setIndex(indices);
+      g.computeVertexNormals();
+      // Soften toward an up/out "needle volume" normal (underside keeps down).
+      const pos = g.getAttribute('position');
+      const nrm = g.getAttribute('normal');
+      for (let v = 0; v < pos.count; v++) {
+        if (v === underCentre) continue;
+        const x = pos.getX(v), z = pos.getZ(v);
+        const rl = Math.hypot(x, z) || 1;
+        const nx = nrm.getX(v) * 0.55 + (x / rl) * 0.35;
+        const ny = nrm.getY(v) * 0.55 + (nrm.getY(v) >= 0 ? 0.45 : -0.2);
+        const nz = nrm.getZ(v) * 0.55 + (z / rl) * 0.35;
+        const l = Math.hypot(nx, ny, nz) || 1;
+        nrm.setXYZ(v, nx / l, ny / l, nz / l);
+      }
+      return g.toNonIndexed();
+    };
+
+    const buildPineGeometry = (shape: PineShape, detailed = false): THREE.BufferGeometry => {
       const parts: THREE.BufferGeometry[] = [];
 
       const paintAttributes = (geometry: THREE.BufferGeometry, colorFor: (localY: number) => THREE.Color, bendFor: (localY: number) => number, yOffset: number, yScale: number) => {
@@ -888,7 +957,7 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
 
       // Trunk — near-white vertex color (material map+color carry the look)
       // with a gentle base-darkening so trunks ground into the floor. No bend.
-      const trunkGeometry = new THREE.CylinderGeometry(0.28, 0.55, shape.trunkHeight, 7);
+      const trunkGeometry = new THREE.CylinderGeometry(0.28, 0.55, shape.trunkHeight, 7).toNonIndexed();
       const white = new THREE.Color(0xffffff);
       const trunkShade = new THREE.Color();
       paintAttributes(
@@ -909,7 +978,9 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
       // grows with height so the crown sways more than the skirt.
       const tipColor = new THREE.Color(PALETTE.foliageTip);
       shape.tiers.forEach((tier, tierIndex) => {
-        const tierGeometry = new THREE.ConeGeometry(tier.radius, tier.height, 12);
+        const tierGeometry = detailed
+          ? buildBoughTier(tier.radius * 1.08, tier.height, tierIndex * 7 + shape.tiers.length)
+          : new THREE.ConeGeometry(tier.radius, tier.height, 12).toNonIndexed();
         const tierF = tierIndex / (shape.tiers.length - 1);
         const base = new THREE.Color(0xffffff);
         paintAttributes(
@@ -1102,19 +1173,21 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
       // Wall trees FIRST in instance order: they are the unbroken horizon
       // line and must survive any density reduction — trimming .count only
       // ever removes trailing (poisson) instances.
-      const ordered = [...wall, ...poisson];
-      const total = ordered.length;
-      const pineGeometry = buildPineGeometry(shape);
-      const trees = new THREE.InstancedMesh(pineGeometry, [barkMaterial, foliageMaterial], total);
-      trees.frustumCulled = false;
-      const windPhases = new Float32Array(total);
-      const windAmps = new Float32Array(total);
-      {
+      // The misty back wall keeps the cheap cone silhouette (it reads only as
+      // shape through the haze); every tree near enough to see gets real
+      // bough skirts. Two instanced meshes, same materials (no new programs).
+      const makeTrees = (list: TreeTransform[], detailed: boolean): THREE.InstancedMesh => {
+        const total = Math.max(list.length, 1);
+        const pineGeometry = buildPineGeometry(shape, detailed);
+        const mesh = new THREE.InstancedMesh(pineGeometry, [barkMaterial, foliageMaterial], total);
+        mesh.frustumCulled = false;
+        const windPhases = new Float32Array(total);
+        const windAmps = new Float32Array(total);
         const dummy = new THREE.Object3D();
         const instanceTint = new THREE.Color();
         const foliagePalette = PALETTE.foliage.map((hex) => new THREE.Color(hex));
-        for (let i = 0; i < total; i++) {
-          const transform = ordered[i];
+        for (let i = 0; i < list.length; i++) {
+          const transform = list[i];
           dummy.position.set(transform.x, heightAt(transform.x, transform.z) - 0.15, transform.z);
           dummy.rotation.set(0, transform.rotation, (Math.random() - 0.5) * 0.04);
           dummy.scale.set(
@@ -1123,20 +1196,24 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
             transform.scale * (0.9 + Math.random() * 0.2),
           );
           dummy.updateMatrix();
-          trees.setMatrixAt(i, dummy.matrix);
+          mesh.setMatrixAt(i, dummy.matrix);
           instanceTint
             .copy(foliagePalette[Math.floor(Math.random() * foliagePalette.length)])
             .multiplyScalar(0.92 + Math.random() * 0.2);
-          trees.setColorAt(i, instanceTint);
+          mesh.setColorAt(i, instanceTint);
           windPhases[i] = Math.random() * Math.PI * 2;
           windAmps[i] = 0.5 + Math.random() * 0.8;
         }
-        trees.instanceMatrix.needsUpdate = true;
-        if (trees.instanceColor) trees.instanceColor.needsUpdate = true;
-      }
-      pineGeometry.setAttribute('aWindPhase', new THREE.InstancedBufferAttribute(windPhases, 1));
-      pineGeometry.setAttribute('aWindAmp', new THREE.InstancedBufferAttribute(windAmps, 1));
-      scene.add(trees);
+        mesh.count = list.length;
+        mesh.instanceMatrix.needsUpdate = true;
+        if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+        pineGeometry.setAttribute('aWindPhase', new THREE.InstancedBufferAttribute(windPhases, 1));
+        pineGeometry.setAttribute('aWindAmp', new THREE.InstancedBufferAttribute(windAmps, 1));
+        scene.add(mesh);
+        return mesh;
+      };
+      makeTrees(wall, false);
+      const trees = makeTrees(poisson, true);
 
       // Grounding for the near/mid poisson trees only — the wall lives
       // inside the mist where patches would be invisible anyway.
@@ -1165,7 +1242,7 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
         setDensity: (terrainDetail: number) => {
           const detail = THREE.MathUtils.clamp((terrainDetail - 0.25) / 0.75, 0, 1);
           const poissonVisible = Math.round(poisson.length * (0.5 + 0.5 * detail));
-          trees.count = wall.length + poissonVisible;
+          trees.count = poissonVisible;
           contact.count = poissonVisible;
           cast.count = poissonVisible;
         },
@@ -1477,14 +1554,85 @@ export default function MainMenuForestScene({ variant = 'main', onReady }: MainM
     }, 6, 52);
     scene.add(fernInstanced);
 
-    const bladeGeometry = new THREE.PlaneGeometry(0.13, 1);
-    bladeGeometry.translate(0, 0.5, 0);
+    // Grass TUFTS (was a single flat card per instance): seven curved,
+    // tapered blades fanning out of a clump, normals bent to the sky so both
+    // faces shade like the lawn around them, swaying on the shared wind clock
+    // with the tip moving most.
+    const bladeGeometry = (() => {
+      const BLADES = 7, SEG = 3;
+      const pos: number[] = [], nrm: number[] = [], hgt: number[] = [], idx: number[] = [];
+      for (let b = 0; b < BLADES; b++) {
+        const th = (b / BLADES) * Math.PI * 2 + Math.sin(b * 4.1) * 0.5;
+        const dx = Math.cos(th), dz = Math.sin(th);
+        const sx = -dz, sz = dx;
+        const h = 0.62 + ((b * 37) % 10) / 10 * 0.42;
+        const lean = 0.14 + ((b * 53) % 10) / 10 * 0.26;
+        const droop = 0.12 + ((b * 71) % 10) / 10 * 0.24;
+        const w = 0.034;
+        const base = pos.length / 3;
+        const nl0 = 1 / Math.hypot(dx * 0.35, 1, dz * 0.35);
+        for (let k = 0; k <= SEG; k++) {
+          const t = k / SEG;
+          const out = 0.04 + (lean * t + droop * t * t) * h;
+          const y = h * (t - droop * 0.35 * t * t);
+          const cx = dx * out, cz = dz * out;
+          if (k < SEG) {
+            const hw = w * (1 - 0.7 * t);
+            pos.push(cx - sx * hw, y, cz - sz * hw, cx + sx * hw, y, cz + sz * hw);
+            nrm.push(dx * 0.35 * nl0, nl0, dz * 0.35 * nl0, dx * 0.35 * nl0, nl0, dz * 0.35 * nl0);
+            hgt.push(t, t);
+          } else {
+            pos.push(cx, y, cz);
+            nrm.push(dx * 0.35 * nl0, nl0, dz * 0.35 * nl0);
+            hgt.push(1);
+          }
+        }
+        for (let k = 0; k < SEG - 1; k++) {
+          const a = base + k * 2;
+          idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+        }
+        const a = base + (SEG - 1) * 2;
+        idx.push(a, a + 1, a + 2);
+      }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+      g.setAttribute('aBladeH', new THREE.Float32BufferAttribute(hgt, 1));
+      g.setIndex(idx);
+      return g;
+    })();
     const bladeMaterial = new THREE.MeshLambertMaterial({ color: 0xffffff, side: THREE.DoubleSide });
+    bladeMaterial.onBeforeCompile = (shader) => {
+      shader.uniforms.uWindTime = windTimeUniform;
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', `#include <common>
+          uniform float uWindTime;
+          attribute float aBladeH;
+          varying float vBladeH;`)
+        .replace('#include <begin_vertex>', `#include <begin_vertex>
+          vBladeH = aBladeH;
+          {
+            vec3 root = instanceMatrix[3].xyz;
+            float ph = uWindTime * 1.6 + root.x * 0.35 + root.z * 0.28;
+            float sway = (sin(ph) * 0.6 + sin(ph * 2.3 + 1.1) * 0.25) * aBladeH * aBladeH;
+            transformed.x += sway * 0.16;
+            transformed.z += cos(ph * 0.8) * aBladeH * aBladeH * 0.07;
+          }`);
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', `#include <common>
+          varying float vBladeH;`)
+        .replace('#include <color_fragment>', `#include <color_fragment>
+          diffuseColor.rgb *= mix(0.55, 1.08, smoothstep(0.0, 0.7, vBladeH));`)
+        .replace('#include <normal_fragment_begin>', `#include <normal_fragment_begin>
+          normal = normalize( vNormal );`);
+    };
+    bladeMaterial.customProgramCacheKey = () => 'menuGrassTuft';
     const bladeInstanced = new THREE.InstancedMesh(bladeGeometry, bladeMaterial, BLADE_MAX);
     const bladePlaced = scatterOnFloor(bladeInstanced, BLADE_MAX, (dummy, x, z) => {
       dummy.position.set(x, heightAt(x, z), z);
-      dummy.rotation.set((Math.random() - 0.5) * 0.25, Math.random() * Math.PI * 2, (Math.random() - 0.5) * 0.16);
-      dummy.scale.set(0.8 + Math.random() * 0.7, 0.35 + Math.random() * 0.7, 1);
+      dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
+      const ts = 0.7 + Math.random() * 0.7;
+      dummy.scale.set(ts, ts * (0.6 + Math.random() * 0.6), ts);
     }, 5, 55);
     {
       const bladeTint = new THREE.Color();

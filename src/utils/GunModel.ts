@@ -454,7 +454,7 @@ const emptyReloadProps = (): ReloadProps => ({
  * cannon and a muzzle-loaded tube. When the support hand is busy (shield /
  * detonator) App slings that item for the duration of these reloads instead.
  */
-const TWO_HAND_RELOAD: ReadonlySet<WeaponType> = new Set(['minigun', 'launcher']);
+export const TWO_HAND_RELOAD: ReadonlySet<WeaponType> = new Set(['minigun', 'launcher']);
 
 /**
  * Articulated glove rig, stored on each arm wrapper's userData.hand. Proximal
@@ -711,6 +711,13 @@ export class GunModel {
   // choreography with a per-weapon pose pair (see MELEE_POSES), so every
   // light weapon has its own distinct, readable bash.
   private meleeAnim = 0;
+  // Hit-stop + recoil off the target: when the strike connects, the playhead
+  // freezes for a beat (meleeHold, s) and a damped jolt (meleeJolt 1→0) knocks
+  // the weapon back toward the wind-up — contact you can FEEL. A connected
+  // swing also stops short; a miss follows through further.
+  private meleeHold = 0;
+  private meleeJolt = 0;
+  private meleeConnected = false;
   // Engineer "wire the bomb" pose — while ON, the gun dips low and tucks across
   // the body as if the free hand is working at the barrel. Smoothed toward
   // `wiringTarget` in updateActions so the bend eases in and out.
@@ -4348,7 +4355,9 @@ export class GunModel {
     if (this.dashAnim > 0) this.dashAnim = Math.max(0, this.dashAnim - delta * 3.6);
     // Melee: ~0.36s total — long enough for the windup → strike → recover
     // choreography to read, still snappy against the 900ms cooldown.
-    if (this.meleeAnim > 0) this.meleeAnim = Math.max(0, this.meleeAnim - delta * 2.8);
+    if (this.meleeHold > 0) this.meleeHold = Math.max(0, this.meleeHold - delta);
+    else if (this.meleeAnim > 0) this.meleeAnim = Math.max(0, this.meleeAnim - delta * 2.2);
+    if (this.meleeJolt > 0) this.meleeJolt = Math.max(0, this.meleeJolt - delta * 4.5);
     // Weapon draw scales with mass: a sidearm comes up almost instantly, a
     // rotary cannon has to be hauled into position. Together with the
     // mass-scaled ADS speed this is what the player feels when they swap TO a
@@ -4558,6 +4567,35 @@ export class GunModel {
   /** True while the retune is still playing (App gates a re-cast on it). */
   get isOverclocking(): boolean { return this.overclockAnim > 0; }
 
+  /** True while a melee swing is playing (the support hand is in it). */
+  get isMeleeing(): boolean { return this.meleeAnim > 0; }
+
+  /**
+   * A world-space copy of the weapon currently in the hands — no arms, no
+   * parked reload hardware — placed exactly where the viewmodel is right now.
+   * Shares every geometry + material with the rig (nothing to dispose; the
+   * caller just removes it from the scene). Used for the death drop.
+   */
+  cloneWeaponForDrop(): THREE.Object3D | null {
+    const rig = this.activeRig;
+    if (!rig) return null;
+    rig.root.updateWorldMatrix(true, true);
+    const copy = (src: THREE.Object3D): THREE.Object3D | null => {
+      if (!src.visible || src === rig.triggerHandGroup || src === rig.supportHandGroup) return null;
+      const dst = src.clone(false);
+      for (const c of src.children) {
+        const cc = copy(c);
+        if (cc) dst.add(cc);
+      }
+      return dst;
+    };
+    const out = copy(rig.root);
+    if (!out) return null;
+    rig.root.matrixWorld.decompose(out.position, out.quaternion, out.scale);
+    out.traverse((o) => { o.castShadow = true; });
+    return out;
+  }
+
   /** A sharp braced pull-back when the player dashes. */
   triggerDash() {
     this.dashAnim = 1;
@@ -4581,6 +4619,37 @@ export class GunModel {
   triggerMelee() {
     if (!MELEE_CAPABLE_WEAPONS.has(this.currentWeaponType)) return;
     this.meleeAnim = 1;
+    this.meleeHold = 0;
+    this.meleeJolt = 0;
+    this.meleeConnected = false;
+  }
+
+  /** The strike landed on something: hit-stop, then recoil off the target. */
+  meleeImpact() {
+    if (this.meleeAnim <= 0) return;
+    this.meleeConnected = true;
+    this.meleeHold = 0.075;
+    this.meleeJolt = 1;
+  }
+
+  /**
+   * Camera follow-through for the swing (radians): the view leans into the
+   * wind-up, snaps with the strike and jars on contact. App adds it to the
+   * final camera euler next to recoil.
+   */
+  getMeleeCamKick(out: { pitch: number; yaw: number; roll: number }): void {
+    out.pitch = 0; out.yaw = 0; out.roll = 0;
+    if (this.meleeAnim <= 0 && this.meleeJolt <= 0) return;
+    const pose = GunModel.MELEE_POSES[this.currentWeaponType];
+    if (!pose) return;
+    const p = 1 - this.meleeAnim;
+    const wind = this.ss(p / 0.24) * (1 - this.ss((p - 0.24) / 0.12));
+    const strike = Math.sin(Math.min(1, Math.max(0, (p - 0.24) / 0.3)) * Math.PI);
+    const dir = Math.sign(pose.s[5] - pose.w[5]) || 1;   // the arc's sweep direction
+    const jolt = this.meleeJolt * Math.cos((1 - this.meleeJolt) * 18) * this.meleeJolt;
+    out.pitch = wind * 0.012 - strike * 0.02 + jolt * 0.012;
+    out.yaw = -dir * (wind * 0.01 - strike * 0.024);
+    out.roll = dir * (wind * 0.02 - strike * 0.035) + jolt * 0.015;
   }
 
   /**
@@ -4654,30 +4723,57 @@ export class GunModel {
     const land = Math.sin(this.landAnim * Math.PI);
     // Subverter deploy "jab" — thrusts the deck forward as a chip launches.
     const deployJab = Math.sin(this.subDeploy * Math.PI);
-    // ── MELEE: three-phase per-weapon strike ──────────────────────────────
-    // Progress runs 0→1 as meleeAnim decays. The weapon first COCKS into its
-    // windup pose (0–26%), SNAPS to the strike pose (26–52%, with a small
-    // overshoot so the hit lands with a crack), then RECOVERS back to rest.
+    // ── MELEE: anticipation → arc strike → contact → follow-through → settle
+    // Progress runs 0→1 as meleeAnim decays (~0.46 s; frozen during hit-stop).
+    //  • 0–24%  ANTICIPATION: eased into the cocked wind-up, with a little
+    //    extra pull right before release (the "load").
+    //  • 24–40% STRIKE: an explosive ease-out along an ARC, not a straight
+    //    blend — a quadratic Bézier from wind-up through a swept control point
+    //    to the strike pose, so the weapon travels like a swung object.
+    //  • CONTACT: a hit freezes the playhead (meleeImpact) and a damped jolt
+    //    knocks it back off the target; a connected swing stops short of the
+    //    pose, a MISS follows through 18% past it.
+    //  • 40–100% RECOVERY: a critically damped return with one small settle.
     // Pose pairs live in MELEE_POSES; weapons without one (heavy ordnance)
     // never have meleeAnim > 0 (triggerMelee gates on the same table's set).
     let mX = 0, mY = 0, mZ = 0, mRX = 0, mRY = 0, mRZ = 0;
-    if (this.meleeAnim > 0) {
+    if (this.meleeAnim > 0 || this.meleeJolt > 0) {
       const pose = GunModel.MELEE_POSES[this.currentWeaponType];
       if (pose) {
         const p = 1 - this.meleeAnim;
-        const strike = this.ss((p - 0.26) / 0.24);
-        const recover = this.ss((p - 0.58) / 0.42);
-        const windupBlend = this.ss(p / 0.26) * (1 - strike);
-        // Overshoot: the strike briefly exceeds its pose by 12% at full snap,
-        // selling the impact, then the recover envelope pulls it home.
-        const strikeBlend = strike * (1 + 0.12 * Math.sin(strike * Math.PI)) * (1 - recover);
         const w = pose.w, s = pose.s;
-        mX = w[0] * windupBlend + s[0] * strikeBlend;
-        mY = w[1] * windupBlend + s[1] * strikeBlend;
-        mZ = w[2] * windupBlend + s[2] * strikeBlend;
-        mRX = w[3] * windupBlend + s[3] * strikeBlend;
-        mRY = w[4] * windupBlend + s[4] * strikeBlend;
-        mRZ = w[5] * windupBlend + s[5] * strikeBlend;
+        const follow = this.meleeConnected ? 0.94 : 1.18;
+        const out = [0, 0, 0, 0, 0, 0];
+        if (p < 0.24) {
+          // Anticipation with a late "load" (ease-in-out, 6% extra cock).
+          const a = this.ss(p / 0.24);
+          const load = 1 + 0.06 * Math.sin(Math.min(1, p / 0.24) * Math.PI * 0.5) ** 4;
+          for (let k = 0; k < 6; k++) out[k] = w[k] * a * load;
+        } else if (p < 0.4) {
+          // Explosive arc: ease-out-cubic along a Bézier through a control
+          // point swept out to the side + up (the swing's curve).
+          const u = (p - 0.24) / 0.16;
+          const e = 1 - (1 - u) * (1 - u) * (1 - u);
+          const b0 = (1 - e) * (1 - e), b1 = 2 * (1 - e) * e, b2 = e * e;
+          for (let k = 0; k < 6; k++) {
+            const ctrl = (w[k] + s[k]) * 0.5 + (k === 0 ? (s[0] - w[0]) * -0.35 : k === 1 ? 0.05 : 0);
+            out[k] = w[k] * 1.06 * b0 + ctrl * b1 + s[k] * follow * b2;
+          }
+        } else {
+          // Recovery: from the strike (or follow-through) back to rest with
+          // a single soft settle past zero.
+          const u = (p - 0.4) / 0.6;
+          const e = this.ss(u);
+          const settle = Math.sin(u * Math.PI) * 0.07 * (1 - u);
+          for (let k = 0; k < 6; k++) out[k] = s[k] * follow * (1 - e) - w[k] * settle;
+        }
+        // Contact jolt: knocked back toward the wind-up, ringing out fast.
+        if (this.meleeJolt > 0) {
+          const j = this.meleeJolt;
+          const ring = Math.cos((1 - j) * 22) * j * j * 0.22;
+          for (let k = 0; k < 6; k++) out[k] += (w[k] - s[k]) * ring;
+        }
+        mX = out[0]; mY = out[1]; mZ = out[2]; mRX = out[3]; mRY = out[4]; mRZ = out[5];
       }
     }
 

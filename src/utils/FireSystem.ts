@@ -43,6 +43,8 @@ export interface FirePatch {
   maxLife: number;
   /** Next allowed damage tick (ms). Owned by App; reset when the patch lights. */
   nextTickAt: number;
+  /** A replicated (remote player's) fire: drawn, but never damages / ignites. */
+  visualOnly?: boolean;
 }
 
 interface PatchRig {
@@ -319,6 +321,7 @@ export class FireSystem {
     p.life = life;
     p.maxLife = life;
     p.nextTickAt = 0;
+    p.visualOnly = false;
     const rig = this.patchRigs[slot];
     rig.group.position.set(x, y, z);
     rig.group.visible = true;

@@ -34,6 +34,7 @@ import {
   buildHeldWeapon, type WeaponType,
 } from './CharacterModels';
 import { getHold, poseAvatarHold } from './AvatarRig';
+import { driveAvatarLegs, newCollapse, startCollapse, endCollapse, driveCollapse, type CollapseState, type CollapseJoints } from './AvatarMotion';
 import { PlayerWounds, woundSeverityForHealth } from './PlayerWounds';
 
 const VALID_WEAPONS: WeaponType[] = ['pistol', 'rifle', 'shotgun', 'smg', 'sniper', 'minigun', 'launcher'];
@@ -42,9 +43,9 @@ function asWeaponType(name: string | undefined): WeaponType {
 }
 
 // Camera/eye height in App.tsx is 5 units above feet. The chamfered
-// humanoid is 4.45 units tall; we scale it up so head top lands right
+// humanoid is ≈4.37 units tall; we scale it up so head top lands right
 // at camera height, then position the root so feet sit on the ground.
-const MODEL_NATIVE_HEIGHT = RIG.headTopY;          // 4.45
+const MODEL_NATIVE_HEIGHT = RIG.headTopY;          // ≈4.37
 const PLAYER_EYE_HEIGHT = 5;                       // matches standingHeight in App.tsx
 const MODEL_SCALE = PLAYER_EYE_HEIGHT / MODEL_NATIVE_HEIGHT;
 // Name tag sits on top, the health bar tucked directly beneath it so the two
@@ -137,6 +138,8 @@ interface RemotePlayerRecord {
   // Lifecycle
   isAlive: boolean;
   deathT: number;
+  /** Death collapse (AvatarMotion) — the body falls and STAYS down until respawn. */
+  collapse: CollapseState;
   materials: THREE.Material[];
   // Realistic human wounds that bleed through as this player nears death and
   // seal up when they're healed. Driven by data.health each frame.
@@ -150,6 +153,8 @@ interface Joints {
   rightElbow: THREE.Group;
   leftHip: THREE.Group;
   rightHip: THREE.Group;
+  leftKnee?: THREE.Group;
+  rightKnee?: THREE.Group;
   headJoint: THREE.Group;
   rightHand: THREE.Mesh;
 }
@@ -318,12 +323,13 @@ export class RemotePlayerManager {
     if (rec.isAlive && !data.isAlive) {
       rec.isAlive = false;
       rec.deathT = 0;
+      // Mostly forward onto the face, sometimes backward.
+      startCollapse(rec.collapse, Math.random() < 0.65 ? 1 : -1, rec.weaponGroup, rec.group);
     } else if (!rec.isAlive && data.isAlive) {
       // Respawn — reset the death pose
       rec.isAlive = true;
       rec.deathT = 0;
-      rec.body.rotation.x = 0;
-      rec.body.position.y = 0;
+      endCollapse(rec.collapse, rec.body);
       rec.body.visible = true;
       rec.nameplate.visible = true;
       rec.healthBar.visible = true;
@@ -416,7 +422,9 @@ export class RemotePlayerManager {
       // ── 1. Position + yaw from the snapshot buffer ─────────────────────
       const prevX = rec.group.position.x;
       const prevZ = rec.group.position.z;
-      if (rec.posBuf.sample(renderTime, _interp)) {
+      // A fallen player's body stays where it dropped (their camera may be
+      // spectating someone else across the map).
+      if (rec.isAlive && rec.posBuf.sample(renderTime, _interp)) {
         rec.group.position.set(_interp.x, _interp.y, _interp.z);
         rec.currentYaw = _interp.yaw;       // already shortest-arc interpolated
       }
@@ -447,16 +455,10 @@ export class RemotePlayerManager {
         rec.aimPitch += (targetPitch - rec.aimPitch) * Math.min(1, delta * 12);
         const pitch = rec.aimPitch;
 
-        // Vertical compression for the crouch (feet stay planted; the scale
-        // origin sits at the feet). x/z keep the native model scale.
-        rec.body.scale.set(MODEL_SCALE, MODEL_SCALE * (1 - 0.2 * crouch), MODEL_SCALE);
-
-        // Legs stride — full range when running, slight idle sway when still,
-        // compressed + knee-folded when crouched.
-        const legSwing = (0.06 + moveGate * 0.85) * (1 - 0.5 * crouch);
-        const hipFold = crouch * 0.55;
-        rec.joints.leftHip.rotation.x = Math.sin(rec.walkPhase) * legSwing + hipFold;
-        rec.joints.rightHip.rotation.x = Math.sin(rec.walkPhase + Math.PI) * legSwing + hipFold;
+        // Legs: hips swing, knees fold through the swing; a crouch folds both
+        // and drops the pelvis by what the bent legs lose (AvatarMotion).
+        rec.body.scale.setScalar(MODEL_SCALE);
+        const legDrop = driveAvatarLegs(rec.joints, rec.walkPhase, moveGate, crouch);
 
         // The weapon is placed from the aim (pitch) and BOTH hands are
         // solved onto it with two-bone IK — strong hand on the grip, support
@@ -467,7 +469,7 @@ export class RemotePlayerManager {
         // Head bob with footfalls (and idle breath when still)
         const bobAmp = (0.03 + moveGate * 0.12) * (1 - 0.4 * crouch);
         const breath = Math.sin(rec.bobPhase * 2) * 0.012;
-        rec.body.position.y = Math.abs(Math.sin(rec.walkPhase)) * bobAmp + breath;
+        rec.body.position.y = Math.abs(Math.sin(rec.walkPhase)) * bobAmp + breath - legDrop * MODEL_SCALE;
 
         // Head (aimed by AvatarRig) + a subtle bob with the footfalls.
         rec.joints.headJoint.rotation.x += Math.sin(rec.walkPhase * 2) * 0.02 * moveGate;
@@ -478,12 +480,11 @@ export class RemotePlayerManager {
         const hpFrac = rec.data.health / Math.max(1, rec.data.maxHealth);
         rec.wounds.update(woundSeverityForHealth(hpFrac), delta);
       } else {
-        // ── 3. Death pose — fall forward, then hide nameplate/healthbar ─
+        // ── 3. Death — knees buckle, the body topples under gravity, bounces
+        // and settles; arms trail, the weapon falls free (AvatarMotion). The
+        // body stays down until the player respawns.
         rec.deathT = Math.min(1.4, rec.deathT + delta / 0.65);
-        const t = Math.min(1, rec.deathT);
-        // Fall forward with a slight roll
-        rec.body.rotation.x = -t * (Math.PI / 2 - 0.05);
-        rec.body.position.y = -t * 1.4;
+        driveCollapse(rec.collapse, rec.joints as unknown as CollapseJoints, rec.body, delta, MODEL_SCALE);
 
         // Hide nameplate + health bar AS SOON AS the player dies (fade
         // over the first 250ms so it's quick but not jarring).
@@ -494,8 +495,7 @@ export class RemotePlayerManager {
         hbMat.opacity = uiFade;
         rec.nameplate.visible = uiFade > 0.01;
         rec.healthBar.visible = uiFade > 0.01;
-        // Body fades out shortly after fully collapsing
-        if (rec.deathT > 1.2) rec.body.visible = false;
+
       }
 
       // ── 4. Nameplate / health bar billboarding ─────────────────────────
@@ -695,7 +695,7 @@ export class RemotePlayerManager {
     group.userData.playerId = data.id;
 
     // The body wrapper carries the yaw rotation + uniform scale so the
-    // chamfered humanoid (~4.45u tall) reaches the 5u camera eye height.
+    // humanoid (~4.37u tall) reaches the 5u camera eye height.
     const bodyWrap = new THREE.Group();
     bodyWrap.name = 'PlayerBody';
     bodyWrap.scale.setScalar(MODEL_SCALE);
@@ -812,6 +812,7 @@ export class RemotePlayerManager {
       lastNameplateMobile: !!data.isMobile,
       isAlive: data.isAlive,
       deathT: 0,
+      collapse: newCollapse(),
       materials,
       wounds,
     };
@@ -823,8 +824,6 @@ export class RemotePlayerManager {
     if (!data.isAlive) {
       rec.nameplate.visible = false;
       rec.healthBar.visible = false;
-      rec.body.rotation.x = -(Math.PI / 2 - 0.05);
-      rec.body.position.y = -1.4;
       rec.body.visible = false;
       rec.deathT = 1.4;
     }

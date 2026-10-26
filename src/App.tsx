@@ -13,7 +13,8 @@ import * as THREE from 'three';
 import { GraduationCap, Play, Home, MousePointerClick, ShieldAlert } from 'lucide-react';
 import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
-import { GunModel, MELEE_CAPABLE_WEAPONS, type WeaponType as GunWeaponType, type ReloadCue, type ReloadStyle, SCOPE_TAKEOVER, OVERCLOCK_DURATION } from './utils/GunModel';
+import { GunModel, MELEE_CAPABLE_WEAPONS, TWO_HAND_RELOAD, type WeaponType as GunWeaponType, type ReloadCue, type ReloadStyle, SCOPE_TAKEOVER, OVERCLOCK_DURATION } from './utils/GunModel';
+import { type LeftHandGear, isPersistentGear, refusedThrowMessage, throwBufferMs, ABILITY_BUFFER_MS } from './utils/LeftHand';
 import { MuzzleFlash, MuzzleSmoke, BulletTracer, ImpactEffect, RobotHitSparks, ExplosionEffect, FireNovaEffect, NukeEffect, AbilityCastEffect, ImpactBurst, setImpactBurstCamera, setMuzzleLightPool, setExplosionLightPool, clearParticleGeometryPools, clearTracerGeometryPool, clearFlashSpritePool, clearSmokeSpritePool, clearExplosionRigPool, clearCastRigPool, clearBurstPairPool, getSoftSparkTexture } from './utils/Effects';
 import { HackBeam, buildHackVisuals, updateHackVisuals, disposeHackVisuals } from './utils/HackVisuals';
 import { soundManager } from './utils/SoundManager';
@@ -32,7 +33,7 @@ import { BiomeSystem } from './utils/BiomeSystem';
 import { MapAmbience } from './utils/MapAmbience';
 import { Wildlife } from './utils/Wildlife';
 import { LeafSystem, hasLeaves } from './utils/LeafSystem';
-import { AmbienceAudio } from './utils/AmbienceAudio';
+import { AmbienceAudio, acousticsFor } from './utils/AmbienceAudio';
 import { MapSignatureFX } from './utils/MapSignatureFX';
 import { gpuProfiler } from './utils/GpuProfiler';
 import { disposeNoiseTextures } from './utils/NoiseTextures';
@@ -52,6 +53,7 @@ import type { ClassId } from './utils/CharacterModels';
 import { AbilitySystem } from './utils/AbilitySystem';
 import { AchievementSystem, type Achievement } from './utils/AchievementSystem';
 import { EnhancedPowerUpSystem } from './utils/EnhancedPowerUps';
+import { getItemMaterial, getItemGeometry, setItemAtlasQuality, disposeItemAtlas, type ItemModelId, type GrenadeKind } from './utils/ItemAtlas';
 import { DayCycleSystem, type AtmosphericSettings } from './utils/DayCycleSystem';
 import HUD, { type AbilityHudItem } from './components/HUD';
 import DebugConsole, { type DebugInfo } from './components/DebugConsole';
@@ -88,7 +90,9 @@ import {
   LEAP_MIN_RANGE, LEAP_MAX_RANGE, LEAP_IMPACT_DAMAGE, LEAP_ROOT_MS,
   SPLITTER_CHILDREN,
 } from './utils/EnemyArchetypes';
-import { RagdollSystem } from './utils/RagdollSystem';
+import { RagdollSystem, type RagdollLimbSpec } from './utils/RagdollSystem';
+import { PhysicsWorld, GROUP_DEBRIS, GROUP_RAGDOLL, GROUP_WORLD, groups as physicsGroups } from './utils/PhysicsWorld';
+import { RigidDebris } from './utils/RigidDebris';
 import { BattleDamageSystem } from './utils/BattleDamage';
 import { SkillTreeMenu } from './components/SkillTreeMenu';
 import { TutorialOverlay } from './components/TutorialOverlay';
@@ -98,12 +102,18 @@ import WavePerkPicker from './components/WavePerkPicker';
 import { aggregatePerkBonuses, NEUTRAL_PERK_BONUSES, rollMysteryBox, isPerkPoolExhausted, WAVE_PERKS, type WavePerkId, type PerkBonuses } from './utils/WavePerkRegistry';
 import RunModifierPicker from './components/RunModifierPicker';
 import { generateStakeOptions, type RunModifier } from './utils/RunModifierSystem';
-import { spawnBarrels, makeBarrelIrradiated, pulseIrradiatedBarrels, irradiatedCoreMaterials, disposeHazardAssets, type ExplosiveBarrel } from './utils/HazardSystem';
+import { spawnBarrels, makeBarrelIrradiated, pulseIrradiatedBarrels, irradiatedCoreMaterials, disposeHazardAssets, buildBarrelDebris, type ExplosiveBarrel } from './utils/HazardSystem';
 import { UplinkNetwork, EmpShockwave } from './utils/UplinkStructure';
 import { spawnRangedSentinels, updateSentinelGlow, type RangedSentinel } from './utils/RangedSentinelSystem';
 import { CHARACTER_PASSIVES } from './utils/CharacterPassiveRegistry';
 import { getCharacterAbility } from './utils/CharacterAbilityRegistry';
 import { AbilityViewmodel, abilityPropKind, ABILITY_PAYLOAD_DELAY, type AbilityBeat } from './utils/AbilityViewmodels';
+import { driveRobotGait, driveRobotIdle, braceKnees } from './utils/RobotGait';
+import { GrenadeSystem, GRENADE_KINDS, SMOKE_EMIT_SECONDS, type LiveGrenade, type SolidHit } from './utils/GrenadeSystem';
+import { THROWABLES, THROWABLE_KINDS, startingThrowables, rollThrowableDrop, type ThrowableKind } from './utils/Throwables';
+import ThrowableWheel from './components/ThrowableWheel';
+import MotionRoot from './components/MotionRoot';
+import { AnimatePresence } from 'motion/react';
 import { FireSystem } from './utils/FireSystem';
 import { DAILY_CHALLENGES, DAILY_CHANNEL_MODE, getTodayChallengeId, type DailyEventChannel } from './utils/DailyChallengeRegistry';
 import { bonusForLevel, levelFromXp, xpPerKill, xpProgressAtLevel, MAX_MASTERY_LEVEL, type MasteryBonus } from './utils/WeaponMasterySystem';
@@ -264,6 +274,17 @@ function serializeSettings(s: UserSettings): string {
   return JSON.stringify(out);
 }
 
+/** Short HUD label for a KeyboardEvent.code ('KeyG' → 'G', 'ShiftLeft' → 'Shift'). */
+function hudKeyLabel(code: string): string {
+  if (/^Key[A-Z]$/.test(code)) return code.slice(3);
+  if (/^Digit[0-9]$/.test(code)) return code.slice(5);
+  if (code.startsWith('Shift')) return 'Shift';
+  if (code.startsWith('Control')) return 'Ctrl';
+  if (code.startsWith('Alt')) return 'Alt';
+  if (code === 'Space') return 'Spc';
+  return code.length > 4 ? code.slice(0, 4) : code;
+}
+
 const ForestSurvivalGame = () => {
   const mountRef = useRef<HTMLDivElement>(null);
 
@@ -368,6 +389,12 @@ const ForestSurvivalGame = () => {
   // 3 cards and gameplay is frozen until the player picks one. Resolved
   // through `wavePerkResolverRef` so the closure inside the game loop can
   // call back to the picker's "pick" handler without a stale reference.
+  // Throwable quick-select wheel (open while the next-throwable key is held).
+  const [throwWheel, setThrowWheel] = useState<{
+    hover: ThrowableKind | null;
+    selected: ThrowableKind;
+    counts: Record<ThrowableKind, number>;
+  } | null>(null);
   const [wavePerkOffer, setWavePerkOffer] = useState<{
     wave: number;
     slots: (WavePerkId | null)[];
@@ -415,7 +442,7 @@ const ForestSurvivalGame = () => {
   // keyframe can scale itself to the message duration; `key` forces a fresh
   // mount per message so the animation restarts (and the collapse replays)
   // even when two identical messages fire back-to-back.
-  const [powerUpMeta, setPowerUpMeta] = useState<{ ms: number; key: number }>({ ms: 2000, key: 0 });
+  const [powerUpMeta, setPowerUpMeta] = useState<{ ms: number; key: number; tone: 'info' | 'warn' }>({ ms: 2000, key: 0, tone: 'info' });
   // Tutorial-only "New Threat" banner — announces each enemy species the moment
   // the Tutorial Enemy Director unlocks it, turning the tutorial into a bestiary.
   const [enemyIntro, setEnemyIntro] = useState<EnemyIntro | null>(null);
@@ -1666,6 +1693,8 @@ const ForestSurvivalGame = () => {
     // cosmetic choices not captured by the numeric knobs (haze density, HDRI res).
     const graphicsPreset = gameSettingsManager.getGraphicsPreset();
     const graphicsQuality = gameSettingsManager.getGraphicsQuality();
+    // Pickup / grenade / airdrop atlas: full 2048² print on Medium and up.
+    setItemAtlasQuality(graphicsPreset.pixelRatio > 0.6 && graphicsPreset.shadowsEnabled);
     // "Low tier" = the performance path: shadow-less / post-less, skipping the
     // pricier cosmetic extras (atmospheric haze sphere, gun fill-lights) and
     // using the cheap pixelated upscale + low-detail sky. Derived from the
@@ -2304,6 +2333,8 @@ const ForestSurvivalGame = () => {
     // allocation-free (it runs every frame).
     const _skyScratch = new THREE.Color();
     const _leafFwd = new THREE.Vector3(); // scratch: view direction for leaf shedding
+    const _stragglerDir = new THREE.Vector3(); // scratch: straggler re-entry bearing
+    const _decoyFocus = new THREE.Vector3(); // scratch: a decoy as an enemy's focus
     const _grassBodies = new Float32Array(8); // scratch: robots pressing the grass (x, z pairs)
 
     // ── TERRAIN SHAPE + GROUND-TEXTURE IDENTITY (per map, per run) ─────────
@@ -2582,10 +2613,14 @@ const ForestSurvivalGame = () => {
     // bolt (built here, before the warmup compile; idle = zero draws).
     const weatherSystem = new WeatherSystem(scene);
     weatherSystem.setQuality(graphicsPreset.particleDensity);
+    // Auto time of day = living weather; a fixed Day / Night pick stays clear.
+    weatherSystem.setDynamic(actualTimeOfDay === 'auto');
     weatherSystem.setClimate(selectedMap);
     // The world you can hear: weather beds, thunder, wildlife, foliage foley.
     const ambienceAudio = new AmbienceAudio(selectedMap, weatherSystem.getStormKind());
     weatherSystem.onStrike = (e) => ambienceAudio.thunder(e);
+    // Every gun, blast and call now rings off THIS map's acoustics.
+    soundManager.setEnvironment(acousticsFor(selectedMap));
     const _precipLight = new THREE.Color(1, 1, 1);
 
     // === AMBIENT MUSIC — per-map adaptive procedural score (SOLO ONLY) ===
@@ -2627,18 +2662,33 @@ const ForestSurvivalGame = () => {
     // anything non-standard) fall back to plain scene.add unchanged.
     const terrainInstancer = new TerrainInstancer(scene);
 
-    // === RAGDOLL PHYSICS (Rapier) ===
-    // Engine-grade enemy-death ragdolls: corpses tumble with a true inertia
-    // tensor, drape over each other, settle and sleep. Capped + pooled + slow-mo
-    // aware (see RagdollSystem). The WASM is dynamic-import()ed here only — never
-    // on the menu — and only for SOLO play with the Ragdoll Physics setting on;
-    // multiplayer corpses stay on the host-mirrored topple, and until the WASM
-    // finishes loading the death loop transparently uses the old lightweight
-    // launcher. So the menu / first paint and the MP path pay nothing for this.
-    const ragdollSystem = new RagdollSystem(20);
-    if (!isMultiplayer && gameSettingsManager.getSetting('ragdollPhysics')) {
-      void ragdollSystem.init();
-    }
+    // === RIGID-BODY PHYSICS (Rapier) ===
+    // ONE shared world (see PhysicsWorld) for jointed robot corpses, rigid
+    // throwables and loose debris: they rest on the VISUAL ground (a
+    // heightfield re-centred on the player), collide with trunks and rocks
+    // streamed in around them, and shove each other. The WASM is
+    // dynamic-import()ed here only — never on the menu — and until it is ready
+    // every system transparently uses its lightweight fallback. Ragdolls stay
+    // behind the Ragdoll Physics setting (checked at each death).
+    const physicsWorld = new PhysicsWorld(18);
+    physicsWorld.setGround((x, z) => visualGroundY(x, z));
+    physicsWorld.setPropQuery((x, z, r, visit) => {
+      const near = collidableGrid.queryRadius(x, z, r + maxCollidableRadius);
+      for (let i = 0; i < near.length; i++) {
+        const o = near[i];
+        const dx = o.x - x, dz = o.z - z;
+        const reach = r + o.radius;
+        if (dx * dx + dz * dz <= reach * reach) visit(o);
+      }
+    });
+    void physicsWorld.init();
+    const ragdollSystem = new RagdollSystem(physicsWorld, 20);
+    // Severed heads / blast-torn limbs as rigid bodies (capped, self-retiring).
+    const rigidDebris = new RigidDebris(physicsWorld, scene, 36);
+    const debrisClank = (speed: number, at: THREE.Vector3) => {
+      soundManager.playAt('impact_metal', at.x, at.y, at.z, Math.min(0.5, 0.08 + speed * 0.03),
+        0.72 + Math.random() * 0.2, { refDistance: 5, maxDistance: 55 });
+    };
 
     // ── BATTLE DAMAGE (persistent dents + scuffs on robots) ────────────────
     // Every real hit punches a metal dent / scrapes a scuff into the enemy's
@@ -4150,6 +4200,128 @@ const ForestSurvivalGame = () => {
         ? OVERCLOCK_DURATION * 0.66 * 1000
         : 0;
 
+    // ── THROWABLES ───────────────────────────────────────────────────────
+    // Seven throwables from one catalog (Throwables.ts): frag, sticky C4,
+    // thermite, throwing knife, smoke, EMP and decoy. Every run starts with
+    // three frags (the tutorial hands out a little of everything); robots very
+    // rarely drop more — a separate pickup stream from the power crates. The
+    // throw key throws (HOLD it to park the arm cocked and aim the arc); the
+    // next / previous keys switch in real time, and HOLDING the next key opens
+    // the quick-select wheel. Every throw is a real choreography in the LEFT
+    // hand (AbilityViewmodel 'grenade', style + arming action per kind), and
+    // the object leaves on its 'release' beat — never on the keypress.
+    const GRENADE_LABEL: Record<ThrowableKind, string> = {} as Record<ThrowableKind, string>;
+    for (const k of THROWABLE_KINDS) GRENADE_LABEL[k] = THROWABLES[k].label;
+    const grenadeCount: Record<ThrowableKind, number> = startingThrowables(isTutorialMode);
+    let selectedGrenade: ThrowableKind = 'frag';
+    let grenadeThrowKind: ThrowableKind = 'frag';
+    /** A throw choreography has started and the object hasn't left the hand. */
+    let grenadeInHand = false;
+    // ── THE LEFT HAND (see utils/LeftHand.ts) ── a throw pressed while the
+    // hand is busy is remembered here; an ability pressed mid-throw, and a
+    // two-handed reload started mid-throw, wait their turn the same way.
+    let throwIntentAt = -1;
+    let throwIntentRefused = false;
+    let abilityIntentAt = -1;
+    let reloadQueued = false;
+    let throwDenyNonce = 0;
+    let lastThrowDenyAt = 0;
+    // Death drop: the real weapon falls as a rigid body (once per death).
+    let deathGunDropped = false;
+    const grenadeProp = new AbilityViewmodel('grenade', camera);
+    const grenadeSystem = new GrenadeSystem(
+      scene,
+      (x, z) => visualGroundY(x, z),
+      (x, y, z, r, out) => grenadeSolid(x, y, z, r, out),
+      physicsWorld,
+    );
+    /** The next (dir 1) / previous (dir −1) kind the player actually carries. */
+    const stepGrenadeKind = (from: ThrowableKind, dir: 1 | -1): ThrowableKind | null => {
+      const i = THROWABLE_KINDS.indexOf(from);
+      const n = THROWABLE_KINDS.length;
+      for (let k = 1; k <= n; k++) {
+        const c = THROWABLE_KINDS[(i + dir * k + n * 2) % n];
+        if (grenadeCount[c] > 0) return c;
+      }
+      return null;
+    };
+    const nextGrenadeKind = (from: ThrowableKind): ThrowableKind | null => stepGrenadeKind(from, 1);
+    /** Select a throwable — the hand shows it off (unless mid-throw). */
+    const selectGrenade = (kind: ThrowableKind, announce = true) => {
+      if (kind === selectedGrenade && !announce) return;
+      selectedGrenade = kind;
+      grenadeProp.showcase(kind);
+      soundManager.play('weaponSwitch', 0.3, false, 1.35);
+      if (announce) showPowerMessage(`${GRENADE_LABEL[kind]} · ${grenadeCount[kind]} left`, 1100);
+    };
+    /** Pouch a throwable drop. False (nothing taken) when that kind is full. */
+    const addGrenades = (kind: ThrowableKind, n: number): boolean => {
+      if (grenadeCount[kind] >= THROWABLES[kind].max) return false;
+      grenadeCount[kind] = Math.min(THROWABLES[kind].max, grenadeCount[kind] + n);
+      if (grenadeCount[selectedGrenade] <= 0) selectedGrenade = kind;
+      showPowerMessage(`+${n} ${GRENADE_LABEL[kind]}`, 1500);
+      if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry(`Looted ${GRENADE_LABEL[kind]}`, 'powerup');
+      return true;
+    };
+    const cycleGrenade = (dir: 1 | -1 = 1) => {
+      const next = stepGrenadeKind(selectedGrenade, dir);
+      if (!next || next === selectedGrenade) {
+        showPowerMessage(grenadeCount[selectedGrenade] > 0
+          ? `Only ${GRENADE_LABEL[selectedGrenade]} carried`
+          : 'No throwables carried', 1200);
+        return;
+      }
+      selectGrenade(next);
+    };
+
+    // ── QUICK-SELECT WHEEL ── held next-throwable key → a radial wheel; the
+    // mouse (pointer-locked deltas) picks a segment, releasing the key equips
+    // it. A tap of the same key just steps to the next throwable.
+    let wheelOpen = false;
+    let wheelKeyDownAt = 0;
+    let wheelTimer: number | null = null;
+    let wheelHover: ThrowableKind | null = null;
+    const wheelVec = { x: 0, y: 0 };
+    const pushWheel = () => {
+      setThrowWheel(wheelOpen ? {
+        hover: wheelHover,
+        selected: selectedGrenade,
+        counts: { ...grenadeCount },
+      } : null);
+    };
+    const openWheel = () => {
+      wheelOpen = true;
+      wheelVec.x = 0; wheelVec.y = 0;
+      wheelHover = null;
+      soundManager.play('weaponSwitch', 0.22, false, 1.6);
+      pushWheel();
+    };
+    const closeWheel = (commit: boolean) => {
+      if (wheelTimer !== null) { window.clearTimeout(wheelTimer); wheelTimer = null; }
+      if (!wheelOpen) return;
+      wheelOpen = false;
+      if (commit && wheelHover && grenadeCount[wheelHover] > 0 && wheelHover !== selectedGrenade) selectGrenade(wheelHover);
+      wheelHover = null;
+      pushWheel();
+    };
+    const steerWheel = (dx: number, dy: number) => {
+      wheelVec.x = THREE.MathUtils.clamp(wheelVec.x + dx, -160, 160);
+      wheelVec.y = THREE.MathUtils.clamp(wheelVec.y + dy, -160, 160);
+      const len = Math.hypot(wheelVec.x, wheelVec.y);
+      let hover: ThrowableKind | null = null;
+      if (len > 28) {
+        // 0 = straight up, clockwise — matches the wheel's layout.
+        const ang = (Math.atan2(wheelVec.x, -wheelVec.y) + Math.PI * 2) % (Math.PI * 2);
+        const seg = Math.round(ang / ((Math.PI * 2) / THROWABLE_KINDS.length)) % THROWABLE_KINDS.length;
+        hover = THROWABLE_KINDS[seg];
+      }
+      if (hover !== wheelHover) {
+        wheelHover = hover;
+        if (hover) soundManager.play('weaponSwitch', 0.12, false, 2.1);
+        pushWheel();
+      }
+    };
+
     // Game state. Ammo starts at the pistol's max-ammo cap, with the
     // One-in-the-Chamber modifier (if active) clamping it to 1.
     let health = 100;
@@ -4223,6 +4395,24 @@ const ForestSurvivalGame = () => {
     // single drop; later waves ~3–4. A short "kills since last drop" cooldown
     // spreads the few drops across the wave instead of clumping at the start.
     let wavePowerupDrops = 0;
+    // ── THROWABLE DROPS ── a separate, EXTREMELY rare loot stream: a ~3% roll
+    // per kill, at most one per wave and never within 45 s of the last.
+    let waveGrenadeDrops = 0;
+    let lastGrenadeDropAt = 0;
+    const GRENADE_DROP_CHANCE = 0.03;
+    const GRENADE_DROP_SPACING_MS = 45000;
+    const maybeDropGrenade = (x: number, z: number) => {
+      if (isTutorialMode || waveGrenadeDrops >= 1) return;
+      const now = Date.now();
+      if (now - lastGrenadeDropAt < GRENADE_DROP_SPACING_MS || Math.random() >= GRENADE_DROP_CHANCE) return;
+      const kind = rollThrowableDrop();
+      const spot = findPickupSpot(x, z, 1.4, 4.0);
+      spawnPickup(spot.x, spot.z, 'grenade', false, kind);
+      waveGrenadeDrops++;
+      lastGrenadeDropAt = now;
+    };
+    /** Set while a blast kill is being resolved (ragdolls launch from it). */
+    let blastKillPos: THREE.Vector3 | null = null;
     let wavePowerupCap = 1;
     let killsSinceLastDrop = 0;
     // ── PICKUP LITTER CONTROL ────────────────────────────────────────────
@@ -4303,13 +4493,13 @@ const ForestSurvivalGame = () => {
     // clear at all, leaving a PERMANENT popup on screen for the rest of the
     // run. One managed timer, always scoped to the newest message.
     let powerMsgTimer: number | null = null;
-    const showPowerMessage = (msg: string, ms = 2000) => {
+    const showPowerMessage = (msg: string, ms = 2000, tone: 'info' | 'warn' = 'info') => {
       setPowerUpMessage(msg);
       // Bump the render key + publish the duration so the pill restarts its
       // entrance→hold→collapse keyframe scaled to `ms`. The collapse is the
       // tail of that animation, so by the time the clear timer fires the pill
       // has already folded away — no hard pop-out.
-      setPowerUpMeta((m) => ({ ms, key: m.key + 1 }));
+      setPowerUpMeta((m) => ({ ms, key: m.key + 1, tone }));
       if (powerMsgTimer !== null) window.clearTimeout(powerMsgTimer);
       powerMsgTimer = window.setTimeout(() => {
         powerMsgTimer = null;
@@ -4509,6 +4699,12 @@ const ForestSurvivalGame = () => {
 
     // Game objects
     const enemies: Enemy[] = [];
+    /** Robots still alive (corpses playing their death fall don't count toward spawn caps). */
+    const livingEnemyCount = (): number => {
+      let n = 0;
+      for (let k = 0; k < enemies.length; k++) if (!enemies[k].dead) n++;
+      return n;
+    };
 
     // The live RunContext handed to external gameplay systems. Allocated ONCE
     // here; refreshRunContext() (in animate) overwrites the per-frame fields in
@@ -4551,6 +4747,7 @@ const ForestSurvivalGame = () => {
       velocity: THREE.Vector3;
       damage: number;
       life: number; // frames until auto-cull
+      whizzed?: boolean; // near-miss crack already played
     }
     const enemyBullets: EnemyBullet[] = [];
     const _enemyBulletGeo = new THREE.SphereGeometry(0.12, 10, 8);
@@ -4586,7 +4783,7 @@ const ForestSurvivalGame = () => {
     // gravity, bounce off the ground with friction + tumble, then shrink away.
     // A hard cap (oldest removed first) keeps rapid fire from spawning unbounded
     // meshes. One shared geo+material so the whole effect costs almost nothing.
-    interface ShellCasing { mesh: THREE.Mesh; vel: THREE.Vector3; spin: THREE.Vector3; life: number; bounced?: boolean; }
+    interface ShellCasing { mesh: THREE.Mesh; vel: THREE.Vector3; spin: THREE.Vector3; life: number; bounced?: boolean; body?: ReturnType<PhysicsWorld['createDynamic']>; }
     const shellCasings: ShellCasing[] = [];
     const MAX_CASINGS = 40;
     // 6 → 12 segments: casings land right in front of the player and a hexagon
@@ -4602,7 +4799,39 @@ const ForestSurvivalGame = () => {
     // per-shot `new Mesh` + Vector3s on autofire; the free-list makes sustained
     // fire allocation-free (a minigun cycles the same ≤40 records forever).
     const _casingFreeList: ShellCasing[] = [];
+    // RIGID CASINGS — while the physics world is up, the newest casings are
+    // real brass cylinders: they roll, ring off rocks and roots, come to rest
+    // lying on their side, and drop onto corpses. Capped (older/excess ones
+    // keep the light arc below) and they never collide with each other.
+    const MAX_RIGID_CASINGS = 18;
+    let rigidCasingCount = 0;
+    const CASING_GROUPS = physicsGroups(GROUP_DEBRIS, GROUP_WORLD | GROUP_RAGDOLL);
+    const attachCasingBody = (c: ShellCasing) => {
+      c.body = null;
+      const R = physicsWorld.R;
+      const world = physicsWorld.world;
+      if (!R || !world || !physicsWorld.ready || rigidCasingCount >= MAX_RIGID_CASINGS) return;
+      const q = c.mesh.quaternion;
+      const body = physicsWorld.createDynamic(R.RigidBodyDesc.dynamic()
+        .setTranslation(c.mesh.position.x, c.mesh.position.y, c.mesh.position.z)
+        .setRotation({ x: q.x, y: q.y, z: q.z, w: q.w })
+        .setLinvel(c.vel.x, c.vel.y, c.vel.z)
+        .setAngvel({ x: c.spin.x, y: c.spin.y, z: c.spin.z })
+        .setLinearDamping(0.1)
+        .setAngularDamping(0.6));
+      if (!body) return;
+      world.createCollider(R.ColliderDesc.cylinder(0.06, 0.024)
+        .setDensity(8.5).setRestitution(0.38).setFriction(0.55)
+        .setCollisionGroups(CASING_GROUPS), body);
+      c.body = body;
+      rigidCasingCount++;
+    };
     const releaseCasing = (c: ShellCasing) => {
+      if (c.body) {
+        physicsWorld.removeDynamic(c.body);
+        c.body = null;
+        rigidCasingCount = Math.max(0, rigidCasingCount - 1);
+      }
       scene.remove(c.mesh);
       if (_casingFreeList.length < MAX_CASINGS) _casingFreeList.push(c);
     };
@@ -4641,6 +4870,7 @@ const ForestSurvivalGame = () => {
           life: 2.4,
         });
       }
+      attachCasingBody(shellCasings[shellCasings.length - 1]);
     };
 
     // ── Bullet shatter shards (deflection debris) ──
@@ -5124,7 +5354,7 @@ const ForestSurvivalGame = () => {
 
       // Extract mesh and parts from pooled enemy
       const {
-        mesh: enemyGroup, body: torso, leftArm, rightArm, leftLeg, rightLeg, head, poolId,
+        mesh: enemyGroup, body: torso, leftArm, rightArm, leftLeg, rightLeg, leftKnee, rightKnee, head, eye, poolId,
         // Shooter archetypes only — the energy lance's bore anchor and its
         // emissive charge set (undefined on every melee archetype).
         muzzle, muzzleGlow, weaponGlow, leftClaw, rightClaw,
@@ -5373,6 +5603,9 @@ const ForestSurvivalGame = () => {
         deathTime: 0,
         leftLeg,
         rightLeg,
+        leftKnee,
+        rightKnee,
+        eye,
         leftArm,
         rightArm,
         torso,
@@ -5670,79 +5903,16 @@ const ForestSurvivalGame = () => {
       },
     );
 
-    // ── Per-color material caches. 6 pickup types → 6 of each material ──
-    const pickupShellMatCache = new Map<number, THREE.MeshStandardMaterial>();
-    const pickupInnerMatCache = new Map<number, THREE.MeshBasicMaterial>();
-    const pickupGlowInnerMatCache = new Map<number, THREE.MeshBasicMaterial>();
-    const pickupGlowOuterMatCache = new Map<number, THREE.MeshBasicMaterial>();
-    const pickupRingMatCache = new Map<number, THREE.MeshBasicMaterial>();
+    // ── Light-pool shader, cached per tint ──
     const pickupHaloMatCache = new Map<number, THREE.ShaderMaterial>();
 
-    const getShellMat = (color: number, coreColor: number): THREE.MeshStandardMaterial => {
-      let m = pickupShellMatCache.get(coreColor);
-      if (!m) {
-        m = new THREE.MeshStandardMaterial({
-          color, roughness: 0.18, metalness: 0.55,
-          emissive: coreColor, emissiveIntensity: 0.85, flatShading: true,
-        });
-        pickupShellMatCache.set(coreColor, m);
-      }
-      return m;
-    };
-    const getInnerMat = (coreColor: number): THREE.MeshBasicMaterial => {
-      let m = pickupInnerMatCache.get(coreColor);
-      if (!m) {
-        m = new THREE.MeshBasicMaterial({
-          color: new THREE.Color(coreColor).multiplyScalar(1.8),
-          toneMapped: true, fog: false,
-        });
-        pickupInnerMatCache.set(coreColor, m);
-      }
-      return m;
-    };
-    const getGlowInnerMat = (coreColor: number): THREE.MeshBasicMaterial => {
-      let m = pickupGlowInnerMatCache.get(coreColor);
-      if (!m) {
-        m = new THREE.MeshBasicMaterial({
-          color: new THREE.Color(coreColor), transparent: true, opacity: 0.45,
-          blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: true,
-          fog: false, side: THREE.BackSide,
-        });
-        pickupGlowInnerMatCache.set(coreColor, m);
-      }
-      return m;
-    };
-    const getGlowOuterMat = (coreColor: number): THREE.MeshBasicMaterial => {
-      let m = pickupGlowOuterMatCache.get(coreColor);
-      if (!m) {
-        m = new THREE.MeshBasicMaterial({
-          color: new THREE.Color(coreColor), transparent: true, opacity: 0.22,
-          blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: true,
-          fog: false, side: THREE.BackSide,
-        });
-        pickupGlowOuterMatCache.set(coreColor, m);
-      }
-      return m;
-    };
-    const getRingMat = (coreColor: number): THREE.MeshBasicMaterial => {
-      let m = pickupRingMatCache.get(coreColor);
-      if (!m) {
-        m = new THREE.MeshBasicMaterial({
-          color: new THREE.Color(coreColor), transparent: true, opacity: 0.85,
-          blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
-          fog: false, side: THREE.DoubleSide,
-        });
-        pickupRingMatCache.set(coreColor, m);
-      }
-      return m;
-    };
     const getHaloMat = (coreColor: number): THREE.ShaderMaterial => {
       let m = pickupHaloMatCache.get(coreColor);
       if (!m) {
         m = new THREE.ShaderMaterial({
           uniforms: {
             uColor: { value: new THREE.Color(coreColor) },
-            uOpacity: { value: 0.6 },
+            uOpacity: { value: 0.34 },
             uTime: { value: 0 },
           },
           vertexShader: /* glsl */`
@@ -5760,8 +5930,8 @@ const ForestSurvivalGame = () => {
             void main() {
               float d = length(vUv - 0.5) * 2.0;
               float glow = 1.0 - smoothstep(0.0, 1.0, d);
-              glow = pow(glow, 1.5);
-              float pulse = 0.85 + sin(uTime * 2.0 - d * 4.0) * 0.15;
+              glow = pow(glow, 2.2);
+              float pulse = 0.9 + sin(uTime * 1.6) * 0.1;
               gl_FragColor = vec4(uColor, glow * uOpacity * pulse);
             }
           `,
@@ -5781,170 +5951,83 @@ const ForestSurvivalGame = () => {
       if (!g) { g = factory(); pickupGeoCache.set(key, g); }
       return g as T;
     };
-    // Halo / glow / ring shapes are the same for every pickup
-    const glowInnerGeoShared = _pgeo('pgGlowInner', () => new THREE.SphereGeometry(0.75, 16, 12));
-    const glowOuterGeoShared = _pgeo('pgGlowOuter', () => new THREE.SphereGeometry(1.4, 16, 12));
-    const ringGeoShared      = _pgeo('pgRing',      () => new THREE.TorusGeometry(1.0, 0.04, 6, 32));
+    // The light-pool disc is the same for every pickup
     const haloGeoShared      = _pgeo('pgHalo',      () => new THREE.CircleGeometry(2.2, 24));
 
-    const createPowerUp = (x: number, z: number, type: PowerUp['type']): PowerUp => {
-      // ── PICKUP GEOMETRY: layered, beacon-class loot drops ─────────────
-      // The geometry shape varies by type (box for health/ammo, cone for
-      // speed, octahedron for damage, icosahedron for shield, torus for
-      // infinite_ammo). Everything else (materials, shared shapes, light)
-      // is pooled — spawning a pickup is now allocation-light.
-      let color = 0x00ff00;
-      let coreColor = 0xffffff;
-      let shellGeo: THREE.BufferGeometry;
-      let innerGeo: THREE.BufferGeometry;
-      switch (type) {
-        case 'overcharge':
-          color = 0xb86a08; coreColor = 0xffcc33;
-          shellGeo = _pgeo('pgShellOc', () => new THREE.DodecahedronGeometry(0.55, 0));
-          innerGeo = _pgeo('pgInnerOc', () => new THREE.DodecahedronGeometry(0.26, 0));
-          break;
-        case 'ammo':
-          color = 0x8a5a18; coreColor = 0xffd54a;
-          shellGeo = _pgeo('pgShellA', () => new THREE.BoxGeometry(0.78, 0.5, 0.5));
-          innerGeo = _pgeo('pgInnerA', () => new THREE.BoxGeometry(0.55, 0.28, 0.28));
-          break;
-        case 'speed':
-          color = 0x08808a; coreColor = 0x6ef0ff;
-          shellGeo = _pgeo('pgShellSp', () => new THREE.ConeGeometry(0.45, 0.95, 5));
-          innerGeo = _pgeo('pgInnerSp', () => new THREE.ConeGeometry(0.18, 0.55, 4));
-          break;
-        case 'damage':
-          color = 0xa6320a; coreColor = 0xff8a3a;
-          shellGeo = _pgeo('pgShellD', () => new THREE.OctahedronGeometry(0.55, 0));
-          innerGeo = _pgeo('pgInnerD', () => new THREE.OctahedronGeometry(0.25, 0));
-          break;
-        case 'shield':
-          color = 0x0a4880; coreColor = 0x55b0ff;
-          shellGeo = _pgeo('pgShellSh', () => new THREE.IcosahedronGeometry(0.55, 0));
-          innerGeo = _pgeo('pgInnerSh', () => new THREE.IcosahedronGeometry(0.26, 0));
-          break;
-        case 'infinite_ammo':
-          color = 0x701a70; coreColor = 0xff5aff;
-          shellGeo = _pgeo('pgShellI', () => new THREE.TorusGeometry(0.42, 0.13, 8, 18));
-          innerGeo = _pgeo('pgInnerI', () => new THREE.TorusGeometry(0.42, 0.06, 6, 16));
-          break;
-        case 'phantom':
-          color = 0x4a1d7a; coreColor = 0xb388ff;
-          shellGeo = _pgeo('pgShellPh', () => new THREE.TorusKnotGeometry(0.32, 0.12, 64, 8));
-          innerGeo = _pgeo('pgInnerPh', () => new THREE.IcosahedronGeometry(0.24, 0));
-          break;
-        case 'cryo':
-          // Icy crystal — sharp octahedron shell + bright frozen core.
-          color = 0x1f6f9c; coreColor = 0x9fe4ff;
-          shellGeo = _pgeo('pgShellCryo', () => new THREE.OctahedronGeometry(0.6, 0));
-          innerGeo = _pgeo('pgInnerCryo', () => new THREE.OctahedronGeometry(0.3, 0));
-          break;
-        case 'tesla':
-          // Charged coil — torus shell wrapping a hot electric core.
-          color = 0xb89a1a; coreColor = 0xfff27a;
-          shellGeo = _pgeo('pgShellTesla', () => new THREE.TorusGeometry(0.4, 0.16, 10, 20));
-          innerGeo = _pgeo('pgInnerTesla', () => new THREE.IcosahedronGeometry(0.26, 0));
-          break;
-        case 'shockwave':
-          // Kinetic ring — flat torus shell with a dense pulse core.
-          color = 0xb8842a; coreColor = 0xffe0a0;
-          shellGeo = _pgeo('pgShellShock', () => new THREE.TorusGeometry(0.5, 0.1, 8, 24));
-          innerGeo = _pgeo('pgInnerShock', () => new THREE.DodecahedronGeometry(0.26, 0));
-          break;
-        case 'health':
-          // Med-pack — a green box shell + bright green core so it reads
-          // instantly as "heal" (distinct from the radioactive nuke green).
-          color = 0x0f7a36; coreColor = 0x4dff7a;
-          shellGeo = _pgeo('pgShellHp', () => new THREE.BoxGeometry(0.7, 0.55, 0.45));
-          innerGeo = _pgeo('pgInnerHp', () => new THREE.BoxGeometry(0.4, 0.32, 0.26));
-          break;
-        case 'nuke':
-          // Radioactive-green warhead — a rounded shell with a hot glowing core
-          // so the rare nuke drop reads as obviously dangerous/special.
-          color = 0x1f7a22; coreColor = 0x9bff4a;
-          shellGeo = _pgeo('pgShellNk', () => new THREE.IcosahedronGeometry(0.6, 1));
-          innerGeo = _pgeo('pgInnerNk', () => new THREE.IcosahedronGeometry(0.32, 0));
-          break;
-        default:
-          shellGeo = _pgeo('pgShellD0', () => new THREE.BoxGeometry(0.6, 0.6, 0.6));
-          innerGeo = _pgeo('pgInnerD0', () => new THREE.BoxGeometry(0.32, 0.32, 0.32));
-      }
+    // ── REALISTIC PICKUP MODELS ──────────────────────────────────────────
+    // Every pickup is the ITEM ITSELF — a hard-shell med case, an M2A1 ammo
+    // can, an adrenaline auto-injector, a plate carrier, an LN2 dewar — built in
+    // ItemAtlas from one shared atlas material (one shader program for all of
+    // them). Presentation follows GTA IV: the object alone, hovering at knee
+    // height and turning slowly, with a soft pool of light on the ground under
+    // it. No gem shells, glow spheres or gyroscope rings.
+    const PICKUP_MODEL: Record<PowerUp['type'], ItemModelId> = {
+      health: 'health', ammo: 'ammo', speed: 'speed', damage: 'damage', shield: 'shield',
+      infinite_ammo: 'infinite_ammo', overcharge: 'overcharge', phantom: 'phantom',
+      cryo: 'cryo', tesla: 'tesla', shockwave: 'shockwave', nuke: 'nuke', grenade: 'grenade_frag',
+    };
+    // Per-item presentation: display scale, a resting tilt (so long objects
+    // show their profile while turning) and the tint of the light pool — a
+    // warm white for most, a faint signature hue where the item's own colour
+    // would read it anyway.
+    const PICKUP_LOOK: Record<PowerUp['type'], { scale: number; tiltX: number; tiltZ: number; light: number }> = {
+      health:        { scale: 1.0, tiltX: 0, tiltZ: 0, light: 0xfff1e0 },
+      ammo:          { scale: 0.95, tiltX: 0, tiltZ: 0, light: 0xffe6b8 },
+      speed:         { scale: 1.15, tiltX: 0, tiltZ: 1.05, light: 0xfff0c8 },
+      damage:        { scale: 1.0, tiltX: 0, tiltZ: 0.25, light: 0xffd8b8 },
+      shield:        { scale: 0.95, tiltX: 0, tiltZ: 0, light: 0xe8f0ff },
+      infinite_ammo: { scale: 0.9, tiltX: 0, tiltZ: 0, light: 0xffe6c8 },
+      overcharge:    { scale: 0.95, tiltX: 0, tiltZ: 0, light: 0xffd890 },
+      phantom:       { scale: 1.0, tiltX: 0, tiltZ: 0, light: 0xe2d4ff },
+      cryo:          { scale: 1.0, tiltX: 0, tiltZ: 0, light: 0xdcefff },
+      tesla:         { scale: 1.0, tiltX: 0, tiltZ: 0, light: 0xd8e8ff },
+      shockwave:     { scale: 1.0, tiltX: 0.32, tiltZ: 0, light: 0xfff0c0 },
+      nuke:          { scale: 1.0, tiltX: 0, tiltZ: 0, light: 0xe8ffcc },
+      grenade:       { scale: 2.7, tiltX: 0, tiltZ: 0.35, light: 0xfff0d8 },
+    };
+    const GRENADE_PICKUP_MODEL = (k: GrenadeKind): ItemModelId => `grenade_${k}`;
+    /** Height the item's CENTRE hovers above the ground (knee height). */
+    const PICKUP_HOVER = 1.25;
 
+    const createPowerUp = (x: number, z: number, type: PowerUp['type'], grenadeKind: GrenadeKind = 'frag'): PowerUp => {
+      const look = PICKUP_LOOK[type];
+      const modelId = type === 'grenade' ? GRENADE_PICKUP_MODEL(grenadeKind) : PICKUP_MODEL[type];
+      const groundY = visualGroundY(x, z);
       const group = new THREE.Group();
-      group.position.set(x, 2, z);
+      group.position.set(x, groundY + PICKUP_HOVER, z);
 
-      // OUTER SHELL — PBR material (shared by color).
-      const shell = new THREE.Mesh(shellGeo, getShellMat(color, coreColor));
-      shell.castShadow = false;
-      shell.receiveShadow = true;
-      group.add(shell);
+      // The item: one merged mesh, shared geometry + the shared atlas material.
+      const item = new THREE.Mesh(getItemGeometry(modelId), getItemMaterial());
+      // A touch over life-size (GTA-style) so loot reads at combat range.
+      item.scale.setScalar(look.scale * (type === 'grenade' ? 1 : 1.35));
+      item.rotation.set(look.tiltX, 0, look.tiltZ);
+      item.castShadow = graphicsPreset.shadowsEnabled;
+      item.receiveShadow = true;
+      group.add(item);
 
-      // INNER GEM — bright unlit core (shared by color).
-      const inner = new THREE.Mesh(innerGeo, getInnerMat(coreColor));
-      group.add(inner);
-
-      // TWIN ADDITIVE GLOW SPHERES (shared geometry + per-color material)
-      const glowInner = new THREE.Mesh(glowInnerGeoShared, getGlowInnerMat(coreColor));
-      glowInner.renderOrder = 989;
-      group.add(glowInner);
-
-      const glowOuter = new THREE.Mesh(glowOuterGeoShared, getGlowOuterMat(coreColor));
-      glowOuter.renderOrder = 988;
-      group.add(glowOuter);
-
-      // ROTATING RING (shared geometry + per-color material)
-      const ring = new THREE.Mesh(ringGeoShared, getRingMat(coreColor));
-      ring.rotation.x = Math.PI / 2;
-      ring.renderOrder = 988;
-      group.add(ring);
-
-      // SECOND ORBIT RING — tilted, counter-rotating (same shared geometry +
-      // material: one extra draw, zero new GPU resources). The crossed pair
-      // gives every pickup a gyroscope silhouette that reads at distance.
-      const ring2 = new THREE.Mesh(ringGeoShared, getRingMat(coreColor));
-      ring2.rotation.x = Math.PI / 2 + 0.85;
-      ring2.scale.setScalar(1.18);
-      ring2.renderOrder = 988;
-      group.add(ring2);
-
-      // GROUND HALO DISC (shared geometry + per-color shader material)
-      const halo = new THREE.Mesh(haloGeoShared, getHaloMat(coreColor));
+      // Soft light pool on the ground (shared geometry + per-tint shader).
+      const halo = new THREE.Mesh(haloGeoShared, getHaloMat(look.light));
       halo.rotation.x = -Math.PI / 2;
-      halo.position.y = -1.95; // ~ground level (group bobs around y=2)
+      halo.position.y = -PICKUP_HOVER + 0.03;
+      halo.scale.setScalar(0.62);
       halo.renderOrder = 986;
       group.add(halo);
 
-      // POINT LIGHT — borrowed from the pre-allocated scene-level pool.
-      // Lives in WORLD space (parent = scene) because we can't reparent
-      // a pool light without triggering the recompile we're trying to
-      // avoid. The per-frame loop syncs its position to the pickup.
-      const pickupLight = acquirePickupLight(coreColor);
+      // POINT LIGHT — borrowed from the pre-allocated scene-level pool (world
+      // space; the per-frame loop keeps it over the item).
+      const pickupLight = acquirePickupLight(look.light);
 
-      // Stash references so the per-frame loop can drive every layer.
-      group.userData.shell = shell;
-      group.userData.inner = inner;
-      group.userData.glowInner = glowInner;
-      group.userData.glowOuter = glowOuter;
-      group.userData.ring = ring;
-      group.userData.ring2 = ring2;
+      group.userData.item = item;
       group.userData.halo = halo;
       group.userData.haloMat = halo.material as THREE.ShaderMaterial;
       group.userData.light = pickupLight; // may be null when pool exhausted
-      // Kept so the render-distance sleep/wake cycle can re-acquire a pool
-      // light in the right colour when a slept pickup rehydrates.
-      group.userData.coreColor = coreColor;
-      // Phase offset so neighbouring pickups don't pulse in sync
+      group.userData.coreColor = look.light;
+      group.userData.groundY = groundY;
       group.userData.pulsePhase = Math.random() * Math.PI * 2;
-      // Materialize-in: the drop pops from a point to full size over ~0.45s
-      // (driven in the per-frame loop) so loot arriving mid-fight has a beat.
       group.userData.spawnAt = Date.now();
-      // Decay clock — see PICKUP_TTL_MS. An unclaimed crate is not permanent
-      // scenery; the per-frame loop blinks it out and despawns it at expiry.
       group.userData.expireAt = group.userData.spawnAt + PICKUP_TTL_MS;
       group.scale.setScalar(0.01);
-      // `core` is the mesh exposed to gameplay code (pickup collision,
-      // cleanup). Aliasing the group keeps `core.position` / `core.userData`
-      // calls below working without further changes.
+      // `core` is the mesh exposed to gameplay code (pickup collision, cleanup).
       const core = group as unknown as THREE.Mesh;
       core.renderOrder = 990;
       scene.add(group);
@@ -5952,8 +6035,9 @@ const ForestSurvivalGame = () => {
       return {
         mesh: core,
         type,
-        position: new THREE.Vector3(x, 2, z),
-        collected: false
+        grenadeKind: type === 'grenade' ? grenadeKind : undefined,
+        position: new THREE.Vector3(x, groundY + PICKUP_HOVER, z),
+        collected: false,
       };
     };
 
@@ -5980,21 +6064,22 @@ const ForestSurvivalGame = () => {
      * to make room, so a fresh, relevant drop always wins over stale litter and
      * the world can never accumulate a field of glowing boxes.
      */
-    const spawnPickup = (x: number, z: number, type: PowerUp['type'], persistent = false): PowerUp => {
+    const spawnPickup = (x: number, z: number, type: PowerUp['type'], persistent = false, grenadeKind: GrenadeKind = 'frag'): PowerUp => {
       let live = 0;
       let oldest: PowerUp | null = null;
       for (let i = 0; i < powerUps.length; i++) {
         const p = powerUps[i];
         // `persistent` crates are exempt from BOTH the cap accounting and the
-        // eviction choice — see below.
-        if (p.collected || p.mesh.userData.persistent === true) continue;
+        // eviction choice — see below. Grenade drops are a separate, far rarer
+        // stream: they neither count toward nor get evicted by the power cap.
+        if (p.collected || p.mesh.userData.persistent === true || p.type === 'grenade') continue;
         live++;
         if (!oldest || ((p.mesh.userData.spawnAt as number) || 0) < ((oldest.mesh.userData.spawnAt as number) || 0)) {
           oldest = p;
         }
       }
-      if (live >= PICKUP_LIVE_CAP && oldest) despawnPickup(oldest);
-      const pu = createPowerUp(x, z, type);
+      if (type !== 'grenade' && live >= PICKUP_LIVE_CAP && oldest) despawnPickup(oldest);
+      const pu = createPowerUp(x, z, type, grenadeKind);
       // A persistent crate never decays and can never be evicted. Used by the
       // tutorial, whose "collect a power-up" drill stages exactly ONE crate and
       // then waits — a crate that timed out, or that an enemy drop pushed off
@@ -6210,7 +6295,7 @@ const ForestSurvivalGame = () => {
       const spreadBase = spawnBearing ?? Math.random() * Math.PI * 2;
       let spawned = 0;
       for (let i = 0; i < count; i++) {
-        if (enemies.length >= adaptiveMax || !smartEnemyManager.canSpawnMore()) break;
+        if (livingEnemyCount() >= adaptiveMax || !smartEnemyManager.canSpawnMore()) break;
         let type: PooledEnemyType = typeOverride ?? 'normal';
         if (!typeOverride) {
           if (isTutorialMode) {
@@ -6322,7 +6407,7 @@ const ForestSurvivalGame = () => {
       let spawnedAdds = 0;
       const startAngle = Math.random() * Math.PI * 2;
       for (let i = 0; i < count; i++) {
-        if (!smartEnemyManager.canSpawnMore() || enemies.length >= smartEnemyManager.getCurrentMaxEnemies()) break;
+        if (!smartEnemyManager.canSpawnMore() || livingEnemyCount() >= smartEnemyManager.getCurrentMaxEnemies()) break;
         // Composition: rare Sniper (ranged), otherwise an even Red/Blue split.
         const roll = Math.random();
         const t: 'normal' | 'fast' | 'ranged' = roll < 0.12 ? 'ranged' : roll < 0.56 ? 'fast' : 'normal';
@@ -6634,6 +6719,7 @@ const ForestSurvivalGame = () => {
       // Tutorial keeps a steady paced trickle (it's teaching the mechanic).
       // `killsSinceLastDrop` starts at 0 so the opening kills can't insta-drop.
       wavePowerupDrops = 0;
+      waveGrenadeDrops = 0;
       killsSinceLastDrop = 0;
       wavePowerupCap = isTutorialMode ? 99
         : wave <= 2 ? 1
@@ -6870,7 +6956,7 @@ const ForestSurvivalGame = () => {
           if (!stepId || TUTORIAL_QUIET_STEPS.has(stepId)) return;
           const guidedInterval = 4200;
           if (currentTime - lastSpawnTime <= guidedInterval) return;
-          if (enemies.length >= smartEnemyManager.getCurrentMaxEnemies() || !smartEnemyManager.canSpawnMore()) return;
+          if (livingEnemyCount() >= smartEnemyManager.getCurrentMaxEnemies() || !smartEnemyManager.canSpawnMore()) return;
           spawnEnemyBatch(1);
           lastSpawnTime = currentTime;
           return;
@@ -6880,7 +6966,7 @@ const ForestSurvivalGame = () => {
         // lighter than the old constant 2.6s/2-3 drip.
         const freeRoamInterval = 5200;
         if (currentTime - lastSpawnTime <= freeRoamInterval) return;
-        if (enemies.length >= smartEnemyManager.getCurrentMaxEnemies() || !smartEnemyManager.canSpawnMore()) return;
+        if (livingEnemyCount() >= smartEnemyManager.getCurrentMaxEnemies() || !smartEnemyManager.canSpawnMore()) return;
         spawnEnemyBatch(1);
         lastSpawnTime = currentTime;
         return;
@@ -6890,7 +6976,7 @@ const ForestSurvivalGame = () => {
       // wave arrives almost entirely up front and then goes quiet.
       const spawnInterval = spawnSettings.interval * waveShapeDef.intervalMult;
       if (currentTime - lastSpawnTime <= spawnInterval) return;
-      if (enemies.length >= smartEnemyManager.getCurrentMaxEnemies() || !smartEnemyManager.canSpawnMore()) return;
+      if (livingEnemyCount() >= smartEnemyManager.getCurrentMaxEnemies() || !smartEnemyManager.canSpawnMore()) return;
 
       // Solo / multiplayer — only spawn what's left of this wave's budget.
       if (waveEnemiesRemaining > 0) {
@@ -6931,6 +7017,7 @@ const ForestSurvivalGame = () => {
     let playerRootedUntil = 0;
     const moving = (action: keyof KeyBindings): boolean => {
       if (tutorialLocks.move && !photoModeRef.current) return false;
+      if (playerEliminated && !photoModeRef.current) return false;
       if (playerRootedUntil > 0 && Date.now() < playerRootedUntil && !photoModeRef.current) return false;
       return movingRaw(action);
     };
@@ -7979,6 +8066,12 @@ const ForestSurvivalGame = () => {
       // Guided tutorial: the weapon isn't the player's yet (the key path has
       // already explained why; this also covers the auto-reload-on-empty call).
       if (tutorialLocks.combat) return false;
+      // Feeding a belt / loading a rocket needs the left hand: mid-throw, the
+      // reload waits and starts the moment the throw is done.
+      if (TWO_HAND_RELOAD.has(currentWeapon as GunWeaponType) && (grenadeInHand || grenadeProp.isPlaying)) {
+        reloadQueued = true;
+        return false;
+      }
       const weapon = WEAPONS[currentWeapon];
       const maxAmmoNow = effectiveMaxAmmo(currentWeapon);
       if (ammo >= maxAmmoNow) return false;
@@ -8055,6 +8148,9 @@ const ForestSurvivalGame = () => {
       // perk; ←/→/Enter browse). Block ALL gameplay handlers so the player
       // can't accidentally swap weapons or jump while picking.
       if (wavePerkActiveRef.current) return;
+      // Falling dead: the body isn't yours any more (UI keys come back with
+      // the game-over / spectate screen).
+      if (playerEliminated && deathCam && !deathCam.committed) return;
 
       // CRITICAL: Always set the key state first to ensure movement works
       // This ensures keys are registered even if later checks fail. The set is
@@ -8144,7 +8240,7 @@ const ForestSurvivalGame = () => {
         tutorialLockedNotice(TUT_LOCK_ABILITY);
         return;
       }
-      if ((e.code === b.reload || e.code === b.melee) && tutorialLocks.combat) {
+      if ((e.code === b.reload || e.code === b.melee || e.code === b.grenade || e.code === b.cycleGrenade || e.code === b.prevThrowable) && tutorialLocks.combat) {
         tutorialLockedNotice(TUT_LOCK_COMBAT);
         return;
       }
@@ -8161,6 +8257,12 @@ const ForestSurvivalGame = () => {
           showPowerMessage(touchControls.enabled
             ? 'Wait for your power to finish'
             : 'Wait for your active power to finish', 1500);
+          return;
+        }
+        // One left hand: every class ability works it (prop, lever, regulator,
+        // shield arm). Pressed mid-throw, it waits for the throw to finish.
+        if (grenadeInHand || grenadeProp.isPlaying) {
+          abilityIntentAt = performance.now();
           return;
         }
         triggerCharacterAbility();
@@ -8185,6 +8287,27 @@ const ForestSurvivalGame = () => {
       if (e.code === b.melee && !paused && !isGameOver && !isDashing
           && !tutorialActiveRef.current && !tutorialLocks.combat) {
         doMeleeStrike();
+        return;
+      }
+
+      // GRENADE — throw (hold the key to aim the arc) / cycle the kind.
+      if (e.code === b.grenade && !paused && !isGameOver && !playerEliminated
+          && !tutorialActiveRef.current) {
+        requestThrow();
+        return;
+      }
+      if (e.code === b.cycleGrenade && !paused && !isGameOver && !tutorialActiveRef.current) {
+        // Tap → next; hold → the quick-select wheel (resolved on key-up).
+        wheelKeyDownAt = performance.now();
+        if (wheelTimer !== null) window.clearTimeout(wheelTimer);
+        wheelTimer = window.setTimeout(() => {
+          wheelTimer = null;
+          if (keys[kb().cycleGrenade] && !paused && !isGameOver) openWheel();
+        }, 230);
+        return;
+      }
+      if (e.code === b.prevThrowable && !paused && !isGameOver && !tutorialActiveRef.current) {
+        cycleGrenade(-1);
         return;
       }
 
@@ -8274,6 +8397,14 @@ const ForestSurvivalGame = () => {
 
     const onKeyUp = (e: KeyboardEvent) => {
       keys[e.code] = false;
+      if (e.code === kb().cycleGrenade && wheelKeyDownAt > 0) {
+        wheelKeyDownAt = 0;
+        if (wheelOpen) closeWheel(true);
+        else {
+          if (wheelTimer !== null) { window.clearTimeout(wheelTimer); wheelTimer = null; }
+          if (!paused && !isGameOver && !tutorialActiveRef.current && !tutorialLocks.combat) cycleGrenade(1);
+        }
+      }
     };
 
     document.addEventListener('keydown', onKeyDown);
@@ -8501,13 +8632,14 @@ const ForestSurvivalGame = () => {
     const MELEE_RANGE_SQ = MELEE_RANGE * MELEE_RANGE;
     const MELEE_ARC_DOT = Math.cos((60 * Math.PI) / 180); // 120° frontal arc
     const MELEE_COOLDOWN_MS = 900;
-    const MELEE_IMPACT_DELAY_MS = 130; // damage lands on the strike frame
+    const MELEE_IMPACT_DELAY_MS = 150; // damage lands on the strike frame (~33% of the 0.46 s swing)
     const MELEE_BASE_DAMAGE = 60;
     const MELEE_MAX_TARGETS = 3;
     const MELEE_STUN_MS = 420;
     let nextMeleeAt = 0;
     let lastMeleeHintAt = 0; // throttles the "too heavy" hint
     const _meleeFwd = new THREE.Vector3();
+    const _meleeKick = { pitch: 0, yaw: 0, roll: 0 };
     const _meleeImpact = new THREE.Vector3();
 
     function doMeleeStrike() {
@@ -8526,7 +8658,7 @@ const ForestSurvivalGame = () => {
       // Swing NOW (viewmodel windup + whoosh); the hit lands on the strike
       // frame below so contact matches what the player sees.
       gunModel.triggerMelee();
-      soundManager.play('jump', 0.45, false, 1.3); // whoosh, pitched up to a swipe
+      soundManager.playMeleeSwing(0.6);
       tutorial.recordAction('melee', 1);
       window.setTimeout(resolveMeleeHits, MELEE_IMPACT_DELAY_MS);
     }
@@ -8603,7 +8735,9 @@ const ForestSurvivalGame = () => {
       }
 
       if (hitCount > 0) {
-        soundManager.play('enemyHit', 0.9, false, 0.72); // low metal thud
+        soundManager.playMeleeHit(0.9);
+        // The viewmodel jars on contact (hit-stop + recoil off the target).
+        gunModel.meleeImpact();
         haptic('hit');
         if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
         // Micro hit-stop so the bash lands with weight.
@@ -8715,7 +8849,7 @@ const ForestSurvivalGame = () => {
         return;
       }
       const nowShot = performance.now();
-      if (ammo > 0 && !isGameOver && !paused && nowShot >= nextShotAt && !isReloading && !tutorialActiveRef.current) {
+      if (ammo > 0 && !isGameOver && !playerEliminated && !paused && nowShot >= nextShotAt && !isReloading && !tutorialActiveRef.current) {
         const weapon = WEAPONS[currentWeapon];
         gunModel.cancelInspect(); // firing snaps the gun back from an inspect
         // Overcharge × Rapid-Fire (killstreak airdrop) × Wave perks compound on
@@ -9038,6 +9172,10 @@ const ForestSurvivalGame = () => {
           euler.x -= e.movementY * s;
           euler.x = Math.max(-PI_2, Math.min(PI_2, euler.x));
         }
+        return;
+      }
+      if (wheelOpen) {
+        steerWheel(e.movementX, e.movementY);
         return;
       }
       if (!paused && !isGameOver) {
@@ -9430,11 +9568,6 @@ const ForestSurvivalGame = () => {
       gib.quaternion.copy(_gibQuat);
       gib.scale.copy(_gibScale);
       gib.traverse((o) => { o.castShadow = false; });
-      // Severed cable bundle torn out WITH the head — dangles from the neck
-      // underside and whips around as the gib tumbles.
-      const gibWires = buildWireBundle(false, 1);
-      gibWires.position.y = -0.35;
-      gib.add(gibWires);
       scene.add(gib);
       head.visible = false; // the body is now headless
 
@@ -9462,12 +9595,23 @@ const ForestSurvivalGame = () => {
       const spin = new THREE.Vector3(
         (Math.random() - 0.5) * 16, (Math.random() - 0.5) * 14, (Math.random() - 0.5) * 16,
       );
-      headGibs.push({ mesh: gib, vel, spin, life: 4, restY: 0.25 * _gibScale.y });
-
-      // Cap the gib count so a long sniper streak can't pile up corp'd heads.
-      if (headGibs.length > MAX_HEAD_GIBS) {
-        const old = headGibs.shift();
-        if (old) scene.remove(old.mesh);
+      // A real rigid body on the shared physics world — it tumbles, rolls
+      // over its edges and glances off trunks and corpses. The hand-rolled
+      // arc below is only the fallback until the physics WASM is ready.
+      const rigid = rigidDebris.launch(gib, { vel, spin, life: 4.5, density: 1.2, onImpact: debrisClank });
+      // Severed cable bundle torn out WITH the head — dangles from the neck
+      // underside and whips around as the gib tumbles. Added AFTER the
+      // collider is fitted so the wires never inflate the box.
+      const gibWires = buildWireBundle(false, 1);
+      gibWires.position.y = -0.35;
+      gib.add(gibWires);
+      if (!rigid) {
+        headGibs.push({ mesh: gib, vel, spin, life: 4, restY: 0.25 * _gibScale.y });
+        // Cap the gib count so a long sniper streak can't pile up corp'd heads.
+        if (headGibs.length > MAX_HEAD_GIBS) {
+          const old = headGibs.shift();
+          if (old) scene.remove(old.mesh);
+        }
       }
 
       // Sharp robot-spark burst at the neck + a meaty pop + a punchy shake so
@@ -9499,6 +9643,192 @@ const ForestSurvivalGame = () => {
       enemy.hackTimeLeft = undefined;
       enemy.hackDuration = undefined;
       enemy.mesh.rotation.z = 0; // clear any leftover instability roll
+    };
+
+    // ── ROBOT DEATH SEQUENCE ─────────────────────────────────────────────
+    // Cosmetic, so EVERY client runs it (solo, host, and guests mirroring a
+    // host-side death): the visor flickers and goes dark, servos whine down,
+    // sparks spit from the neck, and the machine collapses as an ARTICULATED
+    // Rapier ragdoll — chassis + head on a compound torso, arms / thighs /
+    // shins on limited hinge joints — thrown along the killing hit (or flung
+    // from a blast). The corpse lies vented and smoking, then sinks into the
+    // ground instead of shrinking. Ragdolls off → a scripted knees-buckle
+    // collapse. Pre-WASM → the single-body / lightweight fallbacks.
+    const ROBOT_CORPSE_S = 4.4;   // ragdoll + rest, before it starts to sink
+    const CORPSE_SINK_S = 0.9;    // the last stretch: it sinks out of sight
+    const SIMPLE_DEATH_S = 1.9;
+    const _deathDir = new THREE.Vector3();
+    const _deathNeck = new THREE.Vector3();
+    const _ragLimbQuats = [0, 1, 2, 3, 4, 5].map(() => new THREE.Quaternion());
+    const _ragInvQuat = new THREE.Quaternion();
+    const _deathUp = new THREE.Vector3(0, 1, 0);
+    // ── Blast dismemberment ──────────────────────────────────────────────
+    // A robot caught close to an explosion loses parts. Same pooled-mesh-safe
+    // trick as the head gib: the real limb pivot is HIDDEN (restored when the
+    // corpse slot is recycled) and a clone sharing its geometry + material
+    // flies off as rigid debris, trailing torn cables, with a matching stub
+    // left sparking in the socket. Rigid-only: without the physics world the
+    // limb simply stays on (no fallback arc for a whole arm).
+    const _sevPos = new THREE.Vector3();
+    const _sevQuat = new THREE.Quaternion();
+    const _sevScale = new THREE.Vector3();
+    const _sevDir = new THREE.Vector3();
+    const severLimb = (enemy: Enemy, pivot: THREE.Object3D, from: THREE.Vector3): boolean => {
+      if (!pivot.visible || !physicsWorld.ready) return false;
+      pivot.updateWorldMatrix(true, true);
+      pivot.getWorldPosition(_sevPos);
+      pivot.getWorldQuaternion(_sevQuat);
+      pivot.getWorldScale(_sevScale);
+      const part = pivot.clone(true); // shares geometry + material
+      part.position.copy(_sevPos);
+      part.quaternion.copy(_sevQuat);
+      part.scale.copy(_sevScale);
+      part.traverse((o) => { o.castShadow = false; });
+      scene.add(part);
+      _sevDir.set(_sevPos.x - from.x, 0, _sevPos.z - from.z);
+      if (_sevDir.lengthSq() < 1e-4) _sevDir.set(Math.random() - 0.5, 0, Math.random() - 0.5);
+      _sevDir.normalize();
+      const sp = 7 + Math.random() * 5;
+      const ok = rigidDebris.launch(part, {
+        vel: { x: _sevDir.x * sp, y: 6 + Math.random() * 4, z: _sevDir.z * sp },
+        spin: { x: (Math.random() - 0.5) * 18, y: (Math.random() - 0.5) * 12, z: (Math.random() - 0.5) * 18 },
+        life: 5.5, density: 1.6, onImpact: debrisClank,
+      });
+      if (!ok) { scene.remove(part); return false; }
+      // Cables sticking up out of the torn end of the flying part, and a tuft
+      // hanging out of the empty socket on the corpse.
+      part.add(buildWireBundle(true, 0.7));
+      pivot.visible = false;
+      (enemy.severedParts ??= []).push(pivot);
+      if (pivot.parent) {
+        const stub = buildWireBundle(false, 0.6);
+        stub.position.copy(pivot.position);
+        pivot.parent.add(stub);
+        (enemy.socketWires ??= []).push(stub);
+      }
+      robotSparks.push(new RobotHitSparks(scene, _sevPos.clone(), _sevDir.clone(), 10));
+      return true;
+    };
+
+    // A drum that goes off comes APART: bent staves, the lid and a torn rib
+    // fly as rigid bodies (after the blast's own radial shove, so they're
+    // launched once, not twice). Rigid-only — no fallback arc for scrap.
+    const spawnBarrelDebris = (centre: THREE.Vector3) => {
+      if (!physicsWorld.ready) return;
+      for (const m of buildBarrelDebris()) {
+        const dir = m.userData.dir as THREE.Vector3;
+        m.position.add(centre);
+        scene.add(m);
+        const sp = 7 + Math.random() * 6;
+        const up = dir.y > 0.5 ? 11 + Math.random() * 5 : 5 + Math.random() * 5;
+        const ok = rigidDebris.launch(m, {
+          vel: { x: dir.x * sp, y: up, z: dir.z * sp },
+          spin: { x: (Math.random() - 0.5) * 16, y: (Math.random() - 0.5) * 12, z: (Math.random() - 0.5) * 16 },
+          life: 6 + Math.random() * 2, density: 2.4, restitution: 0.3, friction: 0.7, onImpact: debrisClank,
+        });
+        if (!ok) scene.remove(m);
+      }
+    };
+
+    const startEnemyDeathFX = (enemy: Enemy, isCritical: boolean) => {
+      enemy.deathStarted = true;
+      // The corpse keeps its pooled mesh but stops counting against the cap.
+      if (enemy.poolId !== undefined) smartEnemyManager.markCorpse(enemy.poolId);
+      enemy.deathElapsed = 0;
+      enemy.deathImpactDone = false;
+      const heavy = enemy.type === 'tank' || enemy.type === 'boss' || enemy.isMiniBoss === true;
+      const baseScale = ENEMY_SCALE[enemy.type];
+      const dp = enemy.mesh.position;
+      // Servos winding down + a burst of sparks from the neck joint.
+      soundManager.playAt(soundManager.pickVariant('robot_powerdown', 2), dp.x, dp.y + baseScale, dp.z,
+        heavy ? 0.6 : 0.45, heavy ? 0.72 : enemy.type === 'fast' ? 1.25 : 1, { refDistance: 6, maxDistance: 70 });
+      _deathNeck.set(dp.x, dp.y + 1.7 * baseScale, dp.z);
+      robotSparks.push(new RobotHitSparks(scene, _deathNeck.clone(), _deathUp, heavy ? 14 : 9));
+
+      // Fall direction: away from the blast / along the killing hit / away from us.
+      const blast = blastKillPos;
+      // Remembered for the multiplayer wire, so guests fling + dismember too.
+      if (blast) enemy.blastFrom = { x: blast.x, z: blast.z };
+      if (blast) _deathDir.set(dp.x - blast.x, 0, dp.z - blast.z);
+      else if (enemy.hitImpulse && enemy.hitImpulse.lengthSq() > 1e-4) _deathDir.set(enemy.hitImpulse.x, 0, enemy.hitImpulse.z);
+      else _deathDir.set(dp.x - camera.position.x, 0, dp.z - camera.position.z);
+      if (_deathDir.lengthSq() < 1e-6) _deathDir.set(0, 0, 1);
+      _deathDir.normalize();
+
+      if (!gameSettingsManager.getSetting('ragdollPhysics')) {
+        enemy.deathTime = SIMPLE_DEATH_S;
+        return;
+      }
+      const mass = enemy.type === 'boss' ? 0.4 : enemy.type === 'tank' ? 0.62 : enemy.type === 'fast' ? 1.2 : 1;
+      // A bullet drops a robot where it stands (a shove, a stagger, a fall); a
+      // crit hits harder; a blast throws it.
+      const horiz = (blast ? 6 + Math.random() * 4 : isCritical ? 2.4 + Math.random() * 1.4 : 1.1 + Math.random() * 1.3) * mass;
+      const up = (blast ? 6 + Math.random() * 3 : isCritical ? 1.3 : 0.4 + Math.random() * 0.8) * mass;
+      const vel = { x: _deathDir.x * horiz, y: up, z: _deathDir.z * horiz };
+      // Topple AWAY from the hit: spin about (up × dir).
+      const tip = (blast ? 4.5 : isCritical ? 2.6 : 1.8) * mass;
+      const spin = {
+        x: _deathDir.z * tip + (Math.random() - 0.5) * (blast ? 5 : 1),
+        y: (Math.random() - 0.5) * (blast ? 4 : 1.2),
+        z: -_deathDir.x * tip + (Math.random() - 0.5) * (blast ? 5 : 1),
+      };
+
+      // ── Articulated corpse (HIGH-LOD rig) ──
+      const la = enemy.leftArm, ra = enemy.rightArm, ll = enemy.leftLeg, rl = enemy.rightLeg;
+      const lk = enemy.leftKnee, rk = enemy.rightKnee;
+      if (la && ra && ll && rl && lk && rk) {
+        enemy.mesh.updateMatrixWorld(true);
+        const limb = (o: THREE.Object3D, parent: number, anchor: THREE.Vector3, length: number, radius: number, min: number, max: number): RagdollLimbSpec => ({
+          parent, anchor: { x: anchor.x, y: anchor.y, z: anchor.z },
+          pos: o.getWorldPosition(new THREE.Vector3()), quat: o.getWorldQuaternion(new THREE.Quaternion()),
+          length, radius, min, max,
+        });
+        // Arms swing on the shoulders; hips + knees are hinges with real ranges.
+        const limbs: RagdollLimbSpec[] = [
+          limb(la, -1, la.position, 1.25, 0.16, -2.8, 1.0),
+          limb(ra, -1, ra.position, 1.25, 0.16, -2.8, 1.0),
+          limb(ll, -1, ll.position, 0.52, 0.17, -1.7, 0.6),
+          limb(rl, -1, rl.position, 0.52, 0.17, -1.7, 0.6),
+          limb(lk, 2, lk.position, 0.62, 0.15, 0.0, 2.4),
+          limb(rk, 3, rk.position, 0.62, 0.15, 0.0, 2.4),
+        ];
+        // Blast dismemberment: the closer the blast, the more comes off
+        // (point-blank also pops the head).
+        if (blast) {
+          const bd = Math.hypot(dp.x - blast.x, dp.z - blast.z);
+          const tear = bd < 3.2 ? 2 : bd < 6 && Math.random() < 0.7 ? 1 : 0;
+          if (tear > 0) {
+            const parts = [la, ra, ll, rl];
+            for (let k = parts.length - 1; k > 0; k--) {
+              const j = Math.floor(Math.random() * (k + 1));
+              const tmp = parts[k]; parts[k] = parts[j]; parts[j] = tmp;
+            }
+            let torn = 0;
+            for (let k = 0; k < parts.length && torn < tear; k++) if (severLimb(enemy, parts[k], blast)) torn++;
+            if (bd < 2.2) spawnHeadGib(enemy);
+          }
+        }
+        const id = ragdollSystem.spawnArticulated({
+          torsoPos: enemy.mesh.getWorldPosition(new THREE.Vector3()),
+          torsoQuat: enemy.mesh.getWorldQuaternion(new THREE.Quaternion()),
+          scale: baseScale, limbs, vel, spin,
+        });
+        if (id >= 0) {
+          enemy.ragdollArtId = id;
+          enemy.deathTime = ROBOT_CORPSE_S;
+          return;
+        }
+      }
+      // ── Fallbacks: single rigid body, then the lightweight integrator ──
+      const ragId = ragdollSystem.spawn(dp.x, dp.y, dp.z, vel.x, vel.y + 2, vel.z, spin.x * 2, spin.y, spin.z * 2, baseScale);
+      if (ragId >= 0) {
+        enemy.ragdollBodyId = ragId;
+        enemy.deathTime = 3.2;
+      } else {
+        enemy.deathVel = new THREE.Vector3(vel.x, vel.y + 3, vel.z);
+        enemy.deathSpin = new THREE.Vector3(spin.x * 2, spin.y, spin.z * 2);
+        enemy.deathTime = 2.6;
+      }
     };
 
     // Extracted enemy-kill handler — shared by direct bullet hits and the
@@ -9549,7 +9879,7 @@ const ForestSurvivalGame = () => {
         const ez = enemy.mesh.position.z;
         for (let sc = 0; sc < SPLITTER_CHILDREN; sc++) {
           if (!smartEnemyManager.canSpawnMore()) break;
-          if (enemies.length >= smartEnemyManager.getCurrentMaxEnemies()) break;
+          if (livingEnemyCount() >= smartEnemyManager.getCurrentMaxEnemies()) break;
           const a = (sc / SPLITTER_CHILDREN) * Math.PI * 2 + Math.random() * 0.6;
           const child = createEnemy(ex + Math.cos(a) * 2.2, ez + Math.sin(a) * 2.2, 'fast');
           if (!child) break;
@@ -9566,51 +9896,8 @@ const ForestSurvivalGame = () => {
         soundManager.playAt('enemy_alert', ex, enemy.mesh.position.y, ez, 0.6, 0.75);
       }
 
-      // ── Ragdoll launch (lightweight physics, toggleable in Settings) ──
-      // Fling the corpse along the shot direction (or away from the player when
-      // no hit direction is known, e.g. melee/AOE kills), up and tumbling. The
-      // death loop integrates gravity + ground bounce. Heavier types launch less.
-      // When the player disables ragdolls, we leave deathVel/deathSpin unset and
-      // the death loop falls back to a clean topple-and-shrink animation.
-      if (gameSettingsManager.getSetting('ragdollPhysics')) {
-        const massScale = enemy.type === 'boss' ? 0.32
-          : enemy.type === 'tank' ? 0.6
-          : enemy.type === 'fast' ? 1.3
-          : enemy.type === 'ranged' ? 1.0
-          : 1.0;
-        const launchDir = (enemy.hitImpulse && enemy.hitImpulse.lengthSq() > 1e-4)
-          ? enemy.hitImpulse.clone().setY(0).normalize()
-          : new THREE.Vector3(
-              enemy.mesh.position.x - camera.position.x,
-              0,
-              enemy.mesh.position.z - camera.position.z,
-            );
-        if (launchDir.lengthSq() < 1e-4) launchDir.set(0, 0, 1);
-        launchDir.normalize();
-        const launchSpeed = (4 + Math.random() * 2.5) * massScale * (isCritical ? 1.5 : 1);
-        const velX = launchDir.x * launchSpeed;
-        const velY = (5.5 + Math.random() * 1.6) * massScale;
-        const velZ = launchDir.z * launchSpeed;
-        const spinX = (Math.random() - 0.5) * 9 * massScale;
-        const spinY = (Math.random() - 0.5) * 7 * massScale;
-        const spinZ = (Math.random() - 0.5) * 11 * massScale;
-        // Prefer the engine-grade Rapier ragdoll (solo only — MP corpses use the
-        // host-mirrored simple topple). spawn() returns -1 until the physics
-        // WASM is ready (or if it failed to load), in which case we fall back to
-        // the lightweight gravity-integrated launcher — identical impulse + feel.
-        const ragBaseScale = ENEMY_SCALE[enemy.type];
-        const ragId = isMultiplayer ? -1 : ragdollSystem.spawn(
-          enemy.mesh.position.x, enemy.mesh.position.y, enemy.mesh.position.z,
-          velX, velY, velZ, spinX, spinY, spinZ, ragBaseScale,
-        );
-        if (ragId >= 0) {
-          enemy.ragdollBodyId = ragId;
-        } else {
-          enemy.deathVel = new THREE.Vector3(velX, velY, velZ);
-          enemy.deathSpin = new THREE.Vector3(spinX, spinY, spinZ);
-        }
-        enemy.deathStarted = true;
-      }
+      // ── Death sequence (power-down + jointed ragdoll) — see startEnemyDeathFX.
+      startEnemyDeathFX(enemy, isCritical);
 
       // Who gets the kill? In solo — and for the host's OWN kills — it's the
       // local player. In multiplayer, when a guest's reported hit lands the
@@ -9865,6 +10152,7 @@ const ForestSurvivalGame = () => {
         wavePowerupDrops++;
         killsSinceLastDrop = 0;
       }
+      maybeDropGrenade(enemy.mesh.position.x, enemy.mesh.position.z);
       updateGameState();
       // Wave complete — only once the whole wave budget has spawned AND
       // every living enemy is dead. Tutorial mode has no wave progression.
@@ -10206,27 +10494,199 @@ const ForestSurvivalGame = () => {
       if (health <= 0) {
         health = 0;
         playerEliminated = true;
-        // Commit the game-over / spectate state BEFORE the pointer-lock release.
-        // `document.exitPointerLock` is undefined on iOS Safari (Pointer Lock
-        // isn't supported on iOS), so calling it unguarded throws a TypeError
-        // — which used to leave `isGameOver` false and let the player keep
-        // playing with the health bar visibly at zero.
+        // The network learns of the death NOW (kill feed, remote collapse);
+        // the local game-over / spectate UI waits for the death camera to land.
         if (isMultiplayer && multiplayerManager) {
           multiplayerManager.updatePlayerHealth(0);
           const victim = multiplayerManager.getLocalPlayer();
           multiplayerManager.broadcastKill(enemyLabel, victim.id, victim.name, victim.color, enemyLabel);
-          setIsSpectating(true);
-          updateGameState();
-        } else {
-          isGameOver = true;
-          flushGameState(); // game over must show immediately, not on the next coalesced tick
         }
-        try {
-          if (typeof document.exitPointerLock === 'function') {
-            document.exitPointerLock();
-          }
-        } catch { /* iOS Safari / unsupported — ignore */ }
+        beginPlayerDeath(enemyPos);
+        updateGameState();
       }
+    };
+
+    // ── PLAYER DEATH SEQUENCE ────────────────────────────────────────────
+    // The killing blow drains the world to black & white, the muffle closes in
+    // with a ringing in the ears, time slows (solo), and the view FALLS: the
+    // knees go, the camera drops and topples onto its side — away from the
+    // attacker — hits the ground, bounces and settles, looking along the dirt.
+    // The player's own body (the shadow caster) collapses on the same beat.
+    // Only once it lands does the game-over screen (solo) or spectate (MP)
+    // take over. `isGameOver` is committed at the END, so the world keeps
+    // living around the fallen player instead of freezing at the blow.
+    const DEATH_CAM_S = 3.0;
+    interface DeathCam {
+      t: number;
+      pos: THREE.Vector3;
+      vel: THREE.Vector3;
+      yaw: number; pitch: number;
+      roll: number; rollV: number; rollTarget: number;
+      pitchTarget: number;
+      vy: number;
+      landed: boolean; bounced: boolean;
+      committed: boolean;
+    }
+    let deathCam: DeathCam | null = null;
+    let deathGrade = 0;
+    let deathTimeScale = 1;
+    let deathMuffle = 0;
+    const commitPlayerDeath = () => {
+      if (!deathCam || deathCam.committed) return;
+      deathCam.committed = true;
+      // Commit the game-over / spectate state BEFORE the pointer-lock release.
+      // `document.exitPointerLock` is undefined on iOS Safari, so calling it
+      // unguarded throws — which used to leave `isGameOver` false.
+      if (isMultiplayer && multiplayerManager) {
+        setIsSpectating(true);
+        updateGameState();
+      } else {
+        isGameOver = true;
+        flushGameState(); // game over must show now, not on the next coalesced tick
+      }
+      try {
+        if (typeof document.exitPointerLock === 'function') document.exitPointerLock();
+      } catch { /* iOS Safari / unsupported — ignore */ }
+    };
+    function beginPlayerDeath(killerPos: THREE.Vector3 | null) {
+      if (deathCam) return;
+      deathGunDropped = false;
+      mouseDown = false;
+      isAiming = false;
+      if (wheelOpen) closeWheel(false);
+      // A cooked grenade still in the hand drops at the player's feet.
+      if (grenadeInHand) {
+        grenadeInHand = false;
+        _gOrigin.copy(camera.position).add(new THREE.Vector3(0, -1.2, 0));
+        grenadeSystem.throw(grenadeThrowKind, _gOrigin, new THREE.Vector3(0, -2, 0), true, mp ? mp.getLocalPlayer().id : '');
+      }
+      // Fall AWAY from whatever killed us (back if hit from the front).
+      camera.getWorldDirection(_deathFwd);
+      _deathFwd.y = 0; _deathFwd.normalize();
+      let fromFront = true;
+      let side = Math.random() < 0.5 ? -1 : 1;
+      if (killerPos) {
+        _deathAway.set(camera.position.x - killerPos.x, 0, camera.position.z - killerPos.z);
+        if (_deathAway.lengthSq() > 1e-6) {
+          _deathAway.normalize();
+          fromFront = _deathAway.dot(_deathFwd) < 0.2;
+          // Topple toward the side the blow pushed us.
+          side = (-_deathFwd.z * _deathAway.x + _deathFwd.x * _deathAway.z) >= 0 ? 1 : -1;
+        }
+      } else {
+        _deathAway.copy(_deathFwd).multiplyScalar(-1);
+      }
+      deathCam = {
+        t: 0,
+        pos: camera.position.clone(),
+        vel: _deathAway.clone().multiplyScalar(2.2).setY(0),
+        yaw: euler.y,
+        pitch: euler.x,
+        roll: 0,
+        rollV: 0,
+        rollTarget: side * (1.32 + Math.random() * 0.12),
+        pitchTarget: fromFront ? 0.32 : -0.28,
+        vy: 0,
+        landed: false,
+        bounced: false,
+        committed: false,
+      };
+      localPlayerShadow.setAlive(false, fromFront ? -1 : 1);
+      soundManager.play('tinnitus', 0.55);
+      soundManager.play('playerHurt', 0.8, false, 0.8);
+      if (!isMultiplayer) deathTimeScale = 0.38;
+      haptic('hurt');
+    }
+    const _deathFwd = new THREE.Vector3();
+    const _deathAway = new THREE.Vector3();
+    const _deathEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+    const _dropFwd = new THREE.Vector3();
+    /** Launch a rigid copy of the held weapon (true = it's flying). */
+    const dropWeaponOnDeath = (): boolean => {
+      if (!physicsWorld.ready || !gunModel.group.visible) return false;
+      const proxy = gunModel.cloneWeaponForDrop();
+      if (!proxy) return false;
+      scene.add(proxy);
+      camera.getWorldDirection(_dropFwd);
+      _dropFwd.y = 0;
+      if (_dropFwd.lengthSq() < 1e-6) _dropFwd.set(0, 0, -1);
+      _dropFwd.normalize();
+      const ok = rigidDebris.launch(proxy, {
+        vel: { x: _dropFwd.x * 1.6 + (Math.random() - 0.5) * 0.6, y: 0.8, z: _dropFwd.z * 1.6 + (Math.random() - 0.5) * 0.6 },
+        spin: { x: (Math.random() - 0.5) * 5, y: (Math.random() - 0.5) * 3, z: 2 + Math.random() * 3 },
+        life: 14, density: 2.2, restitution: 0.22, friction: 0.75, onImpact: debrisClank,
+      });
+      if (!ok) { scene.remove(proxy); return false; }
+      return true;
+    };
+
+    /** Drive the death camera (after the normal camera compose). */
+    const updateDeathCam = (dt: number) => {
+      const dc = deathCam;
+      // Grade / muffle / slow-mo ease toward their targets every frame.
+      const gradeTarget = dc ? (dc.committed && isMultiplayer ? 0.55 : 1) : 0;
+      deathGrade += (gradeTarget - deathGrade) * Math.min(1, dt * (dc ? 2.4 : 6));
+      if (Math.abs(deathGrade - gradeTarget) < 0.002) deathGrade = gradeTarget;
+      if (postFX) postFX.setDeathGrade(deathGrade);
+      else renderer.domElement.style.filter = deathGrade > 0.002
+        ? `grayscale(${deathGrade.toFixed(3)}) contrast(${(1 + deathGrade * 0.15).toFixed(3)})` : '';
+      deathMuffle += ((dc && !dc.committed ? 0.85 : dc ? 0.35 : 0) - deathMuffle) * Math.min(1, dt * 3);
+      deathTimeScale += (1 - deathTimeScale) * Math.min(1, dt * 0.9);
+      if (!dc || (dc.committed && isMultiplayer)) return;
+      dc.t += dt;
+      const t = dc.t;
+      // Knees give way: a short drop before the topple really starts.
+      const buckle = Math.min(1, t / 0.3);
+      // Horizontal drift away from the blow, dying off.
+      dc.vel.multiplyScalar(Math.max(0, 1 - dt * 3.2));
+      dc.pos.x += dc.vel.x * dt;
+      dc.pos.z += dc.vel.z * dt;
+      // Gravity on the head; the ground stops it at "lying on the side" height,
+      // with one small bounce.
+      const restY = visualGroundY(dc.pos.x, dc.pos.z) + 0.55;
+      if (!dc.landed) {
+        if (t < 0.16) dc.vy = -2.4 * buckle;
+        else dc.vy -= 24 * dt;
+        dc.pos.y += dc.vy * dt;
+        if (dc.pos.y <= restY) {
+          dc.pos.y = restY;
+          if (!dc.bounced && dc.vy < -4) {
+            dc.vy = -dc.vy * 0.16;
+            dc.bounced = true;
+            cameraShakeIntensity = Math.min(cameraShakeIntensity + 0.35, 0.45);
+            soundManager.play('body_fall', 0.85);
+            haptic('hurt');
+          } else {
+            dc.vy = 0;
+            dc.landed = true;
+          }
+        }
+      } else {
+        dc.pos.y = restY;
+      }
+      // The roll is a spring that over-shoots on impact (the head bounces).
+      const rollGoal = t < 0.14 ? 0 : dc.rollTarget;
+      dc.rollV += ((rollGoal - dc.roll) * (dc.landed ? 60 : 16) - dc.rollV * (dc.landed ? 9 : 3.2)) * dt;
+      dc.roll += dc.rollV * dt;
+      dc.pitch += (dc.pitchTarget - dc.pitch) * Math.min(1, dt * (dc.landed ? 5 : 2.2));
+      dc.yaw += dc.vel.length() * 0.02 * dt;
+      camera.position.copy(dc.pos);
+      _deathEuler.set(dc.pitch, dc.yaw, dc.roll, 'YXZ');
+      camera.quaternion.setFromEuler(_deathEuler);
+      // The weapon leaves the hands: a world-space copy of the actual gun
+      // drops as a rigid body and clatters down beside you as the view goes
+      // over. Without the physics world it just slides out of frame.
+      if (!deathGunDropped && t > 0.12) {
+        deathGunDropped = true;
+        if (dropWeaponOnDeath()) gunModel.group.visible = false;
+      }
+      if (gunModel.group.visible) {
+        const gunDrop = Math.min(1, t / 0.45);
+        gunModel.group.position.y -= gunDrop * gunDrop * 0.6;
+        gunModel.group.rotation.z += gunDrop * 0.9;
+        if (t > 0.5) gunModel.group.visible = false;
+      }
+      if (t >= DEATH_CAM_S) commitPlayerDeath();
     };
 
     // Award a kill to the LOCAL player (used when the host tells us our hit
@@ -10259,7 +10719,7 @@ const ForestSurvivalGame = () => {
     // snapshot it receives is always a keyframe.
     const handleEnemySync = (raw: unknown) => {
       if (!isMpGuest) return;
-      const msg = raw as { enemies: EnemyWire[]; wave: number; full?: boolean; t?: number; wm?: number; wi?: number; us?: number[] };
+      const msg = raw as { enemies: EnemyWire[]; wave: number; full?: boolean; t?: number; wm?: number; wi?: number; us?: number[]; ws?: number };
       const isKeyframe = msg.full !== false; // default true for safety
       // First snapshot from the host → we're in sync; drop the affordance.
       if (mpWaitingForHostRef.current) {
@@ -10281,6 +10741,8 @@ const ForestSurvivalGame = () => {
         // see plain red TNT where the host sees warheads.
         markIrradiatedBarrels();
       }
+      // One sky for the whole lobby: the host's weather director drives it.
+      if (typeof msg.ws === 'number') weatherSystem.follow(msg.ws);
       if (typeof msg.wm === 'number') {
         const kind = msg.wm === 1 ? 'surge' : msg.wm === 2 ? 'glitch' : 'none';
         const intensity = Math.max(0, Math.min(2, (msg.wi ?? 75) / 100));
@@ -10303,6 +10765,7 @@ const ForestSurvivalGame = () => {
         // rolled over HERE or it would stay pinned at its wave-1 value and the
         // guest would stop seeing loot entirely after the first crate.
         wavePowerupDrops = 0;
+      waveGrenadeDrops = 0;
         killsSinceLastDrop = 0;
         wavePowerupCap = wave <= 2 ? 1 : 2;
         // The milestone crate stays on the host's every-3rd-wave cadence so
@@ -10375,6 +10838,11 @@ const ForestSurvivalGame = () => {
         if (w.d && !e.dead) {
           e.dead = true;
           e.deathTime = 1.0;
+          // Host says it died to a blast: throw it away from the same spot
+          // and tear off the same kind of damage the host saw.
+          if (w.bx !== undefined && w.bz !== undefined) blastKillPos = new THREE.Vector3(w.bx, e.mesh.position.y, w.bz);
+          startEnemyDeathFX(e, false);
+          blastKillPos = null;
           // Guest-side loot. This used to be a flat 26% per death with NO
           // budget and NO cooldown at all — the wave cap that keeps solo loot
           // scarce simply wasn't on this path, so a multiplayer guest's map
@@ -10387,6 +10855,7 @@ const ForestSurvivalGame = () => {
             wavePowerupDrops++;
             killsSinceLastDrop = 0;
           }
+          maybeDropGrenade(e.mesh.position.x, e.mesh.position.z);
         }
       }
 
@@ -10397,6 +10866,7 @@ const ForestSurvivalGame = () => {
           if (!seen.has(id) && !e.dead) {
             e.dead = true;
             e.deathTime = 1.0;
+            startEnemyDeathFX(e, false);
           }
         });
       }
@@ -10404,6 +10874,16 @@ const ForestSurvivalGame = () => {
 
     if (isMultiplayer && mp) {
       remotePlayerUnsubs.push(mp.onMessage('enemy_sync', handleEnemySync));
+
+      // Another player threw a grenade — fly + detonate a VISUAL copy here
+      // (their client applies the damage; the host adds EMP crowd-control).
+      remotePlayerUnsubs.push(mp.onMessage('grenade_throw', (raw) => {
+        const m = raw as { playerId: string; kind: number; ox: number; oy: number; oz: number; vx: number; vy: number; vz: number };
+        if (m.playerId === mp.getLocalPlayer().id) return;
+        const kind = GRENADE_KINDS[m.kind] ?? 'frag';
+        grenadeSystem.throw(kind, new THREE.Vector3(m.ox, m.oy, m.oz), new THREE.Vector3(m.vx, m.vy, m.vz), false, m.playerId);
+        soundManager.playAt('grenade_throw', m.ox, m.oy, m.oz, 0.5);
+      }));
 
       // Host: a guest reported a hit on a shared enemy — apply it authoritatively.
       remotePlayerUnsubs.push(mp.onMessage('enemy_hit', (raw) => {
@@ -10829,6 +11309,7 @@ const ForestSurvivalGame = () => {
         return;
       }
       spawnExplosionFX(epos, barrel.blastRadius);
+      spawnBarrelDebris(epos);
       if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
       // Real, POSITIONAL detonation. This used to be a pitched-down 'powerUp'
       // ping — the same cue as picking up a health pack.
@@ -11516,6 +11997,510 @@ const ForestSurvivalGame = () => {
       }
     };
 
+    // ── THROWABLE THROWS + EFFECTS ──────────────────────────────────────
+    const FRAG_RADIUS = 10.5;
+    const FRAG_DAMAGE = 210;
+    const STICKY_RADIUS = 8;
+    const STICKY_DAMAGE = 290;
+    const EMP_RADIUS = 12.5;
+    const EMP_DAMAGE = 70;
+    const THERMITE_RADIUS = 5.5;
+    const THERMITE_DAMAGE = 45;
+    const KNIFE_DAMAGE = 150;
+    const SMOKE_RADIUS = 7.5;
+    const DECOY_PULL_RADIUS = 46;
+    const _gOrigin = new THREE.Vector3();
+    const _gVel = new THREE.Vector3();
+    const _gFwd = new THREE.Vector3();
+    const _gHit: SolidHit = { normal: new THREE.Vector3(), target: null, ref: null };
+    const _gBlast = new THREE.Vector3();
+
+    /**
+     * Obstacle query for flying throwables: tree trunks / rocks (collidable
+     * terrain, up to their height) and robot chassis. Fills `out` (normal +
+     * the robot hit, if any) and returns the penetration depth.
+     */
+    const grenadeSolid = (x: number, y: number, z: number, r: number, out: SolidHit): number => {
+      const near = terrainGrid.queryRadius(x, z, 3);
+      for (let q = 0; q < near.length; q++) {
+        const obj = terrainObjects[near[q]];
+        if (!obj || !obj.collidable) continue;
+        if (obj.height !== undefined && y > obj.height + 0.2) continue;
+        const dx = x - obj.x, dz = z - obj.z;
+        const d = Math.hypot(dx, dz);
+        const pen = obj.radius * 0.8 + r - d;
+        if (pen > 0) {
+          if (d > 1e-4) out.normal.set(dx / d, 0, dz / d); else out.normal.set(1, 0, 0);
+          out.target = null;
+          out.ref = null;
+          return pen;
+        }
+      }
+      for (let k = 0; k < enemies.length; k++) {
+        const e = enemies[k];
+        if (e.dead) continue;
+        const sc = ENEMY_SCALE[e.type];
+        const ey = e.mesh.position.y;
+        if (y < ey - sc * 1.1 || y > ey + sc * 2.4) continue;
+        const dx = x - e.mesh.position.x, dz = z - e.mesh.position.z;
+        const d = Math.hypot(dx, dz);
+        const pen = 0.62 * sc + r - d;
+        if (pen > 0) {
+          if (d > 1e-4) out.normal.set(dx / d, 0, dz / d); else out.normal.set(1, 0, 0);
+          out.target = e.mesh;
+          out.ref = e;
+          return pen;
+        }
+      }
+      return 0;
+    };
+
+    /** Hand position + launch velocity for `kind` along the current aim. */
+    const computeGrenadeLaunch = (kind: ThrowableKind): void => {
+      const spec = THROWABLES[kind];
+      camera.updateMatrixWorld();
+      _gOrigin.set(-0.34, -0.12, -0.75).applyMatrix4(camera.matrixWorld);
+      // Never spawn inside a trunk the player is hugging — fall back to the eye.
+      if (grenadeSolid(_gOrigin.x, _gOrigin.y, _gOrigin.z, 0.17, _gHit) > 0) _gOrigin.copy(camera.position);
+      camera.getWorldDirection(_gFwd);
+      _gVel.copy(_gFwd).multiplyScalar(spec.speed);
+      _gVel.y += spec.speed * spec.loft;
+    };
+
+    /** Begin a throw (the object itself leaves on the 'release' beat). */
+    function startGrenadeThrow() {
+      if (grenadeInHand || grenadeProp.isPlaying) return; // the last throw is still finishing (a showcase is fine)
+      if (wheelOpen) closeWheel(true);
+      if (grenadeCount[selectedGrenade] <= 0) {
+        const alt = nextGrenadeKind(selectedGrenade);
+        if (!alt) {
+          showPowerMessage('No throwables — robots rarely drop them', 1400);
+          soundManager.play('weaponSwitch', 0.25, false, 0.7);
+          return;
+        }
+        selectedGrenade = alt;
+      }
+      // The throw needs the left hand (requestThrow owns the feedback/queue).
+      if (leftHandGear() !== null) return;
+      grenadeThrowKind = selectedGrenade;
+      grenadeCount[grenadeThrowKind]--;
+      grenadeProp.setCookHold(true);
+      grenadeProp.playThrow(grenadeThrowKind);
+      gunModel.cancelInspect();
+      grenadeInHand = true;
+      tutorial.recordAction('throw_grenade', 1);
+      if (grenadeCount[selectedGrenade] <= 0) {
+        const alt = nextGrenadeKind(selectedGrenade);
+        if (alt) selectedGrenade = alt;
+      }
+    }
+
+    /**
+     * What is holding the LEFT hand right now (null = free). Persistent gear is
+     * checked first: a live detonator or a braced shield means "no throw" no
+     * matter what else is going on, so the refusal is immediate and honest.
+     */
+    function leftHandGear(): LeftHandGear | null {
+      if (grenadeInHand || grenadeProp.isPlaying) return 'throwable';
+      if (armedBomb !== null) return 'detonator';
+      if (shieldActive) return 'shield';
+      if (wiringTime > 0) return 'wiring';
+      if (isDashing || (abilityProp?.occupiesHand() ?? false)) return 'ability';
+      if (gunModel.isOverclocking) return 'retune';
+      if (gunModel.supportHandBusy) return 'reload';
+      if (gunModel.isMeleeing) return 'melee';
+      return null;
+    }
+
+    /** Refuse a throw: say what's in the hand, shake the slot, a dry click. */
+    function denyThrow(gear: LeftHandGear) {
+      throwDenyNonce++;
+      abilityHudAccum = 1; // push the slot shake on the next frame
+      haptic('deny');
+      const nowMs = performance.now();
+      if (nowMs - lastThrowDenyAt > 700) {
+        lastThrowDenyAt = nowMs;
+        soundManager.play('empty', 0.32, false, 0.7);
+        showPowerMessage(refusedThrowMessage(gear, {
+          shieldSecondsLeft: (shieldEndTime - Date.now()) / 1000,
+          abilityKey: hudKeyLabel(kb().dash),
+        }), 1700, 'warn');
+      }
+      // The gear itself reacts — the braced shield knocks against the arm.
+      if (gear === 'shield') shieldHitFlash = Math.max(shieldHitFlash, 0.35);
+    }
+
+    /**
+     * The throw key went down. A free hand throws now; transient gear QUEUES
+     * the throw (it fires the moment the hand is free); persistent gear is
+     * REFUSED — but a key still held when the gear goes away throws then.
+     */
+    function requestThrow() {
+      if (grenadeInHand || grenadeProp.isPlaying) return;
+      // An empty pouch is its own message — never queue nothing.
+      if (grenadeCount[selectedGrenade] <= 0 && !nextGrenadeKind(selectedGrenade)) { startGrenadeThrow(); return; }
+      const gear = leftHandGear();
+      if (gear === null) { throwIntentAt = -1; startGrenadeThrow(); return; }
+      throwIntentAt = performance.now();
+      throwIntentRefused = isPersistentGear(gear);
+      if (throwIntentRefused) denyThrow(gear);
+      else {
+        abilityHudAccum = 1; // show "queued" straight away
+        soundManager.play('arm_click', 0.14, false, 0.75);
+      }
+    }
+
+    /** Per frame: release queued throws / abilities / reloads when the hand frees. */
+    const updateLeftHandQueue = () => {
+      const nowMs = performance.now();
+      const blocked = paused || isGameOver || playerEliminated;
+      if (throwIntentAt >= 0) {
+        const gear = leftHandGear();
+        if (blocked) {
+          throwIntentAt = -1;
+        } else if (gear === null) {
+          throwIntentAt = -1;
+          abilityHudAccum = 1;
+          startGrenadeThrow(); // a still-held key parks the arm cocked (aiming)
+        } else if (!held('grenade') && (isPersistentGear(gear) || nowMs - throwIntentAt > throwBufferMs(gear))) {
+          // Queued behind a beat that turned into persistent gear (wiring →
+          // live detonator): say so once instead of silently eating the press.
+          if (!throwIntentRefused && isPersistentGear(gear)) denyThrow(gear);
+          throwIntentAt = -1;
+          abilityHudAccum = 1;
+        }
+      }
+      const throwing = grenadeInHand || grenadeProp.isPlaying;
+      if (abilityIntentAt >= 0) {
+        if (blocked || nowMs - abilityIntentAt > ABILITY_BUFFER_MS) abilityIntentAt = -1;
+        else if (!throwing) {
+          abilityIntentAt = -1;
+          if (abilityCooldown <= 0 && !isDashing && !anyTimedEffectActive()) triggerCharacterAbility();
+        }
+      }
+      if (reloadQueued && !throwing) {
+        reloadQueued = false;
+        if (!blocked) startReload();
+      }
+    };
+
+    grenadeProp.onBeat = (beat: AbilityBeat) => {
+      if (beat === 'pin') {
+        // The arming action's own sound: the pin's scrape-and-ping, or a
+        // mechanical click (collar, timer button, switch, knife flip).
+        const prep = THROWABLES[grenadeThrowKind].prep;
+        if (prep === 'pin') soundManager.play('grenade_pin', 0.75);
+        else soundManager.play('arm_click', prep === 'flip' ? 0.35 : 0.6, false, prep === 'button' ? 1.15 : prep === 'twist' ? 0.85 : 1);
+      } else if (beat === 'release' && grenadeInHand) {
+        grenadeInHand = false;
+        computeGrenadeLaunch(grenadeThrowKind);
+        grenadeSystem.throw(grenadeThrowKind, _gOrigin, _gVel, true, mp ? mp.getLocalPlayer().id : '');
+        if (grenadeThrowKind === 'knife') soundManager.play(soundManager.pickVariant('melee_swing', 2), 0.5, false, 1.35);
+        else soundManager.play('grenade_throw', 0.7, false, THROWABLES[grenadeThrowKind].style === 'underhand' || THROWABLES[grenadeThrowKind].style === 'roll' ? 0.85 : 1);
+        if (mp) {
+          mp.broadcastGrenade(GRENADE_KINDS.indexOf(grenadeThrowKind), _gOrigin.x, _gOrigin.y, _gOrigin.z, _gVel.x, _gVel.y, _gVel.z);
+        }
+      }
+    };
+
+    grenadeSystem.onBounce = (g, speed) => {
+      soundManager.playAt(soundManager.pickVariant('grenade_bounce', 3), g.pos.x, g.pos.y, g.pos.z,
+        Math.min(0.85, 0.12 + speed * 0.045), 0.9 + Math.random() * 0.2, { refDistance: 4, maxDistance: 60 });
+    };
+    // A stuck charge / embedded knife rides its robot only while the body exists.
+    grenadeSystem.attachValid = (ref) => {
+      const e = ref as Enemy | null;
+      return !!e && (!e.dead || e.deathTime > 0);
+    };
+    grenadeSystem.onStick = (g, ref) => {
+      soundManager.playAt('arm_click', g.pos.x, g.pos.y, g.pos.z, 0.7, 1.3, { refDistance: 5, maxDistance: 50 });
+      if (g.local && ref) showPowerMessage('Charge stuck!', 900);
+    };
+    grenadeSystem.onImpact = (g, ref, at) => {
+      const e = ref as Enemy | null;
+      if (!e) {
+        soundManager.playAt(soundManager.pickVariant('grenade_bounce', 3), at.x, at.y, at.z, 0.5, 1.6, { refDistance: 4, maxDistance: 40 });
+        return;
+      }
+      soundManager.playAt(soundManager.pickVariant('melee_hit', 2), at.x, at.y, at.z, 0.75, 1.15, { refDistance: 6, maxDistance: 60 });
+      robotSparks.push(new RobotHitSparks(scene, at.clone(), new THREE.Vector3(0, 1, 0), 9));
+      if (!g.local || e.dead) return;
+      // A blade to the head (upper third of the chassis) is a critical.
+      const sc = ENEMY_SCALE[e.type];
+      const crit = at.y > e.mesh.position.y + sc * 1.35;
+      const dmg = KNIFE_DAMAGE * (crit ? 1.8 : 1);
+      if (!e.hitImpulse) e.hitImpulse = new THREE.Vector3();
+      e.hitImpulse.set(e.mesh.position.x - camera.position.x, 0, e.mesh.position.z - camera.position.z);
+      if (e.hitImpulse.lengthSq() > 1e-6) e.hitImpulse.normalize();
+      if (isMpGuest && mp) {
+        if (e.netId !== undefined) mp.sendEnemyHit(e.netId, dmg, crit);
+      } else {
+        if (revShieldUp(e)) { pingRevShield(e, at); return; }
+        e.health -= capBossHit(e, dmg);
+        e.damageFlashTime = crit ? 0.5 : 0.35;
+        stampEnemyDamage(e, dmg, crit, undefined, camera.position);
+        if (e.health <= 0) handleEnemyKilled(e, crit);
+      }
+      if (gameSettingsManager.getSetting('hitMarkers')) addHitMarker(crit, e.health <= 0);
+      adaptiveDifficulty.recordDamage(dmg, true);
+    };
+
+    /** Camera shake that falls off with distance from a blast. */
+    const blastShake = (pos: THREE.Vector3, radius: number) => {
+      const d = camera.position.distanceTo(pos);
+      if (d < radius * 2.4) {
+        cameraShakeIntensity = Math.min(cameraShakeIntensity + 0.35 * (1 - d / (radius * 2.4)), 0.4);
+      }
+    };
+
+    /** Shrapnel blast shared by the frag and the C4 charge. */
+    const shrapnelBlast = (pos: THREE.Vector3, g: LiveGrenade, R: number, damage: number, label: string) => {
+      spawnExplosionFX(pos, R);
+      soundManager.playAt('explosion', pos.x, pos.y, pos.z, 1.0, (g.kind === 'sticky' ? 0.82 : 0.9) + Math.random() * 0.15);
+      createParticles(pos, 0x4e4130, 26); // kicked-up earth
+      blastShake(pos, R);
+      if (!g.local) return; // a remote throw: its owner's client applies the damage
+      for (let j = enemies.length - 1; j >= 0; j--) {
+        const e = enemies[j];
+        if (e.dead) continue;
+        const d = e.mesh.position.distanceTo(pos);
+        // A charge stuck ON a robot hits that robot with the full blast.
+        const host = g.attachRef === e;
+        if (d > R && !host) continue;
+        const dmg = damage * (host ? 1.25 : 1 - (d / R) * 0.72);
+        if (!e.hitImpulse) e.hitImpulse = new THREE.Vector3();
+        e.hitImpulse.set(e.mesh.position.x - pos.x, 0, e.mesh.position.z - pos.z);
+        if (e.hitImpulse.lengthSq() > 1e-6) e.hitImpulse.normalize(); else e.hitImpulse.set(1, 0, 0);
+        if (isMpGuest && mp) {
+          if (e.netId !== undefined) mp.sendEnemyHit(e.netId, dmg, false);
+        } else {
+          if (revShieldUp(e)) shatterRevShield(e, e.mesh.position);
+          e.health -= dmg;
+        }
+        e.damageFlashTime = 0.4;
+        adaptiveDifficulty.recordDamage(dmg, true);
+        _tempVec3.subVectors(e.mesh.position, pos).normalize();
+        robotSparks.push(new RobotHitSparks(scene, e.mesh.position.clone(), _tempVec3, 10));
+        stampEnemyDamage(e, dmg, false, undefined, pos);
+        if (!isMpGuest && e.health <= 0) {
+          blastKillPos = pos;
+          handleEnemyKilled(e, false);
+          blastKillPos = null;
+        }
+      }
+      for (let bi = 0; bi < barrels.length; bi++) {
+        const barrel = barrels[bi];
+        if (!barrel.detonated && barrel.mesh.position.distanceTo(pos) <= R * 0.85) pendingBarrelDetonations.push(barrel);
+      }
+      // Cooked at your own feet: shrapnel doesn't check whose charge it was.
+      if (!isTutorialMode && !playerEliminated) {
+        const pd = Math.hypot(camera.position.x - pos.x, camera.position.z - pos.z);
+        const selfR = R * 0.68;
+        if (pd < selfR) takeEnemyDamage(Math.round(55 * (1 - pd / selfR)), label, pos);
+      }
+    };
+
+    const detonateEmp = (pos: THREE.Vector3, g: LiveGrenade) => {
+      soundManager.playAt('emp_blast', pos.x, pos.y, pos.z, 1.0, 0.95 + Math.random() * 0.1);
+      abilitySystem.createActivationBurst(scene, pos.clone(), 0x5ab8ff, { intensity: 1.5 });
+      impactBursts.push(new ImpactBurst(scene, pos.clone(), 0x8fd8ff, 1.6));
+      createParticles(pos, 0x9fe0ff, 34);
+      blastShake(pos, EMP_RADIUS * 0.6);
+      if (camera.position.distanceTo(pos) < EMP_RADIUS * 1.2) triggerAbilityFlash('#78beff');
+      const now = Date.now();
+      let arcs = 0;
+      for (let j = enemies.length - 1; j >= 0; j--) {
+        const e = enemies[j];
+        if (e.dead) continue;
+        const d = e.mesh.position.distanceTo(pos);
+        if (d > EMP_RADIUS) continue;
+        if (arcs < 8) {
+          arcs++;
+          _tempVec3.copy(e.mesh.position);
+          _tempVec3.y += 1.2 * ENEMY_SCALE[e.type];
+          spawnLightningBolt(pos.clone(), _tempVec3.clone(), 0x8fd0ff);
+        }
+        robotSparks.push(new RobotHitSparks(scene, e.mesh.position.clone().setY(e.mesh.position.y + 1), new THREE.Vector3(0, 1, 0), 8));
+        // CC is host-authoritative: the solo player / host applies the stun
+        // for EVERY EMP (its own or a replicated guest throw); guests don't.
+        if (!isMpGuest) {
+          if (revShieldUp(e)) shatterRevShield(e, e.mesh.position);
+          e.ccUntil = Math.max(e.ccUntil ?? 0, now + (e.type === 'boss' ? 900 : 3400));
+          e.staggerUntil = Math.max(e.staggerUntil ?? 0, now + 500);
+        }
+        if (!g.local) continue;
+        const dmg = EMP_DAMAGE * (1 - (d / EMP_RADIUS) * 0.4);
+        if (isMpGuest && mp) {
+          if (e.netId !== undefined) mp.sendEnemyHit(e.netId, dmg, false);
+        } else {
+          e.health -= dmg;
+          e.damageFlashTime = 0.45;
+          if (e.health <= 0) { blastKillPos = pos; handleEnemyKilled(e, false); blastKillPos = null; continue; }
+        }
+        adaptiveDifficulty.recordDamage(dmg, true);
+        ventEnemySmoke(e, false);
+      }
+    };
+
+    const detonateThermite = (pos: THREE.Vector3, g: LiveGrenade) => {
+      soundManager.playAt('thermite_ignite', pos.x, pos.y, pos.z, 1.0, 0.95 + Math.random() * 0.1);
+      explosionEffects.push(new ExplosionEffect(scene, pos.clone(), THERMITE_RADIUS, 0xffa845));
+      createParticles(pos, 0xffd080, 40);
+      createParticles(pos, 0xff7a20, 24);
+      blastShake(pos, THERMITE_RADIUS);
+      // A field of burning ground: a hot core and a ring of splashed charge.
+      // A replicated throw's fire is VISUAL ONLY on this client — the owner's
+      // patches carry the damage (no double counting across the lobby).
+      const lay = (x: number, z: number, r: number, life: number) => {
+        const patch = fireSystem.ignite(x, visualGroundY(x, z) + 0.02, z, r, life);
+        patch.visualOnly = !g.local;
+      };
+      lay(pos.x, pos.z, 2.5, 7.5);
+      for (let k = 0; k < 6; k++) {
+        const a = (k / 6) * Math.PI * 2 + Math.random() * 0.5;
+        const rr = 1.8 + Math.random() * 2.2;
+        lay(pos.x + Math.cos(a) * rr, pos.z + Math.sin(a) * rr, 1.3 + Math.random() * 0.8, 5 + Math.random() * 3);
+      }
+      if (!g.local) return;
+      for (let j = enemies.length - 1; j >= 0; j--) {
+        const e = enemies[j];
+        if (e.dead) continue;
+        const d = e.mesh.position.distanceTo(pos);
+        if (d > THERMITE_RADIUS) continue;
+        if (revShieldUp(e)) { pingRevShield(e, e.mesh.position); continue; }
+        const dmg = THERMITE_DAMAGE * (1 - (d / THERMITE_RADIUS) * 0.5);
+        if (isMpGuest && mp) {
+          if (e.netId !== undefined) mp.sendEnemyHit(e.netId, dmg, false);
+        } else {
+          e.health -= dmg;
+          e.damageFlashTime = 0.35;
+          if (e.health <= 0) { handleEnemyKilled(e, false); continue; }
+        }
+        igniteEnemy(e, 7000, 26);
+      }
+    };
+
+    grenadeSystem.onDetonate = (g) => {
+      _gBlast.copy(g.pos);
+      _gBlast.y = Math.max(visualGroundY(_gBlast.x, _gBlast.z) + 0.35, _gBlast.y);
+      const pos = _gBlast.clone();
+      switch (g.kind) {
+        case 'frag': shrapnelBlast(pos, g, FRAG_RADIUS, FRAG_DAMAGE, 'Own Grenade'); break;
+        case 'sticky': shrapnelBlast(pos, g, STICKY_RADIUS, STICKY_DAMAGE, 'Own Charge'); break;
+        case 'emp': detonateEmp(pos, g); break;
+        case 'thermite': detonateThermite(pos, g); break;
+        case 'smoke':
+          // The canister pops and starts pouring (the cloud is driven in
+          // updateThrowableZones for as long as it lingers).
+          soundManager.playAt('thermite_ignite', pos.x, pos.y, pos.z, 0.45, 1.6, { refDistance: 6, maxDistance: 70 });
+          createParticles(pos, 0xdfe3e6, 18);
+          break;
+        case 'decoy':
+          // Battery gone: a little pop and it falls silent.
+          soundManager.playAt('arm_click', pos.x, pos.y, pos.z, 0.6, 0.6, { refDistance: 5, maxDistance: 50 });
+          robotSparks.push(new RobotHitSparks(scene, pos.clone(), new THREE.Vector3(0, 1, 0), 6));
+          break;
+        default: break;
+      }
+    };
+
+    // ── SMOKE SCREENS + DECOYS (per frame) ──────────────────────────────
+    interface SmokeZone { x: number; z: number; r: number }
+    const smokeZones: SmokeZone[] = [];
+    const decoyPoints: THREE.Vector3[] = [];
+    const smokeScreenPuffs: MuzzleSmoke[] = [];
+    const SMOKE_PUFF_CAP = 64;
+    let smokeEmitAccum = 0;
+    let decoyPingAccum = 0;
+    const _smokeDirUp = new THREE.Vector3();
+    const _smokeAt = new THREE.Vector3();
+    const updateThrowableZones = (dt: number) => {
+      smokeZones.length = 0;
+      grenadeSystem.forEachSmoke((g) => {
+        const age = SMOKE_EMIT_SECONDS - g.linger;
+        // The cloud blooms over ~2.5 s and thins in its last 3 s.
+        const grow = Math.min(1, age / 2.5);
+        const thin = Math.min(1, g.linger / 3);
+        smokeZones.push({ x: g.pos.x, z: g.pos.z, r: SMOKE_RADIUS * grow * (0.6 + 0.4 * thin) });
+      });
+      decoyPoints.length = 0;
+      grenadeSystem.forEachActiveDecoy((g) => { decoyPoints.push(g.pos); });
+
+      // Pour smoke: big, slow, long-lived sprites spread through each cloud.
+      smokeEmitAccum += dt * 16;
+      while (smokeEmitAccum >= 1 && smokeZones.length > 0) {
+        smokeEmitAccum -= 1;
+        for (const z of smokeZones) {
+          if (smokeScreenPuffs.length >= SMOKE_PUFF_CAP) {
+            const old = smokeScreenPuffs.shift();
+            if (old) old.dispose(scene);
+          }
+          const a = Math.random() * Math.PI * 2;
+          const rr = Math.sqrt(Math.random()) * z.r * 0.85;
+          _smokeAt.set(z.x + Math.cos(a) * rr, visualGroundY(z.x, z.z) + 0.4 + Math.random() * 1.6, z.z + Math.sin(a) * rr);
+          _smokeDirUp.set(currentWindGust * 0.12 + (Math.random() - 0.5) * 0.3, 0.35, (Math.random() - 0.5) * 0.3);
+          smokeScreenPuffs.push(new MuzzleSmoke(scene, _smokeAt, _smokeDirUp, {
+            color: 0xd3d6d9, sizeScale: 6.5 + Math.random() * 3, lifeScale: 6.5, opacityScale: 1.7, rise: 0.1,
+          }));
+        }
+      }
+      if (smokeZones.length === 0) smokeEmitAccum = 0;
+      for (let i = smokeScreenPuffs.length - 1; i >= 0; i--) {
+        const sp = smokeScreenPuffs[i];
+        if (sp.update(dt)) { sp.dispose(scene); smokeScreenPuffs.splice(i, 1); }
+      }
+
+      // Decoys chirp — the noise is the whole point.
+      if (decoyPoints.length > 0) {
+        decoyPingAccum += dt;
+        if (decoyPingAccum >= 0.7) {
+          decoyPingAccum = 0;
+          for (const d of decoyPoints) soundManager.playAt('decoy_ping', d.x, d.y, d.z, 0.55, 1, { refDistance: 6, maxDistance: 70 });
+        }
+      } else decoyPingAccum = 0;
+    };
+
+    // Airdrops: the red M18 signal plume off a landed crate, and the dust its
+    // pallet kicks up on touchdown — the same pooled, already-warmed smoke
+    // sprites (and cap) as the smoke screens.
+    const _puffDir = new THREE.Vector3();
+    enhancedPowerUps.onPuff = (kind, x, y, z) => {
+      if (smokeScreenPuffs.length >= SMOKE_PUFF_CAP) {
+        const old = smokeScreenPuffs.shift();
+        if (old) old.dispose(scene);
+      }
+      _smokeAt.set(x, y, z);
+      if (kind === 'signal') {
+        _puffDir.set(currentWindGust * 0.35 + (Math.random() - 0.5) * 0.25, 1, (Math.random() - 0.5) * 0.25);
+        smokeScreenPuffs.push(new MuzzleSmoke(scene, _smokeAt, _puffDir, {
+          color: 0xc4432c, sizeScale: 2.6 + Math.random() * 1.2, lifeScale: 4.6, opacityScale: 1.15, rise: 1.05,
+        }));
+      } else {
+        _puffDir.set((Math.random() - 0.5) * 0.8, 0.25, (Math.random() - 0.5) * 0.8);
+        smokeScreenPuffs.push(new MuzzleSmoke(scene, _smokeAt, _puffDir, {
+          color: 0x8a7a60, sizeScale: 2.4, lifeScale: 1.7, opacityScale: 0.9, rise: 0.15,
+        }));
+      }
+    };
+
+    /** Does a smoke screen stand between (or around) these two points? */
+    const smokeBlocksSight = (ax: number, az: number, bx: number, bz: number): boolean => {
+      for (const z of smokeZones) {
+        if (z.r < 0.5) continue;
+        const r2 = z.r * z.r;
+        const adx = ax - z.x, adz = az - z.z;
+        const bdx = bx - z.x, bdz = bz - z.z;
+        if (adx * adx + adz * adz < r2 || bdx * bdx + bdz * bdz < r2) return true;
+        const lx = bx - ax, lz = bz - az;
+        const lsq = lx * lx + lz * lz;
+        if (lsq < 1e-6) continue;
+        const t = Math.max(0, Math.min(1, ((z.x - ax) * lx + (z.z - az) * lz) / lsq));
+        const cx = ax + lx * t - z.x, cz = az + lz * t - z.z;
+        if (cx * cx + cz * cz < r2) return true;
+      }
+      return false;
+    };
+
     // Photo Mode camera driver: WASD pans, Space/Shift change height, all
     // clamped to a circular perimeter around the entry anchor. Mouse-drag
     // updates `euler` (handled in onMouseMove); here we just apply it.
@@ -11689,6 +12674,81 @@ const ForestSurvivalGame = () => {
         leaves: () => leafSystem?.stats() ?? null,
         weather: (state: string, snap = true) => weatherSystem.forceState(state, snap),
         avatar: (on = true, dist = 9, yaw = 0) => localPlayerShadow.setDebugPreview(on, dist, yaw),
+        avatarClass: (id: ClassId) => localPlayerShadow.setModelClass(id, 0x4ab0ff),
+        throwFreeze: (kind: ThrowableKind | null, p = 0) => grenadeProp.debugFreeze(kind, p),
+        // Gameplay checks: throw a specific throwable now (a tap of the key),
+        // drop a pickup / airdrop beside the player, kill the nearest robot
+        // (with a shove, to watch its ragdoll), or die (death camera).
+        throwNow: (kind: ThrowableKind) => {
+          grenadeCount[kind] = Math.max(grenadeCount[kind], 1);
+          selectedGrenade = kind;
+          requestThrow();
+        },
+        hand: () => ({ gear: leftHandGear(), intent: throwIntentAt >= 0, refused: throwIntentRefused, ability: abilityIntentAt >= 0, reload: reloadQueued, denies: throwDenyNonce, abilityCd: +abilityCooldown.toFixed(2), reloading: isReloading, ammo }),
+        blowBarrel: (nearDist = 0) => {
+          let best: ExplosiveBarrel | null = null; let bd = Infinity;
+          for (const bb of barrels) { if (bb.detonated || bb.irradiated) continue; const d = bb.mesh.position.distanceTo(camera.position); if (d < bd) { bd = d; best = bb; } }
+          if (!best) return null;
+          if (nearDist > 0) {
+            camera.getWorldDirection(_tempVec3);
+            _tempVec3.y = 0; _tempVec3.normalize();
+            best.mesh.position.x = camera.position.x + _tempVec3.x * nearDist;
+            best.mesh.position.z = camera.position.z + _tempVec3.z * nearDist;
+            bd = nearDist;
+          }
+          const at = [+best.mesh.position.x.toFixed(1), +best.mesh.position.z.toFixed(1)];
+          detonateBarrel(best);
+          return { dist: +bd.toFixed(1), at };
+        },
+        power: (type: HeldPower) => applyPower(type),
+        expire: (what: string) => { if (what === 'shield') shieldEndTime = 0; },
+        pickup: (type: PowerUp['type'], kind: ThrowableKind = 'frag', dist = 5) => {
+          camera.getWorldDirection(_tempVec3);
+          spawnPickup(camera.position.x + _tempVec3.x * dist, camera.position.z + _tempVec3.z * dist, type, false, kind);
+        },
+        airdrop: (type = 'health', dist = 9) => {
+          camera.getWorldDirection(_tempVec3);
+          const ad = enhancedPowerUps.createAirdrop(scene, camera.position.x + _tempVec3.x * dist, camera.position.z + _tempVec3.z * dist, type as Parameters<typeof enhancedPowerUps.createAirdrop>[3]);
+          ad.mesh.position.y = 14;
+        },
+        airdrops: () => enhancedPowerUps.getAirdrops().map((a) => ({
+          x: +a.mesh.position.x.toFixed(1), y: +a.mesh.position.y.toFixed(2), z: +a.mesh.position.z.toFixed(1),
+          landed: a.landed, vis: a.mesh.visible, kids: a.mesh.children.length, inScene: !!a.mesh.parent,
+          cam: [+camera.position.x.toFixed(1), +camera.position.z.toFixed(1)],
+        })),
+        cam: () => [+camera.position.x.toFixed(2), +camera.position.y.toFixed(2), +camera.position.z.toFixed(2)],
+        physics: () => ({
+          ready: physicsWorld.ready,
+          debris: rigidDebris.count,
+          rigidThrown: grenadeSystem.live.filter((g) => g.body).length,
+          thrown: grenadeSystem.live.map((g) => ({
+            kind: g.kind, rigid: !!g.body, resting: g.resting, det: g.detonated,
+            p: [+g.pos.x.toFixed(2), +g.pos.y.toFixed(3), +g.pos.z.toFixed(2)],
+            v: [+g.vel.x.toFixed(2), +g.vel.y.toFixed(2), +g.vel.z.toFixed(2)],
+            y: +g.pos.y.toFixed(3),
+            sleep: g.body ? g.body.isSleeping() : null,
+          })),
+          world: physicsWorld.debugInfo(),
+        }),
+        corpses: () => enemies.filter((e) => e.dead).map((e) => ({
+          t: +e.deathTime.toFixed(2), art: e.ragdollArtId ?? null, body: e.ragdollBodyId ?? null, lite: !!e.deathVel,
+          y: +e.mesh.position.y.toFixed(2), vis: e.mesh.visible, sc: +e.mesh.scale.x.toFixed(2),
+          slot: e.poolId !== undefined ? smartEnemyManager.debugSlot(e.poolId) : null,
+          pos: [+e.mesh.position.x.toFixed(1), +e.mesh.position.z.toFixed(1)],
+        })),
+        killNearest: (blast = false) => {
+          let best: Enemy | null = null; let bd = Infinity;
+          for (const e of enemies) { if (e.dead) continue; const d = e.mesh.position.distanceToSquared(camera.position); if (d < bd) { bd = d; best = e; } }
+          if (!best) return false;
+          if (blast) blastKillPos = best.mesh.position.clone().add(new THREE.Vector3(1, 0, 1));
+          best.health = 0;
+          handleEnemyKilled(best, false);
+          blastKillPos = null;
+          return Math.sqrt(bd);
+        },
+        die: () => { devTest.god = false; takeEnemyDamage(100000, 'Dev Test', null); },
+        deathState: () => ({ grade: +deathGrade.toFixed(2), cam: deathCam ? +deathCam.t.toFixed(2) : -1, over: isGameOver }),
+        throwables: () => ({ ...grenadeCount, selected: selectedGrenade }),
         grassFade: (a: number, b: number) => biomeSystem.setGrassFade(a, b),
         recvShadow: (kind: string, on: boolean) => {
           scene.traverse((o) => { if (o.userData.kind === kind) o.receiveShadow = on; });
@@ -11743,6 +12803,7 @@ const ForestSurvivalGame = () => {
           health, wave, enemies: enemies.length, score, kills: enemiesKilled,
           x: +camera.position.x.toFixed(2), z: +camera.position.z.toFixed(2),
           hour: +dayCycleSystem.getCurrentTime().toFixed(2),
+          weather: weatherSystem.getState(), rain: +weatherMods.rainAmount.toFixed(2),
         }),
       };
     }
@@ -11806,11 +12867,13 @@ const ForestSurvivalGame = () => {
         const k = targetScale < healthTimeScale ? Math.min(1, rawDelta * 3.2) : Math.min(1, rawDelta * 2.2);
         healthTimeScale += (targetScale - healthTimeScale) * k;
         if (Math.abs(healthTimeScale - 1) < 0.002) healthTimeScale = 1;
-        // Drive the matching audio muffle (underwater-dull + ducked).
-        soundManager.setSlowMo(eased);
+        // Drive the matching audio muffle (underwater-dull + ducked) — the
+        // death sequence's own muffle wins while it's up.
+        soundManager.setSlowMo(Math.max(eased, deathMuffle));
       }
 
-      const delta = rawDelta * timeScale * healthTimeScale; // transient + critical slow-mo
+      // transient + critical + death slow-mo
+      const delta = rawDelta * timeScale * healthTimeScale * (isMultiplayer ? 1 : deathTimeScale);
 
       // ── FRAME-RATE NORMALISER (60 FPS reference) ─────────────────────────
       // Player locomotion + the jump/gravity integrator are written as PER-FRAME
@@ -12295,17 +13358,26 @@ const ForestSurvivalGame = () => {
         // other slot and makes the mismatch obvious. Never fold a boolean the
         // renderer branches on back into a rounded number.
         const abilityReady = abilityFill >= 1;
+        // Persistent gear locks the throwable slot visibly (transient beats
+        // would just flicker it); a queued throw shows as "queued".
+        const handNow = leftHandGear();
+        const handLock = handNow !== null && isPersistentGear(handNow) ? handNow : null;
+        const throwQueued = throwIntentAt >= 0 && !throwIntentRefused;
+        const kbNow = kb();
         const sig = `${abilityName}|${activeAbility.id}|${activeAbility.color}|${Math.round(abilityFill * 100)}`
           + `|${abilityReady ? 1 : 0}|${abilityActive ? 1 : 0}`
           + `|${powerName}|${powerType ?? ''}|${powerState}|${powerRatio === undefined ? '' : Math.round(powerRatio * 100)}`
-          + `|${playerSignalJammed ? 1 : 0}`;
+          + `|${playerSignalJammed ? 1 : 0}`
+          + `|${selectedGrenade}|${THROWABLE_KINDS.map((k) => grenadeCount[k]).join(',')}`
+          + `|${handLock ?? ''}|${throwQueued ? 1 : 0}|${throwDenyNonce}`
+          + `|${kbNow.dash}|${kbNow.usePower}|${kbNow.grenade}|${kbNow.cycleGrenade}|${kbNow.prevThrowable}`;
         if (sig !== lastAbilityHudSig) {
           lastAbilityHudSig = sig;
         setAbilityHud([
           {
             // Engineer's slot reads "Detonate" while a bomb is wired so the
             // player knows the next press triggers it.
-            key: 'Q',
+            key: hudKeyLabel(kbNow.dash),
               name: abilityName,
             kind: 'dash',
             abilityId: activeAbility.id,
@@ -12315,7 +13387,7 @@ const ForestSurvivalGame = () => {
               active: abilityActive,
           },
           {
-            key: 'E', kind: 'power',
+            key: hudKeyLabel(kbNow.usePower), kind: 'power',
               name: powerName,
             powerType,
             state: powerState,
@@ -12324,6 +13396,17 @@ const ForestSurvivalGame = () => {
             // fried and the E key genuinely does nothing — so the slot has to
             // SAY so instead of sitting there looking usable.
             jammed: playerSignalJammed && powerState !== 'empty',
+          },
+          {
+            key: hudKeyLabel(kbNow.grenade), kind: 'grenade',
+            name: GRENADE_LABEL[selectedGrenade],
+            grenadeKind: selectedGrenade,
+            count: grenadeCount[selectedGrenade],
+            counts: { ...grenadeCount },
+            cycleKey: `${hudKeyLabel(kbNow.prevThrowable)}/${hudKeyLabel(kbNow.cycleGrenade)}`,
+            handLock,
+            throwQueued,
+            denyNonce: throwDenyNonce,
           },
         ]);
         }
@@ -12447,7 +13530,7 @@ const ForestSurvivalGame = () => {
       // effect IMMEDIATELY (these aren't held / queued like loot crates).
       // Landed crates farther than the render-distance setting sleep (hidden +
       // zero animation cost) and rehydrate when the player closes back in.
-      enhancedPowerUps.updateAirdrops(delta, scene, camera.position, graphicsPreset.viewDistance);
+      enhancedPowerUps.updateAirdrops(delta, scene, camera.position, graphicsPreset.viewDistance, visualGroundY);
       if (!playerEliminated && !isGameOver) {
         const playerX = camera.position.x;
         const playerZ = camera.position.z;
@@ -12584,6 +13667,10 @@ const ForestSurvivalGame = () => {
               ammo = Math.max(1, magMax - Math.max(1, Math.ceil(magMax * 0.35)));
               updateGameState();
             }
+          } else if (step.id === 'throwable') {
+            // The drill can't ask for a throw with an empty pouch — top up the
+            // training kit (a little of everything) before the card appears.
+            for (const k of THROWABLE_KINDS) grenadeCount[k] = Math.max(grenadeCount[k], 2);
           } else if (step.id === 'ability') {
             abilityCooldown = 0; // the drill can't ask for a move that isn't ready
           } else if (step.id === 'powerup') {
@@ -12961,13 +14048,17 @@ const ForestSurvivalGame = () => {
         shakeYaw = k * 0.024 * shakeNoise(shakeTime, 41.3);
         shakeRoll = k * 0.034 * shakeNoise(shakeTime * 0.8, 87.9);
       }
+      // Melee follow-through: the view leans into the swing and jars on contact.
+      gunModel.getMeleeCamKick(_meleeKick);
       _recoilEuler.set(
-        Math.max(-PI_2, Math.min(PI_2, euler.x + recoilPitch + abilityKickPitch + wiringPitch + shakePitch)),
-        euler.y + recoilYaw + shakeYaw,
-        abilityKickRoll + shakeRoll,
+        Math.max(-PI_2, Math.min(PI_2, euler.x + recoilPitch + abilityKickPitch + wiringPitch + shakePitch + _meleeKick.pitch)),
+        euler.y + recoilYaw + shakeYaw + _meleeKick.yaw,
+        abilityKickRoll + shakeRoll + _meleeKick.roll,
         'YXZ',
       );
       camera.quaternion.setFromEuler(_recoilEuler);
+      // Dead: the falling death camera overrides the view (and the grade).
+      updateDeathCam(rawDelta);
 
       // Update ambient particles — drift and re-center around player
       if (ambientParticles) {
@@ -13067,8 +14158,23 @@ const ForestSurvivalGame = () => {
       // The support hand is taken by the ability prop OR the braced riot
       // shield: take the arm off the gun and roll the weapon into a one-handed
       // carry. A reload started in this state runs the ONE-HANDED drill.
+      // The grenade hand: held key parks the arm cocked (aiming); the arc
+      // preview shows only while it is parked and the key is still down.
+      const grenadeHeldKey = grenadeInHand && held('grenade') && !playerEliminated;
+      grenadeProp.setCookHold(grenadeHeldKey);
+      grenadeProp.update(rawDelta, gunModel.group.visible);
+      if (grenadeHeldKey && grenadeProp.isCocked) {
+        computeGrenadeLaunch(grenadeThrowKind);
+        grenadeSystem.setPreview(_gOrigin, _gVel, THROWABLES[grenadeThrowKind].gravity);
+      } else {
+        grenadeSystem.setPreview(null, null);
+      }
+      // The wheel closes itself if the game stops under it.
+      if (wheelOpen && (paused || isGameOver || playerEliminated)) closeWheel(false);
+      updateThrowableZones(rawDelta);
+      updateLeftHandQueue();
       gunModel.setOneHanded(
-        (abilityProp?.handBlend ?? 0) > 0.15 || (shieldActive && shieldRaise > 0.35),
+        (abilityProp?.handBlend ?? 0) > 0.15 || grenadeProp.handBlend > 0.15 || (shieldActive && shieldRaise > 0.35),
       );
 
       // Update dash timer
@@ -13149,7 +14255,8 @@ const ForestSurvivalGame = () => {
         const propInHand = (abilityProp?.handBlend ?? 0) > 0.2;
         // Also slung for a two-handed reload (minigun / launcher) — you cannot
         // feed a belt with a shield on your arm.
-        const raiseTarget = shieldActive && !propInHand && !gunModel.supportHandBusy ? 1 : 0;
+        // …and slung while a throw it came up during is still in the hand.
+        const raiseTarget = shieldActive && !propInHand && !gunModel.supportHandBusy && grenadeProp.handBlend <= 0.2 ? 1 : 0;
         shieldRaise += (raiseTarget - shieldRaise) * Math.min(1, delta * 12);
         const visible = shieldRaise > 0.02 || shieldBreakFlash > 0.01;
         shieldMesh.visible = visible;
@@ -13270,6 +14377,8 @@ const ForestSurvivalGame = () => {
         if (Math.random() < 0.55 * (patch.life / patch.maxLife)) {
           ventFireSmoke(patch.x, patch.y, patch.z, patch.radius);
         }
+        // A replicated grenade's fire is cosmetic here (its owner's carries the damage).
+        if (patch.visualOnly) continue;
         const pr2 = patch.radius * patch.radius;
         for (let i = 0; i < enemies.length; i++) {
           const e = enemies[i];
@@ -13311,6 +14420,7 @@ const ForestSurvivalGame = () => {
         if (e.health <= 0) handleEnemyKilled(e, false);
       }
       fireSystem.update(rawDelta);
+      grenadeSystem.update(delta);
 
       // Player movement with weight-based speed and ability effects.
       // On touch, the analog joystick contributes to both "is moving" and the
@@ -13732,7 +14842,7 @@ const ForestSurvivalGame = () => {
       const floorY = currentCameraHeight + supportY;
 
       // Jump - weight-based jump height (auto-uncrouch when jumping)
-      if (held('jump') && !tutorialLocks.move && !isJumping && jumpCooldown <= 0 && camera.position.y <= floorY + 0.1) {
+      if (held('jump') && !playerEliminated && !tutorialLocks.move && !isJumping && jumpCooldown <= 0 && camera.position.y <= floorY + 0.1) {
         // Auto-uncrouch when jumping
         if (isCrouching) {
           isCrouching = false;
@@ -13795,9 +14905,8 @@ const ForestSurvivalGame = () => {
           landingImpact = THREE.MathUtils.clamp(0.3 + heavy * 1.1, 0.3, 0.8);
           jumpCooldown = JUMP_COOLDOWN_TIME; // Anti-bunny-hop cooldown
           wasJumping = false;
-          // Heavier, lower-pitched footstep for the touchdown thud — scaled by fall.
-          const thudVol = THREE.MathUtils.clamp(0.34 + heavy * 0.7, 0.34, 0.7);
-          soundManager.play('footstep', thudVol, false, 0.78 - Math.min(0.18, heavy * 0.5));
+          // Touch-down on the map's floor — heavier and louder with the fall.
+          ambienceAudio.landing(Math.min(1, heavy * 1.6), weatherMods.wetness);
           if (impactSpeed > 0.62 && gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
           footstepAccum = 0; // don't immediately emit a walking step on landing
         }
@@ -13884,9 +14993,11 @@ const ForestSurvivalGame = () => {
         const stride = isCrouching ? 6 : 9; // world units per step
         if (footstepAccum >= stride) {
           footstepAccum = 0;
-          // Heavy rain masks footfalls — the drumming drowns them out.
-          const vol = (isCrouching ? 0.1 : isRunning ? 0.26 : 0.18) * weatherFootstepMult;
-          soundManager.play('footstep', vol, false, 0.9 + Math.random() * 0.16);
+          // Heavy rain masks footfalls — the drumming drowns them out. The
+          // floor decides the sound (forest litter, snow crunch, sand, mud,
+          // stone…), with a splash on rain-soaked ground.
+          const vol = (isCrouching ? 0.16 : isRunning ? 0.42 : 0.3) * weatherFootstepMult;
+          ambienceAudio.footstep(vol, weatherMods.wetness, playerHazard?.kind ?? null, isRunning ? 1.06 : 1);
           // Pushing through brush adds a leafy rustle on the footfall, so the
           // slowdown is felt as well as seen; open lawns brush the shins.
           if (bushSlowMul < 0.98) {
@@ -14034,6 +15145,26 @@ const ForestSurvivalGame = () => {
       for (let i = shellCasings.length - 1; i >= 0; i--) {
         const c = shellCasings[i];
         c.life -= delta;
+        if (c.body) {
+          // Rigid casing: the physics world moved it; first hard ground
+          // contact (the falling speed snapping back) gets the brass tink.
+          const t = c.body.translation();
+          const r = c.body.rotation();
+          c.mesh.position.set(t.x, t.y, t.z);
+          c.mesh.quaternion.set(r.x, r.y, r.z, r.w);
+          const vy = c.body.linvel().y;
+          if (!c.bounced && c.vel.y < -1.0 && vy > c.vel.y + 1.0) {
+            c.bounced = true;
+            soundManager.play('casing', 0.16, false, 0.9 + Math.random() * 0.3);
+          }
+          c.vel.y = vy;
+          if (c.life < 0.4) c.mesh.scale.setScalar(Math.max(0.02, c.life / 0.4));
+          if (c.life <= 0) {
+            releaseCasing(c);
+            shellCasings.splice(i, 1);
+          }
+          continue;
+        }
         c.vel.y -= 13 * delta;
         c.mesh.position.addScaledVector(c.vel, delta);
         if (c.mesh.position.y <= 0.03) {
@@ -14219,7 +15350,7 @@ const ForestSurvivalGame = () => {
             continue;
           }
 
-          root.rotation.y += delta * 2;
+          root.rotation.y += delta * 1.15;
 
           // Materialize-in: pop from a point to full size with a soft
           // overshoot during the first 0.45s after spawn, then lock at 1.
@@ -14244,53 +15375,24 @@ const ForestSurvivalGame = () => {
             root.visible = Math.sin(_puNow * blinkHz * Math.PI * 2) > -0.45;
           }
 
-          // Gentle vertical bob with a phase offset so neighbouring pickups
-          // don't move in lockstep
+          // Gentle hover with a phase offset so neighbouring pickups don't move
+          // in lockstep (knee height above the ground the item landed on).
           const phase = (root.userData.pulsePhase as number) || 0;
-          const bobY = 2 + Math.sin(_puNow * 1.8 + phase) * 0.35;
+          const puGround = (root.userData.groundY as number | undefined) ?? 0;
+          const bobY = puGround + PICKUP_HOVER + Math.sin(_puNow * 1.6 + phase) * 0.1;
           root.position.y = bobY;
 
-          // Drive the breathing pulse — feeds glow opacity, point light
-          // intensity, ring rotation, beacon scroll, halo pulse.
+          // Breathing pulse — feeds the light pool and the pooled light.
           const pulse = 0.5 + 0.5 * Math.sin(_puNow * 2.4 + phase);
-
-          const glowInner = root.userData.glowInner as THREE.Mesh | undefined;
-          const glowOuter = root.userData.glowOuter as THREE.Mesh | undefined;
-          if (glowInner && glowInner.material instanceof THREE.MeshBasicMaterial) {
-            glowInner.material.opacity = 0.32 + pulse * 0.30;
-            const scale = 1.0 + pulse * 0.12;
-            glowInner.scale.setScalar(scale);
-          }
-          if (glowOuter && glowOuter.material instanceof THREE.MeshBasicMaterial) {
-            glowOuter.material.opacity = 0.14 + pulse * 0.16;
-            const scale = 1.0 + pulse * 0.18;
-            glowOuter.scale.setScalar(scale);
-          }
 
           const light = root.userData.light as THREE.PointLight | null | undefined;
           if (light) {
             // Dims with the decay so a dying crate stops lighting the ground
             // like a fresh one — the beacon fades before the crate vanishes.
-            light.intensity = (3.5 + pulse * 3.5) * _puDecay * (root.visible ? 1 : 0.25);
+            light.intensity = (1.6 + pulse * 0.6) * _puDecay * (root.visible ? 1 : 0.25);
             // Pool lights live in world space (scene-parented), so sync
             // their position to the pickup each frame as it bobs.
             light.position.set(root.position.x, root.position.y, root.position.z);
-          }
-
-          const inner = root.userData.inner as THREE.Mesh | undefined;
-          if (inner) inner.scale.setScalar(1.0 + pulse * 0.10);
-
-          const ring = root.userData.ring as THREE.Mesh | undefined;
-          if (ring) {
-            ring.rotation.z += delta * 1.8;
-            ring.scale.setScalar(1.0 + pulse * 0.08);
-          }
-          // Crossed gyroscope ring — counter-rotates on its tilted axis with
-          // a phase-offset pulse so the pair never reads as one rigid prop.
-          const ring2 = root.userData.ring2 as THREE.Mesh | undefined;
-          if (ring2) {
-            ring2.rotation.z -= delta * 2.4;
-            ring2.scale.setScalar(1.18 + (1 - pulse) * 0.08);
           }
 
           const halo = root.userData.halo as THREE.Mesh | undefined;
@@ -14298,15 +15400,27 @@ const ForestSurvivalGame = () => {
             // Counter-bob so the halo disc stays glued to the terrain
             // surface (root bobs between ~1.65 and ~2.35 — without this
             // the halo would dip below the ground).
-            halo.position.y = -bobY + 0.03;
-            halo.rotation.z += delta * 0.4;
+            halo.position.y = (puGround - bobY + 0.03) / Math.max(0.01, root.scale.y);
           }
           const haloMat = root.userData.haloMat as THREE.ShaderMaterial | undefined;
           if (haloMat && haloMat.uniforms.uTime) {
             haloMat.uniforms.uTime.value = _puNow;
           }
 
-          if (checkCollision(camera.position, powerUp.position, 2 * perkBonuses.pickupRadiusMult)) {
+          if (powerUp.type === 'grenade' && checkCollision(camera.position, powerUp.position, 2 * perkBonuses.pickupRadiusMult)) {
+            // ── GRENADE DROP ── straight into the pouch, independent of the
+            // held-power slot. A full pouch leaves the grenade where it lies.
+            const gk = powerUp.grenadeKind ?? 'frag';
+            if (addGrenades(gk, 1)) {
+              despawnPickup(powerUp);
+              powerUps.splice(pi, 1);
+              soundManager.play('grenade_pickup', 0.85);
+              createParticles(camera.position, 0xffffff, 6);
+            } else if (Date.now() - lastHeldHintAt > 1500) {
+              lastHeldHintAt = Date.now();
+              showPowerMessage(`${GRENADE_LABEL[gk]} pouch full`, 1300);
+            }
+          } else if (checkCollision(camera.position, powerUp.position, 2 * perkBonuses.pickupRadiusMult)) {
             // ── ONE LOOTED POWER AT A TIME ──────────────────────────────
             // If the player already holds a power, the crate stays put —
             // they must spend the current power (E) before looting another.
@@ -14411,7 +15525,13 @@ const ForestSurvivalGame = () => {
         const dxpb = bolt.mesh.position.x - camera.position.x;
         const dypb = bolt.mesh.position.y - camera.position.y;
         const dzpb = bolt.mesh.position.z - camera.position.z;
-        const playerHit = dxpb * dxpb + dypb * dypb + dzpb * dzpb < 0.72; // ~0.85m
+        const boltD2 = dxpb * dxpb + dypb * dypb + dzpb * dzpb;
+        const playerHit = boltD2 < 0.72; // ~0.85m
+        // Near miss: the bolt tears past the ear.
+        if (!playerHit && !bolt.whizzed && boltD2 < 14) {
+          bolt.whizzed = true;
+          soundManager.playWhizz(bolt.mesh.position.x, bolt.mesh.position.y, bolt.mesh.position.z, 0.75);
+        }
         if (playerHit) {
           takeEnemyDamage(bolt.damage, 'Sniper Bolt', bolt.mesh.position);
           // Small impact burst at the player so the hit reads visually.
@@ -15086,11 +16206,15 @@ const ForestSurvivalGame = () => {
       // Updates LOD, frustum culling, and adaptive enemy limits
       smartEnemyManager.update(delta);
 
-      // === RAGDOLL PHYSICS STEP ===
-      // Advance the Rapier corpse world with the SAME (slow-mo scaled) delta as
-      // everything else, so ragdolls dilate in bullet-time identically. No-op
-      // while no corpses are live; the death loop below reads the results.
-      ragdollSystem.step(delta);
+      // === PHYSICS STEP (Rapier) ===
+      // The ONE shared world (corpses, rigid throwables, debris) advances with
+      // the SAME (slow-mo scaled) delta as everything else, so it all dilates
+      // in bullet-time together. The ground heightfield follows the flat
+      // gameplay disc (centred on the player). No-op while nothing dynamic
+      // exists; the death loop below reads the corpse results.
+      physicsWorld.setCentre(ground.position.x, ground.position.z);
+      physicsWorld.step(delta);
+      rigidDebris.update(delta);
 
       // === NEW ADVANCED AI SYSTEM ===
       // AI update distance scales with graphics quality AND difficulty —
@@ -15117,6 +16241,21 @@ const ForestSurvivalGame = () => {
       const PERCEPTION_TICK_MS = 220;  // ~4.5 Hz sight/sound — has raycasts
       const DODGE_TICK_MS_NEAR = 110;  // ~9 Hz bullet dodging when close
       const DODGE_TICK_MS_MID = 240;   // ~4 Hz when further out
+
+      // ── STRAGGLER HUNT ──────────────────────────────────────────────────
+      // A wave could stall on its last robot — a sniper holding range at 70 m,
+      // or a runner that lost the player behind the treeline (seen in soak
+      // tests: one robot kept wave 3 open for ~25 s). Once the wave's whole
+      // budget has spawned, ≤ 2 remain and nothing has died for 8 s, the
+      // stragglers COMMIT: they always know where the player is and close in
+      // (shooters to ~20 u). Authoritative side only (guests mirror).
+      let stragglerHunt = false;
+      if (!isTutorialMode && !isMpGuest && !waveTransitioning && waveEnemiesRemaining <= 0
+          && frameNowMs - lastKillTime > 8000) {
+        let alive = 0;
+        for (let e = 0; e < enemies.length && alive <= 2; e++) if (!enemies[e].dead) alive++;
+        stragglerHunt = alive > 0 && alive <= 2;
+      }
 
       // Host only: rebuild the fair-share target table — every alive player
       // (the host's own camera + alive remotes) and a running tally of how
@@ -15157,11 +16296,51 @@ const ForestSurvivalGame = () => {
         //     shrink/sink in place (the classic death anim).
         if (enemy.dead && enemy.deathTime > 0) {
           enemy.deathTime -= delta;
+          enemy.deathElapsed = (enemy.deathElapsed ?? 0) + delta;
+          const deathAge = enemy.deathElapsed;
 
           // Base scale for this enemy type (pooled enemies use type-based scaling)
           const baseScale = ENEMY_SCALE[enemy.type];
 
-          if (enemy.ragdollBodyId !== undefined) {
+          // Power-down: the visor stutters for half a second, then goes dark.
+          if (enemy.eye) enemy.eye.visible = deathAge < 0.5 && Math.sin(deathAge * 70) > -0.2;
+          // The dead chassis vents smoke and spits the odd spark for a while.
+          if (deathAge < 2.8 && Math.random() < delta * 2.4) ventEnemySmoke(enemy, false);
+          if (deathAge > 0.3 && deathAge < 2.2 && Math.random() < delta * 1.2) {
+            _deathNeck.set(enemy.mesh.position.x, enemy.mesh.position.y + 0.6 * baseScale, enemy.mesh.position.z);
+            robotSparks.push(new RobotHitSparks(scene, _deathNeck.clone(), _deathUp, 4));
+          }
+          const sinking = enemy.deathTime < CORPSE_SINK_S;
+
+          if (enemy.ragdollArtId !== undefined) {
+            // ── ARTICULATED CORPSE ── torso transform straight off the compound
+            // body; every limb's LOCAL rotation = inverse(parent) × its body,
+            // so the jointed rig folds exactly as the physics solved it.
+            if (!sinking) {
+              if (ragdollSystem.readArticulated(enemy.ragdollArtId, enemy.mesh.position, enemy.mesh.quaternion, _ragLimbQuats)) {
+                _ragInvQuat.copy(enemy.mesh.quaternion).invert();
+                if (enemy.leftArm) enemy.leftArm.quaternion.copy(_ragInvQuat).multiply(_ragLimbQuats[0]);
+                if (enemy.rightArm) enemy.rightArm.quaternion.copy(_ragInvQuat).multiply(_ragLimbQuats[1]);
+                if (enemy.leftLeg) enemy.leftLeg.quaternion.copy(_ragInvQuat).multiply(_ragLimbQuats[2]);
+                if (enemy.rightLeg) enemy.rightLeg.quaternion.copy(_ragInvQuat).multiply(_ragLimbQuats[3]);
+                if (enemy.leftKnee) enemy.leftKnee.quaternion.copy(_ragLimbQuats[2]).invert().multiply(_ragLimbQuats[4]);
+                if (enemy.rightKnee) enemy.rightKnee.quaternion.copy(_ragLimbQuats[3]).invert().multiply(_ragLimbQuats[5]);
+                // The chassis hits the ground: one heavy collapse thud.
+                if (!enemy.deathImpactDone && deathAge > 0.22 && ragdollSystem.articulatedSpeed(enemy.ragdollArtId) < 2.4) {
+                  enemy.deathImpactDone = true;
+                  const ip = enemy.mesh.position;
+                  soundManager.playAt(soundManager.pickVariant('robot_collapse', 2), ip.x, ip.y, ip.z,
+                    baseScale > 1.3 ? 0.85 : 0.6, baseScale > 1.3 ? 0.7 : 1, { refDistance: 7, maxDistance: 80 });
+                  createParticles(ip, 0x5a4b38, 8); // dust kicked up
+                }
+              } else {
+                enemy.ragdollArtId = undefined;
+              }
+            } else {
+              enemy.mesh.position.y -= delta * (1.1 / CORPSE_SINK_S) * baseScale;
+            }
+            enemy.mesh.scale.setScalar(baseScale);
+          } else if (enemy.ragdollBodyId !== undefined) {
             // ── RAGDOLL (Rapier-driven) ── the corpse transform comes straight
             // off the rigid body: true-inertia tumble, real ground + corpse-on-
             // corpse collisions, settles and sleeps. Same slack limb pose on the
@@ -15176,11 +16355,14 @@ const ForestSurvivalGame = () => {
             // Copy body → mesh (no allocation). If the body was recycled out from
             // under a still-fading corpse (heavy cap pressure), drop the handle
             // and let it fade where it lies.
-            if (!ragdollSystem.read(enemy.ragdollBodyId, enemy.mesh.position, enemy.mesh.quaternion)) {
-              enemy.ragdollBodyId = undefined;
+            if (!sinking) {
+              if (!ragdollSystem.read(enemy.ragdollBodyId, enemy.mesh.position, enemy.mesh.quaternion)) {
+                enemy.ragdollBodyId = undefined;
+              }
+            } else {
+              enemy.mesh.position.y -= delta * (1.1 / CORPSE_SINK_S) * baseScale;
             }
-            const fade = enemy.deathTime < 0.3 ? Math.max(0.02, enemy.deathTime / 0.3) : 1;
-            enemy.mesh.scale.setScalar(baseScale * fade);
+            enemy.mesh.scale.setScalar(baseScale);
           } else if (enemy.deathVel) {
             // ── RAGDOLL (lightweight fallback — pre-WASM / WASM unavailable) ──
             // Rest height rides the visual terrain surface (0 near the player).
@@ -15198,7 +16380,7 @@ const ForestSurvivalGame = () => {
             // Integrate the rigid-body launch (gravity + bounce + spin).
             enemy.deathVel.y -= 17 * delta; // gravity
             enemy.mesh.position.addScaledVector(enemy.deathVel, delta);
-            if (enemy.mesh.position.y <= restY) {
+            if (!sinking && enemy.mesh.position.y <= restY) {
               enemy.mesh.position.y = restY;
               if (enemy.deathVel.y < 0) {
                 enemy.deathVel.y *= -0.42;            // bounce restitution
@@ -15214,21 +16396,33 @@ const ForestSurvivalGame = () => {
               enemy.mesh.rotation.z += enemy.deathSpin.z * delta;
             }
 
-            // Hold full size while it tumbles, then shrink away in the last 0.3s.
-            const fade = enemy.deathTime < 0.3 ? Math.max(0.02, enemy.deathTime / 0.3) : 1;
-            enemy.mesh.scale.setScalar(baseScale * fade);
+            // Full size while it tumbles; it sinks into the ground at the end.
+            if (sinking) enemy.mesh.position.y -= delta * (1.1 / CORPSE_SINK_S) * baseScale;
+            enemy.mesh.scale.setScalar(baseScale);
           } else {
-            // ── SIMPLE (ragdoll off / MP mirror) — topple forward + shrink ──
-            const p = 1.0 - enemy.deathTime; // 0 → 1 over the 1s death window
-            enemy.mesh.rotation.x = p * (Math.PI / 2);
-            // Corpse settles onto the VISUAL terrain surface (0 near the
-            // player) so a distant kill doesn't pop below the displaced hills.
-            enemy.mesh.position.y = baseScale * (1.0 - p) + visualGroundY(enemy.mesh.position.x, enemy.mesh.position.z);
-            enemy.mesh.scale.setScalar(Math.max(0.02, 1.0 - p * 0.8) * baseScale);
-            if (enemy.leftArm) { enemy.leftArm.rotation.z = p * (Math.PI / 3); enemy.leftArm.rotation.x = p * (Math.PI / 4); }
-            if (enemy.rightArm) { enemy.rightArm.rotation.z = -p * (Math.PI / 3); enemy.rightArm.rotation.x = p * (Math.PI / 4); }
-            if (enemy.leftLeg) enemy.leftLeg.rotation.x = p * (Math.PI / 6);
-            if (enemy.rightLeg) enemy.rightLeg.rotation.x = -p * (Math.PI / 6);
+            // ── SCRIPTED COLLAPSE (ragdolls off) — knees buckle, the chassis
+            // pitches forward onto the ground, arms go limp, then it sinks.
+            const total = SIMPLE_DEATH_S;
+            const p = THREE.MathUtils.clamp(1 - enemy.deathTime / total, 0, 1);
+            const sm = (x: number) => { const c = THREE.MathUtils.clamp(x, 0, 1); return c * c * (3 - 2 * c); };
+            const buckle = sm(p / 0.22);
+            const fall = sm((p - 0.12) / 0.38);
+            const gY = visualGroundY(enemy.mesh.position.x, enemy.mesh.position.z);
+            enemy.mesh.rotation.x = fall * (Math.PI / 2 - 0.12);
+            enemy.mesh.position.y = gY + baseScale * ((1 - 0.42 * buckle) * (1 - fall) + 0.34 * fall)
+              - (sinking ? (1 - enemy.deathTime / CORPSE_SINK_S) * 1.1 * baseScale : 0);
+            enemy.mesh.scale.setScalar(baseScale);
+            if (enemy.leftKnee) enemy.leftKnee.rotation.x = 1.5 * buckle * (1 - 0.6 * fall);
+            if (enemy.rightKnee) enemy.rightKnee.rotation.x = 1.3 * buckle * (1 - 0.6 * fall);
+            if (enemy.leftLeg) enemy.leftLeg.rotation.x = -0.7 * buckle * (1 - 0.7 * fall);
+            if (enemy.rightLeg) enemy.rightLeg.rotation.x = -0.55 * buckle * (1 - 0.7 * fall);
+            if (enemy.leftArm) { enemy.leftArm.rotation.z = fall * 0.9; enemy.leftArm.rotation.x = -fall * 0.9; }
+            if (enemy.rightArm) { enemy.rightArm.rotation.z = -fall * 0.8; enemy.rightArm.rotation.x = -fall * 0.7; }
+            if (!enemy.deathImpactDone && fall > 0.97) {
+              enemy.deathImpactDone = true;
+              const ip = enemy.mesh.position;
+              soundManager.playAt(soundManager.pickVariant('robot_collapse', 2), ip.x, ip.y, ip.z, 0.6, baseScale > 1.3 ? 0.7 : 1, { refDistance: 7, maxDistance: 80 });
+            }
           }
 
           if (enemy.deathTime <= 0) {
@@ -15238,6 +16432,11 @@ const ForestSurvivalGame = () => {
               ragdollSystem.release(enemy.ragdollBodyId);
               enemy.ragdollBodyId = undefined;
             }
+            if (enemy.ragdollArtId !== undefined) {
+              ragdollSystem.release(enemy.ragdollArtId);
+              enemy.ragdollArtId = undefined;
+            }
+            if (enemy.eye) enemy.eye.visible = true;
             // Restore the head we hid on decapitation so the pooled mesh is
             // whole again for the next enemy that reuses this slot (idempotent
             // for enemies that were never decapitated). The torn neck-wire stub
@@ -15246,6 +16445,16 @@ const ForestSurvivalGame = () => {
             if (enemy.neckWires) {
               enemy.neckWires.removeFromParent();
               enemy.neckWires = undefined;
+            }
+            // Same for blast-torn limbs: re-show the hidden pivots and pull the
+            // socket cable stubs off the pooled mesh (shared geo/mats).
+            if (enemy.severedParts) {
+              for (const part of enemy.severedParts) part.visible = true;
+              enemy.severedParts = undefined;
+            }
+            if (enemy.socketWires) {
+              for (const w of enemy.socketWires) w.removeFromParent();
+              enemy.socketWires = undefined;
             }
             // Safety net: strip any hack chip/indicator before the pooled mesh
             // is recycled, so the next enemy in this slot never inherits one.
@@ -15399,17 +16608,16 @@ const ForestSurvivalGame = () => {
 
           // Stride/arm swing scaled by how far it actually moved this frame.
           enemy.walkTime += movedLen * 2.8 + delta * 0.6;
-          const stride = movedLen > 0.002 ? 0.62 : 0.0;
-          if (enemy.leftLeg && enemy.rightLeg) {
-            enemy.leftLeg.rotation.x = THREE.MathUtils.lerp(enemy.leftLeg.rotation.x, Math.sin(enemy.walkTime) * stride, 0.2);
-            enemy.rightLeg.rotation.x = THREE.MathUtils.lerp(enemy.rightLeg.rotation.x, Math.sin(enemy.walkTime + Math.PI) * stride, 0.2);
+          // Same jointed gait as the host's robots, driven by the mirrored travel.
+          const mBase = ENEMY_SCALE[enemy.type];
+          let bob: number;
+          if (movedLen > 0.002) {
+            const run = THREE.MathUtils.clamp((movedLen / Math.max(1e-4, delta) / mBase - 3) / 7, 0, 1);
+            bob = driveRobotGait(enemy, enemy.walkTime, run, Math.min(1, delta * 14));
+          } else {
+            bob = driveRobotIdle(enemy, enemy.walkTime * 0.5, Math.min(1, delta * 6));
           }
-          if (enemy.leftArm && enemy.rightArm) {
-            enemy.leftArm.rotation.x = THREE.MathUtils.lerp(enemy.leftArm.rotation.x, Math.sin(enemy.walkTime + Math.PI) * stride * 0.7, 0.18);
-            enemy.rightArm.rotation.x = THREE.MathUtils.lerp(enemy.rightArm.rotation.x, Math.sin(enemy.walkTime) * stride * 0.7, 0.18);
-          }
-          const bob = Math.abs(Math.sin(enemy.walkTime)) * 0.07 * (movedLen > 0.002 ? 1 : 0);
-          enemy.mesh.position.y = groundY + bob;
+          enemy.mesh.position.y = groundY + bob * mBase;
 
           // Hit reaction (driven by host-synced enemy_hit feedback) — same
           // chassis rock-back + scale punch as the solo/host path so guests see
@@ -15504,6 +16712,26 @@ const ForestSurvivalGame = () => {
           }
         }
 
+        // ── DECOY ── a landed noise decoy pulls nearby robots onto itself
+        // (authoritative side only — guests mirror). The player still wins
+        // the robot back by getting in its face. Bosses, Revenants and
+        // Leapers aren't fooled.
+        let decoyTarget: THREE.Vector3 | null = null;
+        if (!enemy.hacked && decoyPoints.length > 0 && !isMpGuest
+            && enemy.type !== 'boss' && enemy.type !== 'revenant' && enemy.type !== 'leaper') {
+          let bestD = DECOY_PULL_RADIUS * DECOY_PULL_RADIUS;
+          for (const dp of decoyPoints) {
+            const dd = enemy.mesh.position.distanceToSquared(dp);
+            if (dd < bestD) { bestD = dd; decoyTarget = dp; }
+          }
+          if (decoyTarget && enemy.mesh.position.distanceToSquared(camera.position) < 36) decoyTarget = null;
+          if (decoyTarget) {
+            focusPos = _decoyFocus.copy(decoyTarget);
+            focusVel = _zeroVel;
+            focusPlayerId = null;
+          }
+        }
+
         // Performance optimization: Skip AI update for distant enemies
         let distance = enemy.mesh.position.distanceTo(focusPos);
 
@@ -15526,6 +16754,24 @@ const ForestSurvivalGame = () => {
           enemy.mesh.position.z = spot.z;
           enemy.mesh.position.y = groundY;
           distance = enemy.mesh.position.distanceTo(focusPos);
+        }
+
+        // Straggler lost far out for 12 s (stuck / wandering, inside the
+        // recycler's reach on hard) → re-enters the fight ~40 u away, BEHIND
+        // the player (clear of trunks), so it never pops in on screen.
+        if (stragglerHunt && !enemy.hacked && distance > 85) {
+          enemy.stragglerFarSince = enemy.stragglerFarSince ?? frameNowMs;
+          if (frameNowMs - enemy.stragglerFarSince > 12000) {
+            camera.getWorldDirection(_stragglerDir);
+            const spot = findEnemySpawnSpot(40, ENEMY_SPAWN_CLEARANCE[enemy.type],
+              Math.atan2(-_stragglerDir.z, -_stragglerDir.x));
+            enemy.mesh.position.set(spot.x, visualGroundY(spot.x, spot.z), spot.z);
+            enemy.lastPosition.copy(enemy.mesh.position);
+            enemy.stragglerFarSince = undefined;
+            distance = enemy.mesh.position.distanceTo(focusPos);
+          }
+        } else if (enemy.stragglerFarSince !== undefined) {
+          enemy.stragglerFarSince = undefined;
         }
 
         if (distance > MAX_AI_UPDATE_DISTANCE) {
@@ -15588,7 +16834,10 @@ const ForestSurvivalGame = () => {
 
         // Phantom: the player is cloaked — enemies can't see or hear them, so
         // the behaviour tree stops pursuing/attacking and they wander/idle.
-        const canSeePlayer = phantomActive ? false : (perception?.canSeePlayer || false);
+        // A smoke screen in or between them hides the player completely.
+        const smokeHidden = smokeZones.length > 0
+          && smokeBlocksSight(enemy.mesh.position.x, enemy.mesh.position.z, focusPos.x, focusPos.z);
+        const canSeePlayer = phantomActive || smokeHidden ? false : (perception?.canSeePlayer || false);
         const canHearPlayer = phantomActive ? false : (perception?.canHearPlayer || false);
 
         // === AI DECISION MAKING (throttled — behaviour tree is expensive) ===
@@ -15628,6 +16877,11 @@ const ForestSurvivalGame = () => {
             enemy.nextAiAt = frameNowMs + AI_TICK_MS + (i * 23) % 80;
           }
           const aiDecision = enemy.cachedAiDecision;
+          if (stragglerHunt && !enemy.hacked) {
+            // Committed straggler: straight for the player (shooters hold ~20 u).
+            const keep = STEER_ARCHETYPE[enemy.type] === 'ranged' ? 20 : 0;
+            if (distance > keep + 2) aiDecision.targetPosition.copy(focusPos);
+          }
 
           // Update target position from AI decision
           enemy.targetPosition.copy(aiDecision.targetPosition);
@@ -15955,65 +17209,42 @@ const ForestSurvivalGame = () => {
             // Walk animation driven by how far the enemy ACTUALLY moved this
             // frame — the stride stays planted to the ground (no gliding) and
             // the legs stop when the enemy is blocked.
+            const prevWalk = enemy.walkTime;
             enemy.walkTime += movedLen * (enemy.isDodging ? 4.2 : 2.8);
             const walkPhase = enemy.walkTime;
-            const stride = movedLen > 0.0005 ? 0.62 : 0.0;
-            if (enemy.leftLeg && enemy.rightLeg) {
-              enemy.leftLeg.rotation.x = THREE.MathUtils.lerp(enemy.leftLeg.rotation.x, Math.sin(walkPhase) * stride, 0.2);
-              enemy.rightLeg.rotation.x = THREE.MathUtils.lerp(enemy.rightLeg.rotation.x, Math.sin(walkPhase + Math.PI) * stride, 0.2);
+            // A foot plants each time the stride passes through the bottom of
+            // its bob (every π of phase): steel on the ground, positional.
+            if (movedLen > 0.0005 && Math.floor(prevWalk / Math.PI) !== Math.floor(walkPhase / Math.PI)) {
+              ambienceAudio.enemyStep(
+                enemy.mesh.position.x, enemy.mesh.position.y, enemy.mesh.position.z,
+                camera.position.x, camera.position.z,
+                enemy.type === 'tank' || enemy.type === 'boss' || enemy.isMiniBoss === true,
+                enemy.type === 'fast',
+              );
             }
-            if (enemy.leftArm && enemy.rightArm) {
-              // Arms now pivot at the shoulder, so the hand travels on a longer
-              // lever — a gentler 0.5 swing reads natural (the old 0.7 over-swung).
-              enemy.leftArm.rotation.x = THREE.MathUtils.lerp(enemy.leftArm.rotation.x, Math.sin(walkPhase + Math.PI) * stride * 0.5, 0.18);
-              enemy.rightArm.rotation.x = THREE.MathUtils.lerp(enemy.rightArm.rotation.x, Math.sin(walkPhase) * stride * 0.5, 0.18);
-              // Settle the arms back to the side — clears any leftover splay/roll
-              // from a summon telegraph or stagger so the hands never fold across
-              // the body (was the boss "arms overlapping the torso" bug).
-              enemy.leftArm.rotation.z = THREE.MathUtils.lerp(enemy.leftArm.rotation.z, 0, 0.18);
-              enemy.rightArm.rotation.z = THREE.MathUtils.lerp(enemy.rightArm.rotation.z, 0, 0.18);
+            // Jointed gait (RobotGait): hips swing, knees fold through the
+            // swing, arms counter-swing, the torso twists and leans with speed.
+            // A blocked robot (no real travel) drops into the idle stance.
+            const gaitK = Math.min(1, delta * 14);
+            let bodyBob: number;
+            if (movedLen > 0.0005) {
+              const speedU = movedLen / Math.max(1e-4, delta) / baseScale;
+              const run = THREE.MathUtils.clamp((speedU - 3) / 7, 0, 1);
+              bodyBob = driveRobotGait(enemy, walkPhase, run, gaitK, enemy.isDodging);
+            } else {
+              bodyBob = driveRobotIdle(enemy, frameNowMs * 0.001 + (i * 1.7), Math.min(1, delta * 6));
             }
-            // Body bob synced to the stride
-            const bodyBob = Math.abs(Math.sin(walkPhase)) * 0.07 * (movedLen > 0.0005 ? 1 : 0);
-            enemy.mesh.position.y = groundY + bodyBob;
-            if (enemy.torso) {
-              enemy.torso.rotation.x = THREE.MathUtils.lerp(enemy.torso.rotation.x, enemy.isDodging ? 0.14 : 0.05, 0.1);
-            }
+            enemy.mesh.position.y = groundY + bodyBob * baseScale;
           } else {
             // === IDLE ANIMATION ===
             // Smoothly reset limbs to idle position with gentle breathing motion
             enemy.walkTime += delta * 2; // Slower idle animation
             const idlePhase = enemy.walkTime;
 
-            // Smooth leg return to idle
-            if (enemy.leftLeg) {
-              enemy.leftLeg.rotation.x = THREE.MathUtils.lerp(enemy.leftLeg.rotation.x, 0, 0.08);
-            }
-            if (enemy.rightLeg) {
-              enemy.rightLeg.rotation.x = THREE.MathUtils.lerp(enemy.rightLeg.rotation.x, 0, 0.08);
-            }
-
-            // Gentle arm sway while idle, with the arms settling back to the
-            // side (rotation.z → 0) so a post-summon/stagger splay never leaves
-            // the hands folded across the torso.
-            if (enemy.leftArm) {
-              const idleArmLeft = Math.sin(idlePhase * 0.5) * 0.05;
-              enemy.leftArm.rotation.x = THREE.MathUtils.lerp(enemy.leftArm.rotation.x, idleArmLeft, 0.08);
-              enemy.leftArm.rotation.z = THREE.MathUtils.lerp(enemy.leftArm.rotation.z, 0, 0.1);
-            }
-            if (enemy.rightArm) {
-              const idleArmRight = Math.sin(idlePhase * 0.5 + 0.5) * 0.05;
-              enemy.rightArm.rotation.x = THREE.MathUtils.lerp(enemy.rightArm.rotation.x, idleArmRight, 0.08);
-              enemy.rightArm.rotation.z = THREE.MathUtils.lerp(enemy.rightArm.rotation.z, 0, 0.1);
-            }
-
-            // Subtle breathing motion on body
-            enemy.mesh.position.y = THREE.MathUtils.lerp(enemy.mesh.position.y, groundY + Math.sin(idlePhase) * 0.02, 0.1);
-
-            // Reset torso tilt
-            if (enemy.torso) {
-              enemy.torso.rotation.x = THREE.MathUtils.lerp(enemy.torso.rotation.x, 0, 0.08);
-            }
+            // Weight shifts leg to leg, arms hang and drift, the chassis
+            // breathes (RobotGait). Never a frozen mannequin.
+            const breathe = driveRobotIdle(enemy, idlePhase * 0.5 + i * 1.7, Math.min(1, delta * 6));
+            enemy.mesh.position.y = THREE.MathUtils.lerp(enemy.mesh.position.y, groundY + breathe * baseScale, 0.1);
 
             // Square up to the player while idle / attacking. The body used to
             // freeze facing wherever it last walked in (usually a sideways flank
@@ -16041,6 +17272,11 @@ const ForestSurvivalGame = () => {
             let headTargetY = Math.atan2(headDx, headDz) - enemy.mesh.rotation.y;
             while (headTargetY > Math.PI) headTargetY -= Math.PI * 2;
             while (headTargetY < -Math.PI) headTargetY += Math.PI * 2;
+            // Lost sight (smoke, cloak, out of view): the head SWEEPS, searching.
+            if (!canSeePlayer && !decoyTarget) {
+              const st = frameNowMs * 0.001 + i * 2.3;
+              headTargetY = Math.sin(st * 0.7) * 0.7 + Math.sin(st * 1.9) * 0.12;
+            }
             // Clamp head turn to ±70° and track faster so it stays locked on the
             // player instead of lagging behind and reading as "looking away".
             const clampedHeadY = Math.max(-1.22, Math.min(1.22, headTargetY));
@@ -16242,7 +17478,7 @@ const ForestSurvivalGame = () => {
           // midpoint between the enemy and the player and check for any
           // collidable within ~half the distance — same trick the ranged
           // sentinels use, kept lean here.
-          let los = inRange;
+          let los = inRange && !smokeHidden;
           if (los && distR > 4) {
             const midX = (enemy.mesh.position.x + focusPos.x) * 0.5;
             const midZ = (enemy.mesh.position.z + focusPos.z) * 0.5;
@@ -16284,7 +17520,7 @@ const ForestSurvivalGame = () => {
                 // fixed offset off the chassis root, so the round left the
                 // sniper's chest while the barrel pointed elsewhere.
                 const origin = enemyMuzzleOrigin(enemy, 1.2);
-                const target = new THREE.Vector3(focusPos.x, camera.position.y - 0.2, focusPos.z);
+                const target = new THREE.Vector3(focusPos.x, decoyTarget ? focusPos.y + 0.3 : camera.position.y - 0.2, focusPos.z);
                 const dir = target.clone().sub(origin).normalize();
                 const speed = 0.55;
                 const bulletGroup = new THREE.Mesh(_enemyBulletGeo, _enemyBulletMat);
@@ -16580,7 +17816,7 @@ const ForestSurvivalGame = () => {
               if ((enemy.rangedChargeMs ?? 0) >= 520) {
                 // From the lance's bore — see the sniper path above.
                 const origin = enemyMuzzleOrigin(enemy, 1.0);
-                const target = new THREE.Vector3(focusPos.x, camera.position.y - 0.2, focusPos.z);
+                const target = new THREE.Vector3(focusPos.x, decoyTarget ? focusPos.y + 0.3 : camera.position.y - 0.2, focusPos.z);
                 const dir = target.clone().sub(origin).normalize();
                 const bolt = new THREE.Mesh(_enemyBulletGeo, _revBoltMat);   // GOLD bolt
                 bolt.position.copy(origin);
@@ -16679,6 +17915,11 @@ const ForestSurvivalGame = () => {
                 soundManager.play('hit', 0.35, false, 1.4);
                 if (hackVictim.health <= 0) handleEnemyKilled(hackVictim, false);
               }
+            } else if (decoyTarget) {
+              // ── DECOYED: the robot is beating on the decoy, not on anyone.
+              _tempVec3.copy(decoyTarget); _tempVec3.y += 0.3;
+              robotSparks.push(new RobotHitSparks(scene, _tempVec3.clone(), new THREE.Vector3(0, 1, 0), 5));
+              soundManager.playAt('hit', _tempVec3.x, _tempVec3.y, _tempVec3.z, 0.3, 1.5);
             } else if (isMpHost && mp && focusPlayerId !== null) {
               // SHARED ENEMY struck a REMOTE player. The host owns the enemy,
               // so it tells that player's client to take the hit — this is how
@@ -16711,6 +17952,7 @@ const ForestSurvivalGame = () => {
             enemy.rightArm.rotation.z = pose.rightArmZ;
             if (enemy.leftLeg) enemy.leftLeg.rotation.x = pose.leftLegX;
             if (enemy.rightLeg) enemy.rightLeg.rotation.x = pose.rightLegX;
+            braceKnees(enemy, Math.min(1, delta * 12));
             if (enemy.torso) {
               enemy.torso.rotation.x = pose.torsoX;
               enemy.torso.rotation.y = pose.torsoY;
@@ -17126,6 +18368,7 @@ const ForestSurvivalGame = () => {
               mx: Math.round(en.maxHealth),
               d: en.dead ? 1 : 0,
             };
+            if (en.dead && en.blastFrom) { w.bx = r2(en.blastFrom.x); w.bz = r2(en.blastFrom.z); }
             if (sendFull) {
               wire.push(w);
               enemySyncLastSent.set(en.netId, w);
@@ -17160,6 +18403,7 @@ const ForestSurvivalGame = () => {
               wm: netWaveEvent === 'surge' ? 1 : netWaveEvent === 'glitch' ? 2 : 0,
               wi: Math.round(netWaveEventIntensity * 100),
               us: spireList,
+              ws: weatherSystem.getStateIndex(),
             });
           } else if (wire.length > 0) {
             mp.broadcastEnemySync(wire, wave, false, frameNowMs);
@@ -17444,12 +18688,15 @@ const ForestSurvivalGame = () => {
 
       // ── STAGE 2: spawn warmup pickups (every type) ─────────────────
       await stage('Pickups', false, () => {
-        const warmPowerUpTypes: PowerUp['type'][] = ['overcharge', 'ammo', 'speed', 'damage', 'shield', 'infinite_ammo', 'phantom', 'cryo', 'tesla', 'shockwave', 'health', 'nuke'];
+        // Every item model shares ONE atlas material, so this both paints the
+        // atlas (behind the loader) and links its single program.
+        const warmPowerUpTypes: PowerUp['type'][] = ['overcharge', 'ammo', 'speed', 'damage', 'shield', 'infinite_ammo', 'phantom', 'cryo', 'tesla', 'shockwave', 'health', 'nuke', 'grenade'];
         warmPowerUpTypes.forEach((type, index) => {
           const warmPowerUp = createPowerUp(
             wp.x + (index - warmPowerUpTypes.length / 2) * 0.85,
             wp.z,
             type,
+            'emp',
                 );
           warmPowerUps.push(warmPowerUp);
         });
@@ -17481,6 +18728,8 @@ const ForestSurvivalGame = () => {
         // stutter this stage exists to kill. Shown here (parked out of the
         // loader's frame) and switched back off in the warmup teardown.
         abilityProp?.prewarm();
+        grenadeProp.prewarm();
+        warm.push(...grenadeSystem.prewarm(wp.clone()));
         fireSystem.prewarm(wp.clone());
         warmAbilityFlares.push(
           abilitySystem.createAbilityEffect(scene, wp, 'shield'),
@@ -17772,6 +19021,8 @@ const ForestSurvivalGame = () => {
         // only so the compile passes could link them. Their materials are NOT
         // disposed here — that would evict the very programs we just built.
         abilityProp?.endPrewarm();
+        grenadeProp.endPrewarm();
+        grenadeSystem.endPrewarm();
         fireSystem.endPrewarm();
         warm.forEach(o => scene.remove(o));
         warmPowerUps.forEach((powerUp) => {
@@ -18104,7 +19355,8 @@ const ForestSurvivalGame = () => {
       // Cleanup SmartEnemyManager (releases pooled resources)
       smartEnemyManager.dispose();
 
-      // Free the Rapier ragdoll world + every live corpse body.
+      // Drop every live corpse body (the shared world is freed further down,
+      // after the throwables and debris have released theirs).
       ragdollSystem.dispose();
 
       // Cleanup instanced world-prop batches (before BiomeSystem disposes the
@@ -18209,6 +19461,14 @@ const ForestSurvivalGame = () => {
       // fire system (jet + ground-patch rigs + the shared burn-shell assets —
       // every shell it lit is detached first, inside dispose()).
       abilityProp?.dispose();
+      grenadeProp.dispose();
+      grenadeSystem.dispose();
+      rigidDebris.clear();
+      physicsWorld.dispose();
+      for (const sp of smokeScreenPuffs) sp.dispose(scene);
+      smokeScreenPuffs.length = 0;
+      if (wheelTimer !== null) window.clearTimeout(wheelTimer);
+      disposeItemAtlas();
       gunModel.onOverclockCue = null;
       for (const e of enemies) { e.burnFx = undefined; }
       fireSystem.dispose();
@@ -18938,6 +20198,19 @@ const ForestSurvivalGame = () => {
       </div>
       )}
 
+      {/* Throwable quick-select wheel (held next-throwable key). */}
+      <AnimatePresence>
+        {throwWheel && !photoMode && (
+          <ThrowableWheel
+            key="throw-wheel"
+            hover={throwWheel.hover}
+            selected={throwWheel.selected}
+            counts={throwWheel.counts}
+            keyLabel={hudKeyLabel(keyBindingsRef.current.cycleGrenade)}
+          />
+        )}
+      </AnimatePresence>
+
       {/* ON-SCREEN TOUCH CONTROLS — only on touch devices, only during live
           play. The joystick/look-surface write into the touchControls bridge;
           fire + action buttons dispatch synthetic mouse/keyboard events so the
@@ -19176,6 +20449,7 @@ const ForestSurvivalGame = () => {
           powerUpMessage={powerUpMessage}
           powerUpMessageMs={powerUpMeta.ms}
           powerUpMessageKey={powerUpMeta.key}
+          powerUpMessageTone={powerUpMeta.tone}
           t={t}
         />
 
@@ -19303,6 +20577,7 @@ const ForestSurvivalGame = () => {
        * sandbox where achievements would be cheap/spammy AND visually
        * compete with the tutorial overlay card. The onUnlock subscription
        * is also skipped for tutorial sessions so the queue never grows. */}
+      <AnimatePresence>
       {gameMode !== 'tutorial' && !photoMode && achievementQueue.map((achievement, index) => (
         <AchievementNotification
           key={achievement.queueId}
@@ -19317,6 +20592,7 @@ const ForestSurvivalGame = () => {
           }}
         />
       ))}
+      </AnimatePresence>
 
       {/* Enhanced UI Components */}
       {gameStarted && !gameState.isGameOver && !photoMode && (
@@ -19543,7 +20819,9 @@ const ForestSurvivalGame = () => {
 
 const WrappedGame = () => (
   <ErrorBoundary>
-    <ForestSurvivalGame />
+    <MotionRoot>
+      <ForestSurvivalGame />
+    </MotionRoot>
     {/* Rotate-to-landscape gate. Self-contained (uses useDeviceInfo) and
         rendered once at the top level so it overlays every screen on a touch
         device held in portrait. No-op on desktop. */}

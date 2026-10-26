@@ -27,13 +27,14 @@ import {
   buildHeldWeapon,
 } from './CharacterModels';
 import { getHold, poseAvatarHold } from './AvatarRig';
+import { driveAvatarLegs, newCollapse, startCollapse, endCollapse, driveCollapse, type CollapseJoints } from './AvatarMotion';
 
 const VALID_WEAPONS: WeaponType[] = ['pistol', 'rifle', 'shotgun', 'smg', 'sniper', 'minigun', 'launcher'];
 function asWeaponType(name: string | undefined): WeaponType {
   return (VALID_WEAPONS.includes(name as WeaponType) ? name : 'pistol') as WeaponType;
 }
 
-const MODEL_NATIVE_HEIGHT = RIG.headTopY;          // 4.45
+const MODEL_NATIVE_HEIGHT = RIG.headTopY;          // ≈4.37
 const PLAYER_EYE_HEIGHT = 5;                       // matches standingHeight in App.tsx
 const MODEL_SCALE = PLAYER_EYE_HEIGHT / MODEL_NATIVE_HEIGHT;
 
@@ -44,6 +45,8 @@ interface Joints {
   rightElbow: THREE.Group;
   leftHip: THREE.Group;
   rightHip: THREE.Group;
+  leftKnee?: THREE.Group;
+  rightKnee?: THREE.Group;
   headJoint: THREE.Group;
   rightHand: THREE.Mesh;
 }
@@ -82,7 +85,9 @@ export class LocalPlayerShadow {
 
   // Lifecycle
   private isAlive: boolean = true;
-  private deathT: number = 0;
+  /** Death collapse (AvatarMotion) + where the body lies while it plays. */
+  private readonly collapse = newCollapse();
+  private readonly deathRoot = new THREE.Vector3();
 
   constructor(scene: THREE.Scene, opts: LocalPlayerShadowOptions = {}) {
     this.scene = scene;
@@ -124,6 +129,8 @@ export class LocalPlayerShadow {
     const wt = this.currentWeaponType;
     this.swapWeapon(wt);
     this.weaponGroup?.removeFromParent();
+    // Free the old body's GPU buffers (the weapon is already detached).
+    this.body.traverse((obj) => { if (obj instanceof THREE.Mesh) obj.geometry.dispose(); });
     this.body.clear();
     this.materials.forEach((m) => m.dispose());
     this.materials = [];
@@ -146,17 +153,20 @@ export class LocalPlayerShadow {
     this.crouchTarget = crouching ? 1 : 0;
   }
 
-  /** Should be called when the local player dies (collapse pose). */
-  setAlive(alive: boolean): void {
+  /**
+   * Called when the local player dies / revives. `fallDir` +1 collapses
+   * forward (face-down), -1 backward — App passes it from the killing blow.
+   */
+  setAlive(alive: boolean, fallDir = 1): void {
     if (alive && !this.isAlive) {
       this.isAlive = true;
-      this.deathT = 0;
-      this.body.rotation.x = 0;
-      this.body.position.y = 0;
+      endCollapse(this.collapse, this.body);
       this.body.visible = true;
     } else if (!alive && this.isAlive) {
       this.isAlive = false;
-      this.deathT = 0;
+      // The body stays where it fell, even as the camera drops / spectates.
+      this.deathRoot.copy(this.root.position);
+      startCollapse(this.collapse, fallDir, this.weaponGroup, this.root);
     }
   }
 
@@ -173,7 +183,8 @@ export class LocalPlayerShadow {
     // Position: feet on the ground below the camera (the crouch lowers the
     // eye, not the feet — the old fixed 5u offset sank a crouching shadow
     // a full unit and a half into the ground).
-    this.root.position.set(camera.position.x, camera.position.y - eyeHeight, camera.position.z);
+    if (this.isAlive) this.root.position.set(camera.position.x, camera.position.y - eyeHeight, camera.position.z);
+    else this.root.position.copy(this.deathRoot);
     // Yaw: camera looks down -Z by convention; avatar faces same direction,
     // bladed by the weapon's stance turn (weapon + head counter-rotate).
     const turnTarget = this.isAlive ? getHold(this.currentWeaponType).turn : 0;
@@ -205,15 +216,10 @@ export class LocalPlayerShadow {
       this.walkPhase += delta * walkFreq;
       this.bobPhase += delta * (1.5 + moveGate * 0.5);
 
-      // Vertical compression — feet stay planted (scale origin is at the feet)
-      // while the body sinks, reading as a crouch in the cast shadow.
-      this.body.scale.set(MODEL_SCALE, MODEL_SCALE * (1 - 0.2 * crouch), MODEL_SCALE);
-
-      // Legs stride — shorter when crouched, plus a forward knee-fold offset.
-      const legSwing = (0.06 + moveGate * 0.85) * (1 - 0.5 * crouch);
-      const hipFold = crouch * 0.55;
-      this.joints.leftHip.rotation.x = Math.sin(this.walkPhase) * legSwing + hipFold;
-      this.joints.rightHip.rotation.x = Math.sin(this.walkPhase + Math.PI) * legSwing + hipFold;
+      // Legs: hips swing, knees fold through the swing; a crouch folds both
+      // and drops the pelvis by exactly what the bent legs lose (AvatarMotion).
+      this.body.scale.setScalar(MODEL_SCALE);
+      const legDrop = driveAvatarLegs(this.joints, this.walkPhase, moveGate, crouch);
 
       // Weapon on the aim, both hands solved onto it (elbows bend), head
       // down the sights. Pitch is lightly smoothed so mouse jitter doesn't
@@ -225,13 +231,11 @@ export class LocalPlayerShadow {
       // Body bob with footfalls (and idle breath)
       const bobAmp = (0.03 + moveGate * 0.12) * (1 - 0.4 * crouch);
       const breath = Math.sin(this.bobPhase * 2) * 0.012;
-      this.body.position.y = Math.abs(Math.sin(this.walkPhase)) * bobAmp + breath;
+      this.body.position.y = Math.abs(Math.sin(this.walkPhase)) * bobAmp + breath - legDrop * MODEL_SCALE;
     } else {
-      this.deathT = Math.min(1.4, this.deathT + delta / 0.65);
-      const t = Math.min(1, this.deathT);
-      this.body.rotation.x = -t * (Math.PI / 2 - 0.05);
-      this.body.position.y = -t * 1.4;
-      if (this.deathT > 1.2) this.body.visible = false;
+      // Knees buckle, the body topples, bounces and settles; arms trail, the
+      // weapon falls free. It stays down (it's the shadow you watch fall).
+      driveCollapse(this.collapse, this.joints as unknown as CollapseJoints, this.body, delta, MODEL_SCALE);
     }
   }
 

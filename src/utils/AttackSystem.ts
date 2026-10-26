@@ -335,7 +335,11 @@ export class AttackSystem {
     // phases share one formula and cannot disagree at the boundary.
     const cocked = -smooth(wind);
     const swung = cocked + (1 - cocked) * whip(strike);
-    const drive = t < S ? swung : 1 - smooth(rec);
+    // Recovery rebounds once past rest (the limb's own mass) before settling;
+    // the end of the wind-up trembles with servo strain — the "about to
+    // swing" read that lets a player time the dodge.
+    let drive = t < S ? swung : (1 - smooth(rec)) * Math.cos(rec * Math.PI * 1.25);
+    if (t < W) drive += Math.sin(t * 170) * 0.045 * smooth(Math.max(0, (wind - 0.55) / 0.45));
     const fwd = drive > 0 ? drive : 0; // strike-only weight
 
     switch (this.style) {

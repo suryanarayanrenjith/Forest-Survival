@@ -632,6 +632,7 @@ uniform float uScanline;
 uniform float uVignetteOffset;
 uniform float uVignetteDarkness;
 uniform float uGlitch;
+uniform float uDeathGrade;
 uniform float uInterference;
 uniform float uHeatShimmer;
 varying vec2 vUv;
@@ -928,9 +929,16 @@ void main() {
     ldr = mix(ldr, floor(ldr * 6.0) * (1.0 / 6.0), crush * 0.5 * uGlitch);
   }
 
+  // ─── DEATH GRADE — the world drains to a silver-print black & white ─────
+  if (uDeathGrade > 0.001) {
+    float lumaB = dot(ldr, LUMA);
+    float printB = mix(lumaB, smoothstep(0.03, 0.96, lumaB), 0.65);
+    ldr = mix(ldr, vec3(printB) * vec3(0.97, 1.0, 1.035), uDeathGrade);
+  }
+
   // ─── VIGNETTE ──────────────────────────────────────────────────────────
   float vig = smoothstep(uVignetteOffset, 1.0, dist);
-  ldr *= 1.0 - vig * uVignetteDarkness;
+  ldr *= 1.0 - vig * (uVignetteDarkness + uDeathGrade * 0.38);
   // Dither to kill 8-bit banding in the dark gradients.
   ldr += (filmHash(gl_FragCoord.yx * 1.31) - 0.5) / 255.0;
 
@@ -1304,6 +1312,7 @@ export class PostProcessingPipeline {
       uVignetteOffset: { value: 0.42 },
       uVignetteDarkness: { value: 0.42 },
       uGlitch: { value: 0 },
+      uDeathGrade: { value: 0 },
       uInterference: { value: 0 },
       uHeatShimmer: { value: 0 },
     });
@@ -1580,6 +1589,11 @@ export class PostProcessingPipeline {
   /** NULL-WAVE signal corruption amount (0 = clean). Plain uniform write. */
   setGlitch(strength: number) {
     this.compositeMat.uniforms.uGlitch.value = THREE.MathUtils.clamp(strength, 0, 1);
+  }
+
+  /** Player death: 0 = colour, 1 = full black & white. Plain uniform write. */
+  setDeathGrade(amount: number) {
+    this.compositeMat.uniforms.uDeathGrade.value = THREE.MathUtils.clamp(amount, 0, 1);
   }
 
   /** ARK-07 relay interference (0 = clear). Plain uniform write. */

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ArrowUp, ArrowDown, ArrowLeft, ArrowRight, ChevronsUp, ChevronsDown,
-  Wind, Zap, RotateCcw, Sparkles, Radar, Keyboard, Info, Eye, Swords, type LucideIcon,
+  Wind, Zap, RotateCcw, Sparkles, Radar, Keyboard, Info, Eye, Swords, Bomb, Repeat, Undo2, type LucideIcon,
 } from 'lucide-react';
 import {
   gameSettingsManager, defaultKeyBindings, normalizeKeyBindings,
@@ -21,6 +21,9 @@ const ACTION_META: { action: GameAction; label: string; icon: LucideIcon }[] = [
   { action: 'melee', label: 'Melee Strike', icon: Swords },
   { action: 'reload', label: 'Reload', icon: RotateCcw },
   { action: 'usePower', label: 'Use Power-Up', icon: Sparkles },
+  { action: 'grenade', label: 'Throw (hold to aim)', icon: Bomb },
+  { action: 'cycleGrenade', label: 'Next Throwable (hold: wheel)', icon: Repeat },
+  { action: 'prevThrowable', label: 'Previous Throwable', icon: Undo2 },
   { action: 'toggleMap', label: 'Tactical Map', icon: Radar },
   { action: 'inspect', label: 'Inspect Weapon', icon: Eye },
 ];

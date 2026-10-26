@@ -1,6 +1,39 @@
 import { soundManager, type LoopVoice } from './SoundManager';
 import type { MapType } from './MapSystem';
 import type { StormKind, StrikeEvent } from './WeatherSystem';
+import type { Surface } from './SoundDesign';
+
+/** What each map's floor sounds like underfoot. */
+const MAP_SURFACE: Record<MapType, Surface> = {
+  deep_forest: 'forest',
+  autumn_grove: 'leaves',
+  toxic_swamp: 'mud',
+  desert_canyon: 'sand',
+  frozen_tundra: 'snow',
+  scorched_wasteland: 'gravel',
+  military_outpost: 'gravel',
+  ancient_ruins: 'stone',
+};
+
+/** Each map's outdoor acoustics (SoundDesign.ACOUSTICS). */
+const MAP_ACOUSTICS: Record<MapType, string> = {
+  deep_forest: 'forest',
+  autumn_grove: 'vale',
+  toxic_swamp: 'swamp',
+  desert_canyon: 'desert',
+  frozen_tundra: 'tundra',
+  scorched_wasteland: 'wasteland',
+  military_outpost: 'outpost',
+  ancient_ruins: 'ruins',
+};
+
+export function surfaceFor(map: MapType): Surface {
+  return MAP_SURFACE[map] ?? 'forest';
+}
+
+export function acousticsFor(map: MapType): string {
+  return MAP_ACOUSTICS[map] ?? 'forest';
+}
 
 /**
  * AMBIENCE AUDIO — the world you can hear.
@@ -85,17 +118,33 @@ export class AmbienceAudio {
   private time = 0;
   private pending: number[] = [];
   private disposed = false;
+  private readonly surface: Surface;
+  private enemyStepBudget = 0;
 
   constructor(map: MapType, storm: StormKind) {
     this.calls = CALLS[map] ?? [];
     this.timers = this.calls.map(() => 2 + Math.random() * 8);
     this.storm = storm;
+    this.surface = surfaceFor(map);
   }
 
   /** Synthesize every buffer this map can use (behind the loader). */
   prepare(): void {
     const names = new Set<string>(['wind_bed', 'leaf_rustle', 'grass_swish']);
-    if (this.storm === 'rain') { names.add('rain_bed'); names.add('thunder_close'); names.add('thunder_far'); }
+    // Feet (the map's floor, plus wet steps where rain falls), robots, melee.
+    for (let v = 0; v < 4; v++) names.add(`step_${this.surface}_${v}`);
+    names.add(`land_${this.surface}`);
+    for (let v = 0; v < 3; v++) { names.add(`robot_step_light_${v}`); names.add(`robot_step_heavy_${v}`); }
+    for (let v = 0; v < 2; v++) { names.add(`melee_swing_${v}`); names.add(`melee_hit_${v}`); names.add(`whizz_${v}`); }
+    // Grenades + deaths (robot power-down / collapse, the player's fall).
+    for (const n of ['grenade_pin', 'grenade_throw', 'emp_blast', 'thermite_ignite', 'grenade_pickup', 'body_fall', 'tinnitus', 'arm_click', 'decoy_ping']) names.add(n);
+    for (let v = 0; v < 3; v++) names.add(`grenade_bounce_${v}`);
+    for (let v = 0; v < 2; v++) { names.add(`robot_powerdown_${v}`); names.add(`robot_collapse_${v}`); }
+    if (this.storm === 'rain') {
+      for (let v = 0; v < 4; v++) names.add(`step_wet_${v}`);
+      names.add('rain_bed'); names.add('thunder_close'); names.add('thunder_far');
+    }
+    if (this.storm === 'spores') for (let v = 0; v < 4; v++) names.add(`step_mud_${v}`);
     if (this.storm === 'ashfall') { names.add('thunder_close'); names.add('thunder_far'); }
     for (const c of this.calls) for (const s of c.sounds) names.add(s);
     soundManager.prepare([...names]);
@@ -111,6 +160,7 @@ export class AmbienceAudio {
   ): void {
     if (this.disposed) return;
     this.time += dt;
+    this.enemyStepBudget = Math.min(3, this.enemyStepBudget + dt * 10);
 
     // ── Rain bed ──
     const rainTarget = this.storm === 'rain' ? rain : 0;
@@ -182,6 +232,41 @@ export class AmbienceAudio {
     this.lastLeaf = this.time;
     soundManager.playAt('leaf_rustle', x, y, z, Math.min(0.55, 0.16 + amount * 0.06),
       0.85 + Math.random() * 0.35, { refDistance: 6, maxDistance: 60 });
+  }
+
+  /**
+   * The player's footfall: the map's floor (a hazard pool overrides it —
+   * toxic sludge squelches, ice clicks), with a splash layer on rain-soaked
+   * ground. `vol` already folds in crouch / sprint / rain masking.
+   */
+  footstep(vol: number, wetness: number, hazard: string | null, rate = 1): void {
+    const surface: Surface = hazard === 'toxic' ? 'mud' : hazard === 'ice' ? 'stone' : this.surface;
+    soundManager.playFootstep(surface, vol, rate);
+    if (wetness > 0.3 && surface !== 'mud' && surface !== 'snow' && surface !== 'sand') {
+      soundManager.playFootstep('wet', vol * Math.min(1, wetness) * 0.75, rate);
+    }
+  }
+
+  /** Touch-down after a jump / drop; `heavy` 0..1 scales with the fall. */
+  landing(heavy: number, wetness: number): void {
+    soundManager.playLanding(this.surface, Math.min(0.9, 0.42 + heavy * 0.5));
+    if (wetness > 0.3 && this.surface !== 'snow' && this.surface !== 'sand') {
+      soundManager.playLanding('wet', Math.min(0.7, 0.3 + heavy * 0.4) * wetness);
+    }
+  }
+
+  /**
+   * A robot's foot plants at (x, y, z). Rate-limited across the whole swarm
+   * (~10 steps/s) so a pack reads as marching, not static.
+   */
+  enemyStep(x: number, y: number, z: number, camX: number, camZ: number, heavy: boolean, light: boolean): void {
+    if (this.enemyStepBudget <= 0) return;
+    const dx = x - camX, dz = z - camZ;
+    const d2 = dx * dx + dz * dz;
+    if (d2 > 34 * 34) return;
+    this.enemyStepBudget -= 1;
+    const vol = heavy ? 0.62 : light ? 0.24 : 0.36;
+    soundManager.playRobotStep(x, y, z, heavy, vol, heavy ? 0.85 : light ? 1.25 : 1);
   }
 
   /** Brushing through grass while moving at `speed` (u/s). */

@@ -3,16 +3,21 @@ import {
   Heart, Skull, Waves, Lock,
   Zap, Shield as ShieldIcon, Wind, Ghost, Footprints,
   Swords, Infinity as InfinityIcon, Boxes, PackageSearch, Bomb,
-  Snowflake, Bolt, RadioTower, type LucideIcon,
+  Snowflake, Bolt, RadioTower, Radio, Hand, type LucideIcon,
 } from 'lucide-react';
+import { m } from 'motion/react';
+import { THROWABLE_KINDS, type ThrowableKind } from '../utils/Throwables';
+import { LEFT_HAND_TAG, type LeftHandGear } from '../utils/LeftHand';
+import { GRENADE_HUD } from './throwableHud';
 import { WEAPONS } from '../types/game';
 import { getAbilityIcon } from './abilityIcons';
 
 /** One slot's live state for the HUD ability bar. */
 export interface AbilityHudItem {
   key: string;        // keybind label, e.g. 'Q'
-  /** 'dash' = always-available cooldown ability; 'power' = looted power slot. */
-  kind: 'dash' | 'power';
+  /** 'dash' = always-available cooldown ability; 'power' = looted power slot;
+   *  'grenade' = the grenade pouch (selected kind + counts). */
+  kind: 'dash' | 'power' | 'grenade';
   name: string;       // label shown under the slot
   // ── dash / character ability ──
   abilityId?: string; // selects the slot's icon (dash, firestorm, cloak, …)
@@ -34,7 +39,23 @@ export interface AbilityHudItem {
   ratio?: number;     // 0..1 absorb bar (shield while active)
   /** Inside an ARK-07 interference field the trigger is dead — say so. */
   jammed?: boolean;
+  // ── grenade slot ──
+  grenadeKind?: GrenadeHudKind;
+  /** Grenades of the selected kind left. */
+  count?: number;
+  /** Every kind's count (the mini pips under the slot). */
+  counts?: Record<GrenadeHudKind, number>;
+  /** Keybind label of the switch-grenade key. */
+  cycleKey?: string;
+  /** Persistent gear holding the left hand (the throw is refused while set). */
+  handLock?: LeftHandGear | null;
+  /** A throw pressed during a transient beat is waiting for the hand. */
+  throwQueued?: boolean;
+  /** Bumped on every refused throw — replays the slot's "no" shake. */
+  denyNonce?: number;
 }
+
+export type GrenadeHudKind = ThrowableKind;
 
 /** Unique icon per looted power — no more duplicate lightning bolts. */
 const POWER_ICONS: Record<string, LucideIcon> = {
@@ -533,9 +554,122 @@ const HUD = ({
   );
 };
 
-/** Routes to the character-ability or looted-power renderer. */
+/** Routes to the character-ability, looted-power or grenade renderer. */
 const AbilitySlot = ({ ability }: { ability: AbilityHudItem }) =>
-  ability.kind === 'dash' ? <DashSlot ability={ability} /> : <PowerSlot ability={ability} />;
+  ability.kind === 'dash' ? <DashSlot ability={ability} />
+    : ability.kind === 'grenade' ? <GrenadeSlot ability={ability} />
+      : <PowerSlot ability={ability} />;
+
+/**
+ * The grenade pouch: the selected kind's icon with its count, and a pip per
+ * kind underneath so the player knows what the switch key will cycle to.
+ */
+/** Which icon says what's in the left hand. */
+const HAND_GEAR_ICON: Partial<Record<LeftHandGear, LucideIcon>> = { shield: ShieldIcon, detonator: Radio };
+
+const GrenadeSlot = ({ ability }: { ability: AbilityHudItem }) => {
+  const kind = ability.grenadeKind ?? 'frag';
+  const meta = GRENADE_HUD[kind];
+  const count = ability.count ?? 0;
+  const empty = count <= 0;
+  const Icon = meta.icon;
+  // LEFT HAND: persistent gear greys the slot out with the gear's own badge;
+  // a queued throw pulses; a refused press shakes it (Motion, transform only).
+  const lock = ability.handLock ?? null;
+  const queued = !!ability.throwQueued && !lock;
+  const nonce = ability.denyNonce ?? 0;
+  const LockIcon = lock ? (HAND_GEAR_ICON[lock] ?? Hand) : null;
+  const tone = empty ? '#5f6a66' : lock ? '#7f8a86' : meta.color;
+  return (
+    <div className="flex flex-col items-center gap-1.5">
+      <m.div
+        key={`deny-${nonce}`}
+        className="relative"
+        animate={{ x: nonce ? [0, -7, 7, -5, 5, -2, 0] : 0 }}
+        transition={{ duration: 0.42, ease: 'easeOut' }}
+      >
+        <SlotFrame
+          w={52}
+          h={52}
+          cut={9}
+          stroke={lock ? `${C_WARN}99` : empty ? 'rgba(214,228,220,0.14)' : `${meta.color}a8`}
+          fill={lock ? 'rgba(5,9,8,0.62)' : empty ? 'rgba(5,9,8,0.48)' : `${meta.color}1c`}
+        >
+          <div className="flex h-full w-full items-center justify-center" style={{ opacity: lock ? 0.42 : 1 }}>
+            <Icon className="h-[21px] w-[21px]" style={{ color: tone }} strokeWidth={2.2} />
+          </div>
+          {/* The count pops whenever it changes (a pickup or a throw). */}
+          <m.span
+            key={`n-${count}`}
+            className="hud-num absolute bottom-[3px] right-[5px] text-[13px] leading-none"
+            style={{ color: empty ? C_DANGER : 'var(--hud-ink)' }}
+            initial={{ scale: 1.8, opacity: 0.35 }}
+            animate={{ scale: 1, opacity: 1 }}
+            transition={{ type: 'spring', stiffness: 520, damping: 17 }}
+          >
+            {count}
+          </m.span>
+          {LockIcon && (
+            <m.span
+              className="absolute left-[4px] top-[4px] flex h-[17px] w-[17px] items-center justify-center"
+              style={{ borderRadius: pr(4), background: 'rgba(10,8,4,0.85)', border: `1px solid ${C_WARN}aa` }}
+              initial={{ scale: 0.3, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              transition={{ type: 'spring', stiffness: 600, damping: 20 }}
+            >
+              <LockIcon className="h-[11px] w-[11px]" style={{ color: C_WARN }} strokeWidth={2.4} />
+            </m.span>
+          )}
+          {queued && (
+            <m.span
+              className="pointer-events-none absolute inset-0"
+              style={{ boxShadow: `inset 0 0 0 2px ${meta.color}` }}
+              initial={{ opacity: 0.2 }}
+              animate={{ opacity: [0.25, 1, 0.25] }}
+              transition={{ duration: 0.55, repeat: Infinity, ease: 'easeInOut' }}
+            />
+          )}
+        </SlotFrame>
+        <KeyChip label={ability.key} color={tone} border={lock ? `${C_WARN}88` : empty ? 'rgba(214,228,220,0.18)' : `${meta.color}88`} />
+      </m.div>
+      <div className="flex items-center gap-[3px]">
+        {/* Pips for every carried kind (+ the selected one even when empty). */}
+        {THROWABLE_KINDS.filter((k) => k === kind || (ability.counts?.[k] ?? 0) > 0).map((k) => {
+          const n = ability.counts?.[k] ?? 0;
+          const sel = k === kind;
+          return (
+            <span
+              key={k}
+              className="hud-num flex h-[11px] min-w-[15px] items-center justify-center px-[2px] text-[8.5px] leading-none"
+              style={{
+                borderRadius: pr(3),
+                background: sel ? `${GRENADE_HUD[k].color}33` : 'rgba(5,9,8,0.55)',
+                border: `1px solid ${sel ? GRENADE_HUD[k].color : 'rgba(214,228,220,0.14)'}`,
+                color: n > 0 ? GRENADE_HUD[k].color : 'var(--hud-faint)',
+              }}
+              title={`${GRENADE_HUD[k].label} ×${n}`}
+            >
+              {n}
+            </span>
+          );
+        })}
+      </div>
+      {lock ? (
+        <span className="hud-label" style={{ fontSize: 8.5, letterSpacing: '0.18em', color: C_WARN }}>
+          Hand · {LEFT_HAND_TAG[lock]}
+        </span>
+      ) : queued ? (
+        <span className="hud-label" style={{ fontSize: 8.5, letterSpacing: '0.2em', color: meta.color }}>
+          Queued
+        </span>
+      ) : (
+        <span className="hud-label" style={{ fontSize: 8.5, letterSpacing: '0.2em', color: empty ? 'var(--hud-faint)' : tone }}>
+          {meta.label}{ability.cycleKey ? <span className="ml-1 text-[color:var(--hud-faint)]">· {ability.cycleKey}</span> : null}
+        </span>
+      )}
+    </div>
+  );
+};
 
 /** Keybind chip shared by both slot kinds. */
 const KeyChip = ({ label, color, border }: { label: string; color: string; border: string }) => (

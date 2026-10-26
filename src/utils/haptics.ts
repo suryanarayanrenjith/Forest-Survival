@@ -25,7 +25,8 @@ export type HapticKind =
   | 'dash'      // dash / ability used
   | 'hurt'      // player took damage
   | 'kill'      // enemy killed
-  | 'heavy';    // explosion / big impact
+  | 'heavy'     // explosion / big impact
+  | 'deny';     // an action refused (e.g. left hand busy)
 
 // Durations in ms (single number) or on/off pattern arrays.
 const PATTERNS: Record<HapticKind, number | number[]> = {
@@ -38,6 +39,7 @@ const PATTERNS: Record<HapticKind, number | number[]> = {
   hurt: [0, 24, 32, 24],
   kill: [0, 11, 14, 20],
   heavy: 30,
+  deny: [0, 7, 40, 7],
 };
 
 // Cached so firing (up to ~18×/s) never touches localStorage.

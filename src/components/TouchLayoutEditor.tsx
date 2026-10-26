@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Crosshair, ChevronsUp, ChevronsRight, ChevronsDown, RotateCw, Swords, Pause,
   PackageSearch, Move, RotateCcw, Gamepad2, Maximize2, Eye, Hand, Wand2, Magnet,
-  FlipHorizontal2,
+  FlipHorizontal2, Bomb,
   type LucideIcon,
 } from 'lucide-react';
 import {
@@ -25,6 +25,7 @@ const CHIP_META: Record<TouchControlId, { label: string; icon: LucideIcon; accen
   reload: { label: 'Reload', icon: RotateCw, accent: 'amber', shape: 'square' },
   crouch: { label: 'Crouch', icon: ChevronsDown, accent: 'slate', shape: 'square' },
   power: { label: 'Power', icon: PackageSearch, accent: 'slate', shape: 'square' },
+  grenade: { label: 'Grenade', icon: Bomb, accent: 'amber', shape: 'square' },
   weapon: { label: 'Weapon', icon: Crosshair, accent: 'emerald', shape: 'pill' },
   pause: { label: 'Pause', icon: Pause, accent: 'slate', shape: 'square' },
 };
@@ -118,7 +119,7 @@ function autoArrangeLayout(scale: number, aspect: number, deviceW: number): Posi
     weapon: { x: 0.80, y: 0.10 },
     pause: { x: 0.935, y: 0.10 },
   } as Positions;
-  const arc: TouchControlId[] = ['reload', 'ability', 'melee', 'crouch', 'jump', 'power'];
+  const arc: TouchControlId[] = ['reload', 'ability', 'melee', 'grenade', 'crouch', 'jump', 'power'];
   const fx = fireX * deviceW, fy = fireY * deviceH;
   const stepDeg = 20;
   // Equal centre-to-centre spacing → the radius that makes the chord that wide.

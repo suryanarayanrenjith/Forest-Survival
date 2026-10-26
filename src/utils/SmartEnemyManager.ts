@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { type GraphicsPreset } from './GameSettingsManager';
 import { applyRobotSurface } from './RobotSurface';
 
@@ -33,9 +34,15 @@ export interface AcquiredMesh {
   // swing from the shoulder. Typed Object3D since they're Groups, not Meshes.
   leftArm: THREE.Object3D;
   rightArm: THREE.Object3D;
-  leftLeg: THREE.Mesh;
-  rightLeg: THREE.Mesh;
+  // Legs are HIP-pivot groups (thigh inside) with a KNEE pivot (shin + foot
+  // inside), so the gait swings from the hip and the knee really bends.
+  leftLeg: THREE.Object3D;
+  rightLeg: THREE.Object3D;
+  leftKnee?: THREE.Object3D;
+  rightKnee?: THREE.Object3D;
   head: THREE.Mesh;
+  /** The visor eye-bar (HIGH LOD) — App powers it down on death. */
+  eye?: THREE.Mesh;
   /** Shooter archetypes only — bore anchor at the tip of the energy lance.
    *  Undefined for every melee archetype. */
   muzzle?: THREE.Object3D;
@@ -243,7 +250,8 @@ export const ENEMY_SPAWN_CLEARANCE: Record<EnemyType, number> = {
 interface SharedGeometries {
   bodyHigh: THREE.BoxGeometry;
   armHigh: THREE.BoxGeometry;
-  legHigh: THREE.BoxGeometry;
+  thighHigh: THREE.BoxGeometry;
+  shinHigh: THREE.BoxGeometry;
   headHigh: THREE.BoxGeometry;
   eyeHigh: THREE.BoxGeometry;
   // High-detail accent pieces (premium low-poly silhouette)
@@ -282,6 +290,19 @@ interface SharedGeometries {
   // head's dark set so it costs no extra draw.
   antennaHigh: THREE.BoxGeometry;
   jetVentHigh: THREE.BoxGeometry;    // back panel (glow vent)
+  // ── MECHANICAL DETAIL (2026-10) ──────────────────────────────────────
+  // Joint drums at hips / knees-ankles / shoulders, hydraulic pistons
+  // (sleeve + rod) behind the legs and down the forearms, a neck collar,
+  // back cable runs and side sensor pods. All merged into the existing dark
+  // meshes of the part they ride on: more machine, same draw count.
+  jointHigh: THREE.CylinderGeometry;
+  jointSmallHigh: THREE.CylinderGeometry;
+  pistonSleeveHigh: THREE.CylinderGeometry;
+  pistonRodHigh: THREE.CylinderGeometry;
+  neckHigh: THREE.CylinderGeometry;
+  cableHigh: THREE.CylinderGeometry;
+  earHigh: THREE.CylinderGeometry;
+  jawHigh: THREE.BoxGeometry;
   // ── ENEMY ENERGY LANCE ───────────────────────────────────────────────
   // The shooter archetypes used to carry TWO boxes — a 0.18×0.22×0.46 stock
   // and a 0.08×0.08×1.4 stick — which is why the thing in their hands read as
@@ -322,8 +343,10 @@ interface PooledEnemyMesh {
     body?: THREE.Mesh;
     leftArm?: THREE.Object3D;   // shoulder-pivot group
     rightArm?: THREE.Object3D;  // shoulder-pivot group
-    leftLeg?: THREE.Mesh;
-    rightLeg?: THREE.Mesh;
+    leftLeg?: THREE.Object3D;   // hip-pivot group
+    rightLeg?: THREE.Object3D;  // hip-pivot group
+    leftKnee?: THREE.Object3D;  // knee-pivot group
+    rightKnee?: THREE.Object3D; // knee-pivot group
     head?: THREE.Mesh;
     leftEye?: THREE.Mesh;
     rightEye?: THREE.Mesh;
@@ -409,6 +432,12 @@ class SmartEnemyManager {
   private maxPoolSize: number = 50;
 
   private activeEnemies: Set<PooledEnemyMesh> = new Set();
+  /**
+   * Slots holding a CORPSE (death ragdoll still playing). They keep their mesh
+   * until App releases them, but no longer count against the living cap — a
+   * robot lying dead for a few seconds must never throttle the next spawn.
+   */
+  private corpses: Set<PooledEnemyMesh> = new Set();
 
   private metrics: PerformanceMetrics = {
     frameCount: 0,
@@ -454,7 +483,8 @@ class SmartEnemyManager {
 
     this.baseMaxEnemies = graphicsPreset.maxEnemies;
     this.currentMaxEnemies = this.baseMaxEnemies;
-    this.maxPoolSize = Math.ceil(this.baseMaxEnemies * 1.5); // Pool 50% extra for smooth spawning
+    // Living cap + room for the corpses still playing their death fall.
+    this.maxPoolSize = Math.ceil(this.baseMaxEnemies * 2);
 
     this.createSharedGeometries();
     this.createSharedMaterials();
@@ -534,20 +564,26 @@ class SmartEnemyManager {
   }
 
   private createSharedGeometries(): void {
+    // Armour plates are ROUNDED boxes (bevelled edges catch a rim of light —
+    // the single biggest step from "blocks" to "machined armour"); the large
+    // plates get two bevel segments, the small ones one. Same UV layout as a
+    // box, so the RobotSurface panel maps land exactly as before.
+    const rb = (w: number, h: number, d: number, r: number, seg = 1) => new RoundedBoxGeometry(w, h, d, seg, r);
     this.sharedGeometries = {
-      bodyHigh: new THREE.BoxGeometry(1, 1.5, 0.6),
-      armHigh: new THREE.BoxGeometry(0.3, 1.2, 0.3),
-      legHigh: new THREE.BoxGeometry(0.35, 1, 0.35),
-      headHigh: new THREE.BoxGeometry(0.8, 0.8, 0.8),
+      bodyHigh: rb(1, 1.5, 0.6, 0.09, 2),
+      armHigh: rb(0.3, 1.2, 0.3, 0.06),
+      thighHigh: rb(0.35, 0.52, 0.35, 0.06),
+      shinHigh: rb(0.31, 0.5, 0.31, 0.055),
+      headHigh: rb(0.8, 0.8, 0.8, 0.1, 2),
       eyeHigh: new THREE.BoxGeometry(0.52, 0.1, 0.06),
-      chestHigh: new THREE.BoxGeometry(0.74, 0.78, 0.16),
+      chestHigh: rb(0.74, 0.78, 0.16, 0.05),
       coreHigh: new THREE.OctahedronGeometry(0.16, 0),
-      shoulderHigh: new THREE.BoxGeometry(0.42, 0.34, 0.5),
-      visorHigh: new THREE.BoxGeometry(0.72, 0.26, 0.14),
-      footHigh: new THREE.BoxGeometry(0.42, 0.2, 0.56),
+      shoulderHigh: rb(0.42, 0.34, 0.5, 0.07),
+      visorHigh: rb(0.72, 0.26, 0.14, 0.04),
+      footHigh: rb(0.42, 0.2, 0.56, 0.05),
       handHigh: new THREE.BoxGeometry(0.34, 0.34, 0.34),
       // Articulated claw: a slimmer palm block, then jointed finger segments.
-      palmHigh: new THREE.BoxGeometry(0.32, 0.2, 0.3),
+      palmHigh: rb(0.32, 0.2, 0.3, 0.04),
       clawProxHigh: new THREE.BoxGeometry(0.075, 0.16, 0.085),
       clawDistHigh: new THREE.BoxGeometry(0.065, 0.14, 0.075),
       clawKnuckleHigh: new THREE.BoxGeometry(0.3, 0.06, 0.1),
@@ -558,12 +594,20 @@ class SmartEnemyManager {
       crestBladeHigh: new THREE.BoxGeometry(0.13, 0.34, 0.40),
       crestTipHigh:   new THREE.BoxGeometry(0.085, 0.24, 0.24),
       hornHigh:       new THREE.BoxGeometry(0.075, 0.30, 0.13),
-      hipHigh: new THREE.BoxGeometry(0.92, 0.4, 0.56),
+      hipHigh: rb(0.92, 0.4, 0.56, 0.07),
       beltHigh:      new THREE.BoxGeometry(1.06, 0.12, 0.62),
-      kneePadHigh:   new THREE.BoxGeometry(0.42, 0.18, 0.42),
-      elbowPadHigh:  new THREE.BoxGeometry(0.36, 0.16, 0.36),
+      kneePadHigh:   rb(0.42, 0.18, 0.42, 0.05),
+      elbowPadHigh:  rb(0.36, 0.16, 0.36, 0.05),
       antennaHigh:   new THREE.BoxGeometry(0.045, 0.46, 0.045),
-      jetVentHigh:   new THREE.BoxGeometry(0.62, 0.6, 0.14),
+      jetVentHigh:   rb(0.62, 0.6, 0.14, 0.04),
+      jointHigh:       new THREE.CylinderGeometry(0.13, 0.13, 0.4, 12),
+      jointSmallHigh:  new THREE.CylinderGeometry(0.09, 0.09, 0.38, 10),
+      pistonSleeveHigh: new THREE.CylinderGeometry(0.055, 0.055, 0.3, 8),
+      pistonRodHigh:   new THREE.CylinderGeometry(0.028, 0.028, 0.42, 6),
+      neckHigh:        new THREE.CylinderGeometry(0.19, 0.24, 0.26, 12),
+      cableHigh:       new THREE.CylinderGeometry(0.034, 0.034, 0.62, 6),
+      earHigh:         new THREE.CylinderGeometry(0.12, 0.12, 0.08, 12),
+      jawHigh:         rb(0.5, 0.14, 0.12, 0.03),
       // Energy lance. Authored on their natural axes; the merge below rotates
       // the cylinders/tori down the +Z bore.
       wpnReceiver:   new THREE.BoxGeometry(0.15, 0.20, 0.68),
@@ -954,6 +998,11 @@ class SmartEnemyManager {
     const bodyDark = new THREE.Mesh(this.mergedGeo('body_dark', [
       { geo: G.hipHigh, pos: [0, -0.8, 0] },
       { geo: G.jetVentHigh, pos: [0, 0.05, -0.36] },
+      // Neck collar the head turns in, and cable runs from the back vent up
+      // into the shoulder actuators.
+      { geo: G.neckHigh, pos: [0, 0.84, 0] },
+      { geo: G.cableHigh, rotZ: 0.62, pos: [-0.34, 0.5, -0.33] },
+      { geo: G.cableHigh, rotZ: -0.62, pos: [0.34, 0.5, -0.33] },
     ]), darkMat);
     bodyDark.castShadow = shadows;
     body.add(bodyDark);
@@ -978,6 +1027,10 @@ class SmartEnemyManager {
       { geo: G.palmHigh, pos: [0, -0.62, 0] },
       { geo: G.clawKnuckleHigh, pos: [0, -0.7, 0.08] },
       { geo: G.elbowPadHigh, pos: [0, -0.10, 0] },
+      // Shoulder actuator drum + a forearm hydraulic (sleeve over rod).
+      { geo: G.jointHigh, rotZ: Math.PI / 2, pos: [0, 0.54, 0] },
+      { geo: G.pistonSleeveHigh, pos: [0, -0.24, 0.17] },
+      { geo: G.pistonRodHigh, pos: [0, -0.44, 0.17] },
     ]);
     // Finger pair (front of the palm) and thumb (back), authored in their
     // knuckle pivot's space so a single rotation.x curls the whole digit.
@@ -1095,24 +1148,49 @@ class SmartEnemyManager {
       pooledEnemy.parts.muzzleGlow = emitter;
     }
 
-    // ── Legs (foot + knee pad merged into one dark mesh per leg) ──
-    const legDarkGeo = this.mergedGeo('leg_dark', [
-      { geo: G.footHigh, pos: [0, -0.56, 0.12] },
-      { geo: G.kneePadHigh, pos: [0, -0.05, 0.06] },
+    // ── Legs: HIP pivot → thigh, KNEE pivot → shin + foot ──
+    // Each leg used to be one rigid block pivoting about its own middle, so a
+    // stride slid the foot fore-and-aft like a pendulum and the knee never
+    // bent. Now the thigh swings from a real hip joint and the shin hangs from
+    // a knee pivot, so the gait lifts and plants the foot. Same silhouette at
+    // rest (the two halves meet exactly where the old leg's middle was), same
+    // materials, same fittings — split between the two segments they belong to.
+    const thighDarkGeo = this.mergedGeo('thigh_dark', [
+      { geo: G.jointHigh, rotZ: Math.PI / 2, pos: [0, 0.23, 0] },        // hip drum
+      { geo: G.pistonSleeveHigh, rotX: 0.08, pos: [0, -0.08, -0.2] },    // thigh hydraulic
     ]);
-    const leftLeg = new THREE.Mesh(G.legHigh, accentMat);
-    leftLeg.castShadow = shadows;
-    leftLeg.position.set(-0.25, -0.5, 0);
-    highGroup.add(leftLeg);
-    pooledEnemy.parts.leftLeg = leftLeg;
-    leftLeg.add(new THREE.Mesh(legDarkGeo, darkMat));
-
-    const rightLeg = new THREE.Mesh(G.legHigh, accentMat);
-    rightLeg.castShadow = shadows;
-    rightLeg.position.set(0.25, -0.5, 0);
-    highGroup.add(rightLeg);
-    pooledEnemy.parts.rightLeg = rightLeg;
-    rightLeg.add(new THREE.Mesh(legDarkGeo, darkMat));
+    const shinDarkGeo = this.mergedGeo('shin_dark', [
+      { geo: G.kneePadHigh, pos: [0, 0.2, 0.06] },
+      { geo: G.jointSmallHigh, rotZ: Math.PI / 2, pos: [0, 0.25, 0] },  // knee drum
+      { geo: G.jointSmallHigh, rotZ: Math.PI / 2, pos: [0, -0.18, 0] }, // ankle drum
+      { geo: G.footHigh, pos: [0, -0.31, 0.12] },
+      { geo: G.pistonRodHigh, rotX: 0.08, pos: [0, 0.09, -0.21] },       // calf rod
+    ]);
+    const makeLeg = (side: -1 | 1): { hip: THREE.Group; knee: THREE.Group } => {
+      const hip = new THREE.Group();
+      hip.position.set(side * 0.25, 0, 0);
+      highGroup.add(hip);
+      const thigh = new THREE.Mesh(G.thighHigh, accentMat);
+      thigh.castShadow = shadows;
+      thigh.position.set(0, -0.26, 0);
+      thigh.add(new THREE.Mesh(thighDarkGeo, darkMat));
+      hip.add(thigh);
+      const knee = new THREE.Group();
+      knee.position.set(0, -0.5, 0);
+      hip.add(knee);
+      const shin = new THREE.Mesh(G.shinHigh, accentMat);
+      shin.castShadow = shadows;
+      shin.position.set(0, -0.25, 0);
+      shin.add(new THREE.Mesh(shinDarkGeo, darkMat));
+      knee.add(shin);
+      return { hip, knee };
+    };
+    const leftLegRig = makeLeg(-1);
+    const rightLegRig = makeLeg(1);
+    pooledEnemy.parts.leftLeg = leftLegRig.hip;
+    pooledEnemy.parts.rightLeg = rightLegRig.hip;
+    pooledEnemy.parts.leftKnee = leftLegRig.knee;
+    pooledEnemy.parts.rightKnee = rightLegRig.knee;
 
     // ── Head ──────────────────────────────────────────────────────────────
     // Skull + a three-stage swept dorsal CREST, merged into one bright mesh.
@@ -1135,6 +1213,10 @@ class SmartEnemyManager {
     const visor = new THREE.Mesh(this.mergedGeo('head_dark', [
       { geo: G.visorHigh, pos: [0, -0.02, 0.34] },
       { geo: G.antennaHigh, rotZ: 0.16, pos: [0.28, 0.62, -0.14] },
+      // Audio/sensor pods either side and a jaw plate under the visor.
+      { geo: G.earHigh, rotZ: Math.PI / 2, pos: [-0.43, 0.02, -0.02] },
+      { geo: G.earHigh, rotZ: Math.PI / 2, pos: [0.43, 0.02, -0.02] },
+      { geo: G.jawHigh, pos: [0, -0.34, 0.33] },
     ]), darkMat);
     head.add(visor);
     const eyeBar = new THREE.Mesh(G.eyeHigh, glowMat);
@@ -1257,6 +1339,10 @@ class SmartEnemyManager {
       pooledEnemy.parts.rightLeg.rotation.set(0, 0, 0);
       pooledEnemy.parts.rightLeg.scale.set(1, 1, 1);
     }
+    pooledEnemy.parts.leftKnee?.rotation.set(0, 0, 0);
+    pooledEnemy.parts.rightKnee?.rotation.set(0, 0, 0);
+    // A death sequence switches the visor off — hand the next robot its eyes.
+    if (pooledEnemy.parts.leftEye) pooledEnemy.parts.leftEye.visible = true;
     if (pooledEnemy.parts.body) {
       pooledEnemy.parts.body.scale.set(1, 1, 1);
       pooledEnemy.parts.body.rotation.set(0, 0, 0);
@@ -1304,6 +1390,27 @@ class SmartEnemyManager {
 
     // Remove from active set
     this.activeEnemies.delete(pooledEnemy);
+    this.corpses.delete(pooledEnemy);
+  }
+
+  /** Dev: a pooled slot's state (LOD, visibility, set membership). */
+  debugSlot(poolId: number): Record<string, unknown> | null {
+    const e = this.enemyPool[poolId];
+    if (!e) return null;
+    return {
+      inUse: e.inUse, lod: e.currentLOD, groupVis: e.group.visible, highVis: e.lodGroups.high.visible,
+      active: this.activeEnemies.has(e), corpse: this.corpses.has(e),
+      pos: [+e.group.position.x.toFixed(1), +e.group.position.y.toFixed(2), +e.group.position.z.toFixed(1)],
+      inScene: !!e.group.parent,
+    };
+  }
+
+  /** The robot in this slot died: its mesh stays out, but it stops counting as alive. */
+  markCorpse(poolId: number): void {
+    const pooledEnemy = this.enemyPool[poolId];
+    if (!pooledEnemy || !this.activeEnemies.has(pooledEnemy)) return;
+    this.activeEnemies.delete(pooledEnemy);
+    this.corpses.add(pooledEnemy);
   }
 
   /**
@@ -1489,6 +1596,9 @@ class SmartEnemyManager {
       for (const enemy of this.activeEnemies) {
         this.updateEnemyLOD(enemy);
       }
+      for (const enemy of this.corpses) {
+        this.updateEnemyLOD(enemy);
+      }
       this.lastLODUpdateTime = now;
     }
   }
@@ -1555,6 +1665,9 @@ class SmartEnemyManager {
       rightArm: pooledEnemy.parts.rightArm!,
       leftLeg: pooledEnemy.parts.leftLeg!,
       rightLeg: pooledEnemy.parts.rightLeg!,
+      leftKnee: pooledEnemy.parts.leftKnee,
+      rightKnee: pooledEnemy.parts.rightKnee,
+      eye: pooledEnemy.parts.leftEye,
       head: pooledEnemy.parts.head!,
       muzzle: pooledEnemy.parts.muzzle,
       muzzleGlow: pooledEnemy.parts.muzzleGlow,
@@ -1611,6 +1724,7 @@ class SmartEnemyManager {
     // Clear collections
     this.enemyPool = [];
     this.activeEnemies.clear();
+    this.corpses.clear();
     this.poolSize = 0;
 
     // Dispose shared geometries

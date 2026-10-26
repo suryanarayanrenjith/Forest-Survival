@@ -339,8 +339,87 @@ export function irradiatedCoreMaterials(): THREE.Material[] {
   return radAssets ? [radAssets.body, radAssets.rib, radAssets.glow, radAssets.halo] : [];
 }
 
-/** Free the shared irradiated-core assets. Scene teardown only. */
+// ═══ BARREL DEBRIS ═════════════════════════════════════════════════════
+//
+// A drum that goes off comes APART: bent staves, the lid and a torn rib fly
+// as rigid bodies (App launches them through RigidDebris). Shared, lazily
+// built, and drawn with plain MeshStandardMaterials of the same shape as the
+// intact barrel's — so they reuse the barrel's shader program and need no
+// extra warmup.
+
+interface BarrelDebrisAssets {
+  stave: THREE.BufferGeometry;
+  lid: THREE.BufferGeometry;
+  rib: THREE.BufferGeometry;
+  shell: THREE.MeshStandardMaterial;
+}
+let debrisAssets: BarrelDebrisAssets | null = null;
+
+/** A plate with real thickness, bent around the drum's radius (closed, front-faced). */
+function bentPlate(width: number, height: number, thick: number, radius: number, segs: number): THREE.BufferGeometry {
+  const g = new THREE.BoxGeometry(width, height, thick, segs, 1, 1);
+  const pos = g.getAttribute('position') as THREE.BufferAttribute;
+  for (let i = 0; i < pos.count; i++) {
+    const a = pos.getX(i) / radius;
+    const r = radius + pos.getZ(i);
+    pos.setXYZ(i, Math.sin(a) * r, pos.getY(i), Math.cos(a) * r - radius);
+  }
+  g.computeVertexNormals();
+  return g;
+}
+
+/**
+ * Fresh meshes for one blown-apart drum, each already placed around the
+ * barrel's centre (position + rotation are LOCAL to that centre) with
+ * `userData.dir` = its outward direction. Geometry + materials are shared:
+ * the caller only removes the meshes from the scene, never disposes them.
+ */
+export function buildBarrelDebris(): THREE.Mesh[] {
+  if (!debrisAssets) {
+    debrisAssets = {
+      stave: bentPlate(0.62, 0.62, 0.05, 0.55, 4),
+      lid: new THREE.CylinderGeometry(0.52, 0.52, 0.05, 12),
+      rib: new THREE.TorusGeometry(0.56, 0.06, 6, 8, Math.PI * 0.7),
+      // Scorched paint: same material shape as BARREL_MATERIAL (same program).
+      shell: new THREE.MeshStandardMaterial({
+        color: 0x5c1a13, emissive: 0x2c0803, emissiveIntensity: 0.9, roughness: 0.72, metalness: 0.55,
+      }),
+    };
+  }
+  const a = debrisAssets;
+  const out: THREE.Mesh[] = [];
+  const staves = 4;
+  const phase = Math.random() * Math.PI * 2;
+  for (let i = 0; i < staves; i++) {
+    const th = phase + (i / staves) * Math.PI * 2;
+    const m = new THREE.Mesh(a.stave, a.shell);
+    m.position.set(Math.sin(th) * 0.55, (i % 2 ? 0.25 : -0.2), Math.cos(th) * 0.55);
+    m.rotation.y = th;
+    m.userData.dir = new THREE.Vector3(Math.sin(th), 0, Math.cos(th));
+    out.push(m);
+  }
+  const lid = new THREE.Mesh(a.lid, a.shell);
+  lid.position.set(0, 0.66, 0);
+  lid.userData.dir = new THREE.Vector3(0, 1, 0);
+  out.push(lid);
+  const rib = new THREE.Mesh(a.rib, RIB_MATERIAL);
+  rib.position.set(0, -0.4, 0);
+  rib.rotation.x = Math.PI / 2;
+  rib.userData.dir = new THREE.Vector3(Math.sin(phase + 0.8), 0, Math.cos(phase + 0.8));
+  out.push(rib);
+  for (const m of out) { m.castShadow = true; m.receiveShadow = true; }
+  return out;
+}
+
+/** Free the shared irradiated-core + debris assets. Scene teardown only. */
 export function disposeHazardAssets(): void {
+  if (debrisAssets) {
+    debrisAssets.stave.dispose();
+    debrisAssets.lid.dispose();
+    debrisAssets.rib.dispose();
+    debrisAssets.shell.dispose();
+    debrisAssets = null;
+  }
   if (!radAssets) return;
   radAssets.body.map?.dispose();
   radAssets.body.roughnessMap?.dispose();

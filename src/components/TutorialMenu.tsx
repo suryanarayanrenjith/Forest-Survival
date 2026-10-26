@@ -115,7 +115,7 @@ const TutorialMenu = ({ onStartTutorial, onBack, selectedCharacter, onSelectChar
               CHOOSE YOUR MAP
             </h1>
             <p className="mt-3 text-sm text-gray-400">
-              Pick a battlefield to learn the core mechanics. All weapons and abilities are unlocked, and you can't be hurt.
+              Pick a battlefield to learn the core mechanics. All weapons, abilities and throwables are unlocked, and you can't be hurt.
             </p>
             <a
               href={WIKI_BASE}

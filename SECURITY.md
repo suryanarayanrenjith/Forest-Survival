@@ -52,8 +52,8 @@ only, because local dev serves no CSP.**
 
 ### Other CSP notes
 
-- `'wasm-unsafe-eval'` in `script-src` is **load-bearing for Rapier** (the ragdoll physics
-  WASM module). Do not remove it.
+- `'wasm-unsafe-eval'` in `script-src` is **load-bearing for Rapier** (the physics WASM
+  module behind ragdolls, throwables and debris). Do not remove it.
 - `img-src` does not allow arbitrary `https:`. Auth is username/password with **no OAuth
   provider**, so there are no external avatar hosts; `users.image` is never written by app
   code, and `UserAvatar` already falls back to initials on load error.
@@ -122,3 +122,15 @@ Notes for anyone touching the fonts:
 ## Dependencies
 
 `npm audit` is expected to report **0 vulnerabilities**. Run it before releasing.
+`package.json` can't carry comments either, so the non-obvious entries are explained here:
+
+| Entry | Why |
+|---|---|
+| `overrides.postcss-selector-parser: ^7.1.7` | Tailwind 3 (via `postcss-nested`) still asks for `^6`, and every 6.x is affected by GHSA-rj75-hqrm-r3gf / GHSA-w9m9-85wc-3x92. The only fix is 7.1.6+, whose one major change (safe insertion during iteration) Tailwind doesn't depend on — the generated CSS was verified **byte-identical** before and after. Drop the override once Tailwind is upgraded to v4. |
+| `overrides.ws`, `overrides.@auth/core` | Pin patched versions of transitive deps from `peerjs` / `@convex-dev/auth`. |
+| `lucia` (direct dependency) | `convex/auth.ts` imports `Scrypt` from it for password hashing. It used to arrive only transitively through `@convex-dev/auth`; declared explicitly (same `^3.2` range, deduped) so a future auth release that drops it can't silently break sign-in. |
+| `motion` (exact pin) | UI animation library, pinned exactly to a release that had been public for over two weeks when adopted. Bump deliberately, not via `^`. |
+| `vite`, `baseline-browser-mapping` floors | Raised to the first patched versions so a lockfile-less install can't resolve a vulnerable release. |
+
+Dependabot alerts on GitHub track the same advisory database as `npm audit`; if the two
+disagree, re-run `npm audit` against a fresh `npm install`.

@@ -23,6 +23,10 @@
 //     lens iris opens and washes a refraction sheet across the view.
 //   • brace    (Ranger)    — a hip-mounted kinetic charge unit: the free hand
 //     drops, yanks the charge lever, and the vent blows off.
+//   - grenade  (everyone)  : the hand-thrown charge. The grenade comes up in
+//     the fist, the pin is ripped out and flies clear, the arm cocks back over
+//     the shoulder (and HOLDS there while the throw key is held, so the player
+//     can aim the arc), then whips forward and releases on the 'release' beat.
 //
 // DESIGN RULES
 //  • ONE prop is built per run — the one belonging to the player's class — so a
@@ -40,6 +44,8 @@
 
 import * as THREE from 'three';
 import type { CharacterAbilityId } from './CharacterAbilityRegistry';
+import { getItemMaterial, getItemGeometry, type GrenadeKind } from './ItemAtlas';
+import { THROWABLES, type ThrowStyle, type ThrowPrep } from './Throwables';
 
 /** Which physical prop a character's signature ability is operated with. */
 export type AbilityPropKind =
@@ -48,7 +54,8 @@ export type AbilityPropKind =
   | 'medkit'     // medic    — field first-aid case
   | 'stim'       // scout    — combat auto-injector
   | 'bracer'     // phantom  — forearm cloak module
-  | 'brace';     // ranger   — hip kinetic charge unit
+  | 'brace'      // ranger   — hip kinetic charge unit
+  | 'grenade';   // anyone   — every throwable (grenades, C4, decoy, knife)
 
 /**
  * Named frames in a prop's choreography. App subscribes to these and applies
@@ -67,7 +74,9 @@ export type AbilityBeat =
   | 'close'     // case lid shut
   | 'toss'      // spent unit discarded
   | 'switch'    // cloak toggle thrown            → CLOAK
-  | 'slam';     // charge lever released          → DASH
+  | 'slam'      // charge lever released          → DASH
+  | 'pin'       // throwable armed (pin out / cap twisted / button / switch / knife flipped)
+  | 'release';  // grenade leaves the hand        → SPAWN THE PROJECTILE
 
 /** Nothing to hold for abilities whose mechanism is the weapon or the shield. */
 export function abilityPropKind(id: CharacterAbilityId): AbilityPropKind | null {
@@ -84,6 +93,38 @@ export function abilityPropKind(id: CharacterAbilityId): AbilityPropKind | null 
   }
 }
 
+/**
+ * Throw choreography landmarks per STYLE (fractions of the throwable's own
+ * animSeconds): when it's armed, where the playhead PARKS while the key is
+ * held (arm cocked, aiming), and the release frame.
+ */
+const THROW_TIMING: Record<ThrowStyle, { arm: number; hold: number; release: number }> = {
+  overhand: { arm: 0.22, hold: 0.46, release: 0.56 },
+  underhand: { arm: 0.22, hold: 0.46, release: 0.57 },
+  roll: { arm: 0.22, hold: 0.46, release: 0.59 },
+  sidearm: { arm: 0.18, hold: 0.44, release: 0.54 },
+  flick: { arm: 0.2, hold: 0.42, release: 0.49 },
+};
+export const GRENADE_RELEASE_P = THROW_TIMING.overhand.release;
+/** Viewmodel scale of the true-size ItemAtlas throwables (fits a gloved fist). */
+const GRENADE_VM_SCALE = 0.3;
+/** Seconds of the "here's what you switched to" showcase. */
+const SHOWCASE_SECONDS = 0.75;
+/**
+ * The throwing arm's off-screen shoulder (camera space) and segment lengths.
+ * The forearm is solved every frame by two-bone IK from this shoulder to the
+ * animated wrist, so however hard the throw swings the hand, the arm stays
+ * one connected limb running back out of frame — it is never a rigid stub
+ * hanging off the glove.
+ */
+const IK_SHOULDER = new THREE.Vector3(-0.4, -0.8, -0.02);
+const IK_UPPER = 0.46;
+const IK_FORE = 0.4;
+/** The elbow bends out to the left and slightly back toward the body. */
+const IK_POLE = new THREE.Vector3(-1, -0.2, 0.45).normalize();
+/** Wrist point in the hand group's own space (where the cuff sits). */
+const IK_WRIST = new THREE.Vector3(0, 0.012, 0.052);
+
 /** How long one full use choreography runs, per prop (seconds). */
 export const ABILITY_PLAY_SECONDS: Record<AbilityPropKind, number> = {
   detonator: 0.55,
@@ -92,6 +133,7 @@ export const ABILITY_PLAY_SECONDS: Record<AbilityPropKind, number> = {
   stim: 1.00,
   bracer: 0.95,
   brace: 0.70,
+  grenade: 1.0,
 };
 
 /**
@@ -106,6 +148,7 @@ export const ABILITY_PAYLOAD_DELAY: Record<AbilityPropKind, number> = {
   stim: 1.00 * 0.50,
   bracer: 0.95 * 0.32,
   brace: 0,   // a charge has to be instant — the mechanism plays alongside it
+  grenade: 1.0 * GRENADE_RELEASE_P,
 };
 
 interface Pose { x: number; y: number; z: number; rx: number; ry: number; rz: number }
@@ -136,6 +179,13 @@ const THUMB_TIP_REST = -0.25;
 
 /** The Scout's injector at rest in the fist (see buildStim for why it's upright). */
 const STIM_REST = { x: 0.030, y: 0.020, z: -0.030, rx: -1.12, rz: 0.12 };
+
+const _ikW = new THREE.Vector3();
+const _ikD = new THREE.Vector3();
+const _ikP = new THREE.Vector3();
+const _ikE = new THREE.Vector3();
+const _ikS = new THREE.Vector3();
+const _ikY = new THREE.Vector3(0, 1, 0);
 
 export class AbilityViewmodel {
   readonly kind: AbilityPropKind;
@@ -186,6 +236,24 @@ export class AbilityViewmodel {
   private ventMat: THREE.MeshBasicMaterial | null = null;
   private statusLamps: THREE.Mesh[] = [];
   private statusMats: THREE.MeshBasicMaterial[] = [];
+  // Grenade prop: one held model per kind (shown for the selected kind) + the
+  // pin that is ripped out and flies clear.
+  private grenadeHeld: THREE.Group | null = null;
+  private grenadeModels: Partial<Record<GrenadeKind, THREE.Mesh>> = {};
+  private grenadePin: THREE.Mesh | null = null;
+  private grenadeKind: GrenadeKind = 'frag';
+  private cookHold = false;
+  // The kind whose throw is playing (the selection may change mid-throw).
+  private throwKind: GrenadeKind = 'frag';
+  private showTime = -1;
+  /** Dev inspection: a frozen throw playhead (0..1), −1 = live. */
+  private frozenP = -1;
+  // IK throwing arm (grenade prop only), parented to the camera.
+  private armRoot: THREE.Group | null = null;
+  private armUpper: THREE.Mesh | null = null;
+  private armFore: THREE.Mesh | null = null;
+  private armElbow: THREE.Mesh | null = null;
+  private sleeveMat: THREE.Material | null = null;
 
   // ── Animation state ──
   private restPose: Pose;
@@ -230,6 +298,10 @@ export class AbilityViewmodel {
         this.restPose = pose(-0.34, -0.66, -0.42, 0.10, 0.22, 0.06);
         this.readyPose = pose(-0.250, -0.215, -0.395, -0.52, 0.46, 0.22);
         break;
+      case 'grenade':
+        this.restPose = pose(-0.30, -0.66, -0.40, 0.30, 0.30, 0.10);
+        this.readyPose = pose(-0.215, -0.215, -0.385, -0.22, 0.34, 0.18);
+        break;
       case 'brace':
       default:
         this.restPose = pose(-0.26, -0.74, -0.46, 0.30, 0.20, 0.00);
@@ -246,6 +318,7 @@ export class AbilityViewmodel {
       case 'stim':      this.buildStim(); break;
       case 'bracer':    this.buildBracer(); break;
       case 'brace':     this.buildBrace(); break;
+      case 'grenade':   this.buildGrenade(); break;
     }
     this.group.traverse((o) => {
       if (o instanceof THREE.Mesh) { o.castShadow = false; o.receiveShadow = false; }
@@ -327,11 +400,16 @@ export class AbilityViewmodel {
     const len = dir.length();
     const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
 
-    const forearm = this.mesh(this.reg(new THREE.CylinderGeometry(0.032, 0.046, len, 12)), sleeve, g);
-    forearm.quaternion.copy(quat);
-    forearm.position.set((wrist.x + elbow.x) / 2, (wrist.y + elbow.y) / 2, (wrist.z + elbow.z) / 2);
-    const elbowCap = this.mesh(this.reg(new THREE.SphereGeometry(0.046, 10, 8)), sleeve, g);
-    elbowCap.position.copy(elbow);
+    this.sleeveMat = sleeve;
+    // The throwing hand swings far harder than any device prop, so its arm is
+    // an IK limb (see buildIkArm) instead of a forearm welded to the glove.
+    if (this.kind !== 'grenade') {
+      const forearm = this.mesh(this.reg(new THREE.CylinderGeometry(0.032, 0.046, len, 12)), sleeve, g);
+      forearm.quaternion.copy(quat);
+      forearm.position.set((wrist.x + elbow.x) / 2, (wrist.y + elbow.y) / 2, (wrist.z + elbow.z) / 2);
+      const elbowCap = this.mesh(this.reg(new THREE.SphereGeometry(0.046, 10, 8)), sleeve, g);
+      elbowCap.position.copy(elbow);
+    }
     const cuffMesh = this.mesh(this.reg(new THREE.CylinderGeometry(0.043, 0.035, 0.044, 12)), cuff, g);
     cuffMesh.quaternion.copy(quat);
     cuffMesh.position.copy(wrist);
@@ -837,6 +915,150 @@ export class AbilityViewmodel {
       .rotation.z = Math.PI / 2;
   }
 
+  // ── PROP: THROWABLES ──────────────────────────────────────────────────────
+
+  /**
+   * One held model per throwable (only the selected one is shown) plus the pin
+   * that gets ripped out of the pinned kinds. Models come from ItemAtlas — the
+   * SAME geometry and material as the thrown object and the world pickup — so
+   * what leaves the hand is visibly the thing that was in it. Those assets are
+   * session-shared, so they are deliberately NOT registered for disposal here.
+   */
+  private buildGrenade() {
+    const held = new THREE.Group();
+    held.position.set(0.006, 0.046, -0.034);
+    held.rotation.set(-0.35, 0.4, -0.15);
+    this.group.add(held);
+    const mat = getItemMaterial();
+    for (const k of Object.keys(THROWABLES) as GrenadeKind[]) {
+      const m = new THREE.Mesh(getItemGeometry(`grenade_${k}`), mat);
+      m.scale.setScalar(GRENADE_VM_SCALE);
+      m.visible = k === this.grenadeKind;
+      held.add(m);
+      this.grenadeModels[k] = m;
+    }
+    const pin = new THREE.Mesh(getItemGeometry('grenade_pin'), mat);
+    pin.scale.setScalar(GRENADE_VM_SCALE);
+    pin.position.set(-0.012, 0.05, 0.016);
+    held.add(pin);
+    this.grenadePin = pin;
+    this.grenadeHeld = held;
+    this.buildIkArm();
+  }
+
+  /** Upper arm + elbow + forearm, re-solved every frame (see IK_SHOULDER). */
+  private buildIkArm() {
+    const root = new THREE.Group();
+    root.renderOrder = 6;
+    const sleeve = this.sleeveMat ?? this.std(0x2b2e26, 0.12, 0.84);
+    // Tapered like a real sleeved arm: thick at the shoulder, slim at the cuff.
+    const upper = new THREE.Mesh(this.reg(new THREE.CylinderGeometry(0.038, 0.047, 1, 14).translate(0, 0.5, 0)), sleeve);
+    const fore = new THREE.Mesh(this.reg(new THREE.CylinderGeometry(0.029, 0.038, 1, 14).translate(0, 0.5, 0)), sleeve);
+    const elbow = new THREE.Mesh(this.reg(new THREE.SphereGeometry(0.039, 12, 10)), sleeve);
+    for (const m of [upper, fore, elbow]) { m.castShadow = false; m.receiveShadow = false; root.add(m); }
+    root.visible = false;
+    this.camera.add(root);
+    this.armRoot = root;
+    this.armUpper = upper;
+    this.armFore = fore;
+    this.armElbow = elbow;
+  }
+
+  /** Two-bone IK from the fixed shoulder to the hand group's wrist. */
+  private solveIkArm() {
+    if (!this.armRoot || !this.armUpper || !this.armFore || !this.armElbow) return;
+    this.group.updateMatrix();
+    _ikW.copy(IK_WRIST).applyMatrix4(this.group.matrix);
+    _ikD.subVectors(_ikW, IK_SHOULDER);
+    let d = _ikD.length();
+    const dir = _ikD.multiplyScalar(1 / Math.max(1e-5, d));
+    let L1 = IK_UPPER, L2 = IK_FORE;
+    // Out of reach: the limb straightens and stretches imperceptibly rather
+    // than ever letting the hand leave the end of the arm.
+    if (d > L1 + L2 - 1e-3) {
+      const k = d / (L1 + L2 - 1e-3);
+      L1 *= k; L2 *= k;
+    }
+    d = Math.max(d, Math.abs(L1 - L2) + 1e-3);
+    const a = (L1 * L1 - L2 * L2 + d * d) / (2 * d);
+    const h = Math.sqrt(Math.max(0, L1 * L1 - a * a));
+    _ikP.copy(IK_POLE).addScaledVector(dir, -IK_POLE.dot(dir));
+    if (_ikP.lengthSq() < 1e-6) _ikP.set(-1, 0, 0);
+    _ikP.normalize();
+    _ikE.copy(IK_SHOULDER).addScaledVector(dir, a).addScaledVector(_ikP, h);
+    const place = (m: THREE.Mesh, from: THREE.Vector3, to: THREE.Vector3) => {
+      _ikS.subVectors(to, from);
+      const len = _ikS.length();
+      m.position.copy(from);
+      m.quaternion.setFromUnitVectors(_ikY, _ikS.multiplyScalar(1 / Math.max(1e-5, len)));
+      m.scale.set(1, len, 1);
+    };
+    place(this.armUpper, IK_SHOULDER, _ikE);
+    place(this.armFore, _ikE, _ikW);
+    this.armElbow.position.copy(_ikE);
+  }
+
+  /** Which throwable the hand brings up next. */
+  setGrenadeKind(kind: GrenadeKind) {
+    this.grenadeKind = kind;
+    if (this.playTime < 0) this.showModel(kind);
+  }
+
+  private showModel(kind: GrenadeKind) {
+    for (const k of Object.keys(this.grenadeModels) as GrenadeKind[]) {
+      const m = this.grenadeModels[k];
+      if (m) m.visible = k === kind;
+    }
+  }
+
+  /**
+   * Switching throwables: the hand comes up showing the new one, turns it to
+   * the light, and drops again. Ignored mid-throw (the throw owns the hand).
+   */
+  showcase(kind: GrenadeKind) {
+    this.grenadeKind = kind;
+    if (this.playTime >= 0) return;
+    this.showModel(kind);
+    this.showTime = 0;
+  }
+
+  /** Start a throw of `kind` (its own style + arming action + timing). */
+  playThrow(kind: GrenadeKind) {
+    this.throwKind = kind;
+    this.showTime = -1;
+    this.showModel(kind);
+    this.play(THROWABLES[kind].animSeconds);
+  }
+
+  /**
+   * Hold the arm cocked (throw key still down — aiming). Releasing lets the
+   * playhead run on into the throw.
+   */
+  setCookHold(on: boolean) { this.cookHold = on; }
+
+  /** Dev: freeze a throw of `kind` at progress `p` (0..1); `null` resumes. */
+  debugFreeze(kind: GrenadeKind | null, p = 0) {
+    if (kind === null) { this.frozenP = -1; this.playTime = -1; return; }
+    this.throwKind = kind;
+    this.showModel(kind);
+    this.playDur = THROWABLES[kind].animSeconds;
+    this.frozenP = THREE.MathUtils.clamp(p, 0, 1);
+    this.playTime = this.frozenP * this.playDur;
+    this.raise = 1;
+    this.fired.add('pin');
+    this.fired.add('release');
+  }
+
+  /** True while a choreography (a throw) is playing. */
+  get isPlaying(): boolean { return this.playTime >= 0; }
+
+  /** True while the arm is parked at the cocked pose waiting for release. */
+  get isCocked(): boolean {
+    if (this.kind !== 'grenade' || this.playTime < 0) return false;
+    const tm = THROW_TIMING[THROWABLES[this.throwKind].style];
+    return this.playTime >= tm.hold * this.playDur - 1e-4 && this.playTime < tm.release * this.playDur;
+  }
+
   // ── PUBLIC CONTROL ────────────────────────────────────────────────────────
 
   /** Start the one-shot use choreography. `dur` defaults to the prop's own length. */
@@ -845,6 +1067,8 @@ export class AbilityViewmodel {
     this.playDur = Math.max(0.15, dur);
     this.fired.clear();
     this.holdAfter = 0;
+    if (this.grenadeHeld) this.grenadeHeld.visible = true;
+    if (this.grenadePin) this.grenadePin.visible = true;
   }
 
   /**
@@ -877,8 +1101,14 @@ export class AbilityViewmodel {
 
     // ── Timeline ──
     let p = -1;
+    if (this.frozenP >= 0) this.playTime = this.frozenP * this.playDur - dt;
     if (this.playTime >= 0) {
       this.playTime += dt;
+      // A held throw key parks the arm cocked over the shoulder (aiming).
+      if (this.kind === 'grenade' && this.cookHold) {
+        const hold = THROW_TIMING[THROWABLES[this.throwKind].style].hold;
+        this.playTime = Math.min(this.playTime, hold * this.playDur);
+      }
       p = Math.min(1, this.playTime / this.playDur);
       if (this.playTime >= this.playDur) {
         if (this.holdAfter > 0) this.holdAfter -= dt;
@@ -886,13 +1116,18 @@ export class AbilityViewmodel {
       }
     }
     const active = p >= 0;
-    const wantUp = this.heldTarget > 0 || active;
+    if (this.showTime >= 0) {
+      this.showTime += dt;
+      if (this.showTime >= SHOWCASE_SECONDS) this.showTime = -1;
+    }
+    const wantUp = this.heldTarget > 0 || active || this.showTime >= 0;
     const rate = wantUp ? 11 : 7;
     this.raise += ((wantUp ? 1 : 0) - this.raise) * Math.min(1, dt * rate);
     if (!wantUp && this.raise < 0.004) this.raise = 0;
 
     const visible = hostVisible && (this.raise > 0.01 || this.prewarming);
     this.group.visible = visible;
+    if (this.armRoot) this.armRoot.visible = visible;
     if (!visible) return;
     // Mid-warmup the prop is parked on purpose so the compile pass can see
     // every one of its materials — leave the pose exactly where prewarm put it.
@@ -931,10 +1166,12 @@ export class AbilityViewmodel {
       case 'stim':      this.animStim(p, c); break;
       case 'bracer':    this.animBracer(p, c); break;
       case 'brace':     this.animBrace(p, c); break;
+      case 'grenade':   this.animGrenade(p, c); break;
     }
 
     this.group.position.set(c.x, c.y, c.z);
     this.group.rotation.set(c.rx, c.ry, c.rz);
+    if (this.armRoot) this.solveIkArm();
   }
 
   private beat(b: AbilityBeat) {
@@ -1266,6 +1503,146 @@ export class AbilityViewmodel {
     }
   }
 
+  /**
+   * Throwables. Every throw is: ARM (pin ripped out, cap twisted, button
+   * pressed, switch thrown or knife flipped), WIND (into the style's cocked
+   * pose — and parked there while the key is held), DELIVER (the style's own
+   * arc) and FOLLOW-THROUGH (the empty hand carries on and drops out of view).
+   * The object leaves the hand on the release frame — the same frame App
+   * spawns the thrown one at the hand's world position. The forearm is IK, so
+   * none of these arcs can ever pull the hand off the end of the arm.
+   */
+  private animGrenade(p: number, c: Pose) {
+    const up = ss(THREE.MathUtils.clamp(this.raise, 0, 1));
+    const spec = THROWABLES[p >= 0 ? this.throwKind : this.grenadeKind];
+    const style: ThrowStyle = spec.style;
+    const prep: ThrowPrep = spec.prep;
+    const tm = THROW_TIMING[style];
+    let arm = 0, armJolt = 0, wind = 0, deliver = 0, follow = 0, released = false;
+    if (p >= 0) {
+      arm = span(p, tm.arm - 0.08, tm.arm + 0.1);
+      armJolt = bump(p, tm.arm - 0.08, tm.arm + 0.06);
+      this.at(p, tm.arm, 'pin');
+      wind = span(p, tm.arm + 0.06, tm.hold);
+      deliver = span(p, tm.hold + 0.02, tm.release + 0.04);
+      follow = span(p, tm.release, tm.release + 0.26);
+      released = p >= tm.release;
+      this.at(p, tm.release, 'release');
+    }
+    const hold = wind * (1 - deliver);
+    const parked = this.cookHold && wind > 0.95;
+
+    // ── ARMING (the off-hand never exists: everything is done one-handed) ──
+    switch (prep) {
+      case 'pin':
+        // The pull: hand jerks forward and rolls against the ring.
+        c.x += armJolt * 0.012; c.y -= armJolt * 0.006; c.rz -= armJolt * 0.22;
+        break;
+      case 'twist':
+        // Wrist rolls hard to turn the arming collar a quarter-turn.
+        c.rz += armJolt * 0.5; c.rx -= armJolt * 0.1;
+        break;
+      case 'button':
+        // Thumb drives the timer button; the whole fist kicks with the press.
+        c.y -= armJolt * 0.01; c.rx += armJolt * 0.12;
+        break;
+      case 'switch':
+        c.rz -= armJolt * 0.14; c.x += armJolt * 0.006;
+        break;
+      case 'flip':
+        // The knife is flipped from a hammer grip into a pinch on the blade.
+        c.y += armJolt * 0.02; c.rx -= armJolt * 0.3;
+        break;
+    }
+
+    // ── WIND + DELIVER + FOLLOW-THROUGH, per style ──
+    switch (style) {
+      case 'overhand':
+        c.x -= hold * 0.065; c.y += hold * 0.105; c.z += hold * 0.11;
+        c.rx += hold * 0.78; c.ry += hold * 0.22; c.rz += hold * 0.34;
+        c.x += deliver * 0.11 + follow * 0.06;
+        c.y += deliver * 0.035 - follow * 0.34;
+        c.z -= deliver * 0.22 - follow * 0.1;
+        c.rx -= deliver * 1.15 + follow * 0.2;
+        c.rz -= deliver * 0.42;
+        break;
+      case 'underhand':
+        // Dropped to the hip and back, swung up and out, released low.
+        c.x -= hold * 0.02; c.y -= hold * 0.16; c.z += hold * 0.09;
+        c.rx -= hold * 0.55; c.rz += hold * 0.12;
+        c.x += deliver * 0.06; c.y += deliver * 0.2 + follow * 0.05 - follow * follow * 0.4;
+        c.z -= deliver * 0.2 - follow * 0.06;
+        c.rx += deliver * 0.95 - follow * 0.5;
+        break;
+      case 'roll':
+        // Down low like a bowler: the hand drops past the knee and back, then
+        // sweeps forward skimming the ground and lets go at the bottom.
+        c.x -= hold * 0.01; c.y -= hold * 0.24; c.z += hold * 0.12;
+        c.rx -= hold * 0.85; c.rz += hold * 0.08;
+        c.y += deliver * 0.05 - follow * 0.1;
+        c.z -= deliver * 0.28 - follow * 0.04;
+        c.rx += deliver * 0.7 - follow * 0.3;
+        break;
+      case 'sidearm':
+        // Drawn back at waist height, then slung flat across the body.
+        c.x -= hold * 0.1; c.y -= hold * 0.05; c.z += hold * 0.06;
+        c.ry += hold * 0.75; c.rz += hold * 0.5;
+        c.x += deliver * 0.2 + follow * 0.08; c.y -= follow * 0.3;
+        c.z -= deliver * 0.15 - follow * 0.06;
+        c.ry -= deliver * 1.3; c.rz -= deliver * 0.7;
+        break;
+      case 'flick':
+        // Short, explosive: up beside the temple, snapped forward and down.
+        c.x -= hold * 0.03; c.y += hold * 0.09; c.z += hold * 0.06;
+        c.rx += hold * 1.05; c.rz += hold * 0.18;
+        c.x += deliver * 0.06 + follow * 0.04; c.y -= deliver * 0.05 + follow * 0.3;
+        c.z -= deliver * 0.18 - follow * 0.08;
+        c.rx -= deliver * 1.5 + follow * 0.15;
+        break;
+    }
+    if (parked) {
+      // The arm carries the weight of the charge while aiming.
+      c.y += Math.sin(this.t * 2.1) * 0.0028;
+      c.x += Math.sin(this.t * 1.6 + 0.7) * 0.0022;
+    }
+
+    // ── SHOWCASE (switching): up, turned to the light, down again ──
+    if (this.showTime >= 0 && p < 0) {
+      const sp = this.showTime / SHOWCASE_SECONDS;
+      const turn = bump(sp, 0.05, 0.95);
+      c.ry += turn * 0.7; c.rx -= turn * 0.25; c.rz -= turn * 0.15; c.y += turn * 0.03;
+    }
+
+    // Fingers wrap the object until the release, then spring open.
+    const grip = released ? 0.55 - follow * 0.2 : (style === 'flick' ? 1.15 : 1.32) + up * 0.08;
+    for (let i = 0; i < this.fingers.length; i++) this.fingers[i].rotation.x = grip;
+    // Thumb: hooks the ring, rolls the collar, drives the button, throws the switch.
+    if (this.thumb) {
+      const press = prep === 'button' ? armJolt : 0;
+      this.thumb.rotation.x = THUMB_REST.rx - armJolt * (prep === 'button' ? 0.35 : 0.6) - (released ? 0 : wind * 0.3);
+      this.thumb.rotation.z = THUMB_REST.rz - up * 0.12 - armJolt * 0.3;
+      this.thumb.position.y = THUMB_REST.y - press * 0.012;
+    }
+    if (this.thumbTip) this.thumbTip.rotation.x = THUMB_TIP_REST - armJolt * 0.5;
+    if (this.grenadeHeld) {
+      this.grenadeHeld.visible = !released;
+      // The object itself: EMP collar turns with the twist; the knife flips end
+      // for end into a blade pinch; everything else rides the fist.
+      const base = this.grenadeHeld.rotation;
+      base.set(-0.35, 0.4, -0.15);
+      if (prep === 'twist') base.y += arm * 1.6;
+      if (prep === 'flip') { base.x += arm * Math.PI; base.z += arm * 0.4; }
+    }
+    if (this.grenadePin) {
+      const pinned = prep === 'pin';
+      const pinOut = pinned ? arm : 0;
+      // Ripped out up-and-back, spinning, falling out of frame.
+      this.grenadePin.position.set(-0.012 - pinOut * 0.07, 0.05 + pinOut * 0.05 - pinOut * pinOut * 0.12, 0.016 + pinOut * 0.08);
+      this.grenadePin.rotation.set(pinOut * 7, pinOut * 4.2, pinOut * 2.4);
+      this.grenadePin.visible = pinned && pinOut < 0.98 && (p < 0 ? true : p < tm.arm + 0.18);
+    }
+  }
+
   // ── WARMUP / DISPOSAL ─────────────────────────────────────────────────────
 
   /**
@@ -1277,6 +1654,7 @@ export class AbilityViewmodel {
   prewarm() {
     this.prewarming = true;
     this.group.visible = true;
+    if (this.armRoot) { this.armRoot.visible = true; this.solveIkArm(); }
     this.group.traverse((o) => { o.visible = true; });
     // Barely-there opacity: enough for the material to be a real draw, not
     // enough to be a bright rectangle if the loader's overlay ever lifts early.
@@ -1297,6 +1675,7 @@ export class AbilityViewmodel {
   endPrewarm() {
     this.prewarming = false;
     this.group.visible = false;
+    if (this.armRoot) this.armRoot.visible = false;
     for (const f of this.nozzleFlames) f.visible = false;
     if (this.pilotFlame) this.pilotFlame.visible = false;
     if (this.shimmer) this.shimmer.visible = false;
@@ -1309,6 +1688,7 @@ export class AbilityViewmodel {
 
   dispose() {
     this.camera.remove(this.group);
+    if (this.armRoot) this.camera.remove(this.armRoot);
     for (const g of this.geos) g.dispose();
     for (const m of this.mats) m.dispose();
     this.geos.length = 0;

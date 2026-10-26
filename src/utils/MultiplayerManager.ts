@@ -5,6 +5,7 @@ type DataConnection = ReturnType<Peer['connect']>;
 import * as THREE from 'three';
 import { clamp, MAX_MP_KILLS, MAX_MP_DEATHS, MAX_MP_SCORE, AVATAR_COUNT } from '../../convex/gameLimits';
 import { detectIsTouch } from '../hooks/useDeviceInfo';
+import { THROWABLE_KINDS } from './Throwables';
 
 /** 8 unique player-model classes the lobby allows picking from. */
 export type ModelClassId =
@@ -59,6 +60,8 @@ export interface PlayerData {
  *   id = stable network id   ty = type code (0 normal,1 fast,2 tank,3 boss)
  *   x/y/z = world position    ry = body yaw
  *   hp = current health       mx = max health        d = dead flag (0|1)
+ *   bx/bz = where the blast that killed it went off (only on a blast death)
+ *           — guests throw the corpse away from it and tear the same limbs off
  */
 export interface EnemyWire {
   id: number;
@@ -70,6 +73,8 @@ export interface EnemyWire {
   hp: number;
   mx: number;
   d: 0 | 1;
+  bx?: number;
+  bz?: number;
 }
 
 export interface GameState {
@@ -123,7 +128,9 @@ export type NetworkMessage =
   //   us = the relay-spire positions as a flat [x1,z1,x2,z2,…] list
   //        (host-rolled at match start; guests build their local copies
   //        there on first sight — max 4 spires / 8 numbers)
-  | { type: 'enemy_sync'; enemies: EnemyWire[]; wave: number; full: boolean; t?: number; wm?: number; wi?: number; us?: number[] }
+  //   ws = the host's weather-director state (0 clear · 1 mist · 2 overcast
+  //        · 3 drizzle · 4 storm) so every client shares one sky
+  | { type: 'enemy_sync'; enemies: EnemyWire[]; wave: number; full: boolean; t?: number; wm?: number; wi?: number; us?: number[]; ws?: number }
   // Guest → host: "I've finished warming up and I'm in the match." The host
   // withholds the enemy stream until a guest is ready so it never floods a
   // peer that's still on the loading screen.
@@ -137,6 +144,10 @@ export type NetworkMessage =
   // Host → target guest: a shared enemy struck you for `damage`.
   | { type: 'player_damaged'; targetId: string; damage: number; enemyType: string }
   | { type: 'player_shot'; shooterId: string; targetId: string; damage: number }
+  // A thrown grenade (kind 0 frag · 1 EMP · 2 thermite) — release point +
+  // velocity. Every client flies and detonates its own copy for the visuals;
+  // only the thrower's client applies damage (guests via enemy_hit).
+  | { type: 'grenade_throw'; playerId: string; kind: number; ox: number; oy: number; oz: number; vx: number; vy: number; vz: number }
   | { type: 'player_killed'; victimId: string; victimName: string; victimColor: number; killerId: string; killerName: string; weapon: string; timestamp: number }
   | { type: 'chat_message'; playerId: string; playerName: string; playerColor: number; message: string; messageType: 'chat' | 'emote'; timestamp: number }
   | { type: 'heartbeat'; playerId: string; timestamp: number };
@@ -210,6 +221,8 @@ const INBOUND_BUDGET: Record<string, InboundBudgetSpec> = {
   player_update: { capacity: 80, perSecond: 45 },
   enemy_killed: { capacity: 60, perSecond: 30 },
   player_shot: { capacity: 60, perSecond: 30 },
+  // Grenades are carried in single digits and take a second to throw.
+  grenade_throw: { capacity: 6, perSecond: 1.5 },
   player_killed: { capacity: 20, perSecond: 5 },
   // Chat is human-paced; this still allows a rapid emote flurry.
   chat_message: { capacity: 10, perSecond: 2 },
@@ -226,7 +239,7 @@ const NETWORK_MESSAGE_TYPES = new Set<NetworkMessage['type']>([
   'player_kicked', 'game_start', 'game_restart', 'return_to_lobby',
   'game_over', 'enemy_killed', 'client_ready', 'enemy_hit',
   'enemy_sync', 'enemy_kill_credit', 'player_damaged', 'player_shot',
-  'player_killed', 'chat_message', 'heartbeat',
+  'player_killed', 'chat_message', 'heartbeat', 'grenade_throw',
 ]);
 const MODEL_CLASSES = new Set<ModelClassId>([
   'ranger', 'scout', 'heavy', 'operative', 'pyro', 'medic', 'engineer', 'phantom',
@@ -372,10 +385,18 @@ function sanitizeEnemyWire(value: unknown): EnemyWire | null {
   const mx = finiteBetween(value.mx, 1, MAX_ENEMY_HEALTH);
   if (id === null || ty === null || x === null || y === null || z === null
     || ry === null || hp === null || mx === null || (value.d !== 0 && value.d !== 1)) return null;
-  return {
+  const wire: EnemyWire = {
     id: Math.floor(id), ty: Math.floor(ty), x, y, z, ry, hp, mx,
     d: value.d,
   };
+  // Optional blast origin: only meaningful on a death, and only near the body
+  // (a forged far-away origin would just fling the corpse — bound it anyway).
+  if (value.d === 1 && value.bx !== undefined && value.bz !== undefined) {
+    const bx = finiteBetween(value.bx, x - 40, x + 40);
+    const bz = finiteBetween(value.bz, z - 40, z + 40);
+    if (bx !== null && bz !== null) { wire.bx = bx; wire.bz = bz; }
+  }
+  return wire;
 }
 
 export class MultiplayerManager {
@@ -1111,6 +1132,32 @@ export class MultiplayerManager {
         break;
       }
 
+      case 'grenade_throw': {
+        const playerId = boundedString(message.playerId, MAX_PEER_ID_LENGTH);
+        // Index into the throwable catalog — bounded by the catalog itself so a
+        // new throwable can never be silently dropped on the wire again.
+        const kind = finiteBetween(message.kind, 0, THROWABLE_KINDS.length - 1);
+        const ox = finiteBetween(message.ox, -MAX_WORLD_COORDINATE, MAX_WORLD_COORDINATE);
+        const oy = finiteBetween(message.oy, -100, 500);
+        const oz = finiteBetween(message.oz, -MAX_WORLD_COORDINATE, MAX_WORLD_COORDINATE);
+        const vx = finiteBetween(message.vx, -120, 120);
+        const vy = finiteBetween(message.vy, -120, 120);
+        const vz = finiteBetween(message.vz, -120, 120);
+        if (!playerId || kind === null || ox === null || oy === null || oz === null
+          || vx === null || vy === null || vz === null) return;
+        if (this.isHost) {
+          if (!this.isRegisteredGuest(conn) || playerId !== conn.peer) return;
+        } else if (!this.isHostConnection(conn)) {
+          return;
+        }
+        const throwMessage: NetworkMessage = {
+          type: 'grenade_throw', playerId, kind: Math.floor(kind), ox, oy, oz, vx, vy, vz,
+        };
+        if (this.isHost) this.broadcastMessage(throwMessage, conn.peer);
+        this.messageHandlers.get('grenade_throw')?.forEach((handler) => handler(throwMessage));
+        break;
+      }
+
       case 'player_killed': {
         const killerId = boundedString(message.killerId, MAX_PEER_ID_LENGTH);
         const victimId = boundedString(message.victimId, MAX_PEER_ID_LENGTH);
@@ -1211,6 +1258,7 @@ export class MultiplayerManager {
         // ARK-07 network-event fields (keyframes only; absent on deltas).
         const wm = message.wm == null ? undefined : finiteBetween(message.wm, 0, 2);
         const wi = message.wi == null ? undefined : finiteBetween(message.wi, 0, 200);
+        const ws = message.ws == null ? undefined : finiteBetween(message.ws, 0, 4);
         // Relay-spire coordinate list: flat [x,z,…] pairs, hard-capped so a
         // hostile host can't flood guests with structures.
         let us: number[] | undefined;
@@ -1224,11 +1272,12 @@ export class MultiplayerManager {
           }
         }
         const enemies = message.enemies.map((enemy) => sanitizeEnemyWire(enemy));
-        if (wave === null || t === null || wm === null || wi === null
+        if (wave === null || t === null || wm === null || wi === null || ws === null
           || enemies.some((enemy) => enemy === null)) return;
         const syncMessage: NetworkMessage = {
           type: 'enemy_sync', enemies: enemies as EnemyWire[], wave: Math.floor(wave), full: message.full, t,
           wm: wm === undefined ? undefined : Math.floor(wm), wi, us,
+          ws: ws === undefined ? undefined : Math.floor(ws),
         };
         this.messageHandlers.get('enemy_sync')?.forEach((handler) => handler(syncMessage));
         break;
@@ -1441,7 +1490,8 @@ export class MultiplayerManager {
     enemies: EnemyWire[], wave: number, full: boolean, t?: number,
     // ARK-07 network-event state — sent on keyframes so guests mirror the
     // wave modifier + relay-spire placement (see the NetworkMessage comment).
-    mods?: { wm: number; wi: number; us: number[] },
+    // Plus the weather-director state (ws) so guests share the host's sky.
+    mods?: { wm: number; wi: number; us: number[]; ws?: number },
   ): void {
     this.broadcastMessage({ type: 'enemy_sync', enemies, wave, full, t, ...(mods ?? {}) });
   }
@@ -1679,6 +1729,15 @@ export class MultiplayerManager {
    * Broadcast a kill event (who killed whom with what weapon).
    * Also triggers local handlers so the shooter sees their own kill in the feed.
    */
+  /** Tell every peer about a grenade this client just threw. */
+  broadcastGrenade(kind: number, ox: number, oy: number, oz: number, vx: number, vy: number, vz: number): void {
+    const q = (n: number) => Math.round(n * 100) / 100;
+    this.broadcastMessage({
+      type: 'grenade_throw', playerId: this.localPlayer.id, kind,
+      ox: q(ox), oy: q(oy), oz: q(oz), vx: q(vx), vy: q(vy), vz: q(vz),
+    });
+  }
+
   broadcastKill(killerName: string, victimId: string, victimName: string, victimColor: number, weapon: string) {
     const msg = {
       type: 'player_killed' as const,

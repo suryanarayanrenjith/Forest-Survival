@@ -14,11 +14,9 @@
 
 export {
   DAILY_CHALLENGES,
-  DAILY_CHALLENGE_IDS,
   DAILY_CHANNEL_MODE,
   getDailyChallenge,
   getTodayChallengeId,
-  todayUtcDay,
   type DailyChallenge,
   type DailyChallengeId,
   type DailyChannelMode,
