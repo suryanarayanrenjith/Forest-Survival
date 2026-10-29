@@ -46,7 +46,7 @@ const RARITY_STYLE: Record<string, { ring: string; text: string; bg: string }> =
 };
 
 const inputClass =
-  'w-full rounded-lg border border-white/10 bg-[#05080c] px-3.5 py-2.5 text-sm text-white outline-none transition-colors placeholder:text-gray-600 focus:border-emerald-400/50 focus:ring-2 focus:ring-emerald-400/20';
+  'w-full rounded-lg border border-white/10 bg-[#05080c] px-3.5 py-2.5 text-sm text-white outline-none transition-colors placeholder:text-white/35 focus:border-emerald-400/50 focus:ring-2 focus:ring-emerald-400/20';
 
 function popcount(value: number): number {
   let count = 0;
@@ -59,7 +59,7 @@ function popcount(value: number): number {
 }
 
 const SectionLabel = ({ children }: { children: ReactNode }) => (
-  <p className="font-hud text-[10px] font-semibold uppercase tracking-[0.22em] text-gray-400">{children}</p>
+  <p className="font-hud text-[10px] font-semibold uppercase tracking-[0.22em] text-white/60">{children}</p>
 );
 
 /** Icon-led header for the left-column settings cards. Keeps every card aligned
@@ -70,7 +70,7 @@ const CardHead = ({ icon: Icon, label, right }: { icon: LucideIcon; label: strin
       <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg border border-emerald-400/25 bg-emerald-500/[0.08]">
         <Icon className="h-3.5 w-3.5 text-emerald-300" strokeWidth={2.2} />
       </span>
-      <p className="font-hud text-[11px] font-semibold uppercase tracking-[0.2em] text-gray-200">{label}</p>
+      <p className="font-hud text-[11px] font-semibold uppercase tracking-[0.2em] text-white/85">{label}</p>
     </div>
     {right}
   </div>
@@ -81,7 +81,7 @@ const LEFT_CARD = 'rounded-2xl border border-white/[0.08] bg-white/[0.02] p-4';
 
 const StatRow = ({ label, value }: { label: string; value: string }) => (
   <div className="flex items-baseline justify-between gap-2">
-    <span className="font-hud text-[11px] text-gray-400">{label}</span>
+    <span className="font-hud text-[11px] text-white/60">{label}</span>
     <span className="font-bold text-white tabular-nums">{value}</span>
   </div>
 );
@@ -235,14 +235,14 @@ const ProfileMenu = ({ onClose, onSkillTree }: ProfileMenuProps) => {
       className={isTouch
         ? 'm-safe fixed inset-0 z-50 flex flex-col menu-overlay-in'
         : 'fixed inset-0 z-50 flex items-center justify-center overflow-y-auto p-3 sm:p-4 menu-overlay-in'}
-      style={{ background: 'rgba(4,8,7,0.92)', backdropFilter: 'blur(16px)' }}
+      style={{ background: 'rgba(4,8,7,0.92)' }}
     >
       <MenuShell variant="main" />
 
       <div
         className={isTouch
           ? 'm-sheet-in relative z-10 flex h-full w-full flex-col overflow-hidden border-t border-emerald-400/15 bg-[#080d0b]'
-          : 'hud-frame relative z-10 flex max-h-[94dvh] w-full max-w-5xl flex-col overflow-hidden rounded-[24px] border border-emerald-400/15 bg-[#080d0b] shadow-[0_40px_120px_rgba(0,0,0,0.6)]'}
+          : 'hud-frame relative z-10 flex max-h-[94dvh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-emerald-400/15 bg-[#080d0b] shadow-[0_40px_120px_rgba(0,0,0,0.6)]'}
         style={isTouch ? undefined : { animation: 'authFade 0.32s cubic-bezier(0.16,1,0.3,1) forwards' }}
       >
         <div className={`flex flex-none items-center justify-between border-b border-white/[0.07] ${isTouch ? 'gap-2 px-3 py-1.5' : 'gap-4 px-5 sm:px-6 py-4'}`}>
@@ -260,7 +260,7 @@ const ProfileMenu = ({ onClose, onSkillTree }: ProfileMenuProps) => {
           <button
             onClick={onClose}
             aria-label="Close profile panel"
-            className={`flex flex-none items-center justify-center rounded-lg border border-white/10 text-gray-400 transition-colors hover:text-white hover:bg-white/[0.06] ${isTouch ? 'm-tap h-8 w-8' : 'w-9 h-9'}`}
+            className={`flex flex-none items-center justify-center rounded-lg border border-white/10 text-white/60 transition-colors hover:text-white hover:bg-white/[0.06] ${isTouch ? 'm-tap h-8 w-8' : 'w-9 h-9'}`}
           >
             <X className={isTouch ? 'h-4 w-4' : 'w-[18px] h-[18px]'} strokeWidth={2.25} />
           </button>
@@ -294,7 +294,7 @@ const ProfileMenu = ({ onClose, onSkillTree }: ProfileMenuProps) => {
                         {nameBusy ? <Loader className="h-3.5 w-3.5 animate-spin" strokeWidth={2.4} /> : <Check className="h-3.5 w-3.5" strokeWidth={2.6} />}
                       </button>
                       <button type="button" onClick={() => { setNameEditing(false); setNameError(null); }} aria-label="Cancel"
-                        className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md border border-white/10 text-gray-400 transition-colors hover:bg-white/[0.06] hover:text-white">
+                        className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md border border-white/10 text-white/60 transition-colors hover:bg-white/[0.06] hover:text-white">
                         <X className="h-3.5 w-3.5" strokeWidth={2.4} />
                       </button>
                     </form>
@@ -307,12 +307,12 @@ const ProfileMenu = ({ onClose, onSkillTree }: ProfileMenuProps) => {
                           onClick={startNameEdit}
                           aria-label="Edit display name"
                           title="Edit name"
-                          className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md border border-white/10 text-gray-400 transition-colors hover:bg-white/[0.06] hover:text-emerald-200"
+                          className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md border border-white/10 text-white/60 transition-colors hover:bg-white/[0.06] hover:text-emerald-200"
                         >
                           <Pencil className="h-3 w-3" strokeWidth={2.3} />
                         </button>
                       </div>
-                      <p className="font-hud truncate text-[13px] text-gray-300">{usernameLabel}</p>
+                      <p className="font-hud truncate text-[13px] text-white/75">{usernameLabel}</p>
                     </>
                   )}
                   {nameError && <p className="mt-1 text-[11px] text-rose-300">{nameError}</p>}
@@ -338,7 +338,7 @@ const ProfileMenu = ({ onClose, onSkillTree }: ProfileMenuProps) => {
                   </span>
                 }
               />
-              <p className="mt-2 text-[11px] text-gray-500">Pick how you appear across menus and multiplayer.</p>
+              <p className="mt-2 text-[11px] text-white/45">Pick how you appear across menus and multiplayer.</p>
               <div className="mt-3.5 grid grid-cols-6 gap-x-3 gap-y-3.5 sm:gap-x-3.5">
                 {AVATARS.map((a) => {
                   const Icon = a.Icon;
@@ -366,12 +366,12 @@ const ProfileMenu = ({ onClose, onSkillTree }: ProfileMenuProps) => {
 
             <div className={LEFT_CARD}>
               <CardHead icon={Eye} label="Stats Privacy" />
-              <p className="mt-2 text-[11px] leading-relaxed text-gray-500">When private, others still see your rank &amp; avatar — but not detailed stats.</p>
+              <p className="mt-2 text-[11px] leading-relaxed text-white/45">When private, others still see your rank &amp; avatar — but not detailed stats.</p>
               <div className="mt-3 grid grid-cols-2 gap-2">
                 <button
                   onClick={() => handlePrivacy(true)}
                   className={`font-hud flex items-center justify-center gap-2 rounded-xl border px-3 py-2.5 text-xs font-semibold uppercase tracking-wider transition-all ${
-                    statsPublic ? 'border-emerald-400/45 bg-emerald-500/[0.12] text-emerald-100 shadow-[0_0_18px_-6px_rgba(52,211,153,0.6)]' : 'border-white/10 bg-white/[0.02] text-gray-400 hover:bg-white/[0.05] hover:text-gray-200'
+                    statsPublic ? 'border-emerald-400/45 bg-emerald-500/[0.12] text-emerald-100 shadow-[0_0_18px_-6px_rgba(52,211,153,0.6)]' : 'border-white/10 bg-white/[0.02] text-white/60 hover:bg-white/[0.05] hover:text-white/85'
                   }`}
                 >
                   <Eye className="w-4 h-4" strokeWidth={2.2} /> Public
@@ -379,7 +379,7 @@ const ProfileMenu = ({ onClose, onSkillTree }: ProfileMenuProps) => {
                 <button
                   onClick={() => handlePrivacy(false)}
                   className={`font-hud flex items-center justify-center gap-2 rounded-xl border px-3 py-2.5 text-xs font-semibold uppercase tracking-wider transition-all ${
-                    !statsPublic ? 'border-amber-400/45 bg-amber-500/[0.12] text-amber-100 shadow-[0_0_18px_-6px_rgba(245,158,11,0.55)]' : 'border-white/10 bg-white/[0.02] text-gray-400 hover:bg-white/[0.05] hover:text-gray-200'
+                    !statsPublic ? 'border-amber-400/45 bg-amber-500/[0.12] text-amber-100 shadow-[0_0_18px_-6px_rgba(245,158,11,0.55)]' : 'border-white/10 bg-white/[0.02] text-white/60 hover:bg-white/[0.05] hover:text-white/85'
                   }`}
                 >
                   <EyeOff className="w-4 h-4" strokeWidth={2.2} /> Private
@@ -389,12 +389,12 @@ const ProfileMenu = ({ onClose, onSkillTree }: ProfileMenuProps) => {
 
             <div className={LEFT_CARD}>
               <CardHead icon={Crown} label="Leaderboard" />
-              <p className="mt-2 text-[11px] leading-relaxed text-gray-500">Show your name, rank &amp; best wave on the global leaderboard.</p>
+              <p className="mt-2 text-[11px] leading-relaxed text-white/45">Show your name, rank &amp; best wave on the global leaderboard.</p>
               <div className="mt-3 grid grid-cols-2 gap-2">
                 <button
                   onClick={() => handleLeaderboardOptIn(true)}
                   className={`font-hud flex items-center justify-center gap-2 rounded-xl border px-3 py-2.5 text-xs font-semibold uppercase tracking-wider transition-all ${
-                    leaderboardOptIn ? 'border-amber-400/45 bg-amber-500/[0.12] text-amber-100 shadow-[0_0_18px_-6px_rgba(245,158,11,0.55)]' : 'border-white/10 bg-white/[0.02] text-gray-400 hover:bg-white/[0.05] hover:text-gray-200'
+                    leaderboardOptIn ? 'border-amber-400/45 bg-amber-500/[0.12] text-amber-100 shadow-[0_0_18px_-6px_rgba(245,158,11,0.55)]' : 'border-white/10 bg-white/[0.02] text-white/60 hover:bg-white/[0.05] hover:text-white/85'
                   }`}
                 >
                   <Trophy className="w-4 h-4" strokeWidth={2.2} /> Show me
@@ -402,7 +402,7 @@ const ProfileMenu = ({ onClose, onSkillTree }: ProfileMenuProps) => {
                 <button
                   onClick={() => handleLeaderboardOptIn(false)}
                   className={`font-hud flex items-center justify-center gap-2 rounded-xl border px-3 py-2.5 text-xs font-semibold uppercase tracking-wider transition-all ${
-                    !leaderboardOptIn ? 'border-white/30 bg-white/[0.07] text-gray-100' : 'border-white/10 bg-white/[0.02] text-gray-400 hover:bg-white/[0.05] hover:text-gray-200'
+                    !leaderboardOptIn ? 'border-white/30 bg-white/[0.07] text-white/90' : 'border-white/10 bg-white/[0.02] text-white/60 hover:bg-white/[0.05] hover:text-white/85'
                   }`}
                 >
                   <EyeOff className="w-4 h-4" strokeWidth={2.2} /> Hide me
@@ -455,13 +455,13 @@ const ProfileMenu = ({ onClose, onSkillTree }: ProfileMenuProps) => {
             {/* On touch this tab strip sticks to the top of the scroll so the
                 showcase tabs stay reachable after scrolling past the account
                 cards above. */}
-            <div className={`m-tabscroll flex gap-1 overflow-x-auto border-b border-white/[0.07] px-3 py-2 ${isTouch ? 'sticky top-0 z-10 bg-[#080d0b]/95 backdrop-blur-sm' : ''}`}>
+            <div className={`m-tabscroll flex gap-1 overflow-x-auto border-b border-white/[0.07] px-3 py-2 ${isTouch ? 'sticky top-0 z-10 bg-[#080d0b]/95' : ''}`}>
               {TABS.map(({ key, label, Icon }) => (
                 <button
                   key={key}
                   onClick={() => setTab(key)}
                   className={`font-hud flex flex-shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold uppercase tracking-wider transition-colors ${
-                    tab === key ? 'bg-emerald-500/[0.12] text-emerald-200' : 'text-gray-400 hover:text-gray-200 hover:bg-white/[0.04]'
+                    tab === key ? 'bg-emerald-500/[0.12] text-emerald-200' : 'text-white/60 hover:text-white/85 hover:bg-white/[0.04]'
                   }`}
                 >
                   <Icon className="w-4 h-4" strokeWidth={2.1} />
@@ -512,7 +512,7 @@ const ProfileMenu = ({ onClose, onSkillTree }: ProfileMenuProps) => {
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="font-display block text-lg font-semibold uppercase tracking-wide leading-none text-white">Skill Tree</span>
-                      <span className="font-hud mt-1 block text-[11px] text-gray-400">
+                      <span className="font-hud mt-1 block text-[11px] text-white/60">
                         {skillPoints > 0
                           ? `${skillPoints} point${skillPoints === 1 ? '' : 's'} ready to spend on upgrades`
                           : 'Earn points from every run, then upgrade here'}
@@ -578,10 +578,10 @@ const ProfileMenu = ({ onClose, onSkillTree }: ProfileMenuProps) => {
               {tab === 'achievements' && (
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
-                    <p className="font-hud text-xs font-semibold uppercase tracking-wider text-gray-200">
+                    <p className="font-hud text-xs font-semibold uppercase tracking-wider text-white/85">
                       {achievementsUnlocked} of {achievements.length} unlocked
                     </p>
-                    <span className="font-hud text-xs text-gray-500 tabular-nums">
+                    <span className="font-hud text-xs text-white/45 tabular-nums">
                       {Math.round((achievementsUnlocked / achievements.length) * 100)}%
                     </span>
                   </div>
@@ -596,14 +596,14 @@ const ProfileMenu = ({ onClose, onSkillTree }: ProfileMenuProps) => {
                           }`}
                         >
                           <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-black/30 text-xl">
-                            {a.unlocked ? a.icon : <Lock className="h-4 w-4 text-gray-500" strokeWidth={2.2} />}
+                            {a.unlocked ? a.icon : <Lock className="h-4 w-4 text-white/45" strokeWidth={2.2} />}
                           </div>
                           <div className="min-w-0">
                             <div className="flex items-center gap-2">
                               <p className="truncate text-sm font-bold text-white">{a.name}</p>
                               <span className={`font-hud text-[9px] font-bold uppercase tracking-wide ${style.text}`}>{a.rarity}</span>
                             </div>
-                            <p className="truncate text-[11px] text-gray-400">{a.description}</p>
+                            <p className="truncate text-[11px] text-white/60">{a.description}</p>
                           </div>
                         </div>
                       );
@@ -614,7 +614,7 @@ const ProfileMenu = ({ onClose, onSkillTree }: ProfileMenuProps) => {
 
               {tab === 'leaderboard' && (
                 <div className="space-y-4">
-                  <p className="text-[12px] text-gray-400">
+                  <p className="text-[12px] text-white/60">
                     Best players across the world, ranked by overall account XP. Earn more by
                     surviving longer and playing harder difficulties.
                     {!leaderboardOptIn && (
@@ -682,7 +682,7 @@ const DeleteAccountDialog = ({
       aria-modal="true"
       aria-label="Delete account"
       className="fixed inset-0 z-[70] flex items-center justify-center p-4"
-      style={{ background: 'rgba(4,6,6,0.86)', backdropFilter: 'blur(14px)', animation: 'daBack 0.2s ease forwards' }}
+      style={{ background: 'rgba(4,8,7,0.92)', animation: 'daBack 0.2s ease forwards' }}
       onClick={onCancel}
     >
       <div
@@ -695,14 +695,14 @@ const DeleteAccountDialog = ({
         </div>
         <p className="font-hud mt-4 text-[10px] tracking-[0.34em] text-rose-300/90 font-semibold uppercase">Danger Zone</p>
         <h3 className="font-display text-2xl font-semibold uppercase tracking-wide text-white">Delete account</h3>
-        <p className="mt-2 text-[13px] leading-relaxed text-gray-300/90">
+        <p className="mt-2 text-[13px] leading-relaxed text-white/70">
           This permanently erases your profile, stats, photos, achievements, rank and login —
           and releases your username. Every trace is wiped from the database. <span className="font-semibold text-rose-200">This cannot be undone.</span>
         </p>
 
         <div className="mt-4 space-y-3">
           <div>
-            <label className="font-hud block text-[11px] font-semibold uppercase tracking-[0.22em] text-gray-400">
+            <label className="font-hud block text-[11px] font-semibold uppercase tracking-[0.22em] text-white/60">
               Type <span className="text-rose-200">{handle}</span> to confirm
             </label>
             <input
@@ -712,18 +712,18 @@ const DeleteAccountDialog = ({
               spellCheck={false}
               autoCapitalize="none"
               placeholder={handle}
-              className="mt-1.5 w-full rounded-lg border border-white/10 bg-[#05080c] px-3.5 py-2.5 text-sm text-white outline-none transition-colors placeholder:text-gray-600 focus:border-rose-400/50 focus:ring-2 focus:ring-rose-400/20"
+              className="mt-1.5 w-full rounded-lg border border-white/10 bg-[#05080c] px-3.5 py-2.5 text-sm text-white outline-none transition-colors placeholder:text-white/35 focus:border-rose-400/50 focus:ring-2 focus:ring-rose-400/20"
             />
           </div>
           <div>
-            <label className="font-hud block text-[11px] font-semibold uppercase tracking-[0.22em] text-gray-400">Password</label>
+            <label className="font-hud block text-[11px] font-semibold uppercase tracking-[0.22em] text-white/60">Password</label>
             <input
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               type="password"
               autoComplete="current-password"
               placeholder="Enter your password"
-              className="mt-1.5 w-full rounded-lg border border-white/10 bg-[#05080c] px-3.5 py-2.5 text-sm text-white outline-none transition-colors placeholder:text-gray-600 focus:border-rose-400/50 focus:ring-2 focus:ring-rose-400/20"
+              className="mt-1.5 w-full rounded-lg border border-white/10 bg-[#05080c] px-3.5 py-2.5 text-sm text-white outline-none transition-colors placeholder:text-white/35 focus:border-rose-400/50 focus:ring-2 focus:ring-rose-400/20"
             />
           </div>
 
@@ -736,7 +736,7 @@ const DeleteAccountDialog = ({
               type="button"
               onClick={onCancel}
               disabled={busy}
-              className="font-hud rounded-lg border border-white/10 bg-white/[0.03] px-4 py-2.5 text-sm font-semibold uppercase tracking-wider text-gray-200 transition-colors hover:bg-white/[0.07] disabled:opacity-60"
+              className="font-hud rounded-lg border border-white/10 bg-white/[0.03] px-4 py-2.5 text-sm font-semibold uppercase tracking-wider text-white/85 transition-colors hover:bg-white/[0.07] disabled:opacity-60"
             >
               Cancel
             </button>
@@ -803,7 +803,7 @@ const ChangePasswordModal = ({ onClose }: { onClose: () => void }) => {
       aria-modal="true"
       aria-label="Change password"
       className="menu-overlay-in fixed inset-0 z-[70] flex items-center justify-center p-4"
-      style={{ background: 'rgba(4,8,7,0.86)', backdropFilter: 'blur(14px)' }}
+      style={{ background: 'rgba(4,8,7,0.92)' }}
       onClick={() => { if (!busy) onClose(); }}
     >
       <div
@@ -824,20 +824,20 @@ const ChangePasswordModal = ({ onClose }: { onClose: () => void }) => {
           <button
             onClick={onClose}
             aria-label="Close"
-            className="flex items-center justify-center w-9 h-9 rounded-lg border border-white/10 text-gray-400 transition-colors hover:text-white hover:bg-white/[0.06]"
+            className="flex items-center justify-center w-9 h-9 rounded-lg border border-white/10 text-white/60 transition-colors hover:text-white hover:bg-white/[0.06]"
           >
             <X className="w-[18px] h-[18px]" strokeWidth={2.25} />
           </button>
         </div>
 
-        <p className="mt-3 text-[12px] leading-relaxed text-gray-400">
+        <p className="mt-3 text-[12px] leading-relaxed text-white/60">
           Confirm your current password and date of birth to set a new one.
         </p>
 
         <form onSubmit={submit} className="mt-4 grid gap-3">
           <input name="currentPassword" type="password" autoComplete="current-password" placeholder="Current password" className={inputClass} />
           <div className="relative">
-            <Calendar className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" strokeWidth={2.1} />
+            <Calendar className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/45" strokeWidth={2.1} />
             <input name="dob" type="date" aria-label="Date of birth" className={`${inputClass} pl-9 [color-scheme:dark]`} />
           </div>
           <input name="newPassword" type="password" autoComplete="new-password" placeholder="New password" className={inputClass} />
@@ -849,7 +849,7 @@ const ChangePasswordModal = ({ onClose }: { onClose: () => void }) => {
               type="button"
               onClick={onClose}
               disabled={busy}
-              className="font-hud rounded-lg border border-white/10 bg-white/[0.03] px-4 py-2.5 text-sm font-semibold uppercase tracking-wider text-gray-200 transition-colors hover:bg-white/[0.07] disabled:opacity-60"
+              className="font-hud rounded-lg border border-white/10 bg-white/[0.03] px-4 py-2.5 text-sm font-semibold uppercase tracking-wider text-white/85 transition-colors hover:bg-white/[0.07] disabled:opacity-60"
             >
               Close
             </button>
@@ -946,9 +946,9 @@ const ActivityHeatmap = () => {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <Activity className="w-4 h-4 text-emerald-300" strokeWidth={2.2} />
-          <p className="font-hud text-[11px] font-semibold uppercase tracking-[0.2em] text-gray-200">Activity</p>
+          <p className="font-hud text-[11px] font-semibold uppercase tracking-[0.2em] text-white/85">Activity</p>
         </div>
-        <p className="font-hud text-[10px] uppercase tracking-wider text-gray-500">Last 12 months</p>
+        <p className="font-hud text-[10px] uppercase tracking-wider text-white/45">Last 12 months</p>
       </div>
 
       <div className="mt-3 grid grid-cols-3 gap-2">
@@ -969,7 +969,7 @@ const ActivityHeatmap = () => {
                   const label = grid.months.find((m) => m.w === w)?.label;
                   return (
                     <div key={w} className="relative w-[12px]">
-                      {label && <span className="font-hud absolute left-0 top-0 whitespace-nowrap text-[9px] text-gray-500">{label}</span>}
+                      {label && <span className="font-hud absolute left-0 top-0 whitespace-nowrap text-[9px] text-white/45">{label}</span>}
                     </div>
                   );
                 })}
@@ -978,7 +978,7 @@ const ActivityHeatmap = () => {
             <div className="mt-1 flex">
               <div className="mr-1 flex w-6 flex-shrink-0 flex-col gap-[3px]">
                 {['', 'Mon', '', 'Wed', '', 'Fri', ''].map((d, i) => (
-                  <div key={i} className="font-hud flex h-[12px] items-center text-[8px] text-gray-600">{d}</div>
+                  <div key={i} className="font-hud flex h-[12px] items-center text-[8px] text-white/35">{d}</div>
                 ))}
               </div>
               <div className="flex gap-[3px]">
@@ -1003,11 +1003,11 @@ const ActivityHeatmap = () => {
       )}
 
       <div className="mt-3 flex items-center justify-end gap-1.5">
-        <span className="font-hud text-[9px] uppercase tracking-wider text-gray-500">Less</span>
+        <span className="font-hud text-[9px] uppercase tracking-wider text-white/45">Less</span>
         {HEAT_BG.map((bg, i) => (
           <span key={i} className="h-[11px] w-[11px] rounded-[3px]" style={{ background: bg }} />
         ))}
-        <span className="font-hud text-[9px] uppercase tracking-wider text-gray-500">More</span>
+        <span className="font-hud text-[9px] uppercase tracking-wider text-white/45">More</span>
       </div>
     </div>
   );
@@ -1019,7 +1019,7 @@ const HeatStat = ({ icon: Icon, label, value }: { icon: typeof Flame; label: str
       <Icon className="w-3.5 h-3.5 text-emerald-300" strokeWidth={2.3} />
       <span className="font-display text-lg font-semibold leading-none tabular-nums text-white">{value}</span>
     </div>
-    <p className="font-hud mt-1 text-[9px] font-semibold uppercase tracking-[0.14em] text-gray-500">{label}</p>
+    <p className="font-hud mt-1 text-[9px] font-semibold uppercase tracking-[0.14em] text-white/45">{label}</p>
   </div>
 );
 
@@ -1105,8 +1105,8 @@ const PhotosPanel = () => {
       <div className="flex items-center justify-between">
         <div>
           <SectionLabel>Photo Gallery</SectionLabel>
-          <p className="mt-1 text-[11px] text-gray-500">
-            Captured from <span className="text-gray-300">Pause → Photo Mode</span> during Solo play.
+          <p className="mt-1 text-[11px] text-white/45">
+            Captured from <span className="text-white/75">Pause → Photo Mode</span> during Solo play.
           </p>
         </div>
         <span className="font-hud rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-bold tabular-nums text-emerald-200">
@@ -1122,10 +1122,10 @@ const PhotosPanel = () => {
         </div>
       ) : photos.length === 0 ? (
         <div className="flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-white/10 bg-white/[0.02] px-4 py-10 text-center">
-          <Camera className="h-7 w-7 text-gray-600" strokeWidth={1.8} />
-          <p className="text-sm font-semibold text-gray-300">No photos yet</p>
-          <p className="max-w-xs text-[11px] text-gray-500">
-            Open <span className="text-gray-300">Photo Mode</span> from the in-game pause menu to freeze the
+          <Camera className="h-7 w-7 text-white/35" strokeWidth={1.8} />
+          <p className="text-sm font-semibold text-white/75">No photos yet</p>
+          <p className="max-w-xs text-[11px] text-white/45">
+            Open <span className="text-white/75">Photo Mode</span> from the in-game pause menu to freeze the
             world, frame your shot, and capture up to {max} photos.
           </p>
         </div>
@@ -1150,14 +1150,14 @@ const PhotosPanel = () => {
                     loading="lazy"
                   />
                 ) : (
-                  <div className="flex h-full w-full items-center justify-center text-gray-600">
+                  <div className="flex h-full w-full items-center justify-center text-white/35">
                     <ImageOff className="h-6 w-6" strokeWidth={1.8} />
                   </div>
                 )}
               </button>
 
               {p.url && (
-                <span className="pointer-events-none absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-lg bg-black/55 text-white opacity-0 backdrop-blur-md transition-opacity group-hover:opacity-100">
+                <span className="pointer-events-none absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-lg bg-black/55 text-white opacity-0 transition-opacity group-hover:opacity-100">
                   <Maximize2 className="h-3.5 w-3.5" strokeWidth={2.3} />
                 </span>
               )}
@@ -1166,7 +1166,7 @@ const PhotosPanel = () => {
                 <button
                   onClick={(e) => { e.stopPropagation(); handleDownload(p.url, p.id); }}
                   disabled={busyId === p.id || !p.url}
-                  className="pointer-events-auto flex items-center gap-1.5 rounded-lg bg-white/10 px-2.5 py-1.5 text-[11px] font-semibold text-white backdrop-blur-md transition-colors hover:bg-white/20 disabled:opacity-50"
+                  className="pointer-events-auto flex items-center gap-1.5 rounded-lg bg-white/10 px-2.5 py-1.5 text-[11px] font-semibold text-white transition-colors hover:bg-white/20 disabled:opacity-50"
                 >
                   {busyId === p.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2.4} /> : <Download className="h-3.5 w-3.5" strokeWidth={2.4} />}
                   Save
@@ -1174,7 +1174,7 @@ const PhotosPanel = () => {
                 <button
                   onClick={(e) => { e.stopPropagation(); setConfirmId(p.id); }}
                   disabled={busyId === p.id}
-                  className="pointer-events-auto flex items-center gap-1.5 rounded-lg bg-rose-500/20 px-2.5 py-1.5 text-[11px] font-semibold text-rose-100 backdrop-blur-md transition-colors hover:bg-rose-500/35 disabled:opacity-50"
+                  className="pointer-events-auto flex items-center gap-1.5 rounded-lg bg-rose-500/20 px-2.5 py-1.5 text-[11px] font-semibold text-rose-100 transition-colors hover:bg-rose-500/35 disabled:opacity-50"
                 >
                   <Trash2 className="h-3.5 w-3.5" strokeWidth={2.4} />
                   Delete
@@ -1182,9 +1182,9 @@ const PhotosPanel = () => {
               </div>
 
               {confirmId === p.id && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center gap-2.5 bg-black/85 p-3 text-center backdrop-blur-sm">
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-2.5 bg-black/85 p-3 text-center">
                   <p className="text-[12px] font-semibold text-white">Delete this photo?</p>
-                  <p className="text-[10px] text-gray-400">This removes it from cloud storage permanently.</p>
+                  <p className="text-[10px] text-white/60">This removes it from cloud storage permanently.</p>
                   <div className="flex gap-2">
                     <button
                       onClick={() => handleDelete(p.id)}
@@ -1196,7 +1196,7 @@ const PhotosPanel = () => {
                     </button>
                     <button
                       onClick={() => setConfirmId(null)}
-                      className="rounded-lg border border-white/15 px-3 py-1.5 text-[11px] font-semibold text-gray-300 transition-colors hover:bg-white/10"
+                      className="rounded-lg border border-white/15 px-3 py-1.5 text-[11px] font-semibold text-white/75 transition-colors hover:bg-white/10"
                     >
                       Cancel
                     </button>
@@ -1213,7 +1213,7 @@ const PhotosPanel = () => {
           role="dialog"
           aria-modal="true"
           aria-label="Photo preview"
-          className="fixed inset-0 z-[80] flex items-center justify-center bg-black/90 p-3 backdrop-blur-md sm:p-6"
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-black/90 p-3 sm:p-6"
           style={{ animation: 'pmPrevBack 0.18s ease forwards' }}
           onClick={() => setPreviewId(null)}
         >
@@ -1229,13 +1229,13 @@ const PhotosPanel = () => {
                 </span>
                 <div className="min-w-0">
                   <p className="font-display text-sm font-semibold uppercase tracking-wide leading-none text-white">Photo Preview</p>
-                  <p className="font-hud mt-1 truncate text-[11px] text-gray-500">{formatPhotoDate(previewPhoto.createdAt)}</p>
+                  <p className="font-hud mt-1 truncate text-[11px] text-white/45">{formatPhotoDate(previewPhoto.createdAt)}</p>
                 </div>
               </div>
               <button
                 onClick={() => setPreviewId(null)}
                 aria-label="Close preview"
-                className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg border border-white/10 text-gray-400 transition-colors hover:bg-white/10 hover:text-white"
+                className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg border border-white/10 text-white/60 transition-colors hover:bg-white/10 hover:text-white"
               >
                 <X className="h-[17px] w-[17px]" strokeWidth={2.3} />
               </button>
@@ -1252,7 +1252,7 @@ const PhotosPanel = () => {
                   className="max-h-[calc(92dvh-9rem)] max-w-full rounded-lg object-contain shadow-[0_12px_50px_rgba(0,0,0,0.55)]"
                 />
               ) : (
-                <div className="flex h-56 w-full items-center justify-center text-gray-600">
+                <div className="flex h-56 w-full items-center justify-center text-white/35">
                   <ImageOff className="h-8 w-8" strokeWidth={1.8} />
                 </div>
               )}
@@ -1325,7 +1325,7 @@ const StatsVisualizer = (p: StatsVisualizerProps) => {
       <div className="relative mb-4 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <Gauge className="h-4 w-4 text-emerald-300" strokeWidth={2.2} />
-          <p className="font-hud text-[11px] font-semibold uppercase tracking-[0.2em] text-gray-200">{SV_TITLE[view]}</p>
+          <p className="font-hud text-[11px] font-semibold uppercase tracking-[0.2em] text-white/85">{SV_TITLE[view]}</p>
         </div>
         <div className="flex items-center gap-0.5 rounded-lg border border-white/10 bg-black/30 p-0.5">
           {SV_VIEWS.map((v) => {
@@ -1336,7 +1336,7 @@ const StatsVisualizer = (p: StatsVisualizerProps) => {
                 onClick={() => setView(v.key)}
                 aria-pressed={active}
                 className={`font-hud flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-wider transition-colors ${
-                  active ? 'bg-emerald-500/[0.16] text-emerald-200 shadow-[inset_0_0_0_1px_rgba(52,211,153,0.3)]' : 'text-gray-500 hover:text-gray-300'
+                  active ? 'bg-emerald-500/[0.16] text-emerald-200 shadow-[inset_0_0_0_1px_rgba(52,211,153,0.3)]' : 'text-white/45 hover:text-white/75'
                 }`}
               >
                 <v.Icon className="h-3.5 w-3.5" strokeWidth={2.2} />
@@ -1382,7 +1382,7 @@ const SvBars = ({ soloScore, soloKills, soloRuns, mpScore, mpKills, mpGames }: S
       </div>
       <div className="mt-2 flex justify-around">
         {groups.map((g) => (
-          <span key={g.label} className="font-hud text-[10px] font-semibold uppercase tracking-[0.16em] text-gray-500">{g.label}</span>
+          <span key={g.label} className="font-hud text-[10px] font-semibold uppercase tracking-[0.16em] text-white/45">{g.label}</span>
         ))}
       </div>
       <div className="mt-3.5 flex items-center justify-center gap-5 border-t border-white/[0.06] pt-3">
@@ -1395,7 +1395,7 @@ const SvBars = ({ soloScore, soloKills, soloRuns, mpScore, mpKills, mpGames }: S
 
 const SvBar = ({ value, pct, fill, glow }: { value: number; pct: number; fill: string; glow: string }) => (
   <div className="flex h-full w-9 flex-col items-center justify-end">
-    <span className="font-hud mb-1 text-[10px] font-bold tabular-nums text-gray-300">{fmtCompact(value)}</span>
+    <span className="font-hud mb-1 text-[10px] font-bold tabular-nums text-white/75">{fmtCompact(value)}</span>
     <div
       className="w-full rounded-t-[6px]"
       style={{ height: `${Math.max(pct * 0.86, 2)}%`, background: fill, boxShadow: `0 0 14px ${glow}`, transformOrigin: 'bottom', animation: 'svBarGrow 0.7s cubic-bezier(0.16,1,0.3,1)' }}
@@ -1406,7 +1406,7 @@ const SvBar = ({ value, pct, fill, glow }: { value: number; pct: number; fill: s
 const SvLegend = ({ Icon, color, label }: { Icon: LucideIcon; color: string; label: string }) => (
   <div className="flex items-center gap-1.5">
     <Icon className="h-3.5 w-3.5" strokeWidth={2.2} style={{ color }} />
-    <span className="font-hud text-[10px] font-semibold uppercase tracking-wider text-gray-400">{label}</span>
+    <span className="font-hud text-[10px] font-semibold uppercase tracking-wider text-white/60">{label}</span>
   </div>
 );
 
@@ -1438,7 +1438,7 @@ const SvDonut = ({ soloKills, mpKills }: { soloKills: number; mpKills: number })
         </svg>
         <div className="absolute inset-0 flex flex-col items-center justify-center">
           <span className="font-display text-2xl font-bold tabular-nums leading-none text-white">{total.toLocaleString()}</span>
-          <span className="font-hud mt-1 text-[9px] font-semibold uppercase tracking-[0.18em] text-gray-500">Total Kills</span>
+          <span className="font-hud mt-1 text-[9px] font-semibold uppercase tracking-[0.18em] text-white/45">Total Kills</span>
         </div>
       </div>
       <div className="w-full max-w-[220px] space-y-2.5 sm:w-auto">
@@ -1455,9 +1455,9 @@ const SvDonutRow = ({ Icon, color, label, value, pct }: { Icon: LucideIcon; colo
       <Icon className="h-3.5 w-3.5" strokeWidth={2.2} style={{ color }} />
     </span>
     <div className="min-w-0 flex-1">
-      <div className="font-hud text-[10px] font-semibold uppercase tracking-wider text-gray-400">{label}</div>
+      <div className="font-hud text-[10px] font-semibold uppercase tracking-wider text-white/60">{label}</div>
       <div className="text-sm font-bold tabular-nums text-white">
-        {value.toLocaleString()} <span className="text-[11px] font-semibold text-gray-500">· {Math.round(pct)}%</span>
+        {value.toLocaleString()} <span className="text-[11px] font-semibold text-white/45">· {Math.round(pct)}%</span>
       </div>
     </div>
   </div>
@@ -1518,7 +1518,7 @@ const SvRadar = ({ soloKills, mpKills, bestWave, winRate, soloRuns, mpGames, tro
           );
         })}
       </svg>
-      <p className="font-hud -mt-1 text-[10px] uppercase tracking-[0.16em] text-gray-500">
+      <p className="font-hud -mt-1 text-[10px] uppercase tracking-[0.16em] text-white/45">
         Power Index <span className="font-bold text-emerald-300">{overall}</span> · relative profile
       </p>
     </div>
@@ -1527,9 +1527,9 @@ const SvRadar = ({ soloKills, mpKills, bestWave, winRate, soloRuns, mpGames, tro
 
 const SvEmpty = ({ label, hint }: { label: string; hint: string }) => (
   <div className="flex flex-col items-center justify-center gap-1.5 py-10 text-center">
-    <Activity className="h-7 w-7 text-gray-600" strokeWidth={1.8} />
-    <p className="text-sm font-semibold text-gray-300">{label}</p>
-    <p className="max-w-[16rem] text-[11px] text-gray-500">{hint}</p>
+    <Activity className="h-7 w-7 text-white/35" strokeWidth={1.8} />
+    <p className="text-sm font-semibold text-white/75">{label}</p>
+    <p className="max-w-[16rem] text-[11px] text-white/45">{hint}</p>
   </div>
 );
 

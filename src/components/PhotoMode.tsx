@@ -43,7 +43,7 @@ const Slider = ({
 }: { label: string; value: number; min: number; max: number; step: number; onChange: (v: number) => void }) => (
   <div className="flex flex-col gap-1">
     <div className="flex items-center justify-between">
-      <span className="font-hud text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-400">{label}</span>
+      <span className="font-hud text-[11px] font-semibold uppercase tracking-[0.16em] text-white/60">{label}</span>
       <span className="font-hud text-[11px] font-bold tabular-nums text-emerald-300">{Math.round(value * 100)}%</span>
     </div>
     <input
@@ -113,26 +113,26 @@ const PhotoMode = ({ photoCount, maxPhotos, onFilterChange, onCapture, onExit }:
           stays compact instead of overflowing with irrelevant key hints. */}
       <div className="m-safe flex justify-center pt-5">
         {IS_TOUCH ? (
-          <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-white/10 bg-black/55 px-4 py-2 text-[12px] text-gray-300 backdrop-blur-md">
+          <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-white/[0.12] bg-[#060b09]/90 px-4 py-2 font-hud text-[12px] text-white/75">
             <Camera className="h-4 w-4 text-emerald-300" strokeWidth={2.2} />
             <span className="font-hud font-bold tracking-[0.22em] text-white">PHOTO MODE</span>
-            <span className="text-gray-500">·</span>
-            <Hand className="h-3.5 w-3.5 text-gray-400" strokeWidth={2.2} />
+            <span className="text-white/45">·</span>
+            <Hand className="h-3.5 w-3.5 text-white/60" strokeWidth={2.2} />
             <span>Drag to look around</span>
           </div>
         ) : (
-          <div className="pointer-events-auto flex items-center gap-2.5 rounded-lg border border-white/10 bg-black/55 px-4 py-2 text-[12px] text-gray-300 backdrop-blur-md">
+          <div className="pointer-events-auto flex items-center gap-2.5 rounded-lg border border-white/[0.12] bg-[#060b09]/90 px-4 py-2 font-hud text-[12px] text-white/75">
             <Camera className="h-4 w-4 text-emerald-300" strokeWidth={2.2} />
             <span className="font-hud font-bold tracking-[0.22em] text-white">PHOTO MODE</span>
-            <span className="text-gray-500">·</span>
-            <MousePointer2 className="h-3.5 w-3.5 text-gray-400" strokeWidth={2.2} />
+            <span className="text-white/45">·</span>
+            <MousePointer2 className="h-3.5 w-3.5 text-white/60" strokeWidth={2.2} />
             <span>Drag to look</span>
-            <span className="text-gray-500">·</span>
-            <span><kbd className="rounded bg-white/10 px-1 font-mono text-[10px] text-gray-200">WASD</kbd> move</span>
-            <span className="text-gray-500">·</span>
-            <span><kbd className="rounded bg-white/10 px-1 font-mono text-[10px] text-gray-200">Scroll</kbd> zoom</span>
-            <span className="text-gray-500">·</span>
-            <span><kbd className="rounded bg-white/10 px-1 font-mono text-[10px] text-gray-200">Space/Shift</kbd> height</span>
+            <span className="text-white/45">·</span>
+            <span><kbd className="rounded bg-white/10 px-1 font-mono text-[10px] text-white/85">WASD</kbd> move</span>
+            <span className="text-white/45">·</span>
+            <span><kbd className="rounded bg-white/10 px-1 font-mono text-[10px] text-white/85">Scroll</kbd> zoom</span>
+            <span className="text-white/45">·</span>
+            <span><kbd className="rounded bg-white/10 px-1 font-mono text-[10px] text-white/85">Space/Shift</kbd> height</span>
           </div>
         )}
       </div>
@@ -142,7 +142,7 @@ const PhotoMode = ({ photoCount, maxPhotos, onFilterChange, onCapture, onExit }:
       {/* Bottom control dock */}
       <div className="flex justify-center px-3 pb-5">
         <div
-          className="hud-frame pointer-events-auto relative w-full max-w-2xl overflow-hidden rounded-2xl border border-emerald-400/15 p-4 shadow-[0_24px_80px_rgba(0,0,0,0.65)] backdrop-blur-xl"
+          className="hud-frame pointer-events-auto relative w-full max-w-2xl overflow-hidden rounded-2xl border border-emerald-400/15 p-4 shadow-[0_24px_80px_rgba(0,0,0,0.65)]"
           style={{
             background: 'linear-gradient(180deg, rgba(11,18,15,0.94), rgba(6,11,9,0.96))',
             animation: 'pmUp 0.3s cubic-bezier(0.16,1,0.3,1) forwards',
@@ -158,8 +158,8 @@ const PhotoMode = ({ photoCount, maxPhotos, onFilterChange, onCapture, onExit }:
               <span className="font-display text-sm font-semibold uppercase tracking-wide text-white">Adjustments</span>
             </div>
             <div className="flex items-center gap-2">
-              <span className="hidden text-[11px] text-gray-500 sm:inline">
-                View captures in <span className="text-gray-300">Profile → Photos</span>
+              <span className="hidden text-[11px] text-white/45 sm:inline">
+                View captures in <span className="text-white/75">Profile → Photos</span>
               </span>
               <span
                 className={`rounded-lg border px-2.5 py-1 text-[11px] font-bold tabular-nums ${
@@ -180,7 +180,7 @@ const PhotoMode = ({ photoCount, maxPhotos, onFilterChange, onCapture, onExit }:
                 className={`font-hud flex-shrink-0 rounded-lg border px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider transition-colors ${
                   preset === p.id
                     ? 'border-emerald-400/50 bg-emerald-500/15 text-emerald-100'
-                    : 'border-white/10 bg-white/[0.03] text-gray-400 hover:bg-white/[0.07] hover:text-gray-200'
+                    : 'border-white/10 bg-white/[0.03] text-white/60 hover:bg-white/[0.07] hover:text-white/85'
                 }`}
               >
                 {p.label}
@@ -203,7 +203,7 @@ const PhotoMode = ({ photoCount, maxPhotos, onFilterChange, onCapture, onExit }:
                   ? 'border-rose-400/30 bg-rose-500/10 text-rose-100'
                   : status === 'done'
                   ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-100'
-                  : 'border-white/10 bg-white/[0.04] text-gray-200'
+                  : 'border-white/10 bg-white/[0.04] text-white/85'
               }`}
             >
               {status === 'busy' && <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2.4} />}
@@ -217,7 +217,7 @@ const PhotoMode = ({ photoCount, maxPhotos, onFilterChange, onCapture, onExit }:
           <div className="mt-3 flex items-center gap-2.5">
             <button
               onClick={reset}
-              className="flex items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-3.5 py-2.5 text-sm font-semibold text-gray-300 transition-colors hover:bg-white/[0.07]"
+              className="flex items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-3.5 py-2.5 text-sm font-semibold text-white/75 transition-colors hover:bg-white/[0.07]"
             >
               <RotateCcw className="h-4 w-4" strokeWidth={2.2} />
               <span className="hidden sm:inline">Reset</span>
@@ -235,15 +235,15 @@ const PhotoMode = ({ photoCount, maxPhotos, onFilterChange, onCapture, onExit }:
             </button>
             <button
               onClick={onExit}
-              className="flex items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-3.5 py-2.5 text-sm font-semibold text-gray-300 transition-colors hover:bg-red-500/[0.1] hover:text-red-200 hover:border-red-400/40"
+              className="flex items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-3.5 py-2.5 text-sm font-semibold text-white/75 transition-colors hover:bg-red-500/[0.1] hover:text-red-200 hover:border-red-400/40"
             >
               <X className="h-4 w-4" strokeWidth={2.4} />
               <span className="hidden sm:inline">Exit</span>
             </button>
           </div>
           {full && (
-            <p className="mt-2 text-center text-[11px] text-gray-500">
-              Delete a photo from your <span className="text-gray-300">Profile → Photos</span> to free a slot.
+            <p className="mt-2 text-center text-[11px] text-white/45">
+              Delete a photo from your <span className="text-white/75">Profile → Photos</span> to free a slot.
             </p>
           )}
         </div>

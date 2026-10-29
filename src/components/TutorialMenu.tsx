@@ -1,248 +1,81 @@
-import { useEffect, useRef, useState } from 'react';
-import {
-  ArrowLeft, GraduationCap, Play, ChevronDown, CloudSun, Sun, Moon, BookOpen, ArrowUpRight,
-  Trees, Flame, Snowflake, Mountain, Droplet, Shield, Leaf, Landmark, type LucideIcon,
-} from 'lucide-react';
+import { useRef, useState } from 'react';
+import { Play, BookOpen, ArrowUpRight } from 'lucide-react';
 import CharacterSelect from './CharacterSelect';
-import { MAP_CONFIGS, type MapType } from '../utils/MapSystem';
+import type { MapType } from '../utils/MapSystem';
 import type { ClassId } from '../utils/CharacterModels';
 import { WIKI_BASE } from '../utils/TutorialSystem';
 import { detectIsTouch } from '../hooks/useDeviceInfo';
+import {
+  MenuBackButton, MenuScreenHeader, MenuSection, AtmosphereSection, MapSection,
+  MenuStartBar, MenuFootnote, type TimeOfDay,
+} from './MenuKit';
 
 const IS_TOUCH = detectIsTouch();
 
 interface TutorialMenuProps {
-  onStartTutorial: (map: MapType, timeOfDay: 'day' | 'night' | 'auto') => void;
+  onStartTutorial: (map: MapType, timeOfDay: TimeOfDay) => void;
   onBack: () => void;
   selectedCharacter: ClassId;
   onSelectCharacter: (id: ClassId) => void;
   t?: (key: string) => string;
 }
 
-const MAP_ICONS: Record<MapType, LucideIcon> = {
-  deep_forest: Trees,
-  scorched_wasteland: Flame,
-  frozen_tundra: Snowflake,
-  desert_canyon: Mountain,
-  toxic_swamp: Droplet,
-  military_outpost: Shield,
-  autumn_grove: Leaf,
-  ancient_ruins: Landmark,
-};
-
-const ATMOSPHERES: { key: 'auto' | 'day' | 'night'; icon: LucideIcon; label: string; desc: string; color: string }[] = [
-  { key: 'auto',  icon: CloudSun, label: 'Auto',  desc: 'Day-night cycle', color: '#a78bfa' },
-  { key: 'day',   icon: Sun,      label: 'Day',   desc: 'Bright',          color: '#fbbf24' },
-  { key: 'night', icon: Moon,     label: 'Night', desc: 'Dark',            color: '#818cf8' },
-];
-
+/**
+ * Tutorial setup — the SAME layout as Solo (shared MenuKit), in the tutorial's
+ * amber accent. It used to be a translucent glass variant with its own header,
+ * buttons and grey type.
+ */
 const TutorialMenu = ({ onStartTutorial, onBack, selectedCharacter, onSelectCharacter }: TutorialMenuProps) => {
   const [selectedMap, setSelectedMap] = useState<MapType>('deep_forest');
   // Default 'auto' so new players see the full day-night transition the
   // game shows in real gameplay.
-  const [selectedTimeOfDay, setSelectedTimeOfDay] = useState<'day' | 'night' | 'auto'>('auto');
-  const [showMapSelector, setShowMapSelector] = useState(false);
-
-  const SelectedMapIcon = MAP_ICONS[selectedMap];
-
-  // Map is the LAST section on the page, so expanding it unfolds the 8-map grid
-  // straight into the strip covered by the fixed Start bar (or entirely below
-  // the fold on a short screen) — the dropdown looked like it did nothing.
-  // Reveal it: after the grid mounts, scroll it back above the bar.
+  const [selectedTimeOfDay, setSelectedTimeOfDay] = useState<TimeOfDay>('auto');
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const mapSectionRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!showMapSelector) return;
-    // One frame so the grid has laid out and the section has its final height.
-    const raf = requestAnimationFrame(() => {
-      const scroller = scrollRef.current;
-      const section = mapSectionRef.current;
-      if (!scroller || !section) return;
-      // Height of the Start bar (pt-10 + button + pb-6) plus a little breathing
-      // room, so the last row of maps clears the scrim rather than hiding under it.
-      const START_BAR_CLEARANCE = 148;
-      const hidden = section.getBoundingClientRect().bottom - (scroller.clientHeight - START_BAR_CLEARANCE);
-      if (hidden > 0) scroller.scrollBy({ top: hidden, behavior: 'smooth' });
-    });
-    return () => cancelAnimationFrame(raf);
-  }, [showMapSelector]);
 
   return (
     <div className="relative w-full h-dvh overflow-hidden">
       {/* Backdrop chrome (dark gradients + themed tint) is rendered at App
           level OUTSIDE the menu transition so it stays static while this
           screen slides. Only the content below animates. */}
+      <MenuBackButton onClick={onBack} />
 
-      <button
-        onClick={onBack}
-        className="group fixed top-5 left-5 z-50 flex items-center gap-2 rounded-xl px-4 py-2.5
-          border border-white/10 bg-black/50 backdrop-blur-md font-hud text-sm font-semibold uppercase tracking-wider text-gray-300
-          transition-all duration-200 hover:text-white hover:bg-black/70 hover:border-white/20"
-      >
-        <ArrowLeft className="w-4 h-4 group-hover:-translate-x-0.5 transition-transform" strokeWidth={2.25} />
-        Back
-      </button>
-
-      {/* Scrollable content.
-
-          `m-safe` lives on the SCROLLER, never on the padded content div below.
-          It sets all four `padding-*` longhands and is emitted after Tailwind's
-          utility layer at equal specificity, so co-locating it with `px-4 pt-20
-          pb-36` silently zeroed every one of them (env(safe-area-inset-*) is 0px
-          on desktop). That is why the Map section could never be scrolled clear
-          of the Start bar — the page had no bottom padding at all.
-
-          Bottom padding must exceed the fixed Start bar (pt-10 40px + button
-          ~56px + pb-6 24px = ~120px) so the bar always ends up BELOW the last
-          section rather than cutting into it. */}
+      {/* Scrollable content — `m-safe` on the SCROLLER only (see ClassicMenu). */}
       <div ref={scrollRef} className="m-safe relative z-20 h-dvh overflow-y-auto">
         <div className={`flex flex-col items-center max-w-2xl mx-auto ${IS_TOUCH ? 'px-4 pt-16 pb-36' : 'px-4 pt-20 pb-40'}`}>
-          <div className={`text-center ${IS_TOUCH ? 'mb-5' : 'mb-8'}`}>
-            <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl border border-amber-400/30 bg-amber-500/10 mb-4">
-              <GraduationCap className="w-7 h-7 text-amber-400" strokeWidth={1.75} />
-            </div>
-            <p className="font-hud text-[10px] tracking-[0.4em] text-amber-300/90 font-semibold uppercase mb-2">Tutorial</p>
-            <h1
-              className={`font-display font-semibold uppercase tracking-wide ${IS_TOUCH ? 'text-3xl' : 'text-4xl sm:text-5xl'}`}
-              style={{
-                background: 'linear-gradient(180deg, #fef3c7 0%, #fcd34d 60%, #f59e0b 100%)',
-                WebkitBackgroundClip: 'text',
-                WebkitTextFillColor: 'transparent',
-                backgroundClip: 'text',
-                filter: 'drop-shadow(0 4px 20px rgba(245,158,11,0.35))',
-              }}
-            >
-              CHOOSE YOUR MAP
-            </h1>
-            <p className="mt-3 text-sm text-gray-400">
-              Pick a battlefield to learn the core mechanics. All weapons, abilities and throwables are unlocked, and you can't be hurt.
-            </p>
+          <MenuScreenHeader
+            eyebrow="Guided Training"
+            title="Tutorial Mode"
+            subtitle="Learn every control step by step. All weapons, abilities and throwables are unlocked, throwables are unlimited, and nothing can hurt you."
+            accent="amber"
+            compact={IS_TOUCH}
+          >
             <a
               href={WIKI_BASE}
               target="_blank"
               rel="noopener noreferrer"
-              className="group mt-3 inline-flex items-center gap-1.5 text-xs font-semibold text-amber-300/90 transition-colors hover:text-amber-200"
+              className="font-hud group mt-3 inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-300/90 transition-colors hover:text-amber-200"
             >
               <BookOpen className="w-3.5 h-3.5 flex-shrink-0" strokeWidth={2.2} />
-              Prefer reading first? Browse the full Game Wiki
+              Prefer reading first? Browse the Game Wiki
               <ArrowUpRight className="w-3.5 h-3.5 flex-shrink-0 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" strokeWidth={2.2} />
             </a>
-          </div>
+          </MenuScreenHeader>
 
           <div className="w-full space-y-4 menu-stagger">
-            <Section title="Character">
+            <MenuSection title="Character" accent="amber">
               <CharacterSelect selected={selectedCharacter} onSelect={onSelectCharacter} accent="#fbbf24" />
-            </Section>
-
-            <Section title="Atmosphere">
-              <div className="grid grid-cols-3 gap-2">
-                {ATMOSPHERES.map((a) => {
-                  const Icon = a.icon;
-                  const active = selectedTimeOfDay === a.key;
-                  return (
-                    <button
-                      key={a.key}
-                      onClick={() => setSelectedTimeOfDay(a.key)}
-                      className="flex flex-col items-center justify-center py-3 px-2 rounded-xl border transition-all duration-200 hover:-translate-y-0.5"
-                      style={{
-                        borderColor: active ? `${a.color}99` : 'rgba(255,255,255,0.08)',
-                        background: active ? `${a.color}1f` : 'rgba(255,255,255,0.03)',
-                      }}
-                    >
-                      <Icon className="w-5 h-5 mb-1.5" style={{ color: active ? a.color : '#9ca3af' }} strokeWidth={2} />
-                      <span className={`font-hud text-xs font-bold ${active ? 'text-white' : 'text-gray-300'}`}>{a.label}</span>
-                      <span className="text-[10px] text-gray-500">{a.desc}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </Section>
-
-            <Section title="Map" innerRef={mapSectionRef}>
-              <button
-                onClick={() => setShowMapSelector(!showMapSelector)}
-                className="w-full flex items-center gap-3 rounded-xl px-3.5 py-3 border border-white/10 bg-white/[0.03]
-                  transition-colors hover:bg-white/[0.06]"
-              >
-                <span className="flex items-center justify-center w-10 h-10 rounded-lg bg-amber-500/12 flex-shrink-0">
-                  <SelectedMapIcon className="w-5 h-5 text-amber-400" strokeWidth={1.75} />
-                </span>
-                <span className="flex-1 min-w-0 text-left">
-                  <span className="block text-sm font-bold text-white truncate">{MAP_CONFIGS[selectedMap].name}</span>
-                  <span className="block text-[11px] text-gray-500 truncate">{MAP_CONFIGS[selectedMap].description}</span>
-                </span>
-                <ChevronDown className={`w-4 h-4 text-gray-500 flex-shrink-0 transition-transform ${showMapSelector ? 'rotate-180' : ''}`} strokeWidth={2.25} />
-              </button>
-              {showMapSelector && (
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2 menu-pop-grid">
-                  {Object.values(MAP_CONFIGS).map((map) => {
-                    const Icon = MAP_ICONS[map.id];
-                    const active = selectedMap === map.id;
-                    return (
-                      <button
-                        key={map.id}
-                        onClick={() => { setSelectedMap(map.id); setShowMapSelector(false); }}
-                        className="group flex flex-col items-center justify-center py-3 px-2 rounded-xl border
-                          transition-all duration-200 hover:-translate-y-0.5"
-                        title={map.description}
-                        style={{
-                          borderColor: active ? 'rgba(251,191,36,0.6)' : 'rgba(255,255,255,0.08)',
-                          background: active ? 'rgba(251,191,36,0.12)' : 'rgba(255,255,255,0.03)',
-                        }}
-                      >
-                        <Icon className="w-5 h-5 mb-1.5" style={{ color: active ? '#fbbf24' : '#9ca3af' }} strokeWidth={1.75} />
-                        <span className={`text-[10px] font-bold leading-tight text-center ${active ? 'text-white' : 'text-gray-400'}`}>
-                          {map.name}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </Section>
+            </MenuSection>
+            <AtmosphereSection value={selectedTimeOfDay} onChange={setSelectedTimeOfDay} accent="amber" />
+            <MapSection value={selectedMap} onChange={setSelectedMap} accent="amber" scrollRef={scrollRef} />
           </div>
 
-          <p className="font-hud mt-6 text-[10px] tracking-[0.3em] text-gray-600 uppercase">
-            Tutorial Mode · Invincible · All weapons unlocked
-          </p>
+          <MenuFootnote>Tutorial Mode · Invincible · All weapons unlocked</MenuFootnote>
         </div>
       </div>
 
-      {/* Fixed Start button.
-
-          The gradient scrim MUST stay pointer-events-none. It spans the full
-          viewport width and ~120px of height, so when it was interactive it
-          swallowed every click in the bottom strip of the screen — including
-          the Map dropdown, which sits right there once the page is scrolled
-          down. Only the button itself takes input. */}
-      <div className="fixed bottom-0 left-0 right-0 z-50 pointer-events-none">
-        <div className="bg-gradient-to-t from-[#140e05] via-[#140e05]/85 to-transparent pt-10 pb-6 px-4 flex justify-center">
-          <button
-            onClick={() => onStartTutorial(selectedMap, selectedTimeOfDay)}
-            className="group font-hud pointer-events-auto flex items-center justify-center gap-2.5 rounded-xl px-12 py-4 min-w-[260px]
-              font-bold tracking-[0.12em] uppercase text-[#160a04] transition-all duration-200
-              hover:-translate-y-0.5 active:translate-y-0"
-            style={{
-              background: 'linear-gradient(135deg, #fcd34d, #f59e0b)',
-              boxShadow: '0 8px 28px -8px rgba(245,158,11,0.6)',
-            }}
-          >
-            <Play className="w-5 h-5" strokeWidth={2.5} fill="currentColor" />
-            Start Tutorial
-          </button>
-        </div>
-      </div>
+      <MenuStartBar accent="amber" icon={Play} label="Start Tutorial" onClick={() => onStartTutorial(selectedMap, selectedTimeOfDay)} />
     </div>
   );
 };
-
-const Section = ({ title, children, innerRef }: { title: string; children: React.ReactNode; innerRef?: React.Ref<HTMLDivElement> }) => (
-  <div ref={innerRef} className="rounded-2xl border border-white/10 bg-white/[0.025] backdrop-blur-md">
-    <div className="px-4 py-2.5 border-b border-white/[0.07]">
-      <h2 className="font-hud text-[11px] font-semibold tracking-[0.2em] text-gray-400 uppercase">{title}</h2>
-    </div>
-    <div className="p-3">{children}</div>
-  </div>
-);
 
 export default TutorialMenu;

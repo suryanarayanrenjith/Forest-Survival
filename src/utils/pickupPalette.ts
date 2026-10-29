@@ -1,4 +1,5 @@
 import type { PowerUp } from '../types/game';
+import type { PowerUpType as AirdropReward } from './EnhancedPowerUps';
 import { THROWABLES, type ThrowableKind } from './Throwables';
 
 /**
@@ -35,3 +36,23 @@ export function pickupColor(type: PowerUp['type'], grenadeKind?: ThrowableKind):
 export function pickupCss(type: PowerUp['type'], grenadeKind?: ThrowableKind): string {
   return `#${pickupColor(type, grenadeKind).toString(16).padStart(6, '0')}`;
 }
+
+/**
+ * KILLSTREAK AIRDROPS — the same idea for the parachuted reward crates: one
+ * name + one hue per reward, shared by the "inbound" announcement, the crate's
+ * glow and the look-at tag. Shared families keep their pickup hue (a Health
+ * Pack crate glows the same green as a health pickup).
+ */
+export const AIRDROP_LABEL: Record<AirdropReward, string> = {
+  health: 'Health Pack', ammo: 'Ammo Crate', speed: 'Speed Boost', damage: 'Damage Boost',
+  shield: 'Shield', invincible: 'Invincibility', infinite_ammo: 'Infinite Ammo',
+  rapid_fire: 'Rapid Fire', nuke: 'Tactical Nuke', random_weapon: 'Mystery Box',
+  frenzy: 'Frenzy', juggernaut: 'Juggernaut',
+};
+export const AIRDROP_COLOR: Record<AirdropReward, number> = {
+  health: PICKUP_COLOR.health, ammo: PICKUP_COLOR.ammo, speed: PICKUP_COLOR.speed,
+  damage: PICKUP_COLOR.damage, shield: PICKUP_COLOR.shield, invincible: 0xffe066,
+  infinite_ammo: PICKUP_COLOR.infinite_ammo, rapid_fire: 0xff9a3c, nuke: PICKUP_COLOR.nuke,
+  random_weapon: 0xc58bff, frenzy: 0xff4f8b, juggernaut: 0xa9bdd2,
+};
+export const airdropCss = (r: AirdropReward): string => `#${AIRDROP_COLOR[r].toString(16).padStart(6, '0')}`;

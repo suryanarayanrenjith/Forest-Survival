@@ -113,7 +113,7 @@ const RunModifierPicker = ({ options: initialOptions, onChoose, onBack }: RunMod
             style={{ filter: 'drop-shadow(0 4px 20px rgba(244,63,94,0.3))' }}>
             Raise the Stakes
           </h2>
-          <p className="mt-2 text-[13px] text-gray-400">
+          <p className="mt-2 text-[13px] text-white/60">
             Three freshly-rolled mutators — each warps the run a different way and pays out a higher score multiplier.
           </p>
         </div>
@@ -129,7 +129,7 @@ const RunModifierPicker = ({ options: initialOptions, onChoose, onBack }: RunMod
                 type="button"
                 onClick={() => onChoose(mod)}
                 onMouseEnter={() => setFocusedIdx(idx)}
-                className={`group relative flex flex-col gap-3 rounded-2xl border text-left backdrop-blur-md transition-all ${IS_TOUCH ? 'p-4' : 'p-5'}`}
+                className={`group relative flex flex-col gap-3 rounded-2xl border text-left transition-all ${IS_TOUCH ? 'p-4' : 'p-5'}`}
                 style={{
                   borderColor: isFocused ? accent.ring : `${accent.ring}55`,
                   background: isFocused ? accent.chip : accent.soft,
@@ -159,14 +159,14 @@ const RunModifierPicker = ({ options: initialOptions, onChoose, onBack }: RunMod
                 </div>
                 <div>
                   <p className="font-display text-lg font-semibold uppercase tracking-wide text-white">{mod.name}</p>
-                  <p className="mt-1 text-[12px] leading-snug text-gray-400">{mod.blurb}</p>
+                  <p className="mt-1 text-[12px] leading-snug text-white/60">{mod.blurb}</p>
                 </div>
                 {/* Effect breakdown chips — the concrete stat tweaks. */}
                 <div className="flex flex-wrap gap-1.5">
                   {mod.effects.map((eff) => (
                     <span
                       key={eff}
-                      className="rounded-md border px-1.5 py-0.5 text-[9.5px] font-bold uppercase tracking-wide text-gray-200"
+                      className="rounded-md border px-1.5 py-0.5 text-[9.5px] font-bold uppercase tracking-wide text-white/85"
                       style={{ borderColor: `${accent.ring}40`, background: 'rgba(255,255,255,0.04)' }}
                     >
                       {eff}
@@ -190,10 +190,10 @@ const RunModifierPicker = ({ options: initialOptions, onChoose, onBack }: RunMod
               type="button"
               onClick={onBack}
               onMouseEnter={() => setFocusedIdx(-2)}
-              className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2.5 font-hud text-[12px] font-bold uppercase tracking-[0.15em] text-gray-300 transition-all hover:bg-white/[0.08] hover:text-white"
+              className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2.5 font-hud text-[12px] font-bold uppercase tracking-[0.15em] text-white/75 transition-all hover:bg-white/[0.08] hover:text-white"
             >
               ← Back
-              <kbd className="ml-1 rounded border border-white/15 bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-bold text-gray-400">Esc</kbd>
+              <kbd className="ml-1 rounded border border-white/15 bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-bold text-white/60">Esc</kbd>
             </button>
             <button
               type="button"
@@ -222,11 +222,11 @@ const RunModifierPicker = ({ options: initialOptions, onChoose, onBack }: RunMod
 
         {/* Keyboard legend — number highlights, Enter confirms. Desktop only;
             on touch the cards/buttons are tapped directly. */}
-        <div className={`mt-5 flex flex-wrap items-center justify-center gap-4 text-[11px] text-gray-500 ${IS_TOUCH ? 'hidden' : ''}`}>
+        <div className={`mt-5 flex flex-wrap items-center justify-center gap-4 text-[11px] text-white/45 ${IS_TOUCH ? 'hidden' : ''}`}>
           <span className="flex items-center gap-1.5">
-            <kbd className="rounded border border-white/15 bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-bold text-gray-300">1</kbd>
-            <kbd className="rounded border border-white/15 bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-bold text-gray-300">2</kbd>
-            <kbd className="rounded border border-white/15 bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-bold text-gray-300">3</kbd>
+            <kbd className="rounded border border-white/15 bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-bold text-white/75">1</kbd>
+            <kbd className="rounded border border-white/15 bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-bold text-white/75">2</kbd>
+            <kbd className="rounded border border-white/15 bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-bold text-white/75">3</kbd>
             <span className="ml-1">highlight</span>
           </span>
           <span className="flex items-center gap-1.5">
@@ -238,7 +238,7 @@ const RunModifierPicker = ({ options: initialOptions, onChoose, onBack }: RunMod
             <span className="text-violet-300">re-roll</span>
           </span>
           <span className="flex items-center gap-1.5">
-            <kbd className="rounded border border-white/15 bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-bold text-gray-300">S</kbd>
+            <kbd className="rounded border border-white/15 bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-bold text-white/75">S</kbd>
             <span>skip</span>
           </span>
         </div>

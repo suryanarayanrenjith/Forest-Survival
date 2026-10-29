@@ -249,14 +249,14 @@ export const TutorialOverlay = React.memo(function TutorialOverlay({
 
             {/* Scrollable body */}
             <div className="m-scroll min-h-0 flex-1 space-y-3 overflow-y-auto px-4 pb-3 sm:px-5">
-              <p className="text-[13px] leading-relaxed text-gray-300 sm:text-sm">{currentStep.description}</p>
+              <p className="text-[13px] leading-relaxed text-white/75 sm:text-sm">{currentStep.description}</p>
 
               {currentStep.instructions.length > 0 && (
                 <div className="space-y-1.5 border-l-2 border-[#2ee8b4]/50 bg-white/[0.025] p-3">
                   {currentStep.instructions.map((instruction, idx) => (
                     <div key={idx} className="flex items-start gap-2">
                       <span className="mt-1.5 h-1 w-1 flex-shrink-0 rotate-45 bg-[#2ee8b4]" />
-                      <p className="text-xs leading-relaxed text-gray-300">{instruction}</p>
+                      <p className="text-xs leading-relaxed text-white/75">{instruction}</p>
                     </div>
                   ))}
                 </div>

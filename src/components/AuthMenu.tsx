@@ -172,7 +172,7 @@ const AuthMenu = ({ onClose, onSignedIn, initialMode = 'signIn' }: AuthMenuProps
   return (
     <div
       className="fixed inset-0 z-50 overflow-y-auto menu-overlay-in"
-      style={{ background: 'rgba(4,8,7,0.92)', backdropFilter: 'blur(16px)' }}
+      style={{ background: 'rgba(4,8,7,0.92)' }}
     >
       <MenuShell variant="main" />
 
@@ -182,7 +182,7 @@ const AuthMenu = ({ onClose, onSignedIn, initialMode = 'signIn' }: AuthMenuProps
       <div
         className={isTouch
           ? 'm-sheet-in relative grid w-full max-w-none flex-1 overflow-hidden border-0 bg-[#080d0b] md:grid-cols-[0.92fr_1fr]'
-          : 'relative grid w-full max-w-4xl overflow-hidden rounded-[22px] border border-emerald-400/15 bg-[#080d0b] shadow-[0_40px_100px_rgba(0,0,0,0.6)] md:grid-cols-[0.92fr_1fr]'}
+          : 'relative grid w-full max-w-4xl overflow-hidden rounded-2xl border border-emerald-400/15 bg-[#080d0b] shadow-[0_40px_100px_rgba(0,0,0,0.6)] md:grid-cols-[0.92fr_1fr]'}
         style={isTouch ? undefined : { animation: 'authFade 0.28s cubic-bezier(0.16,1,0.3,1) forwards' }}
       >
         {/* ── LEFT · brand / value panel (desktop) ───────────────────── */}
@@ -201,7 +201,7 @@ const AuthMenu = ({ onClose, onSignedIn, initialMode = 'signIn' }: AuthMenuProps
             <h2 className="font-display mt-4 text-3xl font-semibold uppercase leading-[0.95] tracking-wide text-white">
               {isSignUp ? (step === 1 ? <>Join the<br />survivors</> : <>Set up your<br />profile</>) : <>Welcome<br />back</>}
             </h2>
-            <p className="mt-3 text-[13px] leading-relaxed text-gray-400">
+            <p className="mt-3 text-[13px] leading-relaxed text-white/60">
               {isSignUp
                 ? 'Create a free account to take the fight online and carry your progress between runs.'
                 : 'Sign back in to recover your loadout, rank and progress where you left off.'}
@@ -222,7 +222,7 @@ const AuthMenu = ({ onClose, onSignedIn, initialMode = 'signIn' }: AuthMenuProps
                 </span>
                 <span className="min-w-0">
                   <span className="block text-[13px] font-semibold text-white truncate">{title}</span>
-                  <span className="font-hud block text-[11px] text-gray-500 truncate">{desc}</span>
+                  <span className="font-hud block text-[11px] text-white/45 truncate">{desc}</span>
                 </span>
               </li>
             ))}
@@ -263,7 +263,7 @@ const AuthMenu = ({ onClose, onSignedIn, initialMode = 'signIn' }: AuthMenuProps
             <button
               onClick={onClose}
               aria-label="Close authentication panel"
-              className="ml-auto flex-shrink-0 flex items-center justify-center w-9 h-9 rounded-lg border border-white/10 bg-white/[0.02] text-gray-400 transition-colors hover:text-white hover:bg-white/[0.08]"
+              className="ml-auto flex-shrink-0 flex items-center justify-center w-9 h-9 rounded-lg border border-white/10 bg-white/[0.02] text-white/60 transition-colors hover:text-white hover:bg-white/[0.08]"
             >
               <X className="w-[18px] h-[18px]" strokeWidth={2.25} />
             </button>
@@ -274,14 +274,14 @@ const AuthMenu = ({ onClose, onSignedIn, initialMode = 'signIn' }: AuthMenuProps
               <button
                 type="button"
                 onClick={() => switchMode('signIn')}
-                className={`font-hud rounded-lg px-3 py-2 text-xs font-semibold uppercase tracking-wider transition-colors border ${!isSignUp ? 'border-emerald-400/30 bg-emerald-500/15 text-white' : 'border-transparent text-gray-400 hover:text-gray-200'}`}
+                className={`font-hud rounded-lg px-3 py-2 text-xs font-semibold uppercase tracking-wider transition-colors border ${!isSignUp ? 'border-emerald-400/30 bg-emerald-500/15 text-white' : 'border-transparent text-white/60 hover:text-white/85'}`}
               >
                 Login
               </button>
               <button
                 type="button"
                 onClick={() => switchMode('signUp')}
-                className={`font-hud rounded-lg px-3 py-2 text-xs font-semibold uppercase tracking-wider transition-colors border ${isSignUp ? 'border-emerald-400/30 bg-emerald-500/15 text-white' : 'border-transparent text-gray-400 hover:text-gray-200'}`}
+                className={`font-hud rounded-lg px-3 py-2 text-xs font-semibold uppercase tracking-wider transition-colors border ${isSignUp ? 'border-emerald-400/30 bg-emerald-500/15 text-white' : 'border-transparent text-white/60 hover:text-white/85'}`}
               >
                 Register
               </button>
@@ -328,7 +328,7 @@ const AuthMenu = ({ onClose, onSignedIn, initialMode = 'signIn' }: AuthMenuProps
                       <p className={`mt-1 flex items-center gap-1.5 text-[11px] font-medium ${
                         usernameStatus === 'taken' || usernameStatus === 'invalid' ? 'text-rose-300'
                           : usernameStatus === 'available' ? 'text-emerald-300'
-                          : 'text-gray-500'
+                          : 'text-white/45'
                       }`}>
                         {usernameStatus === 'checking' && <Loader2 className="w-3 h-3 animate-spin" strokeWidth={2.5} />}
                         {usernameStatus === 'available' && <Check className="w-3 h-3" strokeWidth={2.75} />}
@@ -351,7 +351,7 @@ const AuthMenu = ({ onClose, onSignedIn, initialMode = 'signIn' }: AuthMenuProps
                       placeholder="Enter your password"
                       className={inputClass}
                     />
-                    {isSignUp && <p className="mt-1 text-[11px] text-gray-500">At least 8 characters, with letters and numbers.</p>}
+                    {isSignUp && <p className="mt-1 text-[11px] text-white/45">At least 8 characters, with letters and numbers.</p>}
                   </Field>
 
                   {isSignUp && (
@@ -384,7 +384,7 @@ const AuthMenu = ({ onClose, onSignedIn, initialMode = 'signIn' }: AuthMenuProps
               {/* ── Sign-up step 2: interactive onboarding ── */}
               {isSignUp && step === 2 && (
                 <>
-                  <div className="rounded-lg border border-emerald-400/15 bg-emerald-500/[0.04] px-3 py-2.5 text-xs text-gray-300">
+                  <div className="rounded-lg border border-emerald-400/15 bg-emerald-500/[0.04] px-3 py-2.5 text-xs text-white/75">
                     Welcome, survivor. A couple of details to set up your profile.
                   </div>
                   <Field label="Your Name">
@@ -396,11 +396,11 @@ const AuthMenu = ({ onClose, onSignedIn, initialMode = 'signIn' }: AuthMenuProps
                       placeholder="e.g. Alex Carter"
                       className={inputClass}
                     />
-                    <p className="mt-1 text-[11px] text-gray-500">This is your display name in the game.</p>
+                    <p className="mt-1 text-[11px] text-white/45">This is your display name in the game.</p>
                   </Field>
                   <Field label="Date of Birth">
                     <div className="relative">
-                      <Calendar className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" strokeWidth={2.1} />
+                      <Calendar className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/45" strokeWidth={2.1} />
                       <input
                         name="dob"
                         value={dob}
@@ -410,7 +410,7 @@ const AuthMenu = ({ onClose, onSignedIn, initialMode = 'signIn' }: AuthMenuProps
                         className={`${inputClass} pl-9 [color-scheme:dark]`}
                       />
                     </div>
-                    <p className="mt-1 text-[11px] text-gray-500">Used to verify it's you when changing your password.</p>
+                    <p className="mt-1 text-[11px] text-white/45">Used to verify it's you when changing your password.</p>
                   </Field>
                 </>
               )}
@@ -432,7 +432,7 @@ const AuthMenu = ({ onClose, onSignedIn, initialMode = 'signIn' }: AuthMenuProps
                   <button
                     type="button"
                     onClick={() => { setError(null); setStep(1); }}
-                    className="flex items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-4 py-2.5 text-sm font-semibold text-gray-300 transition-colors hover:bg-white/[0.06]"
+                    className="flex items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-4 py-2.5 text-sm font-semibold text-white/75 transition-colors hover:bg-white/[0.06]"
                   >
                     <ArrowLeft className="w-4 h-4" strokeWidth={2.25} /> Back
                   </button>
@@ -458,11 +458,11 @@ const AuthMenu = ({ onClose, onSignedIn, initialMode = 'signIn' }: AuthMenuProps
 };
 
 const inputClass =
-  'mt-1.5 w-full rounded-lg border border-white/10 bg-[#05080c] px-3.5 py-2.5 text-sm text-white outline-none transition-colors placeholder:text-gray-600 focus:border-emerald-400/55 focus:ring-2 focus:ring-emerald-400/20 focus:bg-[#070b0f]';
+  'mt-1.5 w-full rounded-lg border border-white/10 bg-[#05080c] px-3.5 py-2.5 text-sm text-white outline-none transition-colors placeholder:text-white/35 focus:border-emerald-400/55 focus:ring-2 focus:ring-emerald-400/20 focus:bg-[#070b0f]';
 
 const Field = ({ label, children }: { label: string; children: React.ReactNode }) => (
   <div>
-    <label className="font-hud block text-[11px] font-semibold tracking-[0.24em] text-gray-400 uppercase">{label}</label>
+    <label className="font-hud block text-[11px] font-semibold tracking-[0.24em] text-white/60 uppercase">{label}</label>
     {children}
   </div>
 );
@@ -471,12 +471,12 @@ const StepDot = ({ active, done, label, index }: { active: boolean; done: boolea
   <div className="flex items-center gap-2">
     <span
       className={`flex items-center justify-center w-6 h-6 rounded-full text-[11px] font-bold transition-colors ${
-        active ? 'bg-emerald-500 text-[#04130a]' : done ? 'bg-emerald-500/30 text-emerald-200' : 'bg-white/[0.06] text-gray-500'
+        active ? 'bg-emerald-500 text-[#04130a]' : done ? 'bg-emerald-500/30 text-emerald-200' : 'bg-white/[0.06] text-white/45'
       }`}
     >
       {index}
     </span>
-    <span className={`font-hud text-xs font-semibold uppercase tracking-wider ${active ? 'text-white' : 'text-gray-500'}`}>{label}</span>
+    <span className={`font-hud text-xs font-semibold uppercase tracking-wider ${active ? 'text-white' : 'text-white/45'}`}>{label}</span>
   </div>
 );
 

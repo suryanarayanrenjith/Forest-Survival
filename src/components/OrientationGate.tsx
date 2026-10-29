@@ -23,13 +23,13 @@ const OrientationGate = () => {
             likely Google's rendered impression of the homepage — and "Rotate your
             device" was the document's only H1. The MainMenu wordmark behind this
             overlay is the real H1. */}
-        <h2 className="text-2xl font-bold text-white">Rotate your device</h2>
-        <p className="mt-2 max-w-xs text-sm leading-relaxed text-gray-400">
+        <h2 className="font-display text-2xl font-semibold uppercase tracking-wide text-white">Rotate your device</h2>
+        <p className="font-hud mt-2 max-w-xs text-sm leading-relaxed text-white/60">
           Forest Survival plays in landscape. Turn your device sideways to continue.
         </p>
         {/* A crawler that only ever sees this screen still gets an accurate
             description of the game and a path into the content pages. */}
-        <p className="mx-auto mt-5 max-w-sm text-xs leading-relaxed text-gray-400">
+        <p className="mx-auto mt-5 max-w-sm text-xs leading-relaxed text-white/60">
           Forest Survival is a free 3D first-person shooter where you survive endless
           waves of hostile robots across eight biome maps, playable instantly in any
           modern browser.

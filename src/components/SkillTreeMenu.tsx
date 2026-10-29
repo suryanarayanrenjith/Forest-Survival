@@ -127,7 +127,7 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
       className={isTouch
         ? 'm-safe fixed inset-0 z-50 flex flex-col menu-overlay-in'
         : 'fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 menu-overlay-in'}
-      style={{ background: 'rgba(4,7,9,0.9)', backdropFilter: 'blur(16px)' }}
+      style={{ background: 'rgba(4,8,7,0.92)' }}
     >
       <MusicMuteButton />
       <div
@@ -208,7 +208,7 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
                     style={{ width: `${progressPct}%`, background: 'linear-gradient(90deg, #2ee8b4, #39d0e6)' }}
                   />
                 </div>
-                <div className="font-hud text-[9px] text-gray-500 mt-0.5 tracking-[0.14em] uppercase">
+                <div className="font-hud text-[9px] text-white/45 mt-0.5 tracking-[0.14em] uppercase">
                   {spentPoints} / {totalPoints} invested
                 </div>
               </div>
@@ -216,7 +216,7 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
 
             <button
               onClick={onClose}
-              className="flex items-center justify-center w-9 h-9 rounded-lg border border-white/10 text-gray-400
+              className="flex items-center justify-center w-9 h-9 rounded-lg border border-white/10 text-white/60
                 transition-all hover:text-white hover:bg-white/[0.06] hover:border-white/20"
               aria-label="Close skill tree"
             >
@@ -230,7 +230,7 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
           {/* ----- Sidebar ----- */}
           <div className="w-56 flex-shrink-0 border-r border-white/[0.07] overflow-y-auto hidden sm:flex flex-col bg-black/20">
             <div className="p-3">
-              <div className="font-hud text-[10px] font-semibold tracking-[0.22em] text-gray-500 uppercase mb-2 px-1">Paths</div>
+              <div className="font-hud text-[10px] font-semibold tracking-[0.22em] text-white/45 uppercase mb-2 px-1">Paths</div>
               <div className="space-y-1">
                 {categories.map((cat) => {
                   const Icon = CATEGORY_ICON[cat.id] ?? Sparkles;
@@ -242,7 +242,7 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
                       key={cat.id}
                       onClick={() => setSelectedCategory(cat.id)}
                       className={`group relative w-full flex items-center gap-2.5 pl-3.5 pr-3 py-2 rounded-lg text-sm font-semibold transition-all duration-200 ${
-                        active ? 'text-white' : 'text-gray-400 hover:text-gray-200 hover:bg-white/[0.04]'
+                        active ? 'text-white' : 'text-white/60 hover:text-white/85 hover:bg-white/[0.04]'
                       }`}
                       style={active ? {
                         background: `linear-gradient(90deg, ${color}24, ${color}0a)`,
@@ -271,7 +271,7 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
               <div className="mt-3 grid grid-cols-2 gap-1.5">
                 <div className="rounded-lg border border-white/[0.07] bg-white/[0.02] px-2.5 py-2 text-center">
                   <div className="font-display text-lg font-bold tabular-nums leading-none text-emerald-200">{unlockedCount}</div>
-                  <div className="font-hud text-[8px] tracking-[0.16em] text-gray-500 uppercase mt-1">Unlocked</div>
+                  <div className="font-hud text-[8px] tracking-[0.16em] text-white/45 uppercase mt-1">Unlocked</div>
                 </div>
                 <div className="rounded-lg border border-emerald-400/20 bg-emerald-500/[0.05] px-2.5 py-2 text-center">
                   <div className="font-display text-lg font-bold tabular-nums leading-none text-emerald-300">{masteredCount}</div>
@@ -286,7 +286,7 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
                 <Sigma className="w-3 h-3" strokeWidth={2.5} /> Active Bonuses
               </div>
               {activeBonuses.length === 0 ? (
-                <div className="rounded-lg border border-dashed border-white/[0.08] bg-white/[0.01] px-3 py-3 text-[11px] text-gray-600 text-center leading-relaxed">
+                <div className="rounded-lg border border-dashed border-white/[0.08] bg-white/[0.01] px-3 py-3 text-[11px] text-white/35 text-center leading-relaxed">
                   Spend a point to light up the lattice — live bonuses appear here.
                 </div>
               ) : (
@@ -298,7 +298,7 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
                     >
                       <div className="min-w-0">
                         <div className="text-[10px] font-semibold text-emerald-300 truncate">{b.skillName}</div>
-                        <div className="font-hud text-[9px] text-gray-500 leading-snug tracking-wide">Level {b.level}</div>
+                        <div className="font-hud text-[9px] text-white/45 leading-snug tracking-wide">Level {b.level}</div>
                       </div>
                       <div className="flex-shrink-0 font-mono text-[11px] font-bold tabular-nums text-emerald-200">{b.value}</div>
                     </div>
@@ -325,7 +325,7 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
                       </span>
                       <div>
                         <div className="font-display text-sm font-semibold uppercase text-white tracking-[0.08em] leading-none">{TIER_LABEL[tier] ?? `Tier ${tier}`}</div>
-                        <div className="font-hud text-[9px] text-gray-600 tracking-[0.22em] uppercase mt-0.5">Tier {tier}</div>
+                        <div className="font-hud text-[9px] text-white/35 tracking-[0.22em] uppercase mt-0.5">Tier {tier}</div>
                       </div>
                       <div className="flex-1 h-px" style={{ background: 'linear-gradient(90deg, rgba(46,232,180,0.25), transparent)' }} />
                     </div>
@@ -387,7 +387,7 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
                 <span className="font-hud text-[10px] tracking-[0.24em] text-emerald-300/80 uppercase">Skill Detail</span>
                 <button
                   onClick={() => setSelectedSkill(null)}
-                  className="flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 text-gray-400 transition-colors hover:bg-white/[0.06] hover:text-white"
+                  className="flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 text-white/60 transition-colors hover:bg-white/[0.06] hover:text-white"
                   aria-label="Close skill details"
                 >
                   <X className="h-5 w-5" strokeWidth={2} />
@@ -409,10 +409,10 @@ export const SkillTreeMenu: React.FC<SkillTreeMenuProps> = ({
 
         {/* ===== FOOTER ===== */}
         <div className="relative z-10 flex items-center justify-between gap-3 px-5 sm:px-6 py-3.5 border-t border-white/[0.07] bg-gradient-to-t from-white/[0.025] to-transparent">
-          <span className="font-hud text-[10px] text-gray-500 tracking-[0.16em] uppercase hidden sm:inline">
+          <span className="font-hud text-[10px] text-white/45 tracking-[0.16em] uppercase hidden sm:inline">
             Points earned every run · saved to your account
           </span>
-          <span className="font-hud text-[10px] text-gray-500 tracking-[0.16em] uppercase sm:hidden">
+          <span className="font-hud text-[10px] text-white/45 tracking-[0.16em] uppercase sm:hidden">
             Saved to your account
           </span>
           <button
@@ -543,7 +543,7 @@ const SkillCard: React.FC<SkillCardProps> = ({
       {/* Lock badge */}
       {isLocked && (
         <span className="absolute -top-1.5 -right-1.5 flex items-center justify-center w-5 h-5 rounded-full bg-[#080d0b] border border-white/15">
-          <Lock className="w-2.5 h-2.5 text-gray-500" strokeWidth={2.5} />
+          <Lock className="w-2.5 h-2.5 text-white/45" strokeWidth={2.5} />
         </span>
       )}
       {/* Maxed badge */}
@@ -561,7 +561,7 @@ const SkillCard: React.FC<SkillCardProps> = ({
           <Icon className="w-[18px] h-[18px]" style={{ color: iconColor }} strokeWidth={2} />
         </div>
         <div className="min-w-0 flex-1">
-          <div className={`font-display text-[13px] font-semibold leading-tight tracking-wide ${isLocked ? 'text-gray-500' : 'text-white'} line-clamp-1`}>
+          <div className={`font-display text-[13px] font-semibold leading-tight tracking-wide ${isLocked ? 'text-white/45' : 'text-white'} line-clamp-1`}>
             {skill.name}
           </div>
           <div className="font-hud text-[9px] font-semibold tracking-[0.16em] uppercase mt-0.5" style={{ color: isLocked ? '#4b5563' : catColor }}>
@@ -570,7 +570,7 @@ const SkillCard: React.FC<SkillCardProps> = ({
         </div>
       </div>
 
-      <div className={`text-[11px] line-clamp-2 leading-snug mb-2.5 ${isLocked ? 'text-gray-600' : 'text-gray-400'}`}>
+      <div className={`text-[11px] line-clamp-2 leading-snug mb-2.5 ${isLocked ? 'text-white/35' : 'text-white/60'}`}>
         {skill.description}
       </div>
 
@@ -622,8 +622,8 @@ const EmptyDetail = () => (
     >
       <Sparkles className="w-6 h-6 text-emerald-400/50" strokeWidth={1.75} />
     </div>
-    <h3 className="font-display text-sm font-semibold uppercase tracking-wide text-gray-300 mb-1.5">Inspect the lattice</h3>
-    <p className="text-[11px] text-gray-600 leading-relaxed max-w-[16rem]">
+    <h3 className="font-display text-sm font-semibold uppercase tracking-wide text-white/75 mb-1.5">Inspect the lattice</h3>
+    <p className="text-[11px] text-white/35 leading-relaxed max-w-[16rem]">
       Hover any node to preview it here, or click to lock it in while you compare your next investment.
     </p>
   </div>
@@ -664,7 +664,7 @@ const SkillDetails: React.FC<SkillDetailsProps> = ({ skill, allSkills, canAfford
 
       {/* Description */}
       <DetailBlock title="Description">
-        <p className="text-sm text-gray-300 leading-relaxed">{skill.description}</p>
+        <p className="text-sm text-white/75 leading-relaxed">{skill.description}</p>
       </DetailBlock>
 
       {/* Effects — with a live "current → next level" preview so the player can
@@ -691,15 +691,15 @@ const SkillDetails: React.FC<SkillDetailsProps> = ({ skill, allSkills, canAfford
                       <span className="ml-1 font-normal text-emerald-500/70">· maxed</span>
                     </span>
                   ) : skill.currentLevel === 0 ? (
-                    <span className="text-gray-400">
+                    <span className="text-white/60">
                       At Lv 1:{' '}
                       <span className="font-bold tabular-nums text-emerald-300">
                         {formatStatBonus(effect.stat, next)}
                       </span>
                     </span>
                   ) : (
-                    <span className="flex items-center gap-1.5 text-gray-400">
-                      <span className="font-bold tabular-nums text-gray-300">{formatStatBonus(effect.stat, cur)}</span>
+                    <span className="flex items-center gap-1.5 text-white/60">
+                      <span className="font-bold tabular-nums text-white/75">{formatStatBonus(effect.stat, cur)}</span>
                       <ArrowRight className="w-3 h-3 text-emerald-400/80" strokeWidth={2.5} />
                       <span className="font-bold tabular-nums text-emerald-300">{formatStatBonus(effect.stat, next)}</span>
                     </span>
@@ -725,7 +725,7 @@ const SkillDetails: React.FC<SkillDetailsProps> = ({ skill, allSkills, canAfford
                     className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs ${
                       met
                         ? 'border-emerald-400/25 bg-emerald-500/[0.05] text-emerald-300'
-                        : 'border-white/10 bg-white/[0.03] text-gray-400'
+                        : 'border-white/10 bg-white/[0.03] text-white/60'
                     }`}
                   >
                     {met
@@ -736,7 +736,7 @@ const SkillDetails: React.FC<SkillDetailsProps> = ({ skill, allSkills, canAfford
                 );
               }
               return (
-                <div key={idx} className="flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs text-gray-400">
+                <div key={idx} className="flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs text-white/60">
                   <Lock className="w-3 h-3" strokeWidth={2.5} /> {req.type}: {String(req.value)}
                 </div>
               );
@@ -805,7 +805,7 @@ const SkillDetails: React.FC<SkillDetailsProps> = ({ skill, allSkills, canAfford
         <button
           disabled
           className="font-hud w-full flex items-center justify-center gap-2 py-3 rounded-xl font-bold text-sm uppercase tracking-wide
-            border border-white/10 bg-white/[0.03] text-gray-500 cursor-not-allowed"
+            border border-white/10 bg-white/[0.03] text-white/45 cursor-not-allowed"
         >
           <Lock className="w-3.5 h-3.5" strokeWidth={2.25} /> Requirements Not Met
         </button>
@@ -826,7 +826,7 @@ const SkillDetails: React.FC<SkillDetailsProps> = ({ skill, allSkills, canAfford
         <button
           disabled
           className="font-hud w-full flex items-center justify-center gap-2 py-3 rounded-xl font-bold text-sm uppercase tracking-wide
-            border border-white/10 bg-white/[0.03] text-gray-500 cursor-not-allowed"
+            border border-white/10 bg-white/[0.03] text-white/45 cursor-not-allowed"
         >
           <Lock className="w-3.5 h-3.5" strokeWidth={2.25} /> Need {skill.cost} pts
         </button>
@@ -837,7 +837,7 @@ const SkillDetails: React.FC<SkillDetailsProps> = ({ skill, allSkills, canAfford
 
 const DetailBlock = ({ title, children }: { title: string; children: React.ReactNode }) => (
   <div className="mb-4">
-    <div className="font-hud text-[10px] font-semibold tracking-[0.2em] text-gray-500 uppercase mb-1.5">{title}</div>
+    <div className="font-hud text-[10px] font-semibold tracking-[0.2em] text-white/45 uppercase mb-1.5">{title}</div>
     {children}
   </div>
 );

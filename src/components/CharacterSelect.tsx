@@ -58,7 +58,7 @@ const CharacterSelect = ({ selected, onSelect, accent = '#34d399' }: CharacterSe
               }}
             >
               <Icon className="w-5 h-5" style={{ color: active ? ab.color : '#9ca3af' }} strokeWidth={1.9} />
-              <span className={`font-hud text-[10px] font-bold uppercase tracking-wide leading-tight text-center ${active ? 'text-white' : 'text-gray-400'}`}>
+              <span className={`font-hud text-[10px] font-bold uppercase tracking-wide leading-tight text-center ${active ? 'text-white' : 'text-white/60'}`}>
                 {CHARACTER_NAMES[id]}
               </span>
             </button>
@@ -82,13 +82,13 @@ const CharacterSelect = ({ selected, onSelect, accent = '#34d399' }: CharacterSe
             <p className="font-hud text-[10px] uppercase tracking-[0.18em] font-semibold" style={{ color: ability.color }}>
               Ability · {ability.name}
             </p>
-            <p className="text-[11px] text-gray-300 leading-snug">{ability.description}</p>
+            <p className="text-[11px] text-white/75 leading-snug">{ability.description}</p>
           </div>
         </div>
         <div className="flex items-center gap-2 pt-1.5 border-t border-white/[0.07]">
           <Sparkles className="w-3.5 h-3.5 flex-shrink-0" style={{ color: accent }} strokeWidth={2} />
-          <p className="text-[11px] text-gray-400">
-            <span className="font-semibold text-gray-300">{passive.label}:</span> {passive.description}
+          <p className="text-[11px] text-white/60">
+            <span className="font-semibold text-white/75">{passive.label}:</span> {passive.description}
           </p>
         </div>
       </div>

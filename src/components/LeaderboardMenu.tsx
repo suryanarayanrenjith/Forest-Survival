@@ -47,7 +47,7 @@ const Rank = ({ position, color }: { position: number; color: string }) => {
     );
   }
   return (
-    <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] text-sm font-black tabular-nums text-gray-400" style={{ color: `${color}` }}>
+    <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] text-sm font-black tabular-nums text-white/60" style={{ color: `${color}` }}>
       {position}
     </span>
   );
@@ -65,20 +65,20 @@ const Row = ({ e }: { e: Entry }) => (
     <UserAvatar name={e.displayName} username={e.username} avatarIndex={e.avatarIndex} size="sm" />
     <div className="min-w-0 flex-1">
       <div className="flex items-center gap-2">
-        <span className="truncate text-sm font-bold text-white">{e.displayName}</span>
+        <span className="font-hud truncate text-sm font-bold text-white">{e.displayName}</span>
         {e.isViewer && (
           <span className="rounded-md bg-emerald-500/20 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-emerald-300">You</span>
         )}
       </div>
-      <div className="flex items-center gap-2 text-[11px] leading-tight">
+      <div className="font-hud flex items-center gap-2 text-[11px] leading-tight">
         <span className="font-semibold uppercase tracking-wide" style={{ color: e.color }}>{e.tierName}</span>
-        <span className="text-gray-500">· Lvl {e.level}</span>
-        <span className="hidden text-gray-600 sm:inline">· Wave {e.highestWave}</span>
+        <span className="text-white/45">· Lvl {e.level}</span>
+        <span className="hidden text-white/35 sm:inline">· Wave {e.highestWave}</span>
       </div>
     </div>
     <div className="flex-shrink-0 text-right">
-      <p className="text-sm font-black tabular-nums text-white">{e.xp.toLocaleString()}</p>
-      <p className="text-[9px] uppercase tracking-[0.15em] text-gray-500">XP</p>
+      <p className="hud-num text-sm font-black tabular-nums text-white">{e.xp.toLocaleString()}</p>
+      <p className="font-hud text-[9px] uppercase tracking-[0.15em] text-white/45">XP</p>
     </div>
   </div>
 );
@@ -95,7 +95,7 @@ export const LeaderboardList = () => {
 
   if (data === undefined) {
     return (
-      <div className="flex items-center justify-center py-16 text-gray-500">
+      <div className="flex items-center justify-center py-16 text-white/45">
         <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading rankings…
       </div>
     );
@@ -119,7 +119,7 @@ export const LeaderboardList = () => {
       )}
 
       {data.entries.length === 0 ? (
-        <div className="py-14 text-center text-sm text-gray-500">
+        <div className="py-14 text-center text-sm text-white/45">
           No ranked players yet — play a Solo run to claim the top spot.
         </div>
       ) : (
@@ -133,7 +133,7 @@ export const LeaderboardList = () => {
       {/* Viewer is ranked but fell outside the visible slice. */}
       {data.viewer && !viewerInTop && !data.viewerOptedOut && (
         <>
-          <div className="flex items-center gap-2 px-1 pt-1 text-[10px] uppercase tracking-[0.2em] text-gray-600">
+          <div className="flex items-center gap-2 px-1 pt-1 text-[10px] uppercase tracking-[0.2em] text-white/35">
             <span className="h-px flex-1 bg-white/10" /> Your rank <span className="h-px flex-1 bg-white/10" />
           </div>
           <Row e={data.viewer} />
@@ -155,14 +155,14 @@ const LeaderboardMenu = ({ onClose }: LeaderboardMenuProps) => {
       className={isTouch
         ? 'm-safe fixed inset-0 z-50 flex flex-col'
         : 'fixed inset-0 z-50 flex items-center justify-center overflow-y-auto p-3 sm:p-4'}
-      style={{ background: 'rgba(5,8,10,0.94)', backdropFilter: 'blur(14px)' }}
+      style={{ background: 'rgba(4,8,7,0.92)' }}
     >
       <MenuShell variant="main" />
 
       <div
         className={isTouch
-          ? 'm-sheet-in relative z-10 flex h-full w-full flex-col overflow-hidden border-t border-white/10 bg-[#0b0f15]'
-          : 'relative z-10 flex max-h-[94dvh] w-full max-w-2xl flex-col overflow-hidden rounded-[24px] border border-white/10 bg-[#0b0f15] shadow-[0_30px_120px_rgba(0,0,0,0.58)]'}
+          ? 'm-sheet-in relative z-10 flex h-full w-full flex-col overflow-hidden border-t border-emerald-400/15 bg-[#080d0b]'
+          : 'hud-frame relative z-10 flex max-h-[94dvh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-emerald-400/15 bg-[#080d0b] shadow-[0_40px_100px_rgba(0,0,0,0.6)]'}
         style={isTouch ? undefined : { animation: 'authFade 0.32s cubic-bezier(0.16,1,0.3,1) forwards' }}
       >
         <div className={`flex flex-none items-center justify-between border-b border-white/[0.07] ${isTouch ? 'gap-2 px-3 py-1.5' : 'items-start gap-4 px-5 py-4'}`}>
@@ -171,14 +171,14 @@ const LeaderboardMenu = ({ onClose }: LeaderboardMenuProps) => {
               <Trophy className={isTouch ? 'h-4 w-4 text-amber-300' : 'h-5 w-5 text-amber-300'} strokeWidth={2.1} />
             </div>
             <div>
-              {!isTouch && <p className="text-[10px] font-semibold uppercase tracking-[0.35em] text-amber-300/90">Global</p>}
-              <h2 className={`font-bold tracking-wide text-white ${isTouch ? 'text-sm leading-none' : 'text-lg'}`}>Leaderboard</h2>
+              {!isTouch && <p className="font-hud text-[10px] font-semibold uppercase tracking-[0.36em] text-amber-300/90">Global</p>}
+              <h2 className={`font-display font-semibold uppercase tracking-wide text-white ${isTouch ? 'text-sm leading-none' : 'text-lg'}`}>Leaderboard</h2>
             </div>
           </div>
           <button
             onClick={onClose}
             aria-label="Close leaderboard"
-            className={`flex flex-none items-center justify-center rounded-lg border border-white/10 text-gray-400 transition-colors hover:bg-white/[0.06] hover:text-white ${isTouch ? 'm-tap h-8 w-8' : 'h-9 w-9'}`}
+            className={`flex flex-none items-center justify-center rounded-lg border border-white/10 text-white/60 transition-colors hover:bg-white/[0.06] hover:text-white ${isTouch ? 'm-tap h-8 w-8' : 'h-9 w-9'}`}
           >
             <X className={isTouch ? 'h-4 w-4' : 'h-[18px] w-[18px]'} strokeWidth={2.25} />
           </button>

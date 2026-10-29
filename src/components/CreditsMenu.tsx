@@ -67,7 +67,7 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
           child scroll (no backdrop-filter on the scroll container). */}
       <div
         className="fixed inset-0 z-50"
-        style={{ background: 'rgba(4,8,7,0.9)', backdropFilter: 'blur(16px)' }}
+        style={{ background: 'rgba(4,8,7,0.92)' }}
       />
       {/* The panel owns the only scroll surface. Keeping the page-sized overlay
           static avoids nested scroll containers fighting over wheel/touch input
@@ -111,7 +111,7 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
           <button
             onClick={onClose}
             aria-label="Close credits"
-            className={`flex flex-none items-center justify-center rounded-lg border border-white/10 text-gray-400
+            className={`flex flex-none items-center justify-center rounded-lg border border-white/10 text-white/60
               transition-colors hover:text-white hover:bg-white/[0.06] ${isTouch ? 'm-tap h-8 w-8' : 'w-9 h-9'}`}
           >
             <X className={isTouch ? 'h-4 w-4' : 'w-[18px] h-[18px]'} strokeWidth={2.25} />
@@ -129,7 +129,7 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
                 <h3 className={`font-display title-bio mt-2 font-semibold uppercase leading-none tracking-[0.04em] ${isTouch ? 'text-4xl' : 'text-5xl sm:text-6xl'}`}>
                   Surya
                 </h3>
-                <p className="mt-4 max-w-xl text-[13px] leading-relaxed text-gray-300/90">
+                <p className="mt-4 max-w-xl text-[13px] leading-relaxed text-white/70">
                   A fully-featured 3D wave-survival shooter with procedural terrain, character abilities,
                   snapshot-interpolated multiplayer, photo mode, and more — built from a blank file through conversational AI.
                 </p>
@@ -139,7 +139,7 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
                 {STATS.map((stat) => (
                   <div key={stat.label} className="rounded-xl border border-white/[0.08] bg-black/15 px-2.5 py-2.5 sm:px-3 sm:py-2">
                     <p className="font-display text-xl font-semibold leading-none text-emerald-300 sm:text-2xl">{stat.value}</p>
-                    <p className="font-hud mt-1 text-[8.5px] uppercase tracking-[0.16em] text-gray-500">{stat.label}</p>
+                    <p className="font-hud mt-1 text-[8.5px] uppercase tracking-[0.16em] text-white/45">{stat.label}</p>
                   </div>
                 ))}
               </div>
@@ -155,7 +155,7 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
                   <span className="flex h-8 w-8 flex-none items-center justify-center rounded-lg border border-emerald-400/15 bg-emerald-500/[0.07]">
                     <Icon className="h-4 w-4 text-emerald-400/80" strokeWidth={2} />
                   </span>
-                  <span className="font-hud min-w-0 flex-1 text-[11px] tracking-wide text-gray-300">{role}</span>
+                  <span className="font-hud min-w-0 flex-1 text-[11px] tracking-wide text-white/75">{role}</span>
                   <span className="font-display text-xs font-semibold uppercase tracking-wide text-white/75">Surya</span>
                 </li>
               ))}
@@ -192,7 +192,7 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
                 <span className="block text-base font-bold text-white tracking-tight truncate">
                   surya.is-a.dev
                 </span>
-                <span className="block text-[11px] text-gray-500 truncate">
+                <span className="block text-[11px] text-white/45 truncate">
                   More about me, my work, and ways to get in touch
                 </span>
               </span>
@@ -230,7 +230,7 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
                 <span className="block text-base font-bold text-white tracking-tight truncate">
                   github.com / Forest-Survival
                 </span>
-                <span className="block text-[11px] text-gray-500 truncate">
+                <span className="block text-[11px] text-white/45 truncate">
                   Source code, issues, and contributions welcome
                 </span>
               </span>
@@ -268,7 +268,7 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
                 <span className="block text-base font-bold text-white tracking-tight truncate">
                   Full mechanics reference
                 </span>
-                <span className="block text-[11px] text-gray-500 truncate">
+                <span className="block text-[11px] text-white/45 truncate">
                   Weapons, enemies, characters, systems — every confirmed number
                 </span>
               </span>
@@ -289,10 +289,10 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
                 <HeartHandshake className="w-[18px] h-[18px] text-emerald-300" strokeWidth={2} />
               </span>
               <span className="min-w-0 flex-1">
-                <span className="block text-[13px] text-gray-300/90 leading-snug">
+                <span className="block text-[13px] text-white/70 leading-snug">
                   Custom domain provided by <span className="font-bold text-white">smsolutionsva-byte</span>
                 </span>
-                <span className="font-hud block mt-0.5 text-[10.5px] text-gray-500">
+                <span className="font-hud block mt-0.5 text-[10.5px] text-white/45">
                   Thank you for giving the game a home on the web
                 </span>
               </span>
@@ -317,7 +317,7 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="block text-[13px] font-bold text-white truncate">{label}</span>
-                    <span className="font-hud block text-[10.5px] text-gray-500 truncate">{hint}</span>
+                    <span className="font-hud block text-[10.5px] text-white/45 truncate">{hint}</span>
                   </span>
                 </li>
               ))}
@@ -326,7 +326,7 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
 
           {/* ── Footer ─────────────────────────────────────────────────── */}
           <div className="border-t border-white/[0.06] pt-5 text-center">
-            <p className="font-hud flex items-center justify-center gap-1.5 text-[11px] text-gray-500">
+            <p className="font-hud flex items-center justify-center gap-1.5 text-[11px] text-white/45">
               Crafted with
               <Heart className="w-3.5 h-3.5 text-red-400" strokeWidth={2.25} fill="currentColor" />
               and a lot of care
@@ -354,7 +354,7 @@ const CreditsMenu = ({ onClose }: CreditsMenuProps) => {
 const SectionLabel = ({ children }: { children: React.ReactNode }) => (
   <div className="flex items-center gap-3">
     <div className="h-px flex-1 bg-gradient-to-r from-transparent via-white/15 to-transparent" />
-    <p className="font-hud text-[10px] font-bold tracking-[0.34em] text-gray-400 uppercase whitespace-nowrap">
+    <p className="font-hud text-[10px] font-bold tracking-[0.34em] text-white/60 uppercase whitespace-nowrap">
       {children}
     </p>
     <div className="h-px flex-1 bg-gradient-to-r from-transparent via-white/15 to-transparent" />

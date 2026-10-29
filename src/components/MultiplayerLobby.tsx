@@ -210,7 +210,7 @@ const CharacterPicker = ({
   onPick: (id: ModelClassId) => void;
 }) => (
   <div>
-    <label className="font-hud block text-[10px] font-semibold tracking-[0.18em] text-gray-500 uppercase mb-1.5">
+    <label className="font-hud block text-[10px] font-semibold tracking-[0.18em] text-white/45 uppercase mb-1.5">
       Choose Character
     </label>
     <div className="grid grid-cols-4 gap-1.5">
@@ -239,7 +239,7 @@ const CharacterPicker = ({
               style={{ color: isMine ? c.color : locked ? '#6b7280' : '#cbd5e1' }}
               strokeWidth={1.8}
             />
-            <span className={`text-[10px] font-bold leading-tight text-center truncate w-full ${isMine ? 'text-white' : 'text-gray-300'}`}>
+            <span className={`text-[10px] font-bold leading-tight text-center truncate w-full ${isMine ? 'text-white' : 'text-white/75'}`}>
               {c.name}
             </span>
             <span
@@ -250,13 +250,13 @@ const CharacterPicker = ({
               <span className="truncate">{CHARACTER_ABILITIES[c.id].name}</span>
             </span>
             <span
-              className={`text-[8px] font-semibold leading-tight text-center truncate w-full ${isMine ? 'text-white/80' : 'text-gray-500'}`}
+              className={`text-[8px] font-semibold leading-tight text-center truncate w-full ${isMine ? 'text-white/80' : 'text-white/45'}`}
             >
               {c.perk}
             </span>
             {locked && (
               <span className="absolute top-1 right-1 flex items-center justify-center w-3.5 h-3.5 rounded-full bg-black/55">
-                <Lock className="w-2 h-2 text-gray-400" strokeWidth={2.5} />
+                <Lock className="w-2 h-2 text-white/60" strokeWidth={2.5} />
               </span>
             )}
             {isMine && (
@@ -283,7 +283,7 @@ const ErrorBox = ({ error }: { error: string }) =>
 // (no random names, no renaming).
 const IdentityField = ({ username }: { username: string }) => (
   <div>
-    <label className="font-hud block text-[10px] font-semibold tracking-[0.18em] text-gray-500 uppercase mb-1.5">
+    <label className="font-hud block text-[10px] font-semibold tracking-[0.18em] text-white/45 uppercase mb-1.5">
       Playing As
     </label>
     <div className="flex items-center gap-2.5 rounded-xl border border-emerald-400/20 bg-emerald-500/[0.06] px-3.5 py-2.5">
@@ -751,11 +751,11 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
   // main lobby panel fills the screen (full-bleed sheet); the small auth/error
   // cards stay centered via m-auto.
   const panelClass = isTouch
-    ? 'hud-frame m-auto w-full max-w-sm rounded-3xl border border-emerald-400/15 bg-[#0a1410]/70 backdrop-blur-xl shadow-[0_30px_90px_-24px_rgba(0,0,0,0.85)]'
-    : 'hud-frame w-full max-w-sm rounded-3xl border border-emerald-400/15 bg-[#0a1410]/70 backdrop-blur-xl shadow-[0_30px_90px_-24px_rgba(0,0,0,0.85)]';
+    ? 'hud-frame m-auto w-full max-w-sm rounded-2xl border border-emerald-400/15 bg-[#080d0b] shadow-[0_40px_100px_rgba(0,0,0,0.6)]'
+    : 'hud-frame w-full max-w-sm rounded-2xl border border-emerald-400/15 bg-[#080d0b] shadow-[0_40px_100px_rgba(0,0,0,0.6)]';
   const panelInnerClass = isTouch
-    ? 'hud-frame w-full max-w-none flex-1 rounded-none border-t border-emerald-400/15 bg-[#0a1410]/70 backdrop-blur-xl overflow-hidden flex flex-col'
-    : 'hud-frame w-full max-w-xl rounded-3xl border border-emerald-400/15 bg-[#0a1410]/70 backdrop-blur-xl shadow-[0_30px_90px_-24px_rgba(0,0,0,0.85)] overflow-hidden flex flex-col max-h-[94dvh]';
+    ? 'hud-frame w-full max-w-none flex-1 rounded-none border-t border-emerald-400/15 bg-[#080d0b] overflow-hidden flex flex-col'
+    : 'hud-frame w-full max-w-xl rounded-2xl border border-emerald-400/15 bg-[#080d0b] shadow-[0_40px_100px_rgba(0,0,0,0.6)] overflow-hidden flex flex-col max-h-[94dvh]';
 
   // ── AUTH GATE ───────────────────────────────────────────────────────────
   // Multiplayer always plays as the signed-in account username. Guests who
@@ -763,9 +763,9 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
   if (currentUser === undefined) {
     return (
       <div className={backdrop} style={backdropStyle}>
-        <div className="m-auto flex flex-col items-center gap-4 rounded-3xl border border-white/10 bg-[#0a1410]/70 backdrop-blur-xl px-6 py-5 shadow-[0_24px_80px_-24px_rgba(0,0,0,0.8)]">
+        <div className="m-auto flex flex-col items-center gap-4 rounded-2xl border border-emerald-400/15 bg-[#080d0b] px-6 py-5 shadow-[0_24px_80px_-24px_rgba(0,0,0,0.8)]">
           <Loader2 className="w-10 h-10 text-sky-400 animate-spin" strokeWidth={2} />
-          <div className="text-sm font-semibold tracking-wide text-gray-300">Checking your session…</div>
+          <div className="text-sm font-semibold tracking-wide text-white/75">Checking your session…</div>
         </div>
       </div>
     );
@@ -780,13 +780,13 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
           </div>
           <p className="font-hud text-[10px] tracking-[0.35em] text-sky-400/90 font-semibold uppercase mb-1">Access Required</p>
           <h2 className="font-display text-2xl font-semibold uppercase text-white tracking-wide">Sign in to play</h2>
-          <p className="mt-2 text-sm text-gray-400">
+          <p className="mt-2 text-sm text-white/60">
             Multiplayer uses your account username. Please sign in from the main menu to host or join a game.
           </p>
           <button
             onClick={handleBack}
             className="mt-5 flex items-center justify-center gap-2 w-full rounded-xl px-4 py-2.5 border border-white/10
-              text-sm font-semibold text-gray-300 transition-colors hover:text-white hover:bg-white/[0.05]"
+              text-sm font-semibold text-white/75 transition-colors hover:text-white hover:bg-white/[0.05]"
           >
             <ArrowLeft className="w-4 h-4" strokeWidth={2.25} /> Back to Menu
           </button>
@@ -823,9 +823,9 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
               </span>
               <span className="flex-1 text-left min-w-0">
                 <span className="font-display block text-sm font-semibold uppercase tracking-wide text-white">Host Game</span>
-                <span className="font-hud block text-[11px] text-gray-500">Create a lobby for friends</span>
+                <span className="font-hud block text-[11px] text-white/45">Create a lobby for friends</span>
               </span>
-              <ChevronRight className="w-4 h-4 text-gray-600 group-hover:text-gray-300 group-hover:translate-x-0.5 transition-all flex-shrink-0" strokeWidth={2} />
+              <ChevronRight className="w-4 h-4 text-white/35 group-hover:text-white/75 group-hover:translate-x-0.5 transition-all flex-shrink-0" strokeWidth={2} />
             </button>
 
             <button
@@ -838,15 +838,15 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
               </span>
               <span className="flex-1 text-left min-w-0">
                 <span className="font-display block text-sm font-semibold uppercase tracking-wide text-white">Join Game</span>
-                <span className="font-hud block text-[11px] text-gray-500">Enter a lobby ID to connect</span>
+                <span className="font-hud block text-[11px] text-white/45">Enter a lobby ID to connect</span>
               </span>
-              <ChevronRight className="w-4 h-4 text-gray-600 group-hover:text-gray-300 group-hover:translate-x-0.5 transition-all flex-shrink-0" strokeWidth={2} />
+              <ChevronRight className="w-4 h-4 text-white/35 group-hover:text-white/75 group-hover:translate-x-0.5 transition-all flex-shrink-0" strokeWidth={2} />
             </button>
 
             <button
               onClick={handleBack}
               className="flex items-center justify-center gap-2 w-full rounded-xl px-4 py-2.5 border border-white/10
-                text-sm font-semibold text-gray-400 transition-colors hover:text-white hover:bg-white/[0.05]"
+                text-sm font-semibold text-white/60 transition-colors hover:text-white hover:bg-white/[0.05]"
             >
               <ArrowLeft className="w-4 h-4" strokeWidth={2.25} />
               Back
@@ -864,9 +864,9 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
   if (view === 'host' && isConnecting && !manager) {
     return (
       <div className={backdrop} style={backdropStyle}>
-        <div className="m-auto flex flex-col items-center gap-4 rounded-3xl border border-white/10 bg-[#0a1410]/70 backdrop-blur-xl px-6 py-5 shadow-[0_24px_80px_-24px_rgba(0,0,0,0.8)]">
+        <div className="m-auto flex flex-col items-center gap-4 rounded-2xl border border-emerald-400/15 bg-[#080d0b] px-6 py-5 shadow-[0_24px_80px_-24px_rgba(0,0,0,0.8)]">
           <Loader2 className="w-10 h-10 text-emerald-400 animate-spin" strokeWidth={2} />
-          <div className="text-sm font-semibold tracking-wide text-gray-300">Creating lobby…</div>
+          <div className="text-sm font-semibold tracking-wide text-white/75">Creating lobby…</div>
         </div>
       </div>
     );
@@ -893,7 +893,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
               </div>
             </div>
             <button onClick={handleBack} aria-label="Close"
-              className="flex items-center justify-center w-9 h-9 rounded-lg border border-white/10 text-gray-400
+              className="flex items-center justify-center w-9 h-9 rounded-lg border border-white/10 text-white/60
                 transition-colors hover:text-white hover:bg-white/[0.06]">
               <X className="w-[18px] h-[18px]" strokeWidth={2.25} />
             </button>
@@ -902,7 +902,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
           <div className="p-5 space-y-4 overflow-y-auto">
             {/* Lobby ID */}
             <div>
-              <label className="font-hud block text-[10px] font-semibold tracking-[0.18em] text-gray-500 uppercase mb-1.5">
+              <label className="font-hud block text-[10px] font-semibold tracking-[0.18em] text-white/45 uppercase mb-1.5">
                 Lobby ID — share with friends
               </label>
               <div className="flex gap-2">
@@ -936,12 +936,12 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
             {/* Settings */}
             <div className="rounded-2xl border border-white/[0.08] bg-white/[0.03] p-4 space-y-3.5">
               <div className="flex items-center gap-2">
-                <SlidersHorizontal className="w-4 h-4 text-gray-400" strokeWidth={2.25} />
-                <span className="text-sm font-semibold text-gray-300">Game Settings</span>
+                <SlidersHorizontal className="w-4 h-4 text-white/60" strokeWidth={2.25} />
+                <span className="text-sm font-semibold text-white/75">Game Settings</span>
               </div>
 
               <div>
-                <label className="font-hud block text-[10px] font-semibold tracking-[0.18em] text-gray-500 uppercase mb-1.5">Mode</label>
+                <label className="font-hud block text-[10px] font-semibold tracking-[0.18em] text-white/45 uppercase mb-1.5">Mode</label>
                 <div className="grid grid-cols-2 gap-2">
                   {([['coop', 'Co-op Survival'], ['survival', 'Last Man Standing']] as const).map(([val, label]) => (
                     <button
@@ -950,7 +950,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
                       className={`rounded-lg border px-3 py-2 text-xs font-semibold transition-all ${
                         gameMode === val
                           ? 'border-emerald-400/50 bg-emerald-500/15 text-emerald-300'
-                          : 'border-white/10 bg-white/[0.03] text-gray-400 hover:bg-white/[0.06]'
+                          : 'border-white/10 bg-white/[0.03] text-white/60 hover:bg-white/[0.06]'
                       }`}
                     >
                       {label}
@@ -961,7 +961,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
 
               {/* Difficulty */}
               <div>
-                <label className="font-hud block text-[10px] font-semibold tracking-[0.18em] text-gray-500 uppercase mb-1.5">Difficulty</label>
+                <label className="font-hud block text-[10px] font-semibold tracking-[0.18em] text-white/45 uppercase mb-1.5">Difficulty</label>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                   {([
                     ['easy', 'Easy', 'Casual', Shield, '#34d399'],
@@ -981,8 +981,8 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
                         }}
                       >
                         <Icon className="w-4 h-4 mb-1" style={{ color: active ? color : '#9ca3af' }} strokeWidth={2} />
-                        <span className={`text-[11px] font-bold ${active ? 'text-white' : 'text-gray-300'}`}>{label}</span>
-                        <span className="text-[9px] text-gray-500">{desc}</span>
+                        <span className={`text-[11px] font-bold ${active ? 'text-white' : 'text-white/75'}`}>{label}</span>
+                        <span className="text-[9px] text-white/45">{desc}</span>
                       </button>
                     );
                   })}
@@ -991,7 +991,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
 
               {/* Time of day */}
               <div>
-                <label className="font-hud block text-[10px] font-semibold tracking-[0.18em] text-gray-500 uppercase mb-1.5">Time of Day</label>
+                <label className="font-hud block text-[10px] font-semibold tracking-[0.18em] text-white/45 uppercase mb-1.5">Time of Day</label>
                 <div className="grid grid-cols-3 gap-2">
                   {([
                     ['auto', 'Auto', 'Day/Night cycle', SunMoon, '#a78bfa'],
@@ -1010,8 +1010,8 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
                         }}
                       >
                         <Icon className="w-4 h-4 mb-1" style={{ color: active ? color : '#9ca3af' }} strokeWidth={2} />
-                        <span className={`text-[11px] font-bold ${active ? 'text-white' : 'text-gray-300'}`}>{label}</span>
-                        <span className="text-[9px] text-gray-500">{desc}</span>
+                        <span className={`text-[11px] font-bold ${active ? 'text-white' : 'text-white/75'}`}>{label}</span>
+                        <span className="text-[9px] text-white/45">{desc}</span>
                       </button>
                     );
                   })}
@@ -1024,8 +1024,8 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
                   onClick={() => setHasTimeLimit(!hasTimeLimit)}
                   className="flex items-center justify-between w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2.5"
                 >
-                  <span className="flex items-center gap-2 text-sm font-semibold text-gray-300">
-                    <Clock className="w-4 h-4 text-gray-400" strokeWidth={2.25} /> Time Limit
+                  <span className="flex items-center gap-2 text-sm font-semibold text-white/75">
+                    <Clock className="w-4 h-4 text-white/60" strokeWidth={2.25} /> Time Limit
                   </span>
                   <span className={`relative w-9 h-5 rounded-full transition-colors ${hasTimeLimit ? 'bg-emerald-500' : 'bg-white/15'}`}>
                     <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${hasTimeLimit ? 'right-0.5' : 'left-0.5'}`} />
@@ -1033,7 +1033,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
                 </button>
                 {hasTimeLimit && (
                   <div className="mt-2 rounded-lg border border-white/[0.07] bg-white/[0.02] px-3 py-2.5">
-                    <div className="flex justify-between text-[11px] text-gray-400 mb-1.5">
+                    <div className="flex justify-between text-[11px] text-white/60 mb-1.5">
                       <span>Duration</span>
                       <span className="font-semibold text-emerald-300">{Math.floor(timeLimit / 60)}m {timeLimit % 60}s</span>
                     </div>
@@ -1048,7 +1048,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
 
               {/* Map */}
               <div>
-                <label className="font-hud block text-[10px] font-semibold tracking-[0.18em] text-gray-500 uppercase mb-1.5">Map</label>
+                <label className="font-hud block text-[10px] font-semibold tracking-[0.18em] text-white/45 uppercase mb-1.5">Map</label>
                 <button
                   onClick={() => setShowMapSelector(!showMapSelector)}
                   className="flex items-center gap-3 w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2.5
@@ -1059,9 +1059,9 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
                   </span>
                   <span className="flex-1 min-w-0 text-left">
                     <span className="block text-sm font-bold text-white truncate">{MAP_CONFIGS[selectedMap].name}</span>
-                    <span className="block text-[11px] text-gray-500 truncate">{MAP_CONFIGS[selectedMap].description}</span>
+                    <span className="block text-[11px] text-white/45 truncate">{MAP_CONFIGS[selectedMap].description}</span>
                   </span>
-                  <ChevronDown className={`w-4 h-4 text-gray-500 flex-shrink-0 transition-transform ${showMapSelector ? 'rotate-180' : ''}`} strokeWidth={2.25} />
+                  <ChevronDown className={`w-4 h-4 text-white/45 flex-shrink-0 transition-transform ${showMapSelector ? 'rotate-180' : ''}`} strokeWidth={2.25} />
                 </button>
                 {showMapSelector && (
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2">
@@ -1077,7 +1077,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
                           }`}
                         >
                           <Icon className="w-5 h-5" style={{ color: active ? '#34d399' : '#9ca3af' }} strokeWidth={1.75} />
-                          <span className={`text-[10px] font-bold leading-tight text-center ${active ? 'text-white' : 'text-gray-400'}`}>
+                          <span className={`text-[10px] font-bold leading-tight text-center ${active ? 'text-white' : 'text-white/60'}`}>
                             {map.name}
                           </span>
                         </button>
@@ -1091,9 +1091,9 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
             {/* Players */}
             <div>
               <div className="flex items-center gap-2 mb-2">
-                <Users className="w-4 h-4 text-gray-400" strokeWidth={2.25} />
-                <span className="text-sm font-semibold text-gray-300">Players</span>
-                <span className="text-xs text-gray-500">{connectedPlayers.length} / 8</span>
+                <Users className="w-4 h-4 text-white/60" strokeWidth={2.25} />
+                <span className="text-sm font-semibold text-white/75">Players</span>
+                <span className="text-xs text-white/45">{connectedPlayers.length} / 8</span>
               </div>
               <div className="space-y-1.5">
                 {connectedPlayers.map((player, index) => (
@@ -1102,9 +1102,9 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
                 {connectedPlayers.length < 8 && (
                   <div className="flex items-center gap-3 rounded-xl border border-dashed border-white/10 px-3 py-2.5">
                     <div className="flex items-center justify-center w-9 h-9 rounded-lg border border-dashed border-white/10">
-                      <Loader2 className="w-4 h-4 text-gray-600 animate-spin" strokeWidth={2} />
+                      <Loader2 className="w-4 h-4 text-white/35 animate-spin" strokeWidth={2} />
                     </div>
-                    <span className="text-xs text-gray-600 italic">Waiting for players…</span>
+                    <span className="text-xs text-white/35 italic">Waiting for players…</span>
                   </div>
                 )}
               </div>
@@ -1143,7 +1143,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
               </button>
               <button
                 onClick={handleBack}
-                className="font-hud rounded-xl px-5 py-3 text-sm font-bold uppercase tracking-wider text-gray-400 border border-white/10
+                className="font-hud rounded-xl px-5 py-3 text-sm font-bold uppercase tracking-wider text-white/60 border border-white/10
                   transition-colors hover:text-white hover:bg-white/[0.06]"
               >
                 Cancel
@@ -1174,7 +1174,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
             <IdentityField username={username} />
 
             <div>
-              <label className="font-hud block text-[10px] font-semibold tracking-[0.18em] text-gray-500 uppercase mb-1.5">
+              <label className="font-hud block text-[10px] font-semibold tracking-[0.18em] text-white/45 uppercase mb-1.5">
                 Lobby ID
               </label>
               <input
@@ -1183,7 +1183,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
                 onChange={(e) => setJoinLobbyId(e.target.value)}
                 placeholder="Paste lobby ID"
                 className="w-full rounded-xl border border-white/10 bg-white/[0.03] px-3.5 py-2.5 font-mono text-xs
-                  text-sky-300 placeholder-gray-600 focus:outline-none focus:border-sky-400/50 transition-colors"
+                  text-sky-300 placeholder-white/35 focus:outline-none focus:border-sky-400/50 transition-colors"
               />
             </div>
 
@@ -1204,7 +1204,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
             <button
               onClick={() => handleChangeView('menu')}
               className="flex items-center justify-center gap-2 w-full rounded-xl px-4 py-2.5 border border-white/10
-                text-sm font-semibold text-gray-400 transition-colors hover:text-white hover:bg-white/[0.05]"
+                text-sm font-semibold text-white/60 transition-colors hover:text-white hover:bg-white/[0.05]"
             >
               <ArrowLeft className="w-4 h-4" strokeWidth={2.25} />
               Back
@@ -1222,7 +1222,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
   if (view === 'join' && manager) {
     return (
       <div className={backdrop} style={backdropStyle}>
-        <div className={`w-full rounded-3xl border border-white/10 bg-[#0a1410]/70 backdrop-blur-xl overflow-hidden shadow-[0_24px_80px_-24px_rgba(0,0,0,0.8)] ${isTouch ? 'm-auto max-w-lg' : 'max-w-md'}`}
+        <div className={`w-full rounded-2xl border border-emerald-400/15 bg-[#080d0b] overflow-hidden shadow-[0_24px_80px_-24px_rgba(0,0,0,0.8)] ${isTouch ? 'm-auto max-w-lg' : 'max-w-md'}`}
           style={{ animation: 'mlFade 0.35s cubic-bezier(0.16,1,0.3,1) forwards' }}>
           <div className="flex items-center gap-3 px-5 py-4 border-b border-white/[0.07]">
             <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-sky-500/12">
@@ -1249,9 +1249,9 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
 
             <div>
               <div className="flex items-center gap-2 mb-2">
-                <Users className="w-4 h-4 text-gray-400" strokeWidth={2.25} />
-                <span className="text-sm font-semibold text-gray-300">Players</span>
-                <span className="text-xs text-gray-500">{connectedPlayers.length} / 8</span>
+                <Users className="w-4 h-4 text-white/60" strokeWidth={2.25} />
+                <span className="text-sm font-semibold text-white/75">Players</span>
+                <span className="text-xs text-white/45">{connectedPlayers.length} / 8</span>
               </div>
               <div className="space-y-1.5">
                 {connectedPlayers.map((player, index) => (
@@ -1263,7 +1263,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
             <div className="flex flex-col items-center gap-2 rounded-xl border border-sky-500/20 bg-sky-500/[0.05] py-5">
               <Loader2 className="w-6 h-6 text-sky-400 animate-spin" strokeWidth={2} />
               <div className="text-sm font-bold text-white">Waiting for Host</div>
-              <div className="text-xs text-gray-500">The game starts when the host is ready</div>
+              <div className="text-xs text-white/45">The game starts when the host is ready</div>
             </div>
 
             <ErrorBox error={error} />
@@ -1271,7 +1271,7 @@ const MultiplayerLobby = ({ onStartGame, onBack, existingManager = null }: Multi
             <button
               onClick={handleBack}
               className="flex items-center justify-center gap-2 w-full rounded-xl px-4 py-2.5 border border-white/10
-                text-sm font-semibold text-gray-400 transition-colors hover:text-white hover:bg-white/[0.05]"
+                text-sm font-semibold text-white/60 transition-colors hover:text-white hover:bg-white/[0.05]"
             >
               <ArrowLeft className="w-4 h-4" strokeWidth={2.25} />
               Leave Lobby

@@ -96,10 +96,10 @@ const RankBadge = ({ rank }: RankBadgeProps) => {
           />
         </div>
 
-        <p className="mt-2 flex items-center gap-1 text-[11px] leading-none text-gray-500">
+        <p className="mt-2 flex items-center gap-1 text-[11px] leading-none text-white/45">
           {rank.nextTierName ? (
             <>
-              <span className="font-semibold text-gray-300 tabular-nums">{xpToNext.toLocaleString()}</span>
+              <span className="font-semibold text-white/75 tabular-nums">{xpToNext.toLocaleString()}</span>
               <span>XP to</span>
               <ChevronRight className="h-3 w-3 opacity-50" strokeWidth={2.5} />
               <span className="inline-flex items-center gap-1 font-bold uppercase tracking-wide" style={{ color: nextColor }}>
@@ -110,7 +110,7 @@ const RankBadge = ({ rank }: RankBadgeProps) => {
             <>
               <Crown className="h-3.5 w-3.5" strokeWidth={2.3} style={{ color }} />
               <span className="font-bold uppercase tracking-wide" style={{ color }}>Apex tier</span>
-              <span>· <span className="font-semibold text-gray-300 tabular-nums">{rank.xp.toLocaleString()}</span> XP</span>
+              <span>· <span className="font-semibold text-white/75 tabular-nums">{rank.xp.toLocaleString()}</span> XP</span>
             </>
           )}
         </p>

@@ -175,10 +175,10 @@ const TouchControls = ({
               <Crosshair className="h-4 w-4 text-emerald-300" strokeWidth={2.25} />
             </span>
             <span className="flex flex-col items-start leading-none">
-              <span className="text-[8px] font-bold uppercase tracking-[0.15em] text-gray-500">Weapon {weaponIndex || '-'}</span>
+              <span className="text-[8px] font-bold uppercase tracking-[0.15em] text-white/45">Weapon {weaponIndex || '-'}</span>
               <span className="mt-0.5 max-w-[88px] truncate text-[12px] font-bold text-white">{WEAPONS[currentWeapon]?.name ?? '—'}</span>
             </span>
-            <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${weaponOpen ? 'rotate-180' : ''}`} strokeWidth={2.5} />
+            <ChevronDown className={`h-4 w-4 text-white/60 transition-transform ${weaponOpen ? 'rotate-180' : ''}`} strokeWidth={2.5} />
           </button>
 
           {/* WEAPON SELECT SHEET — CODM/PUBGM-style full-screen armory picker.
@@ -199,11 +199,11 @@ const TouchControls = ({
             >
               <div className="absolute inset-0 bg-black/70" />
               <div
-                className="absolute left-1/2 top-1/2 w-[min(92vw,30rem)] -translate-x-1/2 -translate-y-1/2 rounded-3xl border border-white/12 bg-[#0b0f15]/95 p-4 shadow-2xl"
+                className="absolute left-1/2 top-1/2 w-[min(92vw,30rem)] -translate-x-1/2 -translate-y-1/2 rounded-3xl border border-white/12 bg-[#080d0b]/95 p-4 shadow-2xl"
                 onPointerDown={(e) => e.stopPropagation()}
               >
                 <div className="mb-3 flex items-center justify-between">
-                  <span className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.2em] text-gray-300">
+                  <span className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.2em] text-white/75">
                     <Crosshair className="h-4 w-4 text-emerald-300" strokeWidth={2.25} />
                     Select Weapon
                   </span>
@@ -213,7 +213,7 @@ const TouchControls = ({
                     onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); setWeaponOpen(false); }}
                     className="flex h-9 w-9 items-center justify-center rounded-xl border border-white/12 bg-white/[0.04] active:scale-90"
                   >
-                    <X className="h-4 w-4 text-gray-300" strokeWidth={2.5} />
+                    <X className="h-4 w-4 text-white/75" strokeWidth={2.5} />
                   </button>
                 </div>
                 <div className="grid grid-cols-4 gap-2">
@@ -233,12 +233,12 @@ const TouchControls = ({
                         }`}
                       >
                         <span className={`flex h-6 w-6 items-center justify-center rounded-lg text-[11px] font-black tabular-nums ${
-                          current ? 'bg-emerald-400/25 text-emerald-100' : unlocked ? 'bg-white/10 text-gray-300' : 'bg-white/5 text-gray-600'
+                          current ? 'bg-emerald-400/25 text-emerald-100' : unlocked ? 'bg-white/10 text-white/75' : 'bg-white/5 text-white/35'
                         }`}>
                           {unlocked ? idx + 1 : <Lock className="h-3 w-3" strokeWidth={2.5} />}
                         </span>
                         <span className={`max-w-full truncate text-[10px] font-bold ${
-                          current ? 'text-emerald-200' : unlocked ? 'text-gray-200' : 'text-gray-600'
+                          current ? 'text-emerald-200' : unlocked ? 'text-white/85' : 'text-white/35'
                         }`}>
                           {WEAPONS[key].name}
                         </span>
@@ -433,7 +433,7 @@ const ACCENT: Record<Accent, { border: string; bg: string; text: string }> = {
   emerald: { border: 'border-emerald-400/50', bg: 'bg-emerald-500/15', text: 'text-emerald-200' },
   amber: { border: 'border-amber-400/50', bg: 'bg-amber-500/15', text: 'text-amber-200' },
   red: { border: 'border-red-400/50', bg: 'bg-red-500/15', text: 'text-red-200' },
-  slate: { border: 'border-white/15', bg: 'bg-black/50', text: 'text-gray-300' },
+  slate: { border: 'border-white/15', bg: 'bg-black/50', text: 'text-white/75' },
 };
 
 const ActionButton = ({
@@ -452,7 +452,7 @@ const ActionButton = ({
       className={`pointer-events-auto relative flex h-[52px] w-[52px] flex-col items-center justify-center rounded-2xl border ${a.border} ${a.bg} transition-transform active:scale-90`}
     >
       <Icon className={`h-5 w-5 ${a.text}`} strokeWidth={2.25} />
-      <span className="mt-0.5 text-[8px] font-bold uppercase tracking-wide text-gray-300">{label}</span>
+      <span className="mt-0.5 text-[8px] font-bold uppercase tracking-wide text-white/75">{label}</span>
       {cooldown < 1 && (
         <div
           className="absolute inset-0 rounded-2xl"
@@ -485,7 +485,7 @@ const PowerButton = ({
       }`}
     >
       <Icon className={`h-5 w-5 ${accent.text}`} strokeWidth={2.25} />
-      <span className="mt-0.5 max-w-full truncate px-0.5 text-[8px] font-bold uppercase tracking-wide text-gray-300">{label}</span>
+      <span className="mt-0.5 max-w-full truncate px-0.5 text-[8px] font-bold uppercase tracking-wide text-white/75">{label}</span>
       {active && ratio !== undefined && (
         <div className="absolute -bottom-0.5 left-1 right-1 h-1 overflow-hidden rounded-full bg-black/55">
           <div className="h-full rounded-full bg-emerald-300" style={{ width: `${Math.max(0, Math.min(1, ratio)) * 100}%` }} />
@@ -542,7 +542,7 @@ const GrenadeButton = ({ grenade }: { grenade?: AbilityHudItem }) => {
         }`}
       >
         <Icon className="h-5 w-5" style={{ color: count > 0 && !lock ? meta.color : '#6b7672', opacity: lock ? 0.5 : 1 }} strokeWidth={2.25} />
-        <span className="mt-0.5 text-[8px] font-bold uppercase tracking-wide text-gray-300">{lock ? 'Hand busy' : meta.label}</span>
+        <span className="mt-0.5 text-[8px] font-bold uppercase tracking-wide text-white/75">{lock ? 'Hand busy' : meta.label}</span>
         <span className="absolute bottom-0.5 right-1 text-[10px] font-bold tabular-nums text-white">{unlimited ? '∞' : count}</span>
         {lock && (
           <span className="absolute left-1 top-1 flex h-4 w-4 items-center justify-center rounded-md border border-amber-300/70 bg-black/85">
@@ -554,7 +554,7 @@ const GrenadeButton = ({ grenade }: { grenade?: AbilityHudItem }) => {
         type="button"
         aria-label="Switch grenade"
         onPointerDown={(e) => { e.preventDefault(); tapKey(keyOf('cycleGrenade')); }}
-        className="pointer-events-auto absolute -left-2 -top-2 flex h-5 w-5 items-center justify-center rounded-md border border-white/20 bg-black/80 text-[9px] font-bold text-gray-200 active:scale-90"
+        className="pointer-events-auto absolute -left-2 -top-2 flex h-5 w-5 items-center justify-center rounded-md border border-white/20 bg-black/80 text-[9px] font-bold text-white/85 active:scale-90"
       >
         ⇄
       </button>
@@ -577,8 +577,8 @@ const HoldButton = ({
     onPointerCancel={onUp}
     className="pointer-events-auto relative flex h-[52px] w-[52px] flex-col items-center justify-center rounded-2xl border border-white/15 bg-black/70 transition-transform active:scale-90 active:bg-white/10"
   >
-    <Icon className="h-5 w-5 text-gray-200" strokeWidth={2.25} />
-    <span className="mt-0.5 text-[8px] font-bold uppercase tracking-wide text-gray-300">{label}</span>
+    <Icon className="h-5 w-5 text-white/85" strokeWidth={2.25} />
+    <span className="mt-0.5 text-[8px] font-bold uppercase tracking-wide text-white/75">{label}</span>
   </button>
 );
 

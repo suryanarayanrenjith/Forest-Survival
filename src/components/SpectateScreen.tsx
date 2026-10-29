@@ -68,7 +68,7 @@ const SpectateScreen = ({ localPlayer, alivePlayers, allPlayers, killerInfo, onM
       className={isTouch
         ? 'm-safe fixed inset-0 flex flex-col menu-overlay-in'
         : 'fixed inset-0 flex items-center justify-center p-4 menu-overlay-in'}
-      style={{ zIndex: 150, background: 'rgba(6,9,13,0.86)', backdropFilter: 'blur(10px)' }}
+      style={{ zIndex: 150, background: 'rgba(4,8,7,0.92)' }}
     >
       <div
         className={isTouch
@@ -84,9 +84,9 @@ const SpectateScreen = ({ localPlayer, alivePlayers, allPlayers, killerInfo, onM
           <div className="min-w-0">
             <p className="font-hud text-[10px] tracking-[0.34em] text-red-300/80 font-semibold uppercase mb-0.5">Spectating</p>
             <h1 className="font-display text-2xl sm:text-3xl font-semibold tracking-[0.08em] text-red-400 uppercase">Eliminated</h1>
-            <p className="font-hud text-xs text-gray-400 mt-0.5">
+            <p className="font-hud text-xs text-white/60 mt-0.5">
               {killerInfo?.killerName
-                ? <>Taken down by <span className="text-gray-200 font-semibold">{killerInfo.killerName}</span> · </>
+                ? <>Taken down by <span className="text-white/85 font-semibold">{killerInfo.killerName}</span> · </>
                 : null}
               Rank #{localRank} of {sortedPlayers.length} · {count} still fighting
             </p>
@@ -102,10 +102,10 @@ const SpectateScreen = ({ localPlayer, alivePlayers, allPlayers, killerInfo, onM
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400" />
               </span>
               <Eye className="w-4 h-4 text-emerald-400" strokeWidth={2.25} />
-              <h2 className="font-hud text-[11px] font-semibold tracking-[0.2em] text-gray-300 uppercase">Now Spectating</h2>
+              <h2 className="font-hud text-[11px] font-semibold tracking-[0.2em] text-white/75 uppercase">Now Spectating</h2>
             </div>
             {count > 1 && (
-              <span className="text-[11px] font-semibold text-gray-500 tabular-nums">
+              <span className="text-[11px] font-semibold text-white/45 tabular-nums">
                 {safeIndex + 1} / {count}
               </span>
             )}
@@ -118,7 +118,7 @@ const SpectateScreen = ({ localPlayer, alivePlayers, allPlayers, killerInfo, onM
                 onClick={() => cycle(-1)}
                 disabled={count < 2}
                 className="flex items-center justify-center w-10 h-10 rounded-xl border border-white/10 bg-white/[0.04]
-                  text-gray-300 transition-colors hover:bg-white/[0.09] hover:text-white disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
+                  text-white/75 transition-colors hover:bg-white/[0.09] hover:text-white disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
                 aria-label="Previous player"
               >
                 <ChevronLeft className="w-5 h-5" strokeWidth={2.5} />
@@ -165,19 +165,19 @@ const SpectateScreen = ({ localPlayer, alivePlayers, allPlayers, killerInfo, onM
                 onClick={() => cycle(1)}
                 disabled={count < 2}
                 className="flex items-center justify-center w-10 h-10 rounded-xl border border-white/10 bg-white/[0.04]
-                  text-gray-300 transition-colors hover:bg-white/[0.09] hover:text-white disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
+                  text-white/75 transition-colors hover:bg-white/[0.09] hover:text-white disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
                 aria-label="Next player"
               >
                 <ChevronRight className="w-5 h-5" strokeWidth={2.5} />
               </button>
             </div>
           ) : (
-            <div className="px-5 py-8 text-center text-sm text-gray-500">
+            <div className="px-5 py-8 text-center text-sm text-white/45">
               No players remaining — finishing match…
             </div>
           )}
           {count > 1 && (
-            <div className="px-5 pb-2.5 -mt-1 text-center text-[10px] text-gray-600">
+            <div className="px-5 pb-2.5 -mt-1 text-center text-[10px] text-white/35">
               Use ← → or A / D to switch players
             </div>
           )}
@@ -187,7 +187,7 @@ const SpectateScreen = ({ localPlayer, alivePlayers, allPlayers, killerInfo, onM
         <div className="rounded-2xl border border-white/10 bg-white/[0.03] overflow-hidden">
           <div className="flex items-center gap-2 px-5 py-2.5 border-b border-white/[0.07]">
             <Activity className="w-4 h-4 text-emerald-400" strokeWidth={2.25} />
-            <h2 className="font-hud text-[11px] font-semibold tracking-[0.2em] text-gray-300 uppercase">Live Scoreboard</h2>
+            <h2 className="font-hud text-[11px] font-semibold tracking-[0.2em] text-white/75 uppercase">Live Scoreboard</h2>
           </div>
           <div className="max-h-[260px] overflow-y-auto">
             {sortedPlayers.map((player, index) => {
@@ -208,14 +208,14 @@ const SpectateScreen = ({ localPlayer, alivePlayers, allPlayers, killerInfo, onM
                   <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: formatColor(player.color) }} />
                   <span className="flex-1 min-w-0 text-sm font-semibold text-white truncate">
                     {player.name}
-                    {isLocal && <span className="text-gray-500 ml-1.5 text-xs">· you</span>}
+                    {isLocal && <span className="text-white/45 ml-1.5 text-xs">· you</span>}
                   </span>
                   {player.isAlive ? (
                     <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-400 uppercase tracking-wide">
                       <Activity className="w-3 h-3" strokeWidth={2.5} /> Alive
                     </span>
                   ) : (
-                    <Skull className="w-3.5 h-3.5 text-gray-600" strokeWidth={2.25} />
+                    <Skull className="w-3.5 h-3.5 text-white/35" strokeWidth={2.25} />
                   )}
                   <span className="flex items-center gap-1 text-orange-300 text-sm font-semibold tabular-nums w-11 justify-end">
                     <Crosshair className="w-3 h-3" strokeWidth={2.5} />{player.kills}
@@ -234,7 +234,7 @@ const SpectateScreen = ({ localPlayer, alivePlayers, allPlayers, killerInfo, onM
           <button
             onClick={onMainMenu}
             className="font-hud group flex items-center gap-2 rounded-xl px-8 py-3 border border-white/10 bg-white/[0.04]
-              text-sm font-bold uppercase tracking-wider text-gray-300 transition-all duration-200
+              text-sm font-bold uppercase tracking-wider text-white/75 transition-all duration-200
               hover:text-white hover:bg-white/[0.08] hover:border-white/20"
           >
             <Home className="w-4 h-4" strokeWidth={2.25} />
@@ -259,8 +259,8 @@ const SpecStat = ({ icon: Icon, label, value, color, small }: {
   <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] py-2 px-1 text-center">
     <div className={`font-display font-semibold tabular-nums truncate ${small ? 'text-sm' : 'text-lg'}`} style={{ color }}>{value}</div>
     <div className="flex items-center justify-center gap-1 mt-0.5">
-      <Icon className="w-2.5 h-2.5 text-gray-600" strokeWidth={2.5} />
-      <span className="font-hud text-[9px] font-semibold tracking-[0.1em] text-gray-500 uppercase">{label}</span>
+      <Icon className="w-2.5 h-2.5 text-white/35" strokeWidth={2.5} />
+      <span className="font-hud text-[9px] font-semibold tracking-[0.1em] text-white/45 uppercase">{label}</span>
     </div>
   </div>
 );

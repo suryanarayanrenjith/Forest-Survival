@@ -51,30 +51,30 @@ const DailyChallengeCard = () => {
   };
 
   return (
-    <div className="w-full rounded-2xl border border-emerald-400/25 bg-emerald-500/[0.06] p-4 backdrop-blur-md">
+    <div className="w-full rounded-xl border border-emerald-300/20 bg-[#050c09]/85 p-4 shadow-[0_18px_50px_rgba(0,0,0,0.35)]">
       <div className="flex items-center gap-2">
         <span className="flex h-7 w-7 items-center justify-center rounded-lg border border-emerald-400/35 bg-emerald-500/12">
           <Calendar className="h-3.5 w-3.5 text-emerald-300" strokeWidth={2.5} />
         </span>
         <div className="flex flex-1 items-baseline justify-between">
-          <span className="text-[10px] font-bold uppercase tracking-[0.3em] text-emerald-300/80">
+          <span className="font-hud text-[10px] font-bold uppercase tracking-[0.3em] text-emerald-300/80">
             Daily Challenge
           </span>
-          <span className="text-[10px] font-semibold tabular-nums text-gray-500">
+          <span className="font-hud text-[10px] font-semibold tabular-nums text-white/45">
             {daily.utcDay}
           </span>
         </div>
       </div>
 
-      <h3 className="mt-2 text-base font-black tracking-tight text-white">{challenge.name}</h3>
-      <p className="mt-0.5 text-[12px] leading-snug text-gray-400">{challenge.blurb}</p>
+      <h3 className="font-display mt-2 text-lg font-semibold uppercase tracking-wide text-white">{challenge.name}</h3>
+      <p className="font-hud mt-0.5 text-[12px] leading-snug text-white/60">{challenge.blurb}</p>
 
       <div className="mt-3">
         <div className="mb-1 flex items-baseline justify-between">
-          <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">
+          <span className="font-hud text-[10px] font-bold uppercase tracking-[0.18em] text-white/60">
             Progress
           </span>
-          <span className="text-[12px] font-bold tabular-nums text-emerald-300">
+          <span className="hud-num text-[12px] font-bold tabular-nums text-emerald-300">
             {progress} / {challenge.goal}
           </span>
         </div>
@@ -99,7 +99,7 @@ const DailyChallengeCard = () => {
             ? 'border-emerald-400/55 bg-emerald-500/18 text-emerald-200'
             : complete
               ? 'border-emerald-400/45 bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/25'
-              : 'border-white/10 bg-white/[0.04] text-gray-500'
+              : 'border-white/10 bg-white/[0.04] text-white/45'
         }`}
       >
         {claimed ? (

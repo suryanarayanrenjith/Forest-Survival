@@ -32,8 +32,8 @@ const MobileNotice = () => {
   };
 
   return (
-    <div className="m-safe fixed inset-0 z-[9998] flex items-center justify-center bg-[#05080a]/90 p-4 backdrop-blur-sm menu-overlay-in">
-      <div className="m-sheet-in w-full max-w-lg overflow-hidden rounded-2xl border border-amber-400/25 bg-[#0b0f15] shadow-2xl">
+    <div className="m-safe fixed inset-0 z-[9998] flex items-center justify-center bg-[#05080a]/90 p-4 menu-overlay-in">
+      <div className="m-sheet-in w-full max-w-lg overflow-hidden rounded-2xl border border-amber-400/25 bg-[#080d0b] shadow-2xl">
         <div className="h-1 w-full bg-gradient-to-r from-transparent via-amber-400 to-transparent" />
         <div className="flex items-center gap-4 p-4">
           <div className="flex h-14 w-14 flex-none items-center justify-center rounded-2xl border border-amber-400/30 bg-amber-500/10">
@@ -47,8 +47,8 @@ const MobileNotice = () => {
                 As an <h1> it gave touch devices — including Googlebot-Smartphone
                 under mobile-first indexing — a second, competing H1 on top of
                 the menu's real one. */}
-            <h2 className="text-base font-bold leading-tight text-white">Best on desktop — but ready for touch</h2>
-            <p className="mt-1 text-[12px] leading-snug text-gray-400">
+            <h2 className="font-display text-lg font-semibold uppercase leading-tight tracking-wide text-white">Best on desktop — but ready for touch</h2>
+            <p className="font-hud mt-1 text-[12px] leading-snug text-white/60">
               Forest Survival is tuned for keyboard &amp; mouse, yet fully playable here
               with purpose-built touch controls. Play in landscape.
             </p>
@@ -59,11 +59,11 @@ const MobileNotice = () => {
         <div className="grid grid-cols-2 gap-2 px-4">
           <div className="flex items-center gap-2 rounded-xl border border-white/[0.08] bg-white/[0.02] px-3 py-2">
             <Gamepad2 className="h-4 w-4 flex-none text-emerald-300" strokeWidth={2} />
-            <span className="text-[11px] leading-tight text-gray-300">Left thumb moves · swipe right to look</span>
+            <span className="text-[11px] leading-tight text-white/75">Left thumb moves · swipe right to look</span>
           </div>
           <div className="flex items-center gap-2 rounded-xl border border-white/[0.08] bg-white/[0.02] px-3 py-2">
             <Crosshair className="h-4 w-4 flex-none text-red-300" strokeWidth={2} />
-            <span className="text-[11px] leading-tight text-gray-300">FIRE auto-aims — no aim button needed</span>
+            <span className="text-[11px] leading-tight text-white/75">FIRE auto-aims — no aim button needed</span>
           </div>
         </div>
 

@@ -46,10 +46,10 @@ const Notifications = ({
                   <ChevronsUp className="w-7 h-7 text-emerald-400" strokeWidth={2.25} />
                 </m.div>
                 <div>
-                  <h2 className="text-3xl font-bold tracking-[0.15em] text-emerald-300 uppercase">
+                  <h2 className="font-display text-3xl font-semibold tracking-[0.15em] text-emerald-300 uppercase">
                     {t('waveComplete')}
                   </h2>
-                  <p className="mt-1 text-sm text-gray-400">{t('nextWave')}</p>
+                  <p className="font-hud mt-1 text-sm text-white/60">{t('nextWave')}</p>
                 </div>
               </div>
             </m.div>

@@ -111,7 +111,7 @@ const ShaderProcessingScreen = ({ visible, error, onContinueAnyway }: ShaderProc
           className="absolute inset-0"
           style={{ background: `radial-gradient(ellipse 55% 45% at center, ${accentSoft} 0%, transparent 60%)` }}
         />
-        <div className="pointer-events-auto relative w-full max-w-md overflow-hidden rounded-3xl border border-red-500/25 bg-black/60 backdrop-blur-xl shadow-[0_30px_80px_rgba(0,0,0,0.6)]">
+        <div className="pointer-events-auto relative w-full max-w-md overflow-hidden rounded-2xl border border-red-500/25 bg-[#0c0807] shadow-[0_30px_80px_rgba(0,0,0,0.6)]">
           <div className="h-px w-full bg-gradient-to-r from-transparent via-red-400/70 to-transparent" />
           <div className="px-7 py-7">
             <div className="flex items-start gap-3">
@@ -122,17 +122,17 @@ const ShaderProcessingScreen = ({ visible, error, onContinueAnyway }: ShaderProc
                 <p className="text-[10px] font-bold uppercase tracking-[0.4em] text-red-300/90">
                   Warmup Failed{error?.stage ? ` · ${error.stage}` : ''}
                 </p>
-                <h2 className="mt-1 text-2xl font-black tracking-tight text-white">
+                <h2 className="font-display mt-1 text-2xl font-semibold uppercase tracking-wide text-white">
                   {error?.message ?? 'Could not finish preparing the game.'}
                 </h2>
               </div>
             </div>
             {error?.detail && (
-              <pre className="mt-4 max-h-32 overflow-auto rounded-xl border border-white/5 bg-white/[0.025] p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-gray-400/90">
+              <pre className="mt-4 max-h-32 overflow-auto rounded-xl border border-white/5 bg-white/[0.025] p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-white/55">
                 {error.detail}
               </pre>
             )}
-            <p className="mt-4 text-[13px] leading-relaxed text-gray-300/80">
+            <p className="mt-4 text-[13px] leading-relaxed text-white/60">
               {error?.recoverable
                 ? 'You can continue with reduced visual fidelity, or reload to retry the full warmup.'
                 : "The game can't run on this device right now. Please reload — if it persists, try another browser or update your GPU drivers."}
@@ -148,7 +148,7 @@ const ShaderProcessingScreen = ({ visible, error, onContinueAnyway }: ShaderProc
               )}
               <button
                 onClick={() => window.location.reload()}
-                className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2.5 text-[12px] font-bold uppercase tracking-[0.12em] text-gray-300 transition-all hover:bg-white/[0.08] hover:text-white"
+                className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2.5 text-[12px] font-bold uppercase tracking-[0.12em] text-white/75 transition-all hover:bg-white/[0.08] hover:text-white"
               >
                 <RefreshCw className="h-4 w-4" strokeWidth={2.25} /> Reload Page
               </button>
@@ -187,7 +187,7 @@ const ShaderProcessingScreen = ({ visible, error, onContinueAnyway }: ShaderProc
               <Crosshair className="sps-reticle mb-0.5 h-4 w-4" style={{ color: accent }} strokeWidth={1.75} />
               <div className="flex items-baseline">
                 <span className="text-2xl font-black leading-none tabular-nums tracking-tight text-white">{progressValue}</span>
-                <span className="ml-0.5 text-xs font-bold text-gray-500">%</span>
+                <span className="ml-0.5 text-xs font-bold text-white/45">%</span>
               </div>
             </div>
           </div>
@@ -199,11 +199,11 @@ const ShaderProcessingScreen = ({ visible, error, onContinueAnyway }: ShaderProc
                 <span className="absolute inline-flex h-full w-full rounded-sm bg-emerald-400/60 sps-glow" />
                 <span className="relative inline-flex h-2 w-2 rotate-45 rounded-sm bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.8)]" />
               </span>
-              <span className="text-[9px] font-bold uppercase tracking-[0.4em] text-gray-300/90">
+              <span className="text-[9px] font-bold uppercase tracking-[0.4em] text-white/70">
                 Forest <span className="text-emerald-300">Survival</span>
               </span>
             </div>
-            <h2 className="mt-1 text-lg font-black leading-tight tracking-tight text-white">Preparing the battlefield</h2>
+            <h2 className="font-display mt-1 text-lg font-semibold uppercase leading-tight tracking-wide text-white">Preparing the battlefield</h2>
             <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-white/[0.06]">
               <div
                 className="h-full rounded-full"
@@ -232,7 +232,7 @@ const ShaderProcessingScreen = ({ visible, error, onContinueAnyway }: ShaderProc
                         <span className="h-1.5 w-1.5 rounded-full bg-white/15" />
                       )}
                     </span>
-                    <span className={`truncate text-[10px] font-semibold leading-tight ${state === 'pending' ? 'text-gray-600' : 'text-gray-200'}`}>
+                    <span className={`truncate text-[10px] font-semibold leading-tight ${state === 'pending' ? 'text-white/35' : 'text-white/85'}`}>
                       {phase.label}
                     </span>
                   </div>

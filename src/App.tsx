@@ -113,7 +113,7 @@ import { AbilityViewmodel, abilityPropKind, ABILITY_PAYLOAD_DELAY, type AbilityB
 import { driveRobotGait, driveRobotIdle, braceKnees } from './utils/RobotGait';
 import { GrenadeSystem, GRENADE_KINDS, type LiveGrenade, type SolidHit } from './utils/GrenadeSystem';
 import { THROWABLES, THROWABLE_KINDS, startingThrowables, rollThrowableDrop, throwableDropRules, type ThrowableKind } from './utils/Throwables';
-import { pickupColor, pickupCss } from './utils/pickupPalette';
+import { pickupColor, pickupCss, AIRDROP_LABEL, AIRDROP_COLOR, airdropCss } from './utils/pickupPalette';
 import ThrowableWheel from './components/ThrowableWheel';
 import MotionRoot from './components/MotionRoot';
 import { AnimatePresence, m } from 'motion/react';
@@ -6096,6 +6096,11 @@ const ForestSurvivalGame = () => {
     /** Name tag: how far away and how close to the crosshair a pickup must be. */
     const PICKUP_TAG_RANGE = 26;
     const PICKUP_TAG_COS = 0.988;
+    /** Airdrop crates: farther reach, wider cone (a 2 m crate, not a med kit). */
+    const AIRDROP_TAG_RANGE = 45;
+    const AIRDROP_TAG_COS = 0.975;
+    /** The crate under the crosshair last frame (its glow swells). */
+    let taggedDrop: import('./utils/EnhancedPowerUps').Airdrop | null = null;
     const _puFwd = new THREE.Vector3();
     const _puAura = new THREE.Vector3();
     let lastPickupTagKey = '';
@@ -10178,16 +10183,7 @@ const ForestSurvivalGame = () => {
               // tells them WHICH reward incoming, and the power-up chime is
               // pitched up so it reads as a "delivery inbound" alert.
               soundManager.play('powerUp', 0.7, false, 1.25);
-              const rewardLabel = (
-                streakReward === 'rapid_fire'    ? 'Rapid Fire' :
-                streakReward === 'health'        ? 'Health Pack' :
-                streakReward === 'invincible'    ? 'Invincibility' :
-                streakReward === 'random_weapon' ? 'Mystery Box' :
-                streakReward === 'nuke'          ? 'Tactical Nuke' :
-                streakReward === 'frenzy'        ? 'Frenzy' :
-                streakReward === 'juggernaut'    ? 'Juggernaut' :
-                'Airdrop'
-              );
+              const rewardLabel = AIRDROP_LABEL[streakReward];
               if (gameSettingsManager.getSetting('killFeed')) {
                 addKillFeedEntry(`${killStreak} Streak · ${rewardLabel} Inbound`, 'powerup');
               }
@@ -10310,20 +10306,26 @@ const ForestSurvivalGame = () => {
       }
       maybeDropGrenade(enemy.mesh.position.x, enemy.mesh.position.z);
       updateGameState();
-      // Wave complete — only once the whole wave budget has spawned AND
-      // every HOSTILE robot is dead (hijacked allies don't hold it open).
-      // Tutorial mode has no wave progression.
-      // MP guests NEVER advance the wave locally — the wave number is strictly
-      // host-authoritative and mirrored from the enemy_sync stream (see
-      // handleEnemySync). This keeps every player's wave counter exactly equal.
-      if (!isTutorialMode && !isGameOver && !playerEliminated && !isMpGuest
-          && waveEnemiesRemaining <= 0 && livingEnemyCount() === 0 && !waveTransitioning) {
-        waveTransitioning = true;
-        // The banner + Mystery Box wait for the last robot's death to play
-        // out (see updateWaveClear) instead of freezing it mid-fall.
-        waveClearElapsed = 0;
-      }
+      maybeBeginWaveClear();
     };
+
+    /**
+     * Wave complete? — once the whole wave budget has spawned AND no HOSTILE
+     * robot is left, however that came about: a kill, an ally's kill, a hazard,
+     * or the last robot being HIJACKED (which is not a kill at all — the wave
+     * used to wait forever on it). So it's checked on every kill AND every
+     * simulated frame (updateWaveClear). Tutorial mode has no wave
+     * progression; MP guests NEVER advance the wave locally — the wave number
+     * is strictly host-authoritative and mirrored from the enemy_sync stream
+     * (see handleEnemySync), so every player's counter stays exactly equal.
+     * The banner + Mystery Box then wait for the last deaths to play out.
+     */
+    function maybeBeginWaveClear(): void {
+      if (isTutorialMode || isGameOver || playerEliminated || isMpGuest || waveTransitioning) return;
+      if (waveEnemiesRemaining > 0 || livingEnemyCount() > 0) return;
+      waveTransitioning = true;
+      waveClearElapsed = 0;
+    }
 
     // ── WAVE CLEAR (settle → celebrate) ──────────────────────────────────
     // The killing blow of a wave used to freeze the whole simulation on the
@@ -10347,7 +10349,7 @@ const ForestSurvivalGame = () => {
     };
     /** Per frame (sim running): count the settle down, then celebrate. */
     const updateWaveClear = (dt: number) => {
-      if (waveClearElapsed < 0) return;
+      if (waveClearElapsed < 0) { maybeBeginWaveClear(); return; }
       if (isGameOver || playerEliminated) { waveClearElapsed = -1; return; }
       waveClearElapsed += dt;
       if (waveClearSettled()) {
@@ -11501,6 +11503,8 @@ const ForestSurvivalGame = () => {
       showPowerMessage('ROBOT HIJACKED · it fights for you until destroyed', 1900);
       if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry(`Hijacked a ${enemyLabelOf(e.type)}`, 'powerup');
       updateGameState();
+      // Turning the wave's LAST hostile ends the wave right here.
+      maybeBeginWaveClear();
     };
 
     /** The spike's timer ran out: take the robot it's in, or one it can reach. */
@@ -13172,6 +13176,19 @@ const ForestSurvivalGame = () => {
         },
         allies: () => liveAllies.map((a) => ({ type: a.type, hp: Math.round(a.health), max: Math.round(a.maxHealth), d: +a.mesh.position.distanceTo(camera.position).toFixed(1) })),
         hostiles: () => livingEnemyCount(),
+        // Kill every hostile except the nearest (last-robot scenarios).
+        leaveOne: () => {
+          waveEnemiesRemaining = 0;
+          let keep: Enemy | null = null; let bd = Infinity;
+          for (const e of enemies) {
+            if (e.dead || e.hijacked) continue;
+            const d = e.mesh.position.distanceToSquared(camera.position);
+            if (d < bd) { bd = d; keep = e; }
+          }
+          for (const e of enemies) if (!e.dead && !e.hijacked && e !== keep) handleEnemyKilled(e, false);
+          return keep ? keep.type : null;
+        },
+        weaken: (hp = 5) => { for (const e of enemies) if (!e.dead && !e.hijacked) e.health = Math.min(e.health, hp); },
         waveClear: () => ({ elapsed: waveClearElapsed, transitioning: waveTransitioning, wave, remaining: waveEnemiesRemaining }),
         // Kill every hostile (wave-clear flow test). Allies are left alone.
         clearWave: () => {
@@ -14124,6 +14141,32 @@ const ForestSurvivalGame = () => {
             applyKillstreakReward(type);
           }
         }
+      }
+      // CRATE GLOW — a landed crate wears the same identity aura as a pickup
+      // (its reward's hue, the same warmed shader), sitting just behind the
+      // crate and facing the camera; it swells while the crate is the one
+      // under the crosshair (taggedDrop, from the look-at tag below).
+      for (const drop of enhancedPowerUps.getAirdrops()) {
+        if (drop.collected) continue;
+        let aura = drop.mesh.userData.aura as THREE.Mesh | undefined;
+        if (!aura) {
+          aura = new THREE.Mesh(haloGeoShared, getAuraMat(AIRDROP_COLOR[drop.powerUpType]));
+          aura.renderOrder = 987;
+          aura.scale.setScalar(0.0001);
+          drop.mesh.add(aura);
+          drop.mesh.userData.aura = aura;
+        }
+        if (!drop.landed || drop.asleep) { aura.scale.setScalar(0.0001); continue; }
+        const adx = drop.mesh.position.x - camera.position.x;
+        const adz = drop.mesh.position.z - camera.position.z;
+        const ad = Math.hypot(adx, adz) || 1;
+        _puAura.set(drop.mesh.position.x + (adx / ad) * 1.25, drop.mesh.position.y + 0.15, drop.mesh.position.z + (adz / ad) * 1.25);
+        drop.mesh.updateMatrixWorld();
+        drop.mesh.worldToLocal(_puAura);
+        aura.position.copy(_puAura);
+        const focus = drop === taggedDrop ? 1.4 + Math.sin(performance.now() * 0.006) * 0.07 : 1;
+        aura.scale.setScalar(1.3 * focus * Math.min(2, Math.max(1, ad / 16)));
+        aura.lookAt(camera.position);
       }
 
       // === UPDATE AI SYSTEMS ===
@@ -16094,10 +16137,35 @@ const ForestSurvivalGame = () => {
         }
       }
 
-      // ── Pickup name tag (only re-rendered when the target / hint changes) ──
+      // ── Pickup / crate name tag (only re-rendered when the target / hint changes) ──
       {
         let tag: { key: string; label: string; hint: string; color: string } | null = null;
-        if (_tagBest && !_tagBest.collected && !paused && !playerEliminated) {
+        // Airdrop crates are big, so they get a longer reach and a wider cone;
+        // whichever of crate or pickup sits closer to the crosshair wins.
+        taggedDrop = null;
+        if (!paused && !playerEliminated) {
+          let dropScore = _tagBest ? _tagScore : AIRDROP_TAG_COS;
+          for (const drop of enhancedPowerUps.getAirdrops()) {
+            if (drop.collected || drop.asleep) continue;
+            const ddx = drop.mesh.position.x - camera.position.x;
+            const ddy = drop.mesh.position.y - camera.position.y;
+            const ddz = drop.mesh.position.z - camera.position.z;
+            const d2 = ddx * ddx + ddy * ddy + ddz * ddz;
+            if (d2 > AIRDROP_TAG_RANGE * AIRDROP_TAG_RANGE) continue;
+            const dl = Math.sqrt(d2) || 1;
+            const score = (_puFwd.x * ddx + _puFwd.y * ddy + _puFwd.z * ddz) / dl + (dl < 6 ? 0.05 : 0);
+            if (score > dropScore && score > AIRDROP_TAG_COS) { dropScore = score; taggedDrop = drop; }
+          }
+        }
+        if (taggedDrop) {
+          tag = {
+            key: '',
+            label: AIRDROP_LABEL[taggedDrop.powerUpType],
+            hint: taggedDrop.landed ? 'Airdrop · walk over to open' : 'Airdrop inbound',
+            color: airdropCss(taggedDrop.powerUpType),
+          };
+          tag.key = `drop|${tag.label}|${tag.hint}`;
+        } else if (_tagBest && !_tagBest.collected && !paused && !playerEliminated) {
           const root = _tagBest.mesh as unknown as THREE.Object3D;
           const color = (root.userData.tagColor as string | undefined) ?? '#ffffff';
           if (_tagBest.type === 'grenade') {
@@ -19325,6 +19393,12 @@ const ForestSurvivalGame = () => {
           const root = pu.mesh as unknown as THREE.Object3D;
           blips.push({ x: root.position.x, z: root.position.z, color: (root.userData.tagColor as string | undefined) ?? '#ffffff', alive: true, kind: 'pickup' });
         }
+        // Airdrop crates show as loot too, in their reward's hue (falling ones
+        // as well — the radar is how you find where it will land).
+        for (const drop of enhancedPowerUps.getAirdrops()) {
+          if (drop.collected) continue;
+          blips.push({ x: drop.mesh.position.x, z: drop.mesh.position.z, color: airdropCss(drop.powerUpType), alive: true, kind: 'pickup' });
+        }
         for (let e = 0; e < enemies.length; e++) {
           const en = enemies[e];
           if (en.dead) continue;
@@ -20929,14 +21003,14 @@ const ForestSurvivalGame = () => {
 
       {/* Ejected mid-match (host kick / anti-cheat) — show the reason, then exit. */}
       {kickedReason && (
-        <div className="absolute inset-0 z-[120] flex items-center justify-center bg-black/85 p-4" style={{ backdropFilter: 'blur(10px)' }}>
+        <div className="absolute inset-0 z-[120] flex items-center justify-center p-4" style={{ background: 'rgba(4,8,7,0.92)' }}>
           <div className="w-full max-w-md rounded-2xl border border-rose-400/25 bg-[#0c0807] p-6 text-center shadow-[0_40px_120px_rgba(0,0,0,0.7)]">
             <div className="mx-auto flex items-center justify-center w-12 h-12 rounded-xl border border-rose-400/30 bg-rose-500/15">
               <ShieldAlert className="w-6 h-6 text-rose-300" strokeWidth={2.2} />
             </div>
             <p className="font-hud mt-4 text-[10px] font-semibold uppercase tracking-[0.34em] text-rose-300/90">Removed from match</p>
             <h2 className="font-display text-2xl font-semibold uppercase tracking-wide text-white">You were kicked</h2>
-            <p className="mt-2 text-sm leading-relaxed text-gray-300/90">{kickedReason}</p>
+            <p className="mt-2 text-sm leading-relaxed text-white/70">{kickedReason}</p>
             <button
               onClick={returnToMenu}
               className="font-hud mt-5 w-full rounded-lg px-4 py-2.5 text-sm font-bold uppercase tracking-wider text-[#04130a] transition-all hover:brightness-110"
@@ -20965,10 +21039,10 @@ const ForestSurvivalGame = () => {
           pointer-events-none) to the canvas, which re-locks (see onMouseDown). */}
       {showResumePrompt && gameStarted && gameMode === 'multiplayer' && !gameState.isGameOver && !isPaused && !showShaderProcessing && !photoMode && !isTouch && (
         <div className="pointer-events-none absolute inset-0 z-[80] flex items-center justify-center bg-black/55">
-          <div className="flex flex-col items-center gap-3 rounded-2xl border border-white/10 bg-[#0b0f15]/85 px-8 py-6">
+          <div className="flex flex-col items-center gap-3 rounded-2xl border border-white/10 bg-[#080d0b]/85 px-8 py-6">
             <MousePointerClick className="h-7 w-7 text-emerald-300" strokeWidth={2} />
             <span className="text-base font-bold tracking-wide text-white">Click to resume</span>
-            <span className="text-[12px] text-gray-400">The match is still live — click to recapture your aim.</span>
+            <span className="text-[12px] text-white/60">The match is still live — click to recapture your aim.</span>
           </div>
         </div>
       )}
@@ -21701,16 +21775,17 @@ const ForestSurvivalGame = () => {
           play freely (the sandbox keeps running) or head to the menu. */}
       {tutorialComplete && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4"
-          style={{ background: 'rgba(5,8,10,0.78)', backdropFilter: 'blur(6px)' }}>
-          <div className="w-full max-w-md overflow-hidden rounded-2xl border border-emerald-400/25 bg-[#0b0f15] shadow-2xl"
+          style={{ background: 'rgba(4,8,7,0.92)' }}>
+          <div className="hud-frame w-full max-w-md overflow-hidden rounded-2xl border border-emerald-400/15 bg-[#080d0b] shadow-[0_40px_100px_rgba(0,0,0,0.6)]"
             style={{ animation: 'tutorialDoneIn 0.4s cubic-bezier(0.16,1,0.3,1) forwards' }}>
             <div className="h-1 w-full bg-gradient-to-r from-transparent via-emerald-400 to-transparent" />
             <div className="px-7 py-7 text-center">
-              <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-emerald-500/15 border border-emerald-400/30">
-                <GraduationCap className="w-8 h-8 text-emerald-300" strokeWidth={2} />
+              <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-xl bg-emerald-500/12 border border-emerald-400/30">
+                <GraduationCap className="w-7 h-7 text-emerald-300" strokeWidth={2} />
               </div>
-              <h2 className="text-2xl font-black tracking-tight text-white">Tutorial Complete!</h2>
-              <p className="mt-2 text-sm leading-relaxed text-gray-400">
+              <p className="font-hud text-[10px] font-semibold uppercase tracking-[0.36em] text-emerald-300/90">Training complete</p>
+              <h2 className="font-display title-bio mt-1 text-3xl font-semibold uppercase tracking-wide">Tutorial Complete</h2>
+              <p className="font-hud mt-3 text-[13px] leading-relaxed text-white/60">
                 You've mastered the basics, survivor. You're free to keep practising here,
                 or jump into a real run from the menu.
               </p>
@@ -21726,14 +21801,14 @@ const ForestSurvivalGame = () => {
                     const canvas = mountRef.current?.querySelector('canvas');
                     if (canvas && !isTouch) (canvas as HTMLCanvasElement).requestPointerLock();
                   }}
-                  className="flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold tracking-wide text-[#04130a] transition-all hover:-translate-y-0.5"
-                  style={{ background: 'linear-gradient(135deg, #34d399, #22c55e)' }}
+                  className="font-hud flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-[12px] font-bold uppercase tracking-[0.18em] text-[#04130a] transition-all hover:-translate-y-0.5 hover:brightness-110"
+                  style={{ background: 'linear-gradient(135deg, #34d399, #22c55e)', boxShadow: '0 8px 28px -8px rgba(52,211,153,0.6)' }}
                 >
-                  <Play className="w-4 h-4" strokeWidth={2.5} /> Keep Playing
+                  <Play className="w-4 h-4" strokeWidth={2.5} fill="currentColor" /> Keep Playing
                 </button>
                 <button
                   onClick={() => { setTutorialComplete(false); returnToMenu(); }}
-                  className="flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2.5 text-sm font-bold tracking-wide text-gray-200 transition-all hover:bg-white/[0.08]"
+                  className="font-hud flex items-center justify-center gap-2 rounded-xl border border-white/[0.12] bg-[#060b09]/85 px-4 py-2.5 text-[12px] font-bold uppercase tracking-[0.18em] text-white/80 transition-all hover:border-white/30 hover:text-white"
                 >
                   <Home className="w-4 h-4" strokeWidth={2.25} /> Main Menu
                 </button>

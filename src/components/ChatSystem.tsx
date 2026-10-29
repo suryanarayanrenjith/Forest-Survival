@@ -287,7 +287,7 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
                 <div className="flex items-center gap-1.5 text-[10px]">
                   <style.icon className="w-3 h-3 flex-shrink-0" style={{ color: style.iconColor }} strokeWidth={2.25} />
                   <span className="font-bold truncate" style={{ color: colorHex }}>{msg.playerName}</span>
-                  <span className="text-gray-300 truncate">{msg.message}</span>
+                  <span className="text-white/75 truncate">{msg.message}</span>
                 </div>
               </div>
             );
@@ -320,7 +320,7 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
                 </div>
                 <button
                   onClick={() => { setTouchOpen(false); setShowEmotes(false); }}
-                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 text-gray-400 hover:bg-white/[0.06] hover:text-white"
+                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 text-white/60 hover:bg-white/[0.06] hover:text-white"
                   aria-label="Close chat"
                 >
                   <X className="h-4 w-4" strokeWidth={2.25} />
@@ -329,7 +329,7 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
 
               <div className="flex-1 space-y-1 overflow-y-auto p-2" style={{ minHeight: '30vh' }}>
                 {messages.length === 0 && (
-                  <div className="mt-4 text-center text-xs text-gray-600">No messages yet — say hello.</div>
+                  <div className="mt-4 text-center text-xs text-white/35">No messages yet — say hello.</div>
                 )}
                 {messages.map((msg) => {
                   const style = getMessageStyle(msg);
@@ -343,7 +343,7 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
                           {msg.type === 'chat' || msg.type === 'emote' ? (
                             <span className="ml-1 text-white">: {msg.message}</span>
                           ) : (
-                            <span className="ml-1 text-gray-300">{msg.message}</span>
+                            <span className="ml-1 text-white/75">{msg.message}</span>
                           )}
                         </div>
                       </div>
@@ -363,7 +363,7 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
                       className={`flex flex-col items-center gap-0.5 rounded-lg border border-white/10 bg-white/[0.03] px-1 py-2 ${emoteCooldown ? 'opacity-50' : 'active:bg-white/[0.08]'}`}
                     >
                       <div className="text-xl">{emote.icon}</div>
-                      <div className="truncate text-[9px] font-medium text-gray-300">{emote.label.split(' ')[0]}</div>
+                      <div className="truncate text-[9px] font-medium text-white/75">{emote.label.split(' ')[0]}</div>
                     </button>
                   ))}
                 </div>
@@ -379,7 +379,7 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
                     onKeyDown={(e) => e.stopPropagation()}
                     onKeyPress={handleKeyPress}
                     placeholder="Type a message…"
-                    className={`min-w-0 flex-1 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white placeholder-gray-600 transition-colors focus:border-emerald-400/50 focus:outline-none ${chatCooldown ? 'opacity-50' : ''}`}
+                    className={`min-w-0 flex-1 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white placeholder-white/35 transition-colors focus:border-emerald-400/50 focus:outline-none ${chatCooldown ? 'opacity-50' : ''}`}
                     maxLength={100}
                     disabled={chatCooldown}
                   />
@@ -423,7 +423,7 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
             </div>
             <button
               onClick={() => setShowChat(false)}
-              className="text-gray-500 hover:text-white transition-colors"
+              className="text-white/45 hover:text-white transition-colors"
               aria-label="Hide chat"
             >
               <X className="w-3.5 h-3.5" strokeWidth={2.5} />
@@ -433,7 +433,7 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
           {/* Messages */}
           <div className="flex-1 overflow-y-auto p-1.5 sm:p-2 space-y-1 scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-transparent">
             {messages.length === 0 && (
-              <div className="text-center text-gray-600 text-xs mt-4">
+              <div className="text-center text-white/35 text-xs mt-4">
                 No messages yet — say hello.
               </div>
             )}
@@ -458,7 +458,7 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
                       {msg.type === 'chat' || msg.type === 'emote' ? (
                         <span className="text-white ml-1">: {msg.message}</span>
                       ) : (
-                        <span className="text-gray-300 ml-1">{msg.message}</span>
+                        <span className="text-white/75 ml-1">{msg.message}</span>
                       )}
                     </div>
                   </div>
@@ -478,7 +478,7 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
                 onChange={(e) => setInputValue(e.target.value)}
                 onKeyPress={handleKeyPress}
                 placeholder="Type a message…"
-                className={`flex-1 px-3 py-1.5 bg-white/[0.04] text-white text-xs sm:text-sm rounded-lg border border-white/10 placeholder-gray-600 focus:outline-none focus:border-emerald-400/50 transition-colors min-w-0 ${chatCooldown ? 'opacity-50' : ''}`}
+                className={`flex-1 px-3 py-1.5 bg-white/[0.04] text-white text-xs sm:text-sm rounded-lg border border-white/10 placeholder-white/35 focus:outline-none focus:border-emerald-400/50 transition-colors min-w-0 ${chatCooldown ? 'opacity-50' : ''}`}
                 maxLength={100}
                 disabled={chatCooldown}
               />
@@ -506,12 +506,12 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
       {showEmotes && (
         <div className="w-[280px] sm:w-80 md:w-96 bg-[#080d0b]/95 border border-white/10 rounded-2xl p-3">
           <div className="flex items-center justify-between mb-2.5">
-            <span className="font-hud text-xs font-semibold tracking-[0.12em] text-gray-300 uppercase">Quick Emotes</span>
+            <span className="font-hud text-xs font-semibold tracking-[0.12em] text-white/75 uppercase">Quick Emotes</span>
             <div className="flex items-center gap-2">
               {emoteCooldown && <span className="text-amber-400 text-[10px] font-semibold">Cooldown…</span>}
               <button
                 onClick={() => setShowEmotes(false)}
-                className="text-gray-500 hover:text-white transition-colors"
+                className="text-white/45 hover:text-white transition-colors"
                 aria-label="Close emotes"
               >
                 <X className="w-3.5 h-3.5" strokeWidth={2.5} />
@@ -527,7 +527,7 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
                 className={`flex flex-col items-center gap-0.5 rounded-lg border border-white/10 bg-white/[0.03] px-1 py-2 transition-all hover:bg-white/[0.07] ${emoteCooldown ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
                 <div className="text-lg sm:text-xl">{emote.icon}</div>
-                <div className="text-gray-300 text-[9px] sm:text-[10px] font-medium truncate">{emote.label.split(' ')[0]}</div>
+                <div className="text-white/75 text-[9px] sm:text-[10px] font-medium truncate">{emote.label.split(' ')[0]}</div>
               </button>
             ))}
           </div>
@@ -539,7 +539,7 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
         <button
           onClick={() => setShowChat(true)}
           className="flex items-center gap-2 rounded-lg border border-white/10 bg-black/85
-            px-3.5 py-2 text-sm font-semibold text-gray-300 transition-all hover:text-white hover:bg-black/80 hover:border-emerald-500/40"
+            px-3.5 py-2 text-sm font-semibold text-white/75 transition-all hover:text-white hover:bg-black/80 hover:border-emerald-500/40"
         >
           <MessageSquare className="w-4 h-4 text-emerald-400" strokeWidth={2.25} />
           <span className="hidden sm:inline">Open </span>Chat
@@ -573,7 +573,7 @@ const ChatSystem = ({ manager, isVisible, isTouch = false }: ChatSystemProps) =>
                 >
                   {msg.playerName}
                 </span>
-                <span className="text-gray-300 truncate">{msg.message}</span>
+                <span className="text-white/75 truncate">{msg.message}</span>
               </div>
             </div>
           );

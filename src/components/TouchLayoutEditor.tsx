@@ -34,7 +34,7 @@ const ACCENT_CLASS: Record<Accent, string> = {
   red: 'border-red-400/70 bg-red-500/35 text-red-50',
   emerald: 'border-emerald-400/60 bg-emerald-500/25 text-emerald-50',
   amber: 'border-amber-400/60 bg-amber-500/25 text-amber-50',
-  slate: 'border-white/30 bg-black/70 text-gray-100',
+  slate: 'border-white/30 bg-black/70 text-white/90',
 };
 
 const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
@@ -303,7 +303,7 @@ const TouchLayoutEditor = () => {
       {/* Intro */}
       <div className="flex items-start gap-2 rounded-xl border border-emerald-400/20 bg-emerald-500/[0.05] px-2.5 py-2">
         <Move className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-emerald-300" strokeWidth={2.2} />
-        <p className="text-[10px] leading-snug text-gray-300">
+        <p className="text-[10px] leading-snug text-white/75">
           <span className="font-semibold text-white">Drag any button</span> onto the scene. <span className="font-semibold text-emerald-300">Auto-align</span> snaps
           them to a grid so they never overlap. Saved to this device.
         </p>
@@ -326,8 +326,8 @@ const TouchLayoutEditor = () => {
           }`}
         >
           <span className="flex items-center gap-2">
-            <Magnet className={`h-4 w-4 ${layout.snap ? 'text-emerald-300' : 'text-gray-500'}`} strokeWidth={2.25} />
-            <span className="text-xs font-bold uppercase tracking-wider text-gray-200">Auto-align</span>
+            <Magnet className={`h-4 w-4 ${layout.snap ? 'text-emerald-300' : 'text-white/45'}`} strokeWidth={2.25} />
+            <span className="text-xs font-bold uppercase tracking-wider text-white/85">Auto-align</span>
           </span>
           <span className={`relative h-5 w-9 flex-shrink-0 rounded-full transition-colors ${layout.snap ? 'bg-emerald-500' : 'bg-white/15'}`}>
             <span className={`absolute top-0.5 h-[16px] w-[16px] rounded-full bg-white transition-all ${layout.snap ? 'right-0.5' : 'left-0.5'}`} />
@@ -342,8 +342,8 @@ const TouchLayoutEditor = () => {
           }`}
         >
           <span className="flex items-center gap-2">
-            <FlipHorizontal2 className={`h-4 w-4 ${layout.mirrored ? 'text-emerald-300' : 'text-gray-500'}`} strokeWidth={2.25} />
-            <span className="text-xs font-bold uppercase tracking-wider text-gray-200">Left-handed</span>
+            <FlipHorizontal2 className={`h-4 w-4 ${layout.mirrored ? 'text-emerald-300' : 'text-white/45'}`} strokeWidth={2.25} />
+            <span className="text-xs font-bold uppercase tracking-wider text-white/85">Left-handed</span>
           </span>
           <span className={`relative h-5 w-9 flex-shrink-0 rounded-full transition-colors ${layout.mirrored ? 'bg-emerald-500' : 'bg-white/15'}`}>
             <span className={`absolute top-0.5 h-[16px] w-[16px] rounded-full bg-white transition-all ${layout.mirrored ? 'right-0.5' : 'left-0.5'}`} />
@@ -371,13 +371,13 @@ const TouchLayoutEditor = () => {
       {/* Reset */}
       <button
         onClick={() => { haptic('tap'); resetTouchLayout(); }}
-        className="flex w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] py-2 text-[11px] font-semibold uppercase tracking-wider text-gray-300 transition-colors hover:bg-white/[0.06] hover:text-white active:scale-[0.99]"
+        className="flex w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] py-2 text-[11px] font-semibold uppercase tracking-wider text-white/75 transition-colors hover:bg-white/[0.06] hover:text-white active:scale-[0.99]"
       >
         <RotateCcw className="h-3.5 w-3.5" strokeWidth={2.25} />
         Reset layout
       </button>
 
-      <p className="flex items-center justify-center gap-1.5 text-center text-[9px] leading-tight text-gray-600">
+      <p className="flex items-center justify-center gap-1.5 text-center text-[9px] leading-tight text-white/35">
         <Crosshair className="h-3 w-3 flex-none text-emerald-500/70" strokeWidth={2} />
         Firing auto-aims — no aim button to place.
       </p>
@@ -396,8 +396,8 @@ const EditorSlider = ({ label, icon: Icon, value, onChange, onCommit, min, max, 
     <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-3.5 py-2.5">
       <div className="mb-2 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Icon className="h-3.5 w-3.5 text-gray-400" strokeWidth={2.25} />
-          <span className="font-hud text-[10px] font-semibold uppercase tracking-[0.16em] text-gray-300">{label}</span>
+          <Icon className="h-3.5 w-3.5 text-white/60" strokeWidth={2.25} />
+          <span className="font-hud text-[10px] font-semibold uppercase tracking-[0.16em] text-white/75">{label}</span>
         </div>
         <span className="text-xs font-bold tabular-nums text-emerald-300">{value}%</span>
       </div>

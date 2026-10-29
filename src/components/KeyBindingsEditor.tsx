@@ -131,7 +131,7 @@ export const KeyBindingsEditor: React.FC<KeyBindingsEditorProps> = ({ accent = '
       {/* Hint / live notice */}
       <div className="flex items-center gap-2 rounded-lg border border-white/[0.07] bg-white/[0.02] px-3 py-2">
         <Info className="w-3.5 h-3.5 flex-shrink-0" strokeWidth={2.25} style={{ color: accent }} />
-        <span className="text-[11px] text-gray-400">
+        <span className="text-[11px] text-white/60">
           {listening
             ? 'Press any key to bind · Esc to cancel'
             : notice || 'Click a key, then press the new key. Conflicts swap automatically.'}
@@ -148,8 +148,8 @@ export const KeyBindingsEditor: React.FC<KeyBindingsEditorProps> = ({ accent = '
               className="flex items-center justify-between rounded-xl border border-white/[0.07] bg-white/[0.02] px-3.5 py-2.5"
             >
               <div className="flex items-center gap-2.5 min-w-0">
-                <Icon className="w-4 h-4 text-gray-500 flex-shrink-0" strokeWidth={2} />
-                <span className="text-sm text-gray-300 font-medium truncate">{label}</span>
+                <Icon className="w-4 h-4 text-white/45 flex-shrink-0" strokeWidth={2} />
+                <span className="text-sm text-white/75 font-medium truncate">{label}</span>
               </div>
               <button
                 onClick={() => { setListening(isListening ? null : action); setNotice(''); }}
@@ -168,13 +168,13 @@ export const KeyBindingsEditor: React.FC<KeyBindingsEditorProps> = ({ accent = '
 
       {/* Reset */}
       <div className="flex items-center justify-between gap-3 pt-0.5">
-        <span className="flex items-center gap-1.5 text-[11px] text-gray-600">
+        <span className="flex items-center gap-1.5 text-[11px] text-white/35">
           <Keyboard className="w-3.5 h-3.5" strokeWidth={2} /> Bindings save to your account
         </span>
         <button
           onClick={() => { commit(normalizeKeyBindings(defaultKeyBindings)); setListening(null); setNotice(''); }}
           disabled={isDefault}
-          className="flex items-center gap-1.5 rounded-lg border border-white/10 px-3 py-1.5 text-[11px] font-semibold text-gray-300 transition-colors enabled:hover:bg-white/[0.06] enabled:hover:text-white disabled:opacity-40 disabled:cursor-not-allowed"
+          className="flex items-center gap-1.5 rounded-lg border border-white/10 px-3 py-1.5 text-[11px] font-semibold text-white/75 transition-colors enabled:hover:bg-white/[0.06] enabled:hover:text-white disabled:opacity-40 disabled:cursor-not-allowed"
         >
           <RotateCcw className="w-3.5 h-3.5" strokeWidth={2.25} /> Reset to defaults
         </button>
@@ -182,12 +182,12 @@ export const KeyBindingsEditor: React.FC<KeyBindingsEditorProps> = ({ accent = '
 
       {/* Fixed controls reference */}
       <div className="rounded-xl border border-white/[0.06] bg-white/[0.01] px-3.5 py-3">
-        <div className="text-[10px] font-semibold tracking-[0.18em] text-gray-500 uppercase mb-2">Fixed controls</div>
+        <div className="text-[10px] font-semibold tracking-[0.18em] text-white/45 uppercase mb-2">Fixed controls</div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5">
           {FIXED_CONTROLS.map((c) => (
             <div key={c.action} className="flex items-center justify-between gap-2">
-              <span className="text-[11px] text-gray-500">{c.action}</span>
-              <kbd className="px-2 py-0.5 rounded bg-white/[0.05] border border-white/10 text-gray-400 font-mono text-[10px] font-semibold">
+              <span className="text-[11px] text-white/45">{c.action}</span>
+              <kbd className="px-2 py-0.5 rounded bg-white/[0.05] border border-white/10 text-white/60 font-mono text-[10px] font-semibold">
                 {c.keyLabel}
               </kbd>
             </div>

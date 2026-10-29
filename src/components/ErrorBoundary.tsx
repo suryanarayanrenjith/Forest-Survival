@@ -80,28 +80,28 @@ export class ErrorBoundary extends Component<Props, State> {
 
       // Default fallback UI
       return (
-        <div className="fixed inset-0 z-50 flex overflow-y-auto p-4 sm:p-6 bg-[#05080a]/95 backdrop-blur-sm">
-          <div className="m-auto w-full max-w-2xl rounded-2xl border border-white/10 bg-[#0b0f15] shadow-2xl p-5 sm:p-8">
+        <div className="fixed inset-0 z-50 flex overflow-y-auto p-4 sm:p-6 bg-[#05080a]/95">
+          <div className="hud-frame m-auto w-full max-w-2xl rounded-2xl border border-rose-400/25 bg-[#0c0807] shadow-[0_40px_120px_rgba(0,0,0,0.7)] p-5 sm:p-8">
             {/* Error Icon */}
             <div className="text-center mb-5 sm:mb-6">
               <div className="inline-flex items-center justify-center w-16 h-16 sm:w-20 sm:h-20 rounded-2xl bg-red-500/10 border border-red-500/30 mb-4">
                 <AlertTriangle className="w-8 h-8 sm:w-10 sm:h-10 text-red-400" strokeWidth={1.75} />
               </div>
-              <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Something Went Wrong</h1>
-              <p className="text-sm text-gray-400">The game encountered an unexpected error</p>
+              <h1 className="font-display text-2xl sm:text-3xl font-semibold uppercase tracking-wide text-white mb-2">Something Went Wrong</h1>
+              <p className="font-hud text-sm text-white/60">The game encountered an unexpected error</p>
             </div>
 
             {/* Error Details (Development Only) */}
             {import.meta.env.DEV && this.state.error && (
               <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4 mb-6 max-h-64 overflow-auto">
                 <div className="text-[11px] font-semibold tracking-[0.15em] text-red-400 uppercase mb-2">Error Details</div>
-                <pre className="text-xs text-gray-300 whitespace-pre-wrap font-mono">
+                <pre className="text-xs text-white/75 whitespace-pre-wrap font-mono">
                   {this.state.error.toString()}
                 </pre>
                 {this.state.errorInfo && (
                   <>
                     <div className="text-[11px] font-semibold tracking-[0.15em] text-red-400 uppercase mt-4 mb-2">Stack Trace</div>
-                    <pre className="text-xs text-gray-500 whitespace-pre-wrap font-mono">
+                    <pre className="text-xs text-white/45 whitespace-pre-wrap font-mono">
                       {this.state.errorInfo.componentStack}
                     </pre>
                   </>
@@ -112,7 +112,7 @@ export class ErrorBoundary extends Component<Props, State> {
             {/* Error Message (Production) */}
             {!import.meta.env.DEV && (
               <div className="rounded-xl border border-red-500/20 bg-red-500/[0.06] p-4 mb-6">
-                <p className="text-sm text-gray-300 text-center">
+                <p className="text-sm text-white/75 text-center">
                   We apologize for the inconvenience. The error has been logged and we'll look into it.
                 </p>
               </div>
@@ -132,7 +132,7 @@ export class ErrorBoundary extends Component<Props, State> {
               <button
                 onClick={this.handleReload}
                 className="flex items-center justify-center gap-2 px-6 py-3 rounded-xl text-sm font-semibold
-                  bg-white/[0.04] border border-white/10 text-gray-300
+                  bg-white/[0.04] border border-white/10 text-white/75
                   hover:bg-white/[0.08] hover:border-white/20 hover:text-white transition-all duration-200"
               >
                 <RefreshCw className="w-4 h-4" strokeWidth={2.25} />
@@ -141,7 +141,7 @@ export class ErrorBoundary extends Component<Props, State> {
             </div>
 
             {/* Help Text */}
-            <div className="mt-6 text-center text-xs text-gray-500">
+            <div className="mt-6 text-center text-xs text-white/45">
               If this problem persists, try refreshing the page or clearing your browser cache.
             </div>
           </div>

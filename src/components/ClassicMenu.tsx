@@ -1,111 +1,60 @@
-import { useEffect, useRef, useState } from 'react';
-import {
-  ArrowLeft, Dices, Sparkles, ChevronDown, Play, Cpu,
-  Shield, Crosshair, Skull, CloudSun, Sun, Moon,
-  Trees, Flame, Snowflake, Mountain, Droplet, Leaf, Landmark, type LucideIcon,
-} from 'lucide-react';
+import { useRef, useState } from 'react';
+import { Dices, Sparkles, Play, Cpu, Shield, Crosshair, Skull, type LucideIcon } from 'lucide-react';
 import CharacterSelect from './CharacterSelect';
-import { MAP_CONFIGS, getRandomMap, type MapType } from '../utils/MapSystem';
+import { getRandomMap, type MapType } from '../utils/MapSystem';
 import type { ClassId } from '../utils/CharacterModels';
 import { detectIsTouch } from '../hooks/useDeviceInfo';
+import {
+  MenuBackButton, MenuScreenHeader, MenuSection, MenuOptionCard, AtmosphereSection, MapSection,
+  MenuStartBar, MenuFootnote, type TimeOfDay,
+} from './MenuKit';
+import { MENU_RADIUS } from './menuTokens';
 
 const IS_TOUCH = detectIsTouch();
 
 interface ClassicMenuProps {
-  onStartGame: (difficulty: 'easy' | 'medium' | 'hard' | 'adaptive', timeOfDay: 'day' | 'night' | 'auto', map: MapType, isRandom: boolean) => void;
+  onStartGame: (difficulty: 'easy' | 'medium' | 'hard' | 'adaptive', timeOfDay: TimeOfDay, map: MapType, isRandom: boolean) => void;
   onBack: () => void;
   selectedCharacter: ClassId;
   onSelectCharacter: (id: ClassId) => void;
   t: (key: string) => string;
 }
 
-const MAP_ICONS: Record<MapType, LucideIcon> = {
-  deep_forest: Trees,
-  scorched_wasteland: Flame,
-  frozen_tundra: Snowflake,
-  desert_canyon: Mountain,
-  toxic_swamp: Droplet,
-  military_outpost: Shield,
-  autumn_grove: Leaf,
-  ancient_ruins: Landmark,
-};
+const DIFFICULTIES: { key: 'easy' | 'medium' | 'hard' | 'adaptive'; icon: LucideIcon; label: string; desc: string; color: string }[] = [
+  { key: 'easy', icon: Shield, label: 'Easy', desc: 'Casual', color: '#34d399' },
+  { key: 'medium', icon: Crosshair, label: 'Medium', desc: 'Balanced', color: '#fbbf24' },
+  { key: 'hard', icon: Skull, label: 'Hard', desc: 'Brutal', color: '#f87171' },
+  { key: 'adaptive', icon: Cpu, label: 'Adaptive', desc: 'AI-paced', color: '#22d3ee' },
+];
 
+/** Solo setup — built from the shared MenuKit (same layout as Tutorial). */
 const ClassicMenu = ({ onStartGame, onBack, selectedCharacter, onSelectCharacter }: ClassicMenuProps) => {
   const [selectedDifficulty, setSelectedDifficulty] = useState<'easy' | 'medium' | 'hard' | 'adaptive'>('medium');
-  const [selectedTimeOfDay, setSelectedTimeOfDay] = useState<'day' | 'night' | 'auto'>('auto');
+  const [selectedTimeOfDay, setSelectedTimeOfDay] = useState<TimeOfDay>('auto');
   const [selectedMap, setSelectedMap] = useState<MapType>('deep_forest');
   const [isRandomMode, setIsRandomMode] = useState(false);
-  const [showMapSelector, setShowMapSelector] = useState(false);
-
-  // Map is the LAST section, so expanding it unfolds the 8-map grid into the
-  // strip covered by the fixed Start bar (or below the fold on a short screen)
-  // and the dropdown reads as doing nothing. Scroll it back into view.
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const mapSectionRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!showMapSelector) return;
-    const raf = requestAnimationFrame(() => {
-      const scroller = scrollRef.current;
-      const section = mapSectionRef.current;
-      if (!scroller || !section) return;
-      // Start bar height (pt-10 + button + pb-6) plus breathing room.
-      const START_BAR_CLEARANCE = 148;
-      const hidden = section.getBoundingClientRect().bottom - (scroller.clientHeight - START_BAR_CLEARANCE);
-      if (hidden > 0) scroller.scrollBy({ top: hidden, behavior: 'smooth' });
-    });
-    return () => cancelAnimationFrame(raf);
-  }, [showMapSelector]);
-
-  const difficulties: { key: 'easy' | 'medium' | 'hard' | 'adaptive'; icon: LucideIcon; label: string; desc: string; color: string }[] = [
-    { key: 'easy', icon: Shield, label: 'Easy', desc: 'Casual', color: '#34d399' },
-    { key: 'medium', icon: Crosshair, label: 'Medium', desc: 'Balanced', color: '#fbbf24' },
-    { key: 'hard', icon: Skull, label: 'Hard', desc: 'Brutal', color: '#f87171' },
-    { key: 'adaptive', icon: Cpu, label: 'Adaptive', desc: 'AI-paced', color: '#22d3ee' },
-  ];
-
-  const atmospheres: { key: 'auto' | 'day' | 'night'; icon: LucideIcon; label: string; desc: string; color: string }[] = [
-    { key: 'auto', icon: CloudSun, label: 'Auto', desc: 'Day-night cycle', color: '#a78bfa' },
-    { key: 'day', icon: Sun, label: 'Day', desc: 'Bright', color: '#fbbf24' },
-    { key: 'night', icon: Moon, label: 'Night', desc: 'Dark', color: '#818cf8' },
-  ];
-
-  const SelectedMapIcon = MAP_ICONS[selectedMap];
 
   return (
     <div className="relative w-full h-dvh overflow-hidden">
       {/* Backdrop chrome (dark gradients + themed tint) is rendered at App
           level OUTSIDE the menu transition so it stays static while this
           screen slides. Only the content below animates. */}
+      <MenuBackButton onClick={onBack} />
 
-      <button
-        onClick={onBack}
-        className="group fixed top-5 left-5 z-50 flex items-center gap-2 px-4 py-2.5
-          border border-white/[0.12] bg-[#060b09]/85 font-hud text-[11px] font-semibold uppercase tracking-[0.24em] text-white/70
-          transition-all duration-200 hover:text-white hover:border-white/30"
-        style={{ borderRadius: '10px 2.5px' }}
-      >
-        <ArrowLeft className="w-4 h-4 group-hover:-translate-x-0.5 transition-transform" strokeWidth={2.25} />
-        Back
-      </button>
-
-      {/* Scrollable content.
-
-          `m-safe` lives on the SCROLLER, never on the padded content div below —
-          it sets all four `padding-*` longhands and wins over a co-located
-          `px-4 pt-20 pb-36` (equal specificity, emitted later), silently zeroing
-          the page's padding. That left no bottom padding to scroll the Map
-          section clear of the Start bar. Same fix as TutorialMenu.
-
-          Bottom padding must exceed the fixed Start bar (~120px: pt-10 + button
-          + pb-6) so the bar ends up BELOW the last section, not cutting into it. */}
+      {/* Scrollable content. `m-safe` lives on the SCROLLER, never on the
+          padded content div below — it sets all four `padding-*` longhands
+          and would silently zero a co-located `px-4 pt-20 pb-40`. Bottom
+          padding must exceed the fixed Start bar (~120px). */}
       <div ref={scrollRef} className="m-safe relative z-20 h-dvh overflow-y-auto">
         <div className={`flex flex-col items-center max-w-2xl mx-auto ${IS_TOUCH ? 'px-4 pt-16 pb-36' : 'px-4 pt-20 pb-40'}`}>
-          <div className={`text-center ${IS_TOUCH ? 'mb-5' : 'mb-8'}`}>
-            <p className="font-hud text-[10px] tracking-[0.4em] text-emerald-400/90 font-semibold uppercase mb-2">Solo Survival</p>
-            <h1 className={`font-display title-bio font-semibold uppercase tracking-wide ${IS_TOUCH ? 'text-3xl' : 'text-4xl sm:text-5xl'}`}>
-              CLASSIC MODE
-            </h1>
-          </div>
+          <MenuScreenHeader
+            eyebrow="Solo Survival"
+            title="Classic Mode"
+            subtitle="Hold the forest against endless robot waves. Pick your operative, the difficulty and the battlefield."
+            accent="emerald"
+            compact={IS_TOUCH}
+          />
 
           <div className="w-full space-y-4 menu-stagger">
             <button
@@ -116,9 +65,9 @@ const ClassicMenu = ({ onStartGame, onBack, selectedCharacter, onSelectCharacter
               }}
               className="w-full flex items-center gap-4 px-4 py-4 border transition-all duration-300 text-left"
               style={{
-                borderColor: isRandomMode ? 'rgba(167,139,250,0.6)' : 'rgba(255,255,255,0.1)',
-                background: isRandomMode ? 'linear-gradient(90deg, rgba(60,40,110,0.9), rgba(16,12,30,0.88))' : 'rgba(6,11,9,0.84)',
-                borderRadius: '10px 2.5px',
+                borderColor: isRandomMode ? 'rgba(167,139,250,0.6)' : 'rgba(255,255,255,0.09)',
+                background: isRandomMode ? 'linear-gradient(90deg, rgba(60,40,110,0.9), rgba(16,12,30,0.88))' : 'rgba(6,11,9,0.85)',
+                borderRadius: MENU_RADIUS,
               }}
             >
               <span
@@ -145,152 +94,52 @@ const ClassicMenu = ({ onStartGame, onBack, selectedCharacter, onSelectCharacter
             </button>
 
             {/* Character — independent of Random Mode (you always pick who you are) */}
-            <Section title="Character" dimmed={false}>
+            <MenuSection title="Character" accent="emerald">
               <CharacterSelect selected={selectedCharacter} onSelect={onSelectCharacter} accent="#34d399" />
-            </Section>
+            </MenuSection>
 
-            <Section title="Difficulty" dimmed={isRandomMode}>
+            <MenuSection title="Difficulty" accent="emerald" dimmed={isRandomMode}>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                {difficulties.map((d) => {
+                {DIFFICULTIES.map((d) => {
                   const Icon = d.icon;
                   const active = selectedDifficulty === d.key && !isRandomMode;
                   return (
-                    <OptionCard key={d.key} active={active} color={d.color}
+                    <MenuOptionCard key={d.key} active={active} color={d.color}
                       onClick={() => { setSelectedDifficulty(d.key); setIsRandomMode(false); }}>
                       <Icon className="w-5 h-5 mb-1.5" style={{ color: active ? d.color : '#9ca3af' }} strokeWidth={2} />
                       <span className={`font-hud text-xs font-bold ${active ? 'text-white' : 'text-white/75'}`}>{d.label}</span>
                       <span className="font-hud text-[10px] text-white/45">{d.desc}</span>
-                    </OptionCard>
+                    </MenuOptionCard>
                   );
                 })}
               </div>
-            </Section>
+            </MenuSection>
 
-            <Section title="Atmosphere" dimmed={isRandomMode}>
-              <div className="grid grid-cols-3 gap-2">
-                {atmospheres.map((a) => {
-                  const Icon = a.icon;
-                  const active = selectedTimeOfDay === a.key;
-                  return (
-                    <OptionCard key={a.key} active={active} color={a.color}
-                      onClick={() => setSelectedTimeOfDay(a.key)}>
-                      <Icon className="w-5 h-5 mb-1.5" style={{ color: active ? a.color : '#9ca3af' }} strokeWidth={2} />
-                      <span className={`font-hud text-xs font-bold ${active ? 'text-white' : 'text-white/75'}`}>{a.label}</span>
-                      <span className="font-hud text-[10px] text-white/45">{a.desc}</span>
-                    </OptionCard>
-                  );
-                })}
-              </div>
-            </Section>
-
-            <Section title="Map" dimmed={isRandomMode} innerRef={mapSectionRef}>
-              <button
-                onClick={() => setShowMapSelector(!showMapSelector)}
-                className="w-full flex items-center gap-3 px-3.5 py-3 border border-white/10 bg-[#08100d]/90
-                  transition-colors hover:border-emerald-300/30 hover:bg-[#0b1511]"
-              >
-                <span className="flex items-center justify-center w-10 h-10 border border-emerald-300/20 bg-emerald-500/[0.12] flex-shrink-0">
-                  <SelectedMapIcon className="w-5 h-5 text-emerald-400" strokeWidth={1.75} />
-                </span>
-                <span className="flex-1 min-w-0 text-left">
-                  <span className="font-display block text-[15px] font-semibold uppercase tracking-wide text-white truncate">{MAP_CONFIGS[selectedMap].name}</span>
-                  <span className="font-hud block text-[11px] text-white/50 truncate">{MAP_CONFIGS[selectedMap].description}</span>
-                </span>
-                <ChevronDown className={`w-4 h-4 text-gray-500 flex-shrink-0 transition-transform ${showMapSelector ? 'rotate-180' : ''}`} strokeWidth={2.25} />
-              </button>
-              {showMapSelector && (
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2 menu-pop-grid">
-                  {Object.values(MAP_CONFIGS).map((map) => {
-                    const Icon = MAP_ICONS[map.id];
-                    const active = selectedMap === map.id;
-                    return (
-                      <OptionCard key={map.id} active={active} color="#34d399"
-                        onClick={() => { setSelectedMap(map.id); setShowMapSelector(false); }}>
-                        <Icon className="w-5 h-5 mb-1.5" style={{ color: active ? '#34d399' : '#9ca3af' }} strokeWidth={1.75} />
-                        <span className={`text-[10px] font-bold leading-tight text-center ${active ? 'text-white' : 'text-gray-400'}`}>
-                          {map.name}
-                        </span>
-                      </OptionCard>
-                    );
-                  })}
-                </div>
-              )}
-            </Section>
+            <AtmosphereSection value={selectedTimeOfDay} onChange={setSelectedTimeOfDay} accent="emerald" dimmed={isRandomMode} />
+            <MapSection value={selectedMap} onChange={setSelectedMap} accent="emerald" dimmed={isRandomMode} scrollRef={scrollRef} />
           </div>
 
-          <p className="font-hud mt-6 text-[10px] tracking-[0.3em] text-white/40 uppercase" style={{ textShadow: '0 1px 2px rgba(0,0,0,0.8)' }}>Version 2.0 · Classic Mode</p>
+          <MenuFootnote>Version 2.0 · Classic Mode</MenuFootnote>
         </div>
       </div>
 
-      {/* Fixed Start button.
-
-          The gradient scrim MUST stay pointer-events-none — it spans the full
-          viewport width, so an interactive scrim eats every click in the bottom
-          strip of the screen, including the Map dropdown once the page is
-          scrolled down. Only the button takes input. (Same fix as TutorialMenu.) */}
-      <div className="fixed bottom-0 left-0 right-0 z-50 pointer-events-none">
-        <div className="bg-gradient-to-t from-[#06130b] via-[#06130b]/85 to-transparent pt-10 pb-6 px-4 flex justify-center">
-          <button
-            onClick={() => {
-              if (isRandomMode) {
-                const timeOptions: ('day' | 'night' | 'auto')[] = ['day', 'night', 'auto'];
-                onStartGame('adaptive', timeOptions[Math.floor(Math.random() * 3)], getRandomMap(), true);
-              } else {
-                onStartGame(selectedDifficulty, selectedTimeOfDay, selectedMap, false);
-              }
-            }}
-            className="group font-hud pointer-events-auto flex items-center justify-center gap-2.5 px-12 py-4 min-w-[280px]
-              font-bold tracking-[0.22em] uppercase text-[#04130a] transition-all duration-200
-              hover:-translate-y-0.5 hover:brightness-110 active:translate-y-0"
-            style={{
-              borderRadius: '14px 3.5px',
-              background: isRandomMode
-                ? 'linear-gradient(135deg, #a78bfa, #f0abfc)'
-                : 'linear-gradient(135deg, #34d399, #22c55e)',
-              boxShadow: isRandomMode
-                ? '0 8px 28px -8px rgba(167,139,250,0.6)'
-                : '0 8px 28px -8px rgba(52,211,153,0.6)',
-            }}
-          >
-            {isRandomMode
-              ? <Dices className="w-5 h-5 group-hover:rotate-180 transition-transform duration-500" strokeWidth={2.25} />
-              : <Play className="w-5 h-5" strokeWidth={2.5} fill="currentColor" />}
-            {isRandomMode ? 'Roll & Play' : 'Start Game'}
-          </button>
-        </div>
-      </div>
+      <MenuStartBar
+        accent={isRandomMode ? 'violet' : 'emerald'}
+        icon={isRandomMode ? Dices : Play}
+        filled={!isRandomMode}
+        iconClassName={isRandomMode ? 'w-5 h-5 group-hover:rotate-180 transition-transform duration-500' : 'w-5 h-5'}
+        label={isRandomMode ? 'Roll & Play' : 'Start Game'}
+        onClick={() => {
+          if (isRandomMode) {
+            const timeOptions: TimeOfDay[] = ['day', 'night', 'auto'];
+            onStartGame('adaptive', timeOptions[Math.floor(Math.random() * 3)], getRandomMap(), true);
+          } else {
+            onStartGame(selectedDifficulty, selectedTimeOfDay, selectedMap, false);
+          }
+        }}
+      />
     </div>
   );
 };
-
-const Section = ({ title, dimmed, children, innerRef }: { title: string; dimmed: boolean; children: React.ReactNode; innerRef?: React.Ref<HTMLDivElement> }) => (
-  <div
-    ref={innerRef}
-    className={`border border-white/[0.09] bg-[#060b09]/85 shadow-[0_18px_50px_rgba(0,0,0,0.3)] transition-opacity duration-300 ${dimmed ? 'opacity-40 pointer-events-none' : ''}`}
-    style={{ borderRadius: '10px 2.5px' }}
-  >
-    <div className="flex items-center gap-2.5 px-4 py-2.5 border-b border-white/[0.07]">
-      <span className="h-3 w-[2px] bg-emerald-300/80" />
-      <h2 className="font-hud text-[10px] font-semibold tracking-[0.3em] text-white/70 uppercase">{title}</h2>
-    </div>
-    <div className="p-3">{children}</div>
-  </div>
-);
-
-const OptionCard = ({ active, color, onClick, children }: {
-  active: boolean; color: string; onClick: () => void; children: React.ReactNode;
-}) => (
-  <button
-    onClick={onClick}
-    className="relative flex flex-col items-center justify-center py-3 px-2 border transition-all duration-200 hover:-translate-y-0.5"
-    style={{
-      borderColor: active ? `${color}aa` : 'rgba(255,255,255,0.08)',
-      background: active ? `linear-gradient(180deg, ${color}2e, ${color}10)` : 'rgba(10,16,14,0.9)',
-      boxShadow: active ? `inset 0 -2px 0 ${color}` : undefined,
-    }}
-  >
-    {children}
-  </button>
-);
 
 export default ClassicMenu;
