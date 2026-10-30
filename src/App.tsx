@@ -114,6 +114,7 @@ import { driveRobotGait, driveRobotIdle, braceKnees } from './utils/RobotGait';
 import { GrenadeSystem, GRENADE_KINDS, type LiveGrenade, type SolidHit } from './utils/GrenadeSystem';
 import { THROWABLES, THROWABLE_KINDS, startingThrowables, rollThrowableDrop, throwableDropRules, type ThrowableKind } from './utils/Throwables';
 import { pickupColor, pickupCss, AIRDROP_LABEL, AIRDROP_COLOR, airdropCss } from './utils/pickupPalette';
+import { AMMO, ammoDropRules, rollAmmoDrop, startingReserve, isGunKey, type GunKey } from './utils/AmmoSystem';
 import ThrowableWheel from './components/ThrowableWheel';
 import MotionRoot from './components/MotionRoot';
 import { AnimatePresence, m } from 'motion/react';
@@ -4446,6 +4447,27 @@ const ForestSurvivalGame = () => {
       waveGrenadeDrops++;
       lastGrenadeDropAt = now;
     };
+    /**
+     * Maybe drop ammunition for one of the player's guns (rollAmmoDrop decides
+     * whether, for which gun and how much: a flat difficulty chance, a random
+     * owned gun with room — no pity, no favouring the gun in hand). Ammo
+     * pickups are their own stream: they never count toward the power-crate
+     * cap, and only `liveCap` of them lie around at once (the oldest retires).
+     */
+    const maybeDropAmmo = (x: number, z: number, enemyType: string, heavy: boolean) => {
+      if (isTutorialMode) return;
+      const base = ammoRulesNow();
+      // The Scavenger skill (more loot) finds more ammunition as well.
+      const rules = { ...base, chance: Math.min(1, base.chance * (1 + skillBonus('powerupSpawnRate'))) };
+      const drop = rollAmmoDrop({
+        owned: unlockedWeapons.filter(isGunKey),
+        hasRoom: (w: GunKey) => (reserveAmmo[w] ?? 0) < reserveCapOf(w),
+        enemyType, heavy, rules,
+      });
+      if (!drop) return;
+      const spot = findPickupSpot(x, z, 1.2, 3.6);
+      spawnAmmoPickup(spot.x, spot.z, drop.weapon, drop.rounds, rules.liveCap);
+    };
     /** Set while a blast kill is being resolved (ragdolls launch from it). */
     let blastKillPos: THREE.Vector3 | null = null;
     let wavePowerupCap = 1;
@@ -4485,6 +4507,30 @@ const ForestSurvivalGame = () => {
     let isReloading = false;
     // Tutorial mode hands the player every weapon so they can try them all.
     const unlockedWeapons = isTutorialMode ? Object.keys(WEAPONS) : ['pistol'];
+
+    // ── AMMUNITION (see utils/AmmoSystem.ts) ─────────────────────────────
+    // Every gun keeps its OWN magazine (`magAmmo`; the gun in hand's live
+    // count is `ammo`) and a finite RESERVE that reloads draw from. Switching
+    // guns no longer refills anything. Robots drop ammunition for the guns the
+    // player owns — a flat difficulty chance, random gun (rollAmmoDrop).
+    const ammoRulesNow = () => ammoDropRules(
+      classicDifficulty,
+      classicDifficulty === 'adaptive' ? Math.max(0, Math.min(1, (adaptiveDifficulty.getDifficulty().level - 20) / 75)) : 0.5,
+    );
+    const magAmmo: Partial<Record<string, number>> = {};
+    const reserveAmmo: Partial<Record<string, number>> = {};
+    // Tutorial: practice ammunition — the reserve never runs down.
+    const unlimitedReserve = isTutorialMode;
+    let lastDryHintAt = 0;
+    /** Carry cap of a gun's reserve (the Drum Magazine perk raises it too). */
+    const reserveCapOf = (w: string): number => isGunKey(w) ? Math.round(AMMO[w].reserveCap * perkBonuses.maxAmmoMult) : 0;
+    const reserveOf = (w: string): number => unlimitedReserve ? Infinity : (reserveAmmo[w] ?? 0);
+    /** A gun joins the loadout with its starting reserve (its magazine fills on first equip). */
+    const grantWeaponAmmo = (w: string) => {
+      if (!isGunKey(w) || reserveAmmo[w] !== undefined) return;
+      reserveAmmo[w] = startingReserve(w, ammoRulesNow(), perkBonuses.maxAmmoMult);
+    };
+    for (const w of unlockedWeapons) grantWeaponAmmo(w);
     let isAiming = false;
     // ── MOBILE AUTO-AIM (CODM-style) ──────────────────────────────────────
     // Touch has NO dedicated ADS button. Instead, pressing FIRE auto-engages
@@ -4593,6 +4639,7 @@ const ForestSurvivalGame = () => {
         const weapon = WEAPONS[weaponKey];
         if (score >= effectiveUnlockScore(weapon) && !unlockedWeapons.includes(weaponKey)) {
           unlockedWeapons.push(weaponKey);
+          grantWeaponAmmo(weaponKey);
           showPowerMessage(`${weapon.name} Unlocked`, 3000);
           newUnlock = true;
         }
@@ -6070,6 +6117,7 @@ const ForestSurvivalGame = () => {
       health: 'health', ammo: 'ammo', speed: 'speed', damage: 'damage', shield: 'shield',
       infinite_ammo: 'infinite_ammo', overcharge: 'overcharge', phantom: 'phantom',
       cryo: 'cryo', tesla: 'tesla', shockwave: 'shockwave', nuke: 'nuke', grenade: 'grenade_frag',
+      ammo_pack: 'ammo_rifle',
     };
     // Per-item presentation: display scale, a resting tilt (so long objects
     // show their profile while turning) and the tint of the light pool — a
@@ -6089,6 +6137,11 @@ const ForestSurvivalGame = () => {
       shockwave:     { scale: 1.0, tiltX: 0.32, tiltZ: 0, light: 0xfff0c0 },
       nuke:          { scale: 1.0, tiltX: 0, tiltZ: 0, light: 0xe8ffcc },
       grenade:       { scale: 2.7, tiltX: 0, tiltZ: 0.35, light: 0xfff0d8 },
+      ammo_pack:     { scale: 1.0, tiltX: 0, tiltZ: 0.18, light: 0xffe6b8 },
+    };
+    /** Display scale of each gun's ammo drop (small items read bigger). */
+    const AMMO_PICKUP_SCALE: Record<GunKey, number> = {
+      pistol: 2.7, rifle: 2.3, shotgun: 2.6, smg: 2.3, sniper: 2.8, minigun: 2.0, launcher: 1.9, subverter: 3.0,
     };
     const GRENADE_PICKUP_MODEL = (k: GrenadeKind): ItemModelId => `grenade_${k}`;
     /** Height the item's CENTRE hovers above the ground (knee height). */
@@ -6105,9 +6158,11 @@ const ForestSurvivalGame = () => {
     const _puAura = new THREE.Vector3();
     let lastPickupTagKey = '';
 
-    const createPowerUp = (x: number, z: number, type: PowerUp['type'], grenadeKind: GrenadeKind = 'frag'): PowerUp => {
+    const createPowerUp = (x: number, z: number, type: PowerUp['type'], grenadeKind: GrenadeKind = 'frag', ammoWeapon?: GunKey): PowerUp => {
       const look = PICKUP_LOOK[type];
-      const modelId = type === 'grenade' ? GRENADE_PICKUP_MODEL(grenadeKind) : PICKUP_MODEL[type];
+      const modelId: ItemModelId = type === 'grenade' ? GRENADE_PICKUP_MODEL(grenadeKind)
+        : type === 'ammo_pack' && ammoWeapon ? `ammo_${ammoWeapon}`
+        : PICKUP_MODEL[type];
       const groundY = visualGroundY(x, z);
       const group = new THREE.Group();
       group.position.set(x, groundY + PICKUP_HOVER, z);
@@ -6115,7 +6170,7 @@ const ForestSurvivalGame = () => {
       // The item: one merged mesh, shared geometry + the shared atlas material.
       const item = new THREE.Mesh(getItemGeometry(modelId), getItemMaterial());
       // A touch over life-size (GTA-style) so loot reads at combat range.
-      item.scale.setScalar(look.scale * (type === 'grenade' ? 1 : 1.35));
+      item.scale.setScalar(type === 'ammo_pack' && ammoWeapon ? AMMO_PICKUP_SCALE[ammoWeapon] : look.scale * (type === 'grenade' ? 1 : 1.35));
       item.rotation.set(look.tiltX, 0, look.tiltZ);
       item.castShadow = graphicsPreset.shadowsEnabled;
       item.receiveShadow = true;
@@ -6124,7 +6179,7 @@ const ForestSurvivalGame = () => {
       // IDENTITY COLOUR — every kind of loot has its own hue (pickupPalette):
       // it tints the pool of light under the item, the pooled point light and
       // a small glow behind the item, so a pickup reads at a glance.
-      const tint = pickupColor(type, grenadeKind);
+      const tint = pickupColor(type, grenadeKind, ammoWeapon);
       const lightTint = pickupLightColor(tint);
       const aura = new THREE.Mesh(haloGeoShared, getAuraMat(tint));
       aura.scale.setScalar(0.46);
@@ -6150,7 +6205,7 @@ const ForestSurvivalGame = () => {
       group.userData.auraMat = aura.material as THREE.ShaderMaterial;
       group.userData.light = pickupLight; // may be null when pool exhausted
       group.userData.coreColor = lightTint;
-      group.userData.tagColor = pickupCss(type, grenadeKind);
+      group.userData.tagColor = pickupCss(type, grenadeKind, ammoWeapon);
       group.userData.groundY = groundY;
       group.userData.pulsePhase = Math.random() * Math.PI * 2;
       group.userData.spawnAt = Date.now();
@@ -6165,6 +6220,7 @@ const ForestSurvivalGame = () => {
         mesh: core,
         type,
         grenadeKind: type === 'grenade' ? grenadeKind : undefined,
+        ammoWeapon: type === 'ammo_pack' ? ammoWeapon : undefined,
         position: new THREE.Vector3(x, groundY + PICKUP_HOVER, z),
         collected: false,
       };
@@ -6185,6 +6241,43 @@ const ForestSurvivalGame = () => {
       pu.collected = true; // marks it for the splice on the next frame
     };
 
+    // ── COLLECT FLIGHT ── a collected pickup doesn't blink out: it pops, then
+    // is drawn INTO the player on an ease-in arc (gentle lift-off, fast finish)
+    // while shrinking away, so taking loot reads as the item coming to you.
+    // Purely visual — it's already in the inventory and leaves powerUps on the
+    // next frame. Shares despawnPickup's no-dispose rule (shared resources).
+    const COLLECT_FLIGHT_S = 0.26;
+    const collectFlights: { root: THREE.Object3D; t: number; from: THREE.Vector3; s0: THREE.Vector3 }[] = [];
+    const collectPickup = (pu: PowerUp): void => {
+      const root = pu.mesh as unknown as THREE.Object3D;
+      releasePickupLight(root.userData.light as THREE.PointLight | null | undefined);
+      root.userData.light = null;
+      pu.collected = true;
+      if (root.parent) collectFlights.push({ root, t: 0, from: root.position.clone(), s0: root.scale.clone() });
+    };
+    const updateCollectFlights = (dt: number): void => {
+      for (let i = collectFlights.length - 1; i >= 0; i--) {
+        const f = collectFlights[i];
+        f.t += dt / COLLECT_FLIGHT_S;
+        if (f.t >= 1) {
+          f.root.parent?.remove(f.root);
+          collectFlights.splice(i, 1);
+          continue;
+        }
+        const t = f.t;
+        const e = t * t * t;
+        const tx = camera.position.x, ty = camera.position.y - 0.6, tz = camera.position.z;
+        f.root.position.set(
+          f.from.x + (tx - f.from.x) * e,
+          f.from.y + (ty - f.from.y) * e + Math.sin(t * Math.PI) * 0.45,
+          f.from.z + (tz - f.from.z) * e,
+        );
+        const k = t < 0.22 ? 1 + 0.2 * Math.sin((t / 0.22) * Math.PI * 0.5) : 1.2 * Math.pow(1 - (t - 0.22) / 0.78, 1.6);
+        f.root.scale.copy(f.s0).multiplyScalar(Math.max(0.001, k));
+        f.root.rotation.y += dt * 10;
+      }
+    };
+
     /**
      * THE single entry point for putting loot on the ground.
      *
@@ -6201,13 +6294,13 @@ const ForestSurvivalGame = () => {
         // `persistent` crates are exempt from BOTH the cap accounting and the
         // eviction choice — see below. Grenade drops are a separate, far rarer
         // stream: they neither count toward nor get evicted by the power cap.
-        if (p.collected || p.mesh.userData.persistent === true || p.type === 'grenade') continue;
+        if (p.collected || p.mesh.userData.persistent === true || p.type === 'grenade' || p.type === 'ammo_pack') continue;
         live++;
         if (!oldest || ((p.mesh.userData.spawnAt as number) || 0) < ((oldest.mesh.userData.spawnAt as number) || 0)) {
           oldest = p;
         }
       }
-      if (type !== 'grenade' && live >= PICKUP_LIVE_CAP && oldest) despawnPickup(oldest);
+      if (type !== 'grenade' && type !== 'ammo_pack' && live >= PICKUP_LIVE_CAP && oldest) despawnPickup(oldest);
       const pu = createPowerUp(x, z, type, grenadeKind);
       // A persistent crate never decays and can never be evicted. Used by the
       // tutorial, whose "collect a power-up" drill stages exactly ONE crate and
@@ -6217,6 +6310,22 @@ const ForestSurvivalGame = () => {
         pu.mesh.userData.persistent = true;
         pu.mesh.userData.expireAt = Infinity;
       }
+      powerUps.push(pu);
+      return pu;
+    };
+
+    /** Drop an ammo pickup (its own stream, capped at `liveCap` — the oldest is retired). */
+    const spawnAmmoPickup = (x: number, z: number, weapon: GunKey, rounds: number, liveCap: number): PowerUp => {
+      let live = 0;
+      let oldest: PowerUp | null = null;
+      for (const p of powerUps) {
+        if (p.collected || p.type !== 'ammo_pack') continue;
+        live++;
+        if (!oldest || ((p.mesh.userData.spawnAt as number) || 0) < ((oldest.mesh.userData.spawnAt as number) || 0)) oldest = p;
+      }
+      if (live >= liveCap && oldest) despawnPickup(oldest);
+      const pu = createPowerUp(x, z, 'ammo_pack', 'frag', weapon);
+      pu.ammoRounds = rounds;
       powerUps.push(pu);
       return pu;
     };
@@ -7343,13 +7452,19 @@ const ForestSurvivalGame = () => {
           break;
         case 'ammo':
           ammo = effectiveMaxAmmo(currentWeapon);
+          // A resupply: half a carry-load for the gun in hand, a quarter for every other gun.
+          for (const w of unlockedWeapons) {
+            if (!isGunKey(w)) continue;
+            const cap = reserveCapOf(w);
+            reserveAmmo[w] = Math.min(cap, (reserveAmmo[w] ?? 0) + Math.ceil(cap * (w === currentWeapon ? 0.5 : 0.25)));
+          }
           // Magazines do not refill themselves: play the weapon's own reload
           // choreography so the hands visibly swap one in. Visual only — the
           // count above is already restored, and a real reload in progress owns
           // the viewmodel, so we never stomp it.
           if (!isReloading) gunModel.triggerReload(0.85, 8, 'tactical', 0);
-          showPowerMessage('Ammo Refilled');
-          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Ammo Refilled', 'powerup');
+          showPowerMessage('Ammo Resupply · magazine + reserves');
+          if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry('Ammo Resupply', 'powerup');
           createParticles(camera.position, 0xffd54a, 12);
           break;
         case 'health': {
@@ -7521,11 +7636,11 @@ const ForestSurvivalGame = () => {
             ?? higher[higher.length - 1]                 // top higher-tier (already owned)
             ?? ordered[ordered.length - 1];              // last resort
           if (!unlockedWeapons.includes(pick)) unlockedWeapons.push(pick);
-          currentWeapon = pick;
+          grantWeaponAmmo(pick);
+          equipWeapon(pick, 'none');
+          // The crate delivers it loaded, with at least a full starting reserve.
           ammo = effectiveMaxAmmo(pick);
-          gunModel.switchWeapon(pick as GunWeaponType);
-          setGunFillForWeapon(pick);
-          refreshMasteryBonus();
+          if (isGunKey(pick)) reserveAmmo[pick] = Math.max(reserveAmmo[pick] ?? 0, startingReserve(pick, ammoRulesNow(), perkBonuses.maxAmmoMult));
           showPowerMessage(`Mystery Box · ${WEAPONS[pick].name}`, 2200);
           if (gameSettingsManager.getSetting('killFeed')) addKillFeedEntry(`Mystery: ${WEAPONS[pick].name}`, 'powerup');
           createParticles(camera.position, 0xbb33ff, 22);
@@ -8135,6 +8250,11 @@ const ForestSurvivalGame = () => {
     // render loop springs the live values toward 0.
     let abilityKickPitch = 0; // + = view dips DOWN (crouch/charge), − = lifts
     let abilityKickRoll = 0;
+    // ── HURT FLINCH ── when a blow lands the head is knocked AWAY from it —
+    // snapped back from a hit ahead, tipped forward from behind, turned and
+    // tilted off a side hit — on an under-damped spring (one snap, one small
+    // return), scaled by the damage. Gated by the Screen Shake setting.
+    const hurtKick = { p: 0, y: 0, r: 0, vp: 0, vy: 0, vr: 0 };
     const triggerAbilityCam = (pitch: number, roll: number) => {
       abilityKickPitch = pitch;
       abilityKickRoll = roll;
@@ -8177,7 +8297,11 @@ const ForestSurvivalGame = () => {
     // Shared completion for both the natural timeout and a perfect snap.
     const completeReload = () => {
       reloadTimeoutId = null;
+      const loaded = Math.max(0, reloadMaxTarget - ammo);
       ammo = reloadMaxTarget;
+      if (!unlimitedReserve && !infiniteAmmoActive) {
+        reserveAmmo[currentWeapon] = Math.max(0, (reserveAmmo[currentWeapon] ?? 0) - loaded);
+      }
       isReloading = false;
       setReloadDurationUI(null);
       updateGameState();
@@ -8217,6 +8341,44 @@ const ForestSurvivalGame = () => {
       const masteryMag = (key === currentWeapon) ? masteryBonus.magazineBonus : 0;
       return Math.round(WEAPONS[key].maxAmmo * perkBonuses.maxAmmoMult * (1 + masteryMag));
     };
+    /**
+     * Equip a gun. The outgoing gun keeps whatever is in its magazine; the
+     * incoming one comes up with ITS magazine (full the first time). Every
+     * switch path goes through here — digit keys, the wheel, a Mystery crate,
+     * the out-of-ammo auto-switch.
+     */
+    const equipWeapon = (name: string, sound: 'switch' | 'wheel' | 'none' = 'switch') => {
+      if (name === currentWeapon) return;
+      magAmmo[currentWeapon] = ammo;
+      currentWeapon = name;
+      refreshMasteryBonus();
+      grantWeaponAmmo(name);
+      const cap = effectiveMaxAmmo(name);
+      ammo = Math.min(cap, magAmmo[name] ?? cap);
+      gunModel.switchWeapon(name as GunWeaponType);
+      setGunFillForWeapon(name);
+      if (sound === 'switch') soundManager.play('weaponSwitch', 0.5);
+      else if (sound === 'wheel') soundManager.play('reload', 0.4);
+      tutorial.recordAction('switch_weapon', 1);
+      updateGameState();
+    };
+    /** Rounds a gun can fire right now (magazine + reserve). */
+    const roundsAvailable = (w: string): number =>
+      (w === currentWeapon ? ammo : (magAmmo[w] ?? effectiveMaxAmmo(w))) + reserveOf(w);
+    /** The best owned gun that still has rounds (highest tier; the Subverter last). */
+    const bestArmedWeapon = (): string | null => {
+      const ordered = Object.keys(WEAPONS).filter((w) => w !== currentWeapon && unlockedWeapons.includes(w) && roundsAvailable(w) > 0);
+      const guns = ordered.filter((w) => w !== 'subverter');
+      return guns[guns.length - 1] ?? ordered[0] ?? null;
+    };
+    /** Dry: say so (throttled), with a dull click. */
+    const noReserve = () => {
+      soundManager.play('empty', 0.4, false, 0.85);
+      const now = performance.now();
+      if (now - lastDryHintAt < 1600) return;
+      lastDryHintAt = now;
+      showPowerMessage(`No ${WEAPONS[currentWeapon].name} ammo · switch weapon or melee (${hudKeyLabel(kb().melee)})`, 1900, 'warn');
+    };
     const startReload = (): boolean => {
       if (isReloading || paused || isGameOver || tutorialActiveRef.current) return false;
       // Guided tutorial: the weapon isn't the player's yet (the key path has
@@ -8231,6 +8393,10 @@ const ForestSurvivalGame = () => {
       const weapon = WEAPONS[currentWeapon];
       const maxAmmoNow = effectiveMaxAmmo(currentWeapon);
       if (ammo >= maxAmmoNow) return false;
+      // A reload can only load what the reserve holds.
+      const spare = infiniteAmmoActive ? Infinity : reserveOf(currentWeapon);
+      if (spare <= 0) { noReserve(); return false; }
+      const fillTo = Math.min(maxAmmoNow, ammo + spare);
       isReloading = true;
       haptic('reload'); // double-tick under the thumb as the mag drops
       gunModel.cancelInspect(); // a reload overrides an in-progress inspect
@@ -8252,7 +8418,7 @@ const ForestSurvivalGame = () => {
       // shell count instead of taking the flat tactical discount. A full reload
       // still costs exactly the tuned reloadTime; a one-shell top-up is quick.
       const isShellFed = currentWeapon === 'shotgun';
-      const shellsNeeded = Math.max(1, maxAmmoNow - Math.max(0, ammo));
+      const shellsNeeded = Math.max(1, fillTo - Math.max(0, ammo));
       const styleMult = isShellFed
         ? 0.30 + 0.70 * (shellsNeeded / Math.max(1, maxAmmoNow))
         : (reloadStyle === 'tactical' ? TACTICAL_SPEEDUP : 1);
@@ -8285,7 +8451,7 @@ const ForestSurvivalGame = () => {
       // Arm the active-reload window for this reload.
       reloadStartedAt = Date.now();
       reloadTotalMs = reloadMs;
-      reloadMaxTarget = maxAmmoNow;
+      reloadMaxTarget = fillTo;
       reloadAttemptUsed = false;
       if (reloadTimeoutId !== null) window.clearTimeout(reloadTimeoutId);
       reloadTimeoutId = window.setTimeout(completeReload, reloadMs);
@@ -8520,16 +8686,9 @@ const ForestSurvivalGame = () => {
       if (weaponKeys[e.code] && !isReloading) {
         const weaponName = weaponKeys[e.code];
         if (unlockedWeapons.includes(weaponName) && weaponName !== currentWeapon) {
-          // Guard against re-selecting the current weapon — that path used to
-          // silently refill the mag (a free instant reload) on every keypress.
-          currentWeapon = weaponName;
-          refreshMasteryBonus();
-          ammo = effectiveMaxAmmo(weaponName);
-          gunModel.switchWeapon(weaponName as GunWeaponType);
-          setGunFillForWeapon(weaponName);
-          soundManager.play('weaponSwitch', 0.5);
-          tutorial.recordAction('switch_weapon', 1);
-          updateGameState();
+          // Guard against re-selecting the current weapon. Magazines persist per
+          // gun (equipWeapon), so a switch is never a free reload.
+          equipWeapon(weaponName);
         } else if (!unlockedWeapons.includes(weaponName)) {
           const weapon = WEAPONS[weaponName];
           showPowerMessage(`${weapon.name} Locked — ${effectiveUnlockScore(weapon)} pts needed`);
@@ -8787,12 +8946,33 @@ const ForestSurvivalGame = () => {
     const MELEE_RANGE = 5.2;
     const MELEE_RANGE_SQ = MELEE_RANGE * MELEE_RANGE;
     const MELEE_ARC_DOT = Math.cos((60 * Math.PI) / 180); // 120° frontal arc
-    const MELEE_COOLDOWN_MS = 900;
+    // TWO-HIT COMBO: a press inside the window after the opener throws the
+    // follow-up (a different authored swing — GunModel.MELEE_POSES_B) that hits
+    // harder and staggers more. The opener recovers into the follow-up quickly;
+    // the follow-up takes longer to reset, so the average rhythm stays ~0.9 s.
+    const MELEE_COMBO_WINDOW_MS = 1500;
+    const MELEE_COMBO_COOLDOWN_MS = 760;
+    const MELEE_FINISH_COOLDOWN_MS = 980;
     const MELEE_IMPACT_DELAY_MS = 150; // damage lands on the strike frame (~33% of the 0.46 s swing)
     const MELEE_BASE_DAMAGE = 60;
+    const MELEE_FINISH_MULT = 1.2;
     const MELEE_MAX_TARGETS = 3;
     const MELEE_STUN_MS = 420;
+    // LUNGE: a robot just out of reach in front of the crosshair pulls the
+    // player through the swing — they step INTO the strike rather than bashing
+    // air a metre short. Collision-safe (attemptMove), and only closes the gap
+    // to a natural striking distance; it never carries the player past it.
+    const MELEE_LUNGE_RANGE = 7.2;
+    const MELEE_LUNGE_COS = Math.cos((32 * Math.PI) / 180);
+    const MELEE_LUNGE_STOP = 2.4;
+    const MELEE_LUNGE_MAX = 2.2;
     let nextMeleeAt = 0;
+    let meleeComboUntil = 0;
+    let meleeVariant: 0 | 1 = 0;
+    let meleeLungeLeft = 0;  // metres still to travel this swing
+    let meleeLungeSpeed = 0; // m/s, sized so the step finishes on the strike frame
+    const _meleeLungeDir = new THREE.Vector3();
+    const _meleeRight = new THREE.Vector3();
     let lastMeleeHintAt = 0; // throttles the "too heavy" hint
     const _meleeFwd = new THREE.Vector3();
     const _meleeKick = { pitch: 0, yaw: 0, roll: 0 };
@@ -8809,12 +8989,42 @@ const ForestSurvivalGame = () => {
         }
         return;
       }
-      nextMeleeAt = nowMs + MELEE_COOLDOWN_MS;
+      const variant: 0 | 1 = nowMs < meleeComboUntil && meleeVariant === 0 ? 1 : 0;
+      meleeVariant = variant;
+      meleeComboUntil = variant === 0 ? nowMs + MELEE_COMBO_WINDOW_MS : 0;
+      nextMeleeAt = nowMs + (variant === 0 ? MELEE_COMBO_COOLDOWN_MS : MELEE_FINISH_COOLDOWN_MS);
+
+      // Pick the lunge target: the nearest robot inside a tight cone ahead.
+      meleeLungeLeft = 0;
+      if (!tutorialLocks.move && !playerEliminated) {
+        camera.getWorldDirection(_meleeFwd);
+        _meleeFwd.y = 0;
+        if (_meleeFwd.lengthSq() > 1e-6) {
+          _meleeFwd.normalize();
+          let bestD = MELEE_LUNGE_RANGE;
+          for (let li = 0; li < enemies.length; li++) {
+            const le = enemies[li];
+            if (le.dead || le.hijacked || le.engageable === false || le.detailReady === false) continue;
+            const ldx = le.mesh.position.x - camera.position.x;
+            const ldz = le.mesh.position.z - camera.position.z;
+            const ld = Math.hypot(ldx, ldz);
+            if (ld >= bestD || ld < 1e-3) continue;
+            if ((ldx * _meleeFwd.x + ldz * _meleeFwd.z) / ld < MELEE_LUNGE_COS) continue;
+            bestD = ld;
+            _meleeLungeDir.set(ldx / ld, 0, ldz / ld);
+          }
+          const travel = Math.min(MELEE_LUNGE_MAX, bestD - MELEE_LUNGE_STOP);
+          if (bestD < MELEE_LUNGE_RANGE && travel > 0.15) {
+            meleeLungeLeft = travel;
+            meleeLungeSpeed = travel / ((MELEE_IMPACT_DELAY_MS / 1000) * 0.9);
+          }
+        }
+      }
 
       // Swing NOW (viewmodel windup + whoosh); the hit lands on the strike
       // frame below so contact matches what the player sees.
-      gunModel.triggerMelee();
-      soundManager.playMeleeSwing(0.6);
+      gunModel.triggerMelee(variant);
+      soundManager.playMeleeSwing(variant === 1 ? 0.7 : 0.6);
       tutorial.recordAction('melee', 1);
       window.setTimeout(resolveMeleeHits, MELEE_IMPACT_DELAY_MS);
     }
@@ -8822,7 +9032,8 @@ const ForestSurvivalGame = () => {
     function resolveMeleeHits() {
       if (isGameOver || paused) return;
       const nowMs = Date.now();
-      fovPunch = Math.min(fovPunch + 1.4, 14);
+      const finisher = meleeVariant === 1;
+      fovPunch = Math.min(fovPunch + (finisher ? 2 : 1.4), 14);
 
       // Aim re-read at impact time — the strike connects where the player is
       // ACTUALLY looking when the swing lands, not where they were at windup.
@@ -8830,9 +9041,14 @@ const ForestSurvivalGame = () => {
       _meleeFwd.y = 0;
       if (_meleeFwd.lengthSq() < 1e-6) return;
       _meleeFwd.normalize();
+      // Camera-right = forward × up. A horizontal swing knocks the target
+      // sideways along its sweep as well as back.
+      _meleeRight.set(-_meleeFwd.z, 0, _meleeFwd.x);
+      const sweep = gunModel.meleeSweep;
 
       const impactFeedbackOn = gameSettingsManager.getSetting('impactFeedback');
       const meleeDamage = MELEE_BASE_DAMAGE
+        * (finisher ? MELEE_FINISH_MULT : 1)
         * (damageBoostActive ? damageBoostMultiplier : 1)
         * (runMods.playerDamageMult ?? 1);
       let hitCount = 0;
@@ -8843,18 +9059,26 @@ const ForestSurvivalGame = () => {
         const tdx = te.mesh.position.x - camera.position.x;
         const tdz = te.mesh.position.z - camera.position.z;
         const d2 = tdx * tdx + tdz * tdz;
-        if (d2 > MELEE_RANGE_SQ || d2 < 1e-6) continue;
-        const inv = 1 / Math.sqrt(d2);
-        if (tdx * inv * _meleeFwd.x + tdz * inv * _meleeFwd.z < MELEE_ARC_DOT) continue;
+        if (d2 > MELEE_RANGE_SQ) continue;
+        // A robot pressed right up against the player is hit whatever the arc
+        // says — its bearing from the eye is meaningless when it's ON you.
+        if (d2 > 1.44) {
+          const inv = 1 / Math.sqrt(d2);
+          if (tdx * inv * _meleeFwd.x + tdz * inv * _meleeFwd.z < MELEE_ARC_DOT) continue;
+        }
 
         // A shielded Revenant phases the bash off — it pings, no damage.
         if (revShieldUp(te)) { pingRevShield(te, te.mesh.position); continue; }
 
         hitCount++;
         te.damageFlashTime = 0.4;
-        // Record the strike direction so a killing blow ragdolls the right way.
+        // Record the strike direction so a killing blow ragdolls the right way
+        // and the flinch rocks the chassis along the swing (head snaps aside
+        // from a horizontal bash, straight back from a jab).
         if (!te.hitImpulse) te.hitImpulse = new THREE.Vector3();
-        te.hitImpulse.set(_meleeFwd.x, 0, _meleeFwd.z);
+        te.hitImpulse.set(
+          _meleeFwd.x + _meleeRight.x * sweep * 0.8, 0, _meleeFwd.z + _meleeRight.z * sweep * 0.8,
+        ).normalize();
 
         const heavyChassis = te.type === 'tank' || te.type === 'boss' || te.isMiniBoss === true;
         if (isMpGuest && mp) {
@@ -8864,12 +9088,18 @@ const ForestSurvivalGame = () => {
         } else {
           te.health -= meleeDamage;
           if (te.type === 'revenant') te.revEvadeUntil = nowMs + 500;
-          // Hard shove + a brief stagger (bosses shrug the stagger off so the
-          // bash can never stun-lock the fight's anchor).
-          const shove = heavyChassis ? 0.35 : 1.1;
-          te.mesh.position.x += _meleeFwd.x * shove;
-          te.mesh.position.z += _meleeFwd.z * shove;
+          // Knockback is a VELOCITY that bleeds off over a few frames and
+          // slides along obstacles (integrated in the enemy loop), so the robot
+          // is visibly DRIVEN back by the blow instead of popping a metre in
+          // one frame. Heavies barely give; the combo finisher drives harder.
+          // Plus a brief stun, and real poise damage so a clean bash (or the
+          // one-two) breaks a robot's footing. Bosses shrug the stun off so
+          // the bash can never stun-lock the fight's anchor.
+          const knock = (heavyChassis ? 4.2 : 14) * (finisher ? 1.35 : 1);
+          te.knockVX = (te.knockVX ?? 0) + (_meleeFwd.x + _meleeRight.x * sweep * 0.3) * knock;
+          te.knockVZ = (te.knockVZ ?? 0) + (_meleeFwd.z + _meleeRight.z * sweep * 0.3) * knock;
           if (!heavyChassis) te.ccUntil = Math.max(te.ccUntil ?? 0, nowMs + MELEE_STUN_MS);
+          if (te.health > 0) applyPoise(te, meleeDamage * (finisher ? 1.8 : 1.2));
         }
 
         // Crunchy impact feedback at the point of contact.
@@ -8878,7 +9108,9 @@ const ForestSurvivalGame = () => {
           te.mesh.position.y + 1.1,
           te.mesh.position.z - _meleeFwd.z * 0.5,
         );
-        robotSparks.push(new RobotHitSparks(scene, _meleeImpact.clone(), _meleeFwd.clone(), 14));
+        robotSparks.push(new RobotHitSparks(scene, _meleeImpact.clone(), _meleeFwd.clone(), finisher ? 20 : 14));
+        // Steel on steel at the point of contact, layered under the bash thud.
+        soundManager.playAt('impact_metal', _meleeImpact.x, _meleeImpact.y, _meleeImpact.z, 0.45, 0.78 + Math.random() * 0.18);
         stampEnemyDamage(te, meleeDamage, false, undefined, _meleeImpact);
         if (impactFeedbackOn) {
           impactBursts.push(new ImpactBurst(scene, _meleeImpact.clone(), 0xffe6b0, 1.15));
@@ -8896,9 +9128,9 @@ const ForestSurvivalGame = () => {
         gunModel.meleeImpact();
         haptic('hit');
         if (gameSettingsManager.getSetting('screenShake')) triggerScreenShake();
-        // Micro hit-stop so the bash lands with weight.
+        // Micro hit-stop so the bash lands with weight (longer on the finisher).
         timeScale = 0.5;
-        setTimeout(() => { timeScale = 1.0; }, 70);
+        setTimeout(() => { timeScale = 1.0; }, finisher ? 95 : 70);
         // Daily melee channel — one tick per SWING that connected (not per
         // enemy hit), so a crowd bash counts once.
         if (dailyEnabled) dailyCounts.melee_hit += 1;
@@ -9000,8 +9232,14 @@ const ForestSurvivalGame = () => {
         nextShotAt = nowEmpty + 280; // believable dry-fire cadence for a held trigger
         soundManager.play('empty', 0.5);
         // Auto-reload on empty is a player setting (default on). When off, the
-        // empty pull just dry-fires and the player reloads manually.
-        if (gameSettingsManager.getSetting('autoReload')) startReload();
+        // empty pull just dry-fires and the player reloads manually. A gun with
+        // nothing left in reserve can't reload at all: say so, and (with
+        // auto-reload on) bring up the best gun that still has rounds.
+        if (!infiniteAmmoActive && reserveOf(currentWeapon) <= 0) {
+          noReserve();
+          const alt = gameSettingsManager.getSetting('autoReload') ? bestArmedWeapon() : null;
+          if (alt) equipWeapon(alt);
+        } else if (gameSettingsManager.getSetting('autoReload')) startReload();
         return;
       }
       const nowShot = performance.now();
@@ -9372,26 +9610,16 @@ const ForestSurvivalGame = () => {
         const unlockedKeys = weaponKeys.filter(key => unlockedWeapons.includes(key));
         const currentIndex = unlockedKeys.indexOf(currentWeapon);
 
+        let next = currentWeapon;
         if (e.deltaY > 0) {
           // Scroll down - next weapon
-          const nextIndex = (currentIndex + 1) % unlockedKeys.length;
-          currentWeapon = unlockedKeys[nextIndex];
+          next = unlockedKeys[(currentIndex + 1) % unlockedKeys.length];
         } else if (e.deltaY < 0) {
           // Scroll up - previous weapon
-          const prevIndex = (currentIndex - 1 + unlockedKeys.length) % unlockedKeys.length;
-          currentWeapon = unlockedKeys[prevIndex];
+          next = unlockedKeys[(currentIndex - 1 + unlockedKeys.length) % unlockedKeys.length];
         }
-
-        // Update weapon — same source-of-truth mag size + mastery snapshot as
-        // the digit-key path (the wheel used to skip both, so perk/mastery
-        // magazine bonuses silently vanished on a scroll-switch).
-        refreshMasteryBonus();
-        ammo = effectiveMaxAmmo(currentWeapon);
-        gunModel.switchWeapon(currentWeapon as GunWeaponType);
-        setGunFillForWeapon(currentWeapon);
-        tutorial.recordAction('switch_weapon', 1);
-        updateGameState();
-        soundManager.play('reload', 0.4);
+        // Same equip path as the digit keys (per-gun magazines + mastery).
+        equipWeapon(next, 'wheel');
       }
     };
 
@@ -9427,6 +9655,9 @@ const ForestSurvivalGame = () => {
         maxHealth: playerMaxHealth,
         ammo,
         maxAmmo: effectiveMaxAmmo(currentWeapon),
+        reserveAmmo: unlimitedReserve ? 0 : (reserveAmmo[currentWeapon] ?? 0),
+        reserveUnlimited: unlimitedReserve,
+        dryWeapons: unlimitedReserve ? [] : unlockedWeapons.filter((w) => roundsAvailable(w) <= 0),
         score,
         enemiesKilled,
         wave,
@@ -10305,6 +10536,8 @@ const ForestSurvivalGame = () => {
         killsSinceLastDrop = 0;
       }
       maybeDropGrenade(enemy.mesh.position.x, enemy.mesh.position.z);
+      maybeDropAmmo(enemy.mesh.position.x, enemy.mesh.position.z, enemy.type,
+        enemy.type === 'tank' || enemy.type === 'boss' || enemy.isMiniBoss === true);
       updateGameState();
       maybeBeginWaveClear();
     };
@@ -10666,6 +10899,13 @@ const ForestSurvivalGame = () => {
           // Horizontal camera-right = forward × up = (-fz, 0, fx).
           const rightDot = -_shieldFwd.z * _shieldToEnemy.x + _shieldFwd.x * _shieldToEnemy.z;
           triggerDamageDirection(Math.atan2(rightDot, fwdDot));
+          const flinch = Math.min(1, damage / 22);
+          if (gameSettingsManager.getSetting('screenShake')) {
+            hurtKick.vp += fwdDot * 1.05 * flinch;
+            hurtKick.vy += rightDot * 0.55 * flinch;
+            hurtKick.vr += rightDot * 1.2 * flinch;
+          }
+          gunModel.triggerHurt(rightDot, fwdDot, flinch);
         }
         // ── CINEMATIC IMPACT FEEDBACK (toggleable) ──
         // A visceral, first-person "you got hit" punch: a hot impact flash +
@@ -11067,6 +11307,8 @@ const ForestSurvivalGame = () => {
             killsSinceLastDrop = 0;
           }
           maybeDropGrenade(e.mesh.position.x, e.mesh.position.z);
+          // Each client rolls ammo for ITS OWN guns (loot is per-client).
+          maybeDropAmmo(e.mesh.position.x, e.mesh.position.z, e.type, e.type === 'tank' || e.type === 'boss' || e.isMiniBoss === true);
         }
       }
 
@@ -13062,10 +13304,9 @@ const ForestSurvivalGame = () => {
         weapon: (w: string) => {
           if (!WEAPONS[w]) return false;
           if (!unlockedWeapons.includes(w)) unlockedWeapons.push(w);
-          currentWeapon = w;
+          grantWeaponAmmo(w);
+          equipWeapon(w, 'none');
           ammo = effectiveMaxAmmo(w);
-          gunModel.switchWeapon(w as GunWeaponType);
-          setGunFillForWeapon(w);
           return true;
         },
         shield: (on = true) => {
@@ -13144,6 +13385,20 @@ const ForestSurvivalGame = () => {
           return enemyBullets.length;
         },
         boltCount: () => enemyBullets.length,
+        ammoState: () => ({
+          current: currentWeapon, mag: ammo,
+          reserve: Object.fromEntries(unlockedWeapons.map((w) => [w, reserveAmmo[w] ?? 0])),
+          mags: { ...magAmmo },
+          live: powerUps.filter((p) => p.type === 'ammo_pack' && !p.collected).map((p) => `${p.ammoWeapon}:${p.ammoRounds}`),
+        }),
+        setReserve: (w: string, n: number) => { reserveAmmo[w] = n; updateGameState(); },
+        setMag: (n: number) => { ammo = n; updateGameState(); },
+        dropAmmo: (w: string, n = 30, dist = 5) => {
+          if (!isGunKey(w)) return false;
+          camera.getWorldDirection(_tempVec3);
+          spawnAmmoPickup(camera.position.x + _tempVec3.x * dist, camera.position.z + _tempVec3.z * dist, w, n, 99);
+          return true;
+        },
         // Hijack the nearest robot the spike could take (null if none).
         hijackNearest: () => {
           let best: Enemy | null = null; let bd = Infinity;
@@ -13388,6 +13643,36 @@ const ForestSurvivalGame = () => {
           hour: +dayCycleSystem.getCurrentTime().toFixed(2),
           weather: weatherSystem.getState(), rain: +weatherMods.rainAmount.toFixed(2),
         }),
+        // A directional hit on the player from `bearingDeg` (0 = ahead, +right).
+        hurtFrom: (dmg = 12, bearingDeg = 0) => {
+          camera.getWorldDirection(_tempVec3);
+          _tempVec3.y = 0; _tempVec3.normalize();
+          const a = (bearingDeg * Math.PI) / 180;
+          const rx = -_tempVec3.z, rz = _tempVec3.x; // camera-right
+          const pos = camera.position.clone();
+          pos.x += (_tempVec3.x * Math.cos(a) + rx * Math.sin(a)) * 3;
+          pos.z += (_tempVec3.z * Math.cos(a) + rz * Math.sin(a)) * 3;
+          takeEnemyDamage(dmg, 'Dev Test', pos);
+        },
+        // Melee combo / lunge / knockback readout + the nearest robot's reaction.
+        meleeState: () => {
+          let near: Enemy | null = null;
+          let nd = Infinity;
+          for (const e of enemies) {
+            if (e.dead) continue;
+            const d = Math.hypot(e.mesh.position.x - camera.position.x, e.mesh.position.z - camera.position.z);
+            if (d < nd) { nd = d; near = e; }
+          }
+          return {
+            variant: meleeVariant, lungeLeft: +meleeLungeLeft.toFixed(2), flights: collectFlights.length,
+            hurt: +(Math.abs(hurtKick.p) + Math.abs(hurtKick.r)).toFixed(4),
+            near: near ? {
+              d: +nd.toFixed(2), hp: Math.round(near.health),
+              kv: +Math.hypot(near.knockVX ?? 0, near.knockVZ ?? 0).toFixed(2),
+              stagger: (near.staggerUntil ?? 0) > Date.now(),
+            } : null,
+          };
+        },
       };
     }
 
@@ -14661,6 +14946,16 @@ const ForestSurvivalGame = () => {
       const abilityRecover = Math.min(1, rawDelta * 6.5);
       abilityKickPitch += (0 - abilityKickPitch) * abilityRecover;
       abilityKickRoll += (0 - abilityKickRoll) * abilityRecover;
+      if (hurtKick.vp !== 0 || hurtKick.vy !== 0 || hurtKick.vr !== 0 || hurtKick.p !== 0 || hurtKick.y !== 0 || hurtKick.r !== 0) {
+        const hdt = Math.min(rawDelta, 0.05);
+        hurtKick.vp += (-220 * hurtKick.p - 13 * hurtKick.vp) * hdt; hurtKick.p += hurtKick.vp * hdt;
+        hurtKick.vy += (-220 * hurtKick.y - 13 * hurtKick.vy) * hdt; hurtKick.y += hurtKick.vy * hdt;
+        hurtKick.vr += (-220 * hurtKick.r - 13 * hurtKick.vr) * hdt; hurtKick.r += hurtKick.vr * hdt;
+        if (Math.abs(hurtKick.p) + Math.abs(hurtKick.y) + Math.abs(hurtKick.r)
+          + Math.abs(hurtKick.vp) + Math.abs(hurtKick.vy) + Math.abs(hurtKick.vr) < 1e-4) {
+          hurtKick.p = hurtKick.y = hurtKick.r = hurtKick.vp = hurtKick.vy = hurtKick.vr = 0;
+        }
+      }
       let shakePitch = 0;
       let shakeYaw = 0;
       let shakeRoll = 0;
@@ -14675,9 +14970,9 @@ const ForestSurvivalGame = () => {
       // Melee follow-through: the view leans into the swing and jars on contact.
       gunModel.getMeleeCamKick(_meleeKick);
       _recoilEuler.set(
-        Math.max(-PI_2, Math.min(PI_2, euler.x + recoilPitch + abilityKickPitch + wiringPitch + shakePitch + _meleeKick.pitch)),
-        euler.y + recoilYaw + shakeYaw + _meleeKick.yaw,
-        abilityKickRoll + shakeRoll + _meleeKick.roll,
+        Math.max(-PI_2, Math.min(PI_2, euler.x + recoilPitch + abilityKickPitch + wiringPitch + shakePitch + _meleeKick.pitch + hurtKick.p)),
+        euler.y + recoilYaw + shakeYaw + _meleeKick.yaw + hurtKick.y,
+        abilityKickRoll + shakeRoll + _meleeKick.roll + hurtKick.r,
         'YXZ',
       );
       camera.quaternion.setFromEuler(_recoilEuler);
@@ -15459,6 +15754,15 @@ const ForestSurvivalGame = () => {
       if (!isDashing && moving('moveRight')) {
         attemptMove(-_moveRight.x * currentSpeed, -_moveRight.z * currentSpeed);
       }
+      // MELEE LUNGE — the step through a strike (target picked in doMeleeStrike).
+      if (meleeLungeLeft > 0) {
+        if (isDashing || playerEliminated) meleeLungeLeft = 0;
+        else {
+          const lstep = Math.min(meleeLungeLeft, meleeLungeSpeed * delta);
+          attemptMove(_meleeLungeDir.x * lstep, _meleeLungeDir.z * lstep);
+          meleeLungeLeft -= lstep;
+        }
+      }
 
       // ── ANALOG TOUCH MOVEMENT (mobile joystick) ──
       // Combine forward (moveY along view dir) + strafe (moveX; +X = right, so
@@ -15929,6 +16233,7 @@ const ForestSurvivalGame = () => {
       // TTL) can be spliced out on the spot. The array used to be append-only
       // for the whole run, so a 25-wave session ended up walking — and reading
       // the userData of — a hundred dead entries every single frame.
+      updateCollectFlights(delta);
       const _puNowMs = Date.now();
       const _puNow = _puNowMs * 0.001;
       camera.getWorldDirection(_puFwd);
@@ -16059,7 +16364,9 @@ const ForestSurvivalGame = () => {
           // leaves it on the ground — those never get pulled in.)
           const _puTakeable = powerUp.type === 'grenade'
             ? grenadeCount[powerUp.grenadeKind ?? 'frag'] < THROWABLES[powerUp.grenadeKind ?? 'frag'].max
-            : heldPower === null;
+            : powerUp.type === 'ammo_pack'
+              ? (reserveAmmo[powerUp.ammoWeapon ?? ''] ?? 0) < reserveCapOf(powerUp.ammoWeapon ?? '')
+              : heldPower === null;
 
           // MAGNET — the last stretch glides the item into your hands instead
           // of making you walk onto its exact spot.
@@ -16086,12 +16393,38 @@ const ForestSurvivalGame = () => {
             if (score > _tagScore) { _tagScore = score; _tagBest = powerUp; }
           }
 
-          if (powerUp.type === 'grenade' && checkCollision(camera.position, powerUp.position, 2 * perkBonuses.pickupRadiusMult)) {
+          if (powerUp.type === 'ammo_pack' && checkCollision(camera.position, powerUp.position, 2 * perkBonuses.pickupRadiusMult)) {
+            // ── AMMO DROP ── straight into that gun's reserve (up to its carry
+            // cap). A gun at its cap leaves the box where it lies; a partly
+            // full one takes what fits and the rest stays behind.
+            const w = powerUp.ammoWeapon ?? '';
+            const cap = reserveCapOf(w);
+            const have = reserveAmmo[w] ?? 0;
+            const take = Math.min(powerUp.ammoRounds ?? 0, Math.max(0, cap - have));
+            if (take > 0 && isGunKey(w)) {
+              reserveAmmo[w] = have + take;
+              powerUp.ammoRounds = (powerUp.ammoRounds ?? 0) - take;
+              soundManager.play('grenade_pickup', 0.7, false, 0.85);
+              soundManager.play('reload', 0.32, false, 1.25);
+              showPowerMessage(`+${take} ${AMMO[w].caliber} · ${WEAPONS[w].name}`, 1300);
+              if ((powerUp.ammoRounds ?? 0) <= 0) {
+                collectPickup(powerUp);
+                powerUps.splice(pi, 1);
+              }
+              createParticles(camera.position, AMMO[w].color, 6);
+              // Picking up rounds for the gun in hand while it sits empty starts the reload.
+              if (w === currentWeapon && ammo === 0 && !isReloading && gameSettingsManager.getSetting('autoReload')) startReload();
+              updateGameState();
+            } else if (Date.now() - lastHeldHintAt > 1500) {
+              lastHeldHintAt = Date.now();
+              showPowerMessage(`${WEAPONS[w]?.name ?? 'That'} ammo full`, 1300);
+            }
+          } else if (powerUp.type === 'grenade' && checkCollision(camera.position, powerUp.position, 2 * perkBonuses.pickupRadiusMult)) {
             // ── GRENADE DROP ── straight into the pouch, independent of the
             // held-power slot. A full pouch leaves the grenade where it lies.
             const gk = powerUp.grenadeKind ?? 'frag';
             if (addGrenades(gk, 1)) {
-              despawnPickup(powerUp);
+              collectPickup(powerUp);
               powerUps.splice(pi, 1);
               soundManager.play('grenade_pickup', 0.85);
               createParticles(camera.position, 0xffffff, 6);
@@ -16113,9 +16446,9 @@ const ForestSurvivalGame = () => {
               // All pickup materials + geometries are shared (cached per
               // colour / per shape) so we do NOT dispose them — that would
               // wipe out resources still in use by other live pickups.
-              // despawnPickup releases the pool light and unparents the group;
-              // GC reclaims the small per-instance Mesh wrappers.
-              despawnPickup(powerUp);
+              // collectPickup releases the pool light and flies the group in
+              // before unparenting it; GC reclaims the per-instance wrappers.
+              collectPickup(powerUp);
               powerUps.splice(pi, 1);
               soundManager.play('powerUp', 0.8);
 
@@ -16172,6 +16505,15 @@ const ForestSurvivalGame = () => {
             const gk = _tagBest.grenadeKind ?? 'frag';
             const full = grenadeCount[gk] >= THROWABLES[gk].max;
             tag = { key: '', label: GRENADE_LABEL[gk], hint: full ? 'Pouch full' : 'Throwable · walk over to pick up', color };
+          } else if (_tagBest.type === 'ammo_pack' && isGunKey(_tagBest.ammoWeapon ?? '')) {
+            const w = _tagBest.ammoWeapon as GunKey;
+            const full = (reserveAmmo[w] ?? 0) >= reserveCapOf(w);
+            tag = {
+              key: '',
+              label: `${AMMO[w].label} · ${_tagBest.ammoRounds ?? 0}`,
+              hint: full ? `${WEAPONS[w].name} ammo full` : `${WEAPONS[w].name} ammo · walk over to pick up`,
+              color,
+            };
           } else {
             const label = POWER_LABELS[_tagBest.type as HeldPower] ?? _tagBest.type;
             tag = { key: '', label, hint: heldPower !== null ? `Use your ${POWER_LABELS[heldPower]} first` : 'Walk over to loot', color };
@@ -17313,6 +17655,20 @@ const ForestSurvivalGame = () => {
         }
 
         if (enemy.dead) continue;
+
+        // MELEE KNOCKBACK — the shove from resolveMeleeHits as a velocity that
+        // bleeds off (~0.4 s) and wall-slides per axis. Only ever set on the
+        // authoritative side, so guest mirrors never integrate it.
+        if (enemy.knockVX || enemy.knockVZ) {
+          const kpx = enemy.mesh.position.x, kpz = enemy.mesh.position.z;
+          const ksx = (enemy.knockVX ?? 0) * delta, ksz = (enemy.knockVZ ?? 0) * delta;
+          if (!checkTerrainCollision(kpx + ksx, kpz)) enemy.mesh.position.x = kpx + ksx; else enemy.knockVX = 0;
+          if (!checkTerrainCollision(enemy.mesh.position.x, kpz + ksz)) enemy.mesh.position.z = kpz + ksz; else enemy.knockVZ = 0;
+          const kdecay = Math.exp(-9 * delta);
+          enemy.knockVX = (enemy.knockVX ?? 0) * kdecay;
+          enemy.knockVZ = (enemy.knockVZ ?? 0) * kdecay;
+          if (Math.abs(enemy.knockVX) + Math.abs(enemy.knockVZ) < 0.05) { enemy.knockVX = 0; enemy.knockVZ = 0; }
+        }
 
         // Compute baseScale for ALL living enemies (needed for grounding).
         const baseScale = ENEMY_SCALE[enemy.type];
@@ -21150,6 +21506,9 @@ const ForestSurvivalGame = () => {
           maxHealth={gameState.maxHealth}
           ammo={gameState.ammo}
           maxAmmo={gameState.maxAmmo}
+          reserveAmmo={gameState.reserveAmmo}
+          reserveUnlimited={gameState.reserveUnlimited}
+          dryWeapons={gameState.dryWeapons}
           enemiesKilled={gameState.enemiesKilled}
           score={gameState.score}
           wave={gameState.wave}

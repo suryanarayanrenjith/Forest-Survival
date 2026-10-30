@@ -63,6 +63,12 @@ interface HUDProps {
   maxHealth?: number; // optional dynamic cap (Thick Skin); defaults to 100
   ammo: number;
   maxAmmo: number;
+  /** Spare rounds for the equipped gun (shown after the magazine count). */
+  reserveAmmo?: number;
+  /** Tutorial: the reserve never runs down (∞). */
+  reserveUnlimited?: boolean;
+  /** Owned guns with no rounds left at all — their loadout slot is flagged. */
+  dryWeapons?: string[];
   enemiesKilled: number;
   score: number;
   wave: number;
@@ -220,7 +226,7 @@ const SegmentedBar = ({ ratio, color, low, height = 8, segments = 5 }: {
 );
 
 const HUD = ({
-  health, maxHealth = 100, ammo, maxAmmo, enemiesKilled, score, wave, weaponName,
+  health, maxHealth = 100, ammo, maxAmmo, reserveAmmo = 0, reserveUnlimited = false, dryWeapons, enemiesKilled, score, wave, weaponName,
   unlockedWeapons, currentWeapon, hideStatsPanel = false, unlimitedHealth = false,
   hideWave = false, abilities = [],
   staminaRatio = 1, staminaExhausted = false, unlimitedStamina = false,
@@ -241,6 +247,16 @@ const HUD = ({
     if (health < prevHealth.current - 0.5) setHurtTick((n) => n + 1);
     prevHealth.current = health;
   }, [health]);
+  // Reserve gain: the "/ reserve" readout pops when rounds come IN for the
+  // gun in hand (a pickup or resupply) — not on a weapon switch.
+  const [reserveGain, setReserveGain] = useState(0);
+  const prevReserve = useRef({ w: currentWeapon, n: reserveAmmo });
+  useEffect(() => {
+    const prev = prevReserve.current;
+    if (prev.w === currentWeapon && reserveAmmo > prev.n) setReserveGain((n) => n + 1);
+    prevReserve.current = { w: currentWeapon, n: reserveAmmo };
+  }, [reserveAmmo, currentWeapon]);
+  const reserveAnim = reserveGain ? 'hudReserveGain 0.42s cubic-bezier(0.2, 0.9, 0.3, 1)' : undefined;
 
   const safeMax = Math.max(1, maxHealth);
   const healthRatio = unlimitedHealth ? 1 : Math.max(0, Math.min(1, health / safeMax));
@@ -248,6 +264,10 @@ const HUD = ({
   const isLowHealth = !unlimitedHealth && healthRatio <= 0.3;
   const isLowAmmo = ammo <= Math.ceil(maxAmmo * 0.2);
   const ammoColor = ammo === 0 ? C_DANGER : isLowAmmo ? C_WARN : 'var(--hud-ink)';
+  // The reserve: what's left to reload from. Red when it's gone, amber when
+  // it can't fill one more magazine.
+  const reserveText = reserveUnlimited ? '∞' : String(reserveAmmo);
+  const reserveColor = reserveUnlimited ? 'var(--hud-dim)' : reserveAmmo <= 0 ? C_DANGER : reserveAmmo < maxAmmo ? C_WARN : 'var(--hud-dim)';
   const stamina = unlimitedStamina ? 1 : Math.max(0, Math.min(1, staminaRatio));
   const staminaColor = unlimitedStamina ? C_COOL : staminaExhausted ? C_DANGER : stamina < 0.3 ? C_WARN : C_COOL;
   const hpText = unlimitedHealth ? '∞' : String(Math.max(0, Math.floor(health)));
@@ -271,7 +291,7 @@ const HUD = ({
               </div>
               <div className="flex items-end gap-1">
                 <span className="hud-num text-[17px]" style={{ color: ammoColor }}>{ammo}</span>
-                <span className="hud-num mb-[1px] text-[11px] text-[color:var(--hud-dim)]">/ {maxAmmo}</span>
+                <span key={`rg-${reserveGain}`} className="hud-num mb-[1px] inline-block text-[11px]" style={{ color: reserveColor, transformOrigin: 'left bottom', animation: reserveAnim }}>/ {reserveText}</span>
               </div>
               {!hideStatsPanel && (
                 <div className="flex items-end gap-1">
@@ -458,7 +478,7 @@ const HUD = ({
           >
             {ammo}
           </span>
-          <span className="hud-num mb-[6px] text-[22px] text-[color:var(--hud-dim)]">/ {maxAmmo}</span>
+          <span key={`rg-${reserveGain}`} className="hud-num mb-[6px] inline-block text-[22px]" style={{ color: reserveColor, transformOrigin: 'left bottom', animation: reserveAnim }} title="Reserve">/ {reserveText}</span>
         </div>
         <div className="mt-1.5 flex justify-end">
           {showPips ? (
@@ -507,10 +527,11 @@ const HUD = ({
           {weaponKeys.map((key, index) => {
             const unlocked = unlockedWeapons.includes(key);
             const current = currentWeapon === key;
+            const dry = unlocked && !!dryWeapons?.includes(key);
             return (
               <div
                 key={key}
-                title={unlocked ? `${WEAPONS[key].name} (${index + 1})` : `Unlocks at ${Math.round(WEAPONS[key].unlockScore * weaponUnlockMult)} pts`}
+                title={unlocked ? `${WEAPONS[key].name} (${index + 1})${dry ? ' · no ammo' : ''}` : `Unlocks at ${Math.round(WEAPONS[key].unlockScore * weaponUnlockMult)} pts`}
                 className="relative"
               >
                 <SlotFrame
@@ -522,7 +543,7 @@ const HUD = ({
                 >
                   <div className="flex h-full w-full items-center justify-center">
                     {unlocked ? (
-                      <span className="hud-num text-[13px]" style={{ color: current ? C_ACCENT : 'var(--hud-dim)' }}>{index + 1}</span>
+                      <span className="hud-num text-[13px]" style={{ color: dry ? C_DANGER : current ? C_ACCENT : 'var(--hud-dim)', opacity: dry && !current ? 0.7 : 1 }}>{index + 1}</span>
                     ) : (
                       <Lock className="h-2.5 w-2.5 text-[color:var(--hud-faint)]" strokeWidth={2.5} />
                     )}

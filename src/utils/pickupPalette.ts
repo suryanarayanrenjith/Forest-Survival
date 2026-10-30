@@ -1,5 +1,6 @@
 import type { PowerUp } from '../types/game';
 import type { PowerUpType as AirdropReward } from './EnhancedPowerUps';
+import { AMMO, isGunKey } from './AmmoSystem';
 import { THROWABLES, type ThrowableKind } from './Throwables';
 
 /**
@@ -24,17 +25,19 @@ export const PICKUP_COLOR: Record<PowerUp['type'], number> = {
   shockwave: 0xffe28a,
   nuke: 0xb4ff2e,
   grenade: 0xd9c27a,
+  ammo_pack: 0xffb13d,
 };
 
-/** The identity colour of a pickup (throwables use their catalog colour). */
-export function pickupColor(type: PowerUp['type'], grenadeKind?: ThrowableKind): number {
+/** The identity colour of a pickup (throwables and ammo use their catalog colour). */
+export function pickupColor(type: PowerUp['type'], grenadeKind?: ThrowableKind, ammoWeapon?: string): number {
   if (type === 'grenade' && grenadeKind) return parseInt(THROWABLES[grenadeKind].color.slice(1), 16);
+  if (type === 'ammo_pack' && ammoWeapon && isGunKey(ammoWeapon)) return AMMO[ammoWeapon].color;
   return PICKUP_COLOR[type];
 }
 
 /** The same colour as a CSS hex string. */
-export function pickupCss(type: PowerUp['type'], grenadeKind?: ThrowableKind): string {
-  return `#${pickupColor(type, grenadeKind).toString(16).padStart(6, '0')}`;
+export function pickupCss(type: PowerUp['type'], grenadeKind?: ThrowableKind, ammoWeapon?: string): string {
+  return `#${pickupColor(type, grenadeKind, ammoWeapon).toString(16).padStart(6, '0')}`;
 }
 
 /**

@@ -213,6 +213,9 @@ export interface Enemy {
   /** The visor eye-bar (switched off as the robot powers down). */
   eye?: THREE.Mesh;
   hitImpulse?: THREE.Vector3;
+  /** Melee knockback velocity (m/s), bled off each frame — solo/host only. */
+  knockVX?: number;
+  knockVZ?: number;
   leftLeg?: THREE.Object3D;  // hip-pivot group (thigh inside)
   rightLeg?: THREE.Object3D;
   leftKnee?: THREE.Object3D; // knee-pivot group (shin + foot inside)
@@ -559,13 +562,18 @@ export interface Bullet {
 export type PowerUpType = 'ammo' | 'speed' | 'damage' | 'shield' | 'infinite_ammo' | 'overcharge' | 'phantom'
   | 'cryo' | 'tesla' | 'shockwave' | 'health' | 'nuke'
   /** A grenade drop — goes straight into the pouch, never the held-power slot. */
-  | 'grenade';
+  | 'grenade'
+  /** An ammunition drop for one gun — goes straight into that gun's reserve. */
+  | 'ammo_pack';
 
 export interface PowerUp {
   mesh: THREE.Mesh;
   type: PowerUpType;
   /** Which throwable a 'grenade' pickup holds (see utils/Throwables). */
   grenadeKind?: 'frag' | 'emp' | 'thermite' | 'hijack' | 'sticky' | 'decoy' | 'knife';
+  /** Which gun an 'ammo_pack' is for, and the rounds still in it (see utils/AmmoSystem). */
+  ammoWeapon?: 'pistol' | 'rifle' | 'shotgun' | 'smg' | 'sniper' | 'minigun' | 'launcher' | 'subverter';
+  ammoRounds?: number;
   position: THREE.Vector3;
   collected: boolean;
 }
@@ -606,6 +614,12 @@ export interface GameState {
   maxHealth: number; // dynamic, boosted by Thick Skin skill
   ammo: number;
   maxAmmo: number;
+  /** Spare rounds for the equipped gun (reloads draw from these). */
+  reserveAmmo?: number;
+  /** Tutorial: the reserve never runs down (shown as ∞). */
+  reserveUnlimited?: boolean;
+  /** Owned guns with no rounds left at all (magazine + reserve) — flagged on the loadout strip. */
+  dryWeapons?: string[];
   score: number;
   enemiesKilled: number;
   wave: number;

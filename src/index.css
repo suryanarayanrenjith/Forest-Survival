@@ -760,6 +760,12 @@ canvas {
   0% { transform: translateY(-3px) scale(1.08); filter: brightness(1.6); }
   100% { transform: none; filter: none; }
 }
+/* Reserve readout pop when rounds are picked up for the gun in hand. */
+@keyframes hudReserveGain {
+  0% { transform: translateY(-4px) scale(1.3); color: #ffd27a; filter: brightness(1.5); }
+  60% { transform: scale(1.04); }
+  100% { transform: none; filter: none; }
+}
 /* Health readout jolt when a hit lands. */
 @keyframes hudHurtHit {
   0% { transform: scale(1.14); color: #ff5a5f; }

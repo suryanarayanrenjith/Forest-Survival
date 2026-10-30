@@ -232,13 +232,13 @@ export class TutorialSystem {
         instructions: touch ? [
           'Tap the Grenade button to throw — HOLD it to aim the arc, lift to let go',
           'Tap the ⇄ chip on its corner to switch throwable',
-          'Training pouch: frag, sticky C4, thermite, knife, smoke, EMP and decoy',
+          'Training pouch: frag, sticky C4, thermite, knife, hijack spike, EMP and decoy',
           'You throw with your LEFT hand — not while it holds the shield or a detonator',
           'Throw anything to continue',
         ] : [
           'Press G to throw — HOLD G to aim the arc, release to let go',
           'T / B switch throwable — HOLD T for the quick-select wheel',
-          'Training pouch: frag, sticky C4, thermite, knife, smoke, EMP and decoy',
+          'Training pouch: frag, sticky C4, thermite, knife, hijack spike, EMP and decoy',
           'You throw with your LEFT hand — not while it holds the shield or a detonator',
           'Throw anything to continue',
         ],

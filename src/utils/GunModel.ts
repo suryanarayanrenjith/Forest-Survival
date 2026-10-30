@@ -718,6 +718,10 @@ export class GunModel {
   private meleeHold = 0;
   private meleeJolt = 0;
   private meleeConnected = false;
+  // Which swing of the two-hit combo is playing: 0 = the opener (MELEE_POSES),
+  // 1 = the follow-up (MELEE_POSES_B), a different authored strike that
+  // travels back the other way. App picks it from the combo window.
+  private meleeVariant: 0 | 1 = 0;
   // Engineer "wire the bomb" pose — while ON, the gun dips low and tucks across
   // the body as if the free hand is working at the barrel. Smoothed toward
   // `wiringTarget` in updateActions so the bend eases in and out.
@@ -4358,6 +4362,12 @@ export class GunModel {
     if (this.meleeHold > 0) this.meleeHold = Math.max(0, this.meleeHold - delta);
     else if (this.meleeAnim > 0) this.meleeAnim = Math.max(0, this.meleeAnim - delta * 2.2);
     if (this.meleeJolt > 0) this.meleeJolt = Math.max(0, this.meleeJolt - delta * 4.5);
+    // White knuckles: both hands clamp down as the swing releases and stay
+    // clamped through contact, then relax into the recovery.
+    if (this.meleeAnim > 0) {
+      const mp = 1 - this.meleeAnim;
+      if (mp > 0.2 && mp < 0.46) this.gripSqueeze = Math.max(this.gripSqueeze, 0.95);
+    }
     // Weapon draw scales with mass: a sidearm comes up almost instantly, a
     // rotary cannon has to be hauled into position. Together with the
     // mass-scaled ADS speed this is what the player feels when they swap TO a
@@ -4615,13 +4625,65 @@ export class GunModel {
     subverter: { w: [ 0.00,  0.22,  0.09,  0.58,  0.00, -0.13], s: [ 0.00, -0.15, -0.44, -0.66,  0.00,  0.20] },
   };
 
-  /** One-shot melee strike. No-op for heavy weapons (no pose defined). */
-  triggerMelee() {
+  // The combo FOLLOW-UP: a second, different strike that starts where the
+  // opener left the weapon and travels back the other way, so a double tap
+  // reads as a real one-two rather than the same swing twice. The pistol
+  // backhands up-and-right, the rifle drives a rising stock uppercut, the
+  // shotgun comes down in a vertical butt slam, the SMG hooks in from the left
+  // and the subverter backhands its deck edge across.
+  private static readonly MELEE_POSES_B: Partial<Record<WeaponType, { w: number[]; s: number[] }>> = {
+    pistol:    { w: [-0.12,  0.05,  0.06,  0.28, -0.30,  0.44], s: [ 0.12,  0.01, -0.38, -0.46,  0.32, -0.46] },
+    rifle:     { w: [ 0.03, -0.11,  0.13,  0.32,  0.26,  0.12], s: [-0.04,  0.09, -0.50, -0.56, -0.32, -0.10] },
+    shotgun:   { w: [ 0.06,  0.20,  0.10,  0.62,  0.20, -0.10], s: [-0.04, -0.16, -0.44, -0.72, -0.28,  0.14] },
+    smg:       { w: [-0.11,  0.00,  0.10,  0.08, -0.46,  0.30], s: [ 0.13,  0.02, -0.45, -0.12,  0.56, -0.36] },
+    subverter: { w: [-0.14,  0.06,  0.08,  0.12, -0.40,  0.34], s: [ 0.16, -0.02, -0.42, -0.18,  0.50, -0.40] },
+  };
+
+  private meleePose(): { w: number[]; s: number[] } | undefined {
+    return (this.meleeVariant === 1 ? GunModel.MELEE_POSES_B : GunModel.MELEE_POSES)[this.currentWeaponType];
+  }
+
+  /**
+   * One-shot melee strike. No-op for heavy weapons (no pose defined).
+   * `variant` 1 plays the combo follow-up swing.
+   */
+  triggerMelee(variant: 0 | 1 = 0) {
     if (!MELEE_CAPABLE_WEAPONS.has(this.currentWeaponType)) return;
+    this.meleeVariant = variant;
     this.meleeAnim = 1;
     this.meleeHold = 0;
     this.meleeJolt = 0;
     this.meleeConnected = false;
+  }
+
+  /**
+   * Which way the current swing sweeps across the view: +1 = travels to the
+   * right, −1 = to the left, ~0 for a straight jab. App tilts the robot's hit
+   * reaction by it, so a horizontal bash snaps the target's head sideways.
+   */
+  get meleeSweep(): number {
+    const pose = this.meleePose();
+    if (!pose) return 0;
+    const d = pose.s[0] - pose.w[0];
+    return Math.abs(d) < 0.06 ? 0 : Math.sign(d);
+  }
+
+  /**
+   * Taking a hit: the weapon is jarred AWAY from the blow. `side` is the
+   * attacker's bearing (+1 = from the right), `front` +1 = from ahead, and
+   * `strength` 0..1 scales with the damage. Fed into the recoil spring so it
+   * rings out with the same physical character as a shot.
+   */
+  triggerHurt(side: number, front: number, strength: number) {
+    const k = THREE.MathUtils.clamp(strength, 0, 1);
+    if (k <= 0) return;
+    const r = this.recoilSpring;
+    const ads = 1 - this.aimProgress * 0.55;
+    r.vz += (4 + 5 * Math.max(0, front)) * k * ads;
+    r.vrx -= (7 + 9 * Math.max(0, front)) * k * ads;
+    r.vry += side * 7 * k * ads;
+    r.vrz += side * 11 * k * ads;
+    this.gripSqueeze = Math.min(1, this.gripSqueeze + 0.6 * k);
   }
 
   /** The strike landed on something: hit-stop, then recoil off the target. */
@@ -4640,16 +4702,21 @@ export class GunModel {
   getMeleeCamKick(out: { pitch: number; yaw: number; roll: number }): void {
     out.pitch = 0; out.yaw = 0; out.roll = 0;
     if (this.meleeAnim <= 0 && this.meleeJolt <= 0) return;
-    const pose = GunModel.MELEE_POSES[this.currentWeaponType];
+    const pose = this.meleePose();
     if (!pose) return;
     const p = 1 - this.meleeAnim;
     const wind = this.ss(p / 0.24) * (1 - this.ss((p - 0.24) / 0.12));
     const strike = Math.sin(Math.min(1, Math.max(0, (p - 0.24) / 0.3)) * Math.PI);
     const dir = Math.sign(pose.s[5] - pose.w[5]) || 1;   // the arc's sweep direction
+    // A vertical strike (big pitch travel, little yaw) drives the head DOWN
+    // with it — the shoulders roll over the blow — instead of swinging sideways.
+    const vert = THREE.MathUtils.clamp(Math.abs(pose.s[3] - pose.w[3]) - Math.abs(pose.s[4] - pose.w[4]), 0, 1);
     const jolt = this.meleeJolt * Math.cos((1 - this.meleeJolt) * 18) * this.meleeJolt;
-    out.pitch = wind * 0.012 - strike * 0.02 + jolt * 0.012;
-    out.yaw = -dir * (wind * 0.01 - strike * 0.024);
-    out.roll = dir * (wind * 0.02 - strike * 0.035) + jolt * 0.015;
+    // Follow-through: a miss carries the body on past where a hit would stop.
+    const carry = this.meleeConnected ? 1 : 1.35;
+    out.pitch = wind * (0.014 + vert * 0.01) - strike * (0.022 + vert * 0.03) * carry + jolt * 0.016;
+    out.yaw = -dir * (wind * 0.012 - strike * 0.028 * carry) * (1 - vert * 0.6);
+    out.roll = dir * (wind * 0.022 - strike * 0.04 * carry) * (1 - vert * 0.5) + jolt * 0.018;
   }
 
   /**
@@ -4738,7 +4805,7 @@ export class GunModel {
     // never have meleeAnim > 0 (triggerMelee gates on the same table's set).
     let mX = 0, mY = 0, mZ = 0, mRX = 0, mRY = 0, mRZ = 0;
     if (this.meleeAnim > 0 || this.meleeJolt > 0) {
-      const pose = GunModel.MELEE_POSES[this.currentWeaponType];
+      const pose = this.meleePose();
       if (pose) {
         const p = 1 - this.meleeAnim;
         const w = pose.w, s = pose.s;

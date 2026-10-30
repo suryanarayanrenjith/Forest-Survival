@@ -28,6 +28,7 @@ import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeom
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { heightToNormal } from './ProceduralSurface';
 import type { ThrowableKind } from './Throwables';
+import type { GunKey } from './AmmoSystem';
 
 // ── ATLAS LAYOUT ─────────────────────────────────────────────────────────────
 
@@ -74,6 +75,15 @@ const C = {
   knifeBlade: [4, 7, 1, 1],
   paracord: [5, 7, 1, 1],
   c4Putty: [6, 7, 1, 1],
+  // Row 14 — ammunition (the per-gun ammo drops)
+  pmag: [0, 14, 1, 1],
+  stanag: [1, 14, 2, 1],
+  shellHull: [3, 14, 1, 1],
+  beltLinks: [4, 14, 2, 1],
+  rocketBody: [6, 14, 2, 1],
+  chipCart: [8, 14, 2, 1],
+  ammoBox: [10, 14, 2, 1],
+  shellBox: [12, 14, 2, 1],
 } as const satisfies Record<string, Cell>;
 
 
@@ -903,6 +913,131 @@ function paintItemLabels(L: Layers, rnd: () => number): void {
   }
 }
 
+/** The ammunition surfaces: magazines, shells, belt, rocket, chip cartridge, boxes. */
+function paintAmmoLabels(L: Layers, rnd: () => number): void {
+  // ── Pistol / SMG magazine: blued steel, witness holes + round count. ──
+  {
+    const r = cellRect(L, C.pmag);
+    base(L, r, 0x232529, 0.38, 0.92);
+    brushed(L, r, rnd, 0.06, true);
+    for (let i = 0; i < 5; i++) {
+      const y = r.y + r.h * (0.2 + i * 0.15);
+      L.a.fillStyle = '#060607'; L.a.beginPath(); L.a.arc(r.x + r.w * 0.74, y, r.w * 0.035, 0, Math.PI * 2); L.a.fill();
+      L.h.fillStyle = grey(0.18); L.h.beginPath(); L.h.arc(r.x + r.w * 0.74, y, r.w * 0.035, 0, Math.PI * 2); L.h.fill();
+      text(L, String(15 - i * 3), r.x + r.w * 0.86, y, r.h * 0.06, 0xb8bcc2, { weight: '800' });
+    }
+    // Pressed spine + a maker's stamp.
+    L.h.fillStyle = grey(0.64); L.h.fillRect(r.x + r.w * 0.18, r.y + r.h * 0.08, r.w * 0.08, r.h * 0.84);
+    text(L, 'CAL 9MM', r.x + r.w * 0.42, r.y + r.h * 0.12, r.h * 0.07, 0x9ea2a8, { weight: '800' });
+    chips(L, r, rnd, 14, 0xb9bbbd);
+  }
+  // ── Rifle magazine: dark-earth polymer, ribs, round-count window. ──
+  {
+    const r = cellRect(L, C.stanag);
+    base(L, r, 0x5a4a33, 0.72, 0);
+    speckle(L, r, rnd, 1.6, 0.07, 0.04);
+    for (let i = 1; i < 9; i++) {
+      const x = r.x + (i / 9) * r.w;
+      L.h.fillStyle = grey(0.6); L.h.fillRect(x - r.w * 0.012, r.y + r.h * 0.12, r.w * 0.024, r.h * 0.76);
+      L.a.fillStyle = 'rgba(0,0,0,0.18)'; L.a.fillRect(x + r.w * 0.012, r.y + r.h * 0.12, r.w * 0.006, r.h * 0.76);
+    }
+    // Smoked witness window showing brass behind it.
+    L.a.fillStyle = '#2a2116'; L.a.fillRect(r.x + r.w * 0.1, r.y + r.h * 0.42, r.w * 0.8, r.h * 0.12);
+    for (let i = 0; i < 12; i++) {
+      L.a.fillStyle = 'rgba(201,162,79,0.55)';
+      L.a.fillRect(r.x + r.w * (0.12 + i * 0.065), r.y + r.h * 0.44, r.w * 0.045, r.h * 0.08);
+    }
+    L.o.fillStyle = orm(0.12, 0); L.o.fillRect(r.x + r.w * 0.1, r.y + r.h * 0.42, r.w * 0.8, r.h * 0.12);
+    text(L, '5.56 NATO · 30 RDS', r.x + r.w * 0.5, r.y + r.h * 0.26, r.h * 0.1, 0x1e1810, { weight: '900', raise: 0.05, maxW: r.w * 0.8 });
+    text(L, 'MAG-G3 · DO NOT DISASSEMBLE', r.x + r.w * 0.5, r.y + r.h * 0.72, r.h * 0.06, 0x2c241a, { maxW: r.w * 0.8 });
+  }
+  // ── Shotgun hull: red ribbed plastic, printed load. ──
+  {
+    const r = cellRect(L, C.shellHull);
+    base(L, r, 0xa21c19, 0.44, 0);
+    for (let i = 0; i < 14; i++) {
+      const x = r.x + (i / 14) * r.w;
+      L.h.fillStyle = grey(0.58); L.h.fillRect(x, r.y, r.w * 0.025, r.h);
+      L.a.fillStyle = 'rgba(255,255,255,0.06)'; L.a.fillRect(x, r.y, r.w * 0.02, r.h);
+    }
+    text(L, '12 GA', r.x + r.w * 0.5, r.y + r.h * 0.3, r.h * 0.12, 0xf2ece4, { weight: '900' });
+    text(L, '00 BUCK', r.x + r.w * 0.5, r.y + r.h * 0.46, r.h * 0.07, 0xf2ece4, { weight: '800' });
+    // Crimp folds at the top edge.
+    for (let i = 0; i < 8; i++) seam(L, r.x + (i / 8) * r.w, r.y, r.x + (i / 8) * r.w + r.w * 0.06, r.y + r.h * 0.08, 1.5, 0.15, 0.35);
+  }
+  // ── Minigun belt: brass rounds held in blackened steel links. ──
+  {
+    const r = cellRect(L, C.beltLinks);
+    base(L, r, 0x18191b, 0.5, 0.8);
+    const n = 10;
+    for (let i = 0; i < n; i++) {
+      const x = r.x + (i + 0.5) * (r.w / n);
+      const w = (r.w / n) * 0.55;
+      const g = L.a.createLinearGradient(x - w / 2, 0, x + w / 2, 0);
+      g.addColorStop(0, '#7a5c22'); g.addColorStop(0.45, '#e2bb62'); g.addColorStop(1, '#6e5220');
+      L.a.fillStyle = g; L.a.fillRect(x - w / 2, r.y + r.h * 0.22, w, r.h * 0.5);
+      L.a.fillStyle = '#b5652f'; L.a.fillRect(x - w * 0.35, r.y + r.h * 0.08, w * 0.7, r.h * 0.16);
+      L.o.fillStyle = orm(0.26, 1); L.o.fillRect(x - w / 2, r.y + r.h * 0.08, w, r.h * 0.64);
+      L.h.fillStyle = grey(0.72); L.h.fillRect(x - w / 2, r.y + r.h * 0.1, w, r.h * 0.62);
+      // Link loops around each case.
+      L.a.fillStyle = '#2b2d30'; L.a.fillRect(x - w * 0.6, r.y + r.h * 0.38, w * 1.2, r.h * 0.06);
+      L.a.fillRect(x - w * 0.6, r.y + r.h * 0.6, w * 1.2, r.h * 0.06);
+    }
+  }
+  // ── Rocket body: olive drab, yellow HE band, black stencil. ──
+  {
+    const r = cellRect(L, C.rocketBody);
+    base(L, r, 0x4b5233, 0.6, 0.1);
+    L.a.fillStyle = '#d6a51e'; L.a.fillRect(r.x + r.w * 0.16, r.y, r.w * 0.08, r.h);
+    L.a.fillStyle = '#d6a51e'; L.a.fillRect(r.x + r.w * 0.27, r.y, r.w * 0.02, r.h);
+    text(L, 'HEAT 84MM', r.x + r.w * 0.6, r.y + r.h * 0.36, r.h * 0.16, 0x16180f, { weight: '900', stencil: 0x4b5233 });
+    text(L, 'LOT 17-RKT · DANGER BACKBLAST', r.x + r.w * 0.6, r.y + r.h * 0.6, r.h * 0.07, 0x16180f, { maxW: r.w * 0.6 });
+    chips(L, r, rnd, 16);
+    grime(L, r, 0.26);
+  }
+  // ── Subverter chip cartridge: PCB, gold contacts, status LED. ──
+  {
+    const r = cellRect(L, C.chipCart);
+    base(L, r, 0x0f1a12, 0.4, 0.2);
+    for (let t = 0; t < 14; t++) {
+      const x0 = r.x + rnd() * r.w, y0 = r.y + r.h * (0.15 + rnd() * 0.5);
+      const x1 = x0 + (rnd() - 0.5) * r.w * 0.2, x2 = x0 + (rnd() - 0.5) * r.w * 0.2;
+      L.a.strokeStyle = 'rgba(57,255,20,0.5)'; L.e.strokeStyle = 'rgba(57,255,20,0.35)';
+      L.a.lineWidth = L.e.lineWidth = Math.max(1, r.h * 0.012);
+      for (const ctx of [L.a, L.e]) {
+        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y0); ctx.lineTo(x2, y0 + r.h * 0.12); ctx.stroke();
+      }
+    }
+    for (let i = 0; i < 12; i++) {
+      L.a.fillStyle = '#d4af37'; L.a.fillRect(r.x + r.w * (0.08 + i * 0.07), r.y + r.h * 0.8, r.w * 0.045, r.h * 0.14);
+      L.o.fillStyle = orm(0.2, 1); L.o.fillRect(r.x + r.w * (0.08 + i * 0.07), r.y + r.h * 0.8, r.w * 0.045, r.h * 0.14);
+    }
+    text(L, 'SUBVERTER · INTRUSION ×2', r.x + r.w * 0.45, r.y + r.h * 0.18, r.h * 0.1, 0x9dff6a, { weight: '900', maxW: r.w * 0.8 });
+    led(L, r.x + r.w * 0.92, r.y + r.h * 0.18, r.h * 0.05, 0x39ff14);
+  }
+  // ── Marksman cartridge box (cardboard). ──
+  {
+    const r = cellRect(L, C.ammoBox);
+    base(L, r, 0xb08a58, 0.92, 0);
+    speckle(L, r, rnd, 1.8, 0.07, 0.03);
+    L.a.fillStyle = '#1d3b2a'; L.a.fillRect(r.x, r.y + r.h * 0.12, r.w, r.h * 0.26);
+    text(L, '.338 LAPUA MAG', r.x + r.w * 0.5, r.y + r.h * 0.25, r.h * 0.13, 0xf1ead8, { weight: '900', maxW: r.w * 0.86 });
+    text(L, '5 CARTRIDGES · 250 GR · MATCH', r.x + r.w * 0.5, r.y + r.h * 0.56, r.h * 0.08, 0x2a1f12, { maxW: r.w * 0.86 });
+    text(L, 'LOT 338-4417', r.x + r.w * 0.5, r.y + r.h * 0.74, r.h * 0.07, 0x2a1f12);
+    grime(L, r, 0.22);
+  }
+  // ── Shotgun shell box. ──
+  {
+    const r = cellRect(L, C.shellBox);
+    base(L, r, 0x8a1c17, 0.8, 0);
+    L.a.fillStyle = '#e4c04a'; L.a.fillRect(r.x, r.y + r.h * 0.68, r.w, r.h * 0.18);
+    text(L, '12 GA · 00 BUCK', r.x + r.w * 0.5, r.y + r.h * 0.3, r.h * 0.15, 0xf6efe2, { weight: '900', maxW: r.w * 0.86 });
+    text(L, '8 SHELLS · 70MM · 9 PELLETS', r.x + r.w * 0.5, r.y + r.h * 0.5, r.h * 0.08, 0xf6efe2, { maxW: r.w * 0.86 });
+    text(L, 'BUCKSHOT', r.x + r.w * 0.5, r.y + r.h * 0.77, r.h * 0.09, 0x2a1210, { weight: '900' });
+    grime(L, r, 0.2);
+  }
+}
+
 // ── ATLAS + MATERIAL ─────────────────────────────────────────────────────────
 
 let material: THREE.MeshStandardMaterial | null = null;
@@ -938,6 +1073,7 @@ function buildAtlas(): THREE.MeshStandardMaterial {
   paintStrapAndPallet(L, rnd);
   paintCrateLabels(L, rnd);
   paintItemLabels(L, rnd);
+  paintAmmoLabels(L, rnd);
 
   const map = new THREE.CanvasTexture(ca);
   map.colorSpace = THREE.SRGBColorSpace;
@@ -1058,7 +1194,8 @@ export type GrenadeKind = ThrowableKind;
 export type ItemModelId =
   | 'health' | 'ammo' | 'speed' | 'damage' | 'shield' | 'infinite_ammo' | 'overcharge'
   | 'phantom' | 'cryo' | 'tesla' | 'shockwave' | 'nuke'
-  | `grenade_${ThrowableKind}` | 'grenade_pin';
+  | `grenade_${ThrowableKind}` | 'grenade_pin'
+  | `ammo_${GunKey}`;
 
 /** Throwables authored at REAL scale (a grenade's radius ≈ 0.12 u ≈ 4 cm); pickups and the viewmodel scale them. */
 function buildGrenade(kind: GrenadeKind, withPin: boolean): THREE.BufferGeometry {
@@ -1144,6 +1281,112 @@ function buildPin(): THREE.BufferGeometry {
     .cyl(0.004, 0.004, 0.08, C.steel, { p: [0.03, 0, 0], r: [0, 0, Math.PI / 2] }, 6)
     .build();
 }
+
+/** A cartridge lying along +Z: case + projectile (the tip points +Z). */
+function round(it: Item, x: number, y: number, z: number, caseR: number, caseL: number, tip: Cell = C.copper): void {
+  it.cyl(caseR, caseR, caseL, C.brass, { p: [x, y, z], r: [Math.PI / 2, 0, 0] }, 10);
+  it.cyl(caseR * 0.14, caseR * 0.92, caseL * 0.42, tip, { p: [x, y, z + caseL * 0.7], r: [Math.PI / 2, 0, 0] }, 10);
+}
+
+/**
+ * Per-gun AMMUNITION drops — each reads as its own thing at a glance: twin
+ * pistol mags, coupled rifle mags, an open shell box, taped stick mags, a
+ * stripper clip of long marksman rounds, a belt feed box, a rocket, a pair of
+ * chip cartridges. Same atlas material as every other item (one program).
+ */
+const AMMO_BUILDERS: Record<`ammo_${GunKey}`, () => THREE.BufferGeometry> = {
+  ammo_pistol: () => {
+    const it = new Item();
+    for (const [x, z, ry] of [[-0.07, 0.03, 0.22], [0.07, -0.03, -0.18]] as const) {
+      it.box(0.095, 0.4, 0.19, C.pmag, { p: [x, 0, z], r: [0, ry, 0] }, 0.012);
+      it.box(0.11, 0.035, 0.21, C.blackPoly, { p: [x, -0.215, z], r: [0, ry, 0] }, 0.01);     // base plate
+      round(it, x, 0.215, z - 0.03, 0.02, 0.06);                                                // top round in the lips
+    }
+    return it.build();
+  },
+  ammo_rifle: () => {
+    const it = new Item();
+    for (const x of [-0.068, 0.068]) {
+      it.box(0.11, 0.48, 0.23, C.stanag, { p: [x, 0, 0] }, 0.016);
+      it.box(0.125, 0.04, 0.25, C.blackPoly, { p: [x, -0.26, 0] }, 0.012);
+      round(it, x, 0.255, -0.04, 0.02, 0.09);
+    }
+    for (const y of [0.08, -0.12]) it.box(0.27, 0.05, 0.25, C.darkSteel, { p: [0, y, 0] }, 0.01); // coupler clamps
+    return it.build();
+  },
+  ammo_shotgun: () => {
+    const it = new Item();
+    it.box(0.36, 0.15, 0.22, C.shellBox, { p: [0, -0.075, 0] }, 0.01);
+    for (let i = 0; i < 5; i++) {
+      const x = -0.13 + i * 0.065;
+      it.cyl(0.03, 0.03, 0.17, C.shellHull, { p: [x, 0.07, 0.02] }, 14);
+      it.cyl(0.032, 0.032, 0.045, C.brass, { p: [x, -0.035, 0.02] }, 14);                       // brass head
+    }
+    // One loose shell lying in front.
+    it.cyl(0.03, 0.03, 0.17, C.shellHull, { p: [0.03, -0.12, 0.16], r: [0, 0, Math.PI / 2] }, 14);
+    it.cyl(0.032, 0.032, 0.045, C.brass, { p: [-0.075, -0.12, 0.16], r: [0, 0, Math.PI / 2] }, 14);
+    return it.build();
+  },
+  ammo_smg: () => {
+    const it = new Item();
+    for (const x of [-0.048, 0.048]) {
+      it.box(0.085, 0.6, 0.16, C.pmag, { p: [x, 0, 0] }, 0.01);
+      it.box(0.1, 0.035, 0.18, C.blackPoly, { p: [x, -0.315, 0] }, 0.01);
+      round(it, x, 0.315, -0.02, 0.019, 0.055);
+    }
+    for (const y of [0.12, -0.14]) it.box(0.2, 0.07, 0.175, C.odPaint, { p: [0, y, 0] }, 0.006);   // field tape
+    return it.build();
+  },
+  ammo_sniper: () => {
+    const it = new Item();
+    it.box(0.3, 0.12, 0.17, C.ammoBox, { p: [0, -0.1, -0.07] }, 0.008);
+    it.box(0.3, 0.025, 0.05, C.steel, { p: [0, -0.02, 0.09] }, 0.006);                          // stripper clip
+    for (let i = 0; i < 5; i++) {
+      const x = -0.12 + i * 0.06;
+      it.cyl(0.024, 0.027, 0.24, C.brass, { p: [x, 0.11, 0.09] }, 12);                           // long case
+      it.cyl(0.014, 0.024, 0.04, C.brass, { p: [x, 0.25, 0.09] }, 12);                           // shoulder + neck
+      it.cyl(0.002, 0.014, 0.08, C.copper, { p: [x, 0.31, 0.09] }, 12);                           // boat-tail bullet
+    }
+    return it.build();
+  },
+  ammo_minigun: () => {
+    const it = new Item();
+    it.box(0.46, 0.3, 0.26, C.darkSteel, { p: [0, -0.1, 0] }, 0.02);                            // feed box
+    it.decal(0.4, 0.16, C.beltLinks, { p: [0, -0.1, 0.132] });
+    it.box(0.48, 0.04, 0.28, C.odPaint, { p: [0, 0.06, 0] }, 0.01);                             // lid lip
+    // The belt spilling out of the feed throat and draping over the side.
+    for (let k = 0; k < 9; k++) {
+      const t = k / 8;
+      const x = -0.12 + t * 0.4;
+      const y = 0.11 + Math.sin(t * Math.PI) * 0.12 - t * t * 0.28;
+      round(it, x, y, -0.07, 0.017, 0.12);
+      it.box(0.034, 0.018, 0.12, C.darkSteel, { p: [x, y - 0.022, -0.02] }, 0.004);                // link
+    }
+    return it.build();
+  },
+  ammo_launcher: () => {
+    const it = new Item();
+    it.cyl(0.06, 0.06, 0.5, C.rocketBody, { r: [0, 0, Math.PI / 2] }, 20);                       // motor body (along X)
+    it.cyl(0.014, 0.06, 0.2, C.odPaint, { p: [0.35, 0, 0], r: [0, 0, -Math.PI / 2] }, 20);        // ogive warhead
+    it.cyl(0.006, 0.014, 0.04, C.brass, { p: [0.47, 0, 0], r: [0, 0, -Math.PI / 2] }, 10);        // fuze tip
+    it.cyl(0.045, 0.055, 0.06, C.darkSteel, { p: [-0.28, 0, 0], r: [0, 0, Math.PI / 2] }, 16);    // nozzle
+    for (let k = 0; k < 4; k++) {
+      const a = (k / 4) * Math.PI * 2 + Math.PI / 4;
+      it.box(0.12, 0.004, 0.07, C.darkSteel, { p: [-0.22, Math.sin(a) * 0.085, Math.cos(a) * 0.085], r: [a, 0, 0] }, 0.002);
+    }
+    return it.build();
+  },
+  ammo_subverter: () => {
+    const it = new Item();
+    for (const [y, ry] of [[0, 0], [0.05, 0.55]] as const) {
+      it.box(0.26, 0.035, 0.16, C.blackPoly, { p: [0, y, 0], r: [0, ry, 0] }, 0.006);
+      it.decal(0.24, 0.14, C.chipCart, { p: [0, y + 0.0185, 0], r: [-Math.PI / 2, 0, ry] });
+      it.box(0.2, 0.012, 0.03, C.brass, { p: [Math.sin(ry) * 0.085, y, Math.cos(ry) * 0.085], r: [0, ry, 0] }, 0.002);
+    }
+    it.sphere(0.016, C.ledGreen, { p: [0.1, 0.075, -0.04] }, 8, 6);
+    return it.build();
+  },
+};
 
 const builders: Record<ItemModelId, () => THREE.BufferGeometry> = {
   // Hard-shell first-aid case.
@@ -1295,6 +1538,7 @@ const builders: Record<ItemModelId, () => THREE.BufferGeometry> = {
   grenade_decoy: () => buildGrenade('decoy', true),
   grenade_knife: () => buildGrenade('knife', true),
   grenade_pin: () => buildPin(),
+  ...AMMO_BUILDERS,
 };
 
 const geoCache = new Map<string, THREE.BufferGeometry>();
